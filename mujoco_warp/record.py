@@ -1,0 +1,179 @@
+# Copyright 2026 The Newton Developers
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+"""mjwarp-record: record video of MuJoCo Warp rollouts.
+
+Usage: mjwarp-record <mjcf XML path> --video <output_path> [flags]
+
+Example:
+  mjwarp-record benchmarks/humanoid/humanoid.xml --video humanoid.mp4 --nworld 1
+"""
+
+import sys
+from typing import Sequence
+
+import mujoco
+import numpy as np
+import warp as wp
+from absl import app
+from absl import flags
+from etils import epath
+from PIL import Image
+
+import mujoco_warp as mjw
+from mujoco_warp._src import cli
+
+_OUTPUT = flags.DEFINE_string("output", None, "output video file path", required=True)
+_FPS = flags.DEFINE_integer("fps", 30, "frames per second for the video")
+_QUALITY = flags.DEFINE_integer("quality", 70, "quality setting for webp/gif (0-100)")
+_CAM_DISTANCE = flags.DEFINE_float("cam_distance", 1.5, "camera distance coefficient (multiplier for model extent)")
+_CAM_LOOKAT_Z = flags.DEFINE_float("cam_lookat_z", None, "camera lookat z value (absolute); default: mjm.stat.center[2]")
+_CAM_AZIMUTH_SPEED = flags.DEFINE_float("cam_azimuth_speed", 0.05, "camera azimuth orbit speed (degrees per step)")
+_RENDER_MODE = flags.DEFINE_enum("render_mode", "python", ["warp", "python"], "rendering backend to use")
+_CHANNEL = flags.DEFINE_enum("channel", "rgb", ["rgb", "depth", "segmentation"], "rendering channel to record in the video")
+_CAM_INDEX = flags.DEFINE_integer("cam_index", 0, "camera index to record in warp mode")
+
+
+def _colorize_segmentation(seg_map: np.ndarray) -> np.ndarray:
+  """Map 2D segmentation geom IDs to RGB image."""
+  geom_ids = seg_map[:, :, 0]
+  rng = np.random.RandomState(42)
+  palette = rng.randint(50, 255, size=(1000, 3), dtype=np.uint8)
+  mask_bg = geom_ids < 0
+  colored = palette[np.mod(np.abs(geom_ids), len(palette))]
+  colored[mask_bg] = [20, 20, 20]
+  return colored
+
+
+def _main(argv: Sequence[str]):
+  """Run the recorder."""
+  if len(argv) < 2:
+    raise app.UsageError("Missing required input: mjcf path.")
+  elif len(argv) > 2:
+    raise app.UsageError("Too many command-line arguments.")
+
+  wp.config.log_level = wp.LOG_WARNING if flags.FLAGS["verbosity"].value < 1 else wp.LOG_INFO
+  wp.init()
+
+  path = epath.Path(argv[1])
+  print(f"Loading model from: {path}...\n")
+  mjm = cli.load_model(path)
+
+  if _RENDER_MODE.value == "warp":
+    # TODO(team): Add support for Warp renderer to match the MuJoCo free camera, possibly by adding
+    # it via MjSpec.
+    if mjm.ncam == 0:
+      raise ValueError(
+        "Warp rendering requested, but the model has no cameras. Please define at least one camera in the scene."
+      )
+    m, d, rc, ctrls = cli.init_structs(mjw.render, mjm)
+    if _CHANNEL.value == "depth" and not rc.render_depth.numpy()[0]:
+      raise ValueError("Depth channel requested for recording, but depth rendering is disabled.")
+    if _CHANNEL.value == "segmentation" and not rc.render_seg.numpy()[0]:
+      raise ValueError("Segmentation channel requested for recording, but segmentation rendering is disabled.")
+  else:
+    if _CHANNEL.value in ("depth", "segmentation"):
+      raise ValueError(f"{_CHANNEL.value} channel recording is only supported under the 'warp' rendering mode.")
+    m, d, rc, ctrls = cli.init_structs(mjw.step, mjm)
+
+    renderer = mujoco.Renderer(mjm, height=cli.RENDER_HEIGHT.value[0], width=cli.RENDER_WIDTH.value[0])
+    cam = mujoco.MjvCamera()
+    cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+    cam.lookat[:] = mjm.stat.center
+    if _CAM_LOOKAT_Z.value is not None:
+      cam.lookat[2] = _CAM_LOOKAT_Z.value
+    cam.distance = mjm.stat.extent * _CAM_DISTANCE.value
+    cam.elevation = -20
+    mjd = mujoco.MjData(mjm)
+
+  frames = []
+  render_every = max(1, int(1.0 / (_FPS.value * mjm.opt.timestep)))
+
+  def callback(step, trace, latency):
+    del trace, latency
+    if step % render_every != 0:
+      return
+
+    if _RENDER_MODE.value == "warp":
+      mjw.refit_bvh(m, d, rc)
+      mjw.render(m, d, rc)
+
+      cam_idx = _CAM_INDEX.value
+      res = rc.cam_res.numpy()[cam_idx]  # (width, height)
+
+      # 1. Extract and Unpack RGB via mjw.get_rgb
+      if _CHANNEL.value == "rgb":
+        rgb_dev = wp.zeros((d.nworld, res[1], res[0]), dtype=wp.vec3)
+        mjw.get_rgb(rc, cam_idx, rgb_dev)
+        img_rgb = (rgb_dev.numpy() * 255.0).astype(np.uint8)
+        frames.append(Image.fromarray(img_rgb[0]))
+
+      # 2. Extract and Normalize Depth via mjw.get_depth
+      elif _CHANNEL.value == "depth":
+        depth_dev = wp.zeros((d.nworld, res[1], res[0]), dtype=float)
+        mjw.get_depth(rc, cam_idx, 5.0, depth_dev)
+        # Scale to uint8 grayscale
+        img_depth = ((1.0 - depth_dev.numpy()[0]) * 255.0).astype(np.uint8)
+        frames.append(Image.fromarray(img_depth, "L"))
+
+      # 3. Extract Segmentation via mjw.get_segmentation
+      elif _CHANNEL.value == "segmentation":
+        seg_dev = wp.zeros((d.nworld, res[1], res[0]), dtype=wp.vec2i)
+        mjw.get_segmentation(rc, cam_idx, seg_dev)
+        img_seg = _colorize_segmentation(seg_dev.numpy()[0])
+        frames.append(Image.fromarray(img_seg))
+    else:
+      mjd.qpos[:] = d.qpos.numpy()[0]
+      mjd.qvel[:] = d.qvel.numpy()[0]
+      mujoco.mj_forward(mjm, mjd)
+      # symmetric orbit
+      cam.azimuth = 90 + (step - cli.NSTEP.value / 2) * _CAM_AZIMUTH_SPEED.value
+      renderer.update_scene(mjd, camera=cam)
+      frames.append(Image.fromarray(renderer.render()))
+
+  print(f"Recording {cli.NSTEP.value} steps...")
+  cli.unroll(mjw.step, m, d, None, callback, ctrls)
+
+  print(f"Saving video to {_OUTPUT.value}...")
+  if _OUTPUT.value.endswith((".gif", ".webp")):
+    frames[0].save(
+      _OUTPUT.value,
+      save_all=True,
+      append_images=frames[1:],
+      duration=int(render_every * mjm.opt.timestep * 1000),
+      loop=0,
+      # minimize_size=True,
+      quality=_QUALITY.value,
+    )
+  else:
+    raise ValueError(f"Unsupported video format: {_OUTPUT.value}")
+
+
+def main():
+  # absl flags assumes __main__ is the main running module for printing usage documentation
+  # pyproject bin scripts break this assumption, so manually set argv and docstring
+  sys.argv[0] = "mujoco_warp.record"
+  sys.modules["__main__"].__doc__ = __doc__
+  # default to single world with no noise
+  flags.FLAGS.set_default("nworld", 1)
+  flags.FLAGS.set_default("noise_std", 0.0)
+  flags.FLAGS.set_default("noise_rate", 0.0)
+  flags.FLAGS.set_default("render_width", [320])
+  flags.FLAGS.set_default("render_height", [240])
+  app.run(_main)
+
+
+if __name__ == "__main__":
+  main()

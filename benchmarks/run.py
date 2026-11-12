@@ -1,0 +1,212 @@
+#!/usr/bin/python3
+
+# Copyright 2026 The Newton Developers
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+"""run.py: runs MuJoCo Warp benchmarks.
+
+Usage: python benchmarks/run.py [flags]
+
+Example:
+  python benchmarks/run.py -f humanoid
+  python benchmarks/run.py -f humanoid --view
+  python benchmarks/run.py --input git@github.com:google-deepmind/mujoco_warp.git#abc123f
+  python benchmarks/run.py --input .
+"""
+
+import argparse
+import importlib
+import logging
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from common import clone_if_needed
+from common import ensure_pinned_clone
+from common import uv_run
+
+_ARGS = None  # module level variable that gets populated with argparse results
+
+# Ensure the active virtual environment's bin directory is in PATH so 'uv' can be found
+_venv_bin = Path(sys.executable).parent.as_posix()
+if _venv_bin not in os.environ.get("PATH", ""):
+  os.environ["PATH"] = f"{_venv_bin}{os.path.pathsep}{os.environ.get('PATH', '')}"
+
+logging.basicConfig(format="[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S", level=logging.INFO)
+log = logging.getLogger(__name__)
+
+
+# benchmark discovery, assembly, and execution
+
+
+def _discover_benchmarks(input_dir: str):
+  """Discover benchmarks from __init__.py modules under input_dir/benchmarks."""
+  benchmarks_dir = Path(input_dir) / "benchmarks"
+
+  if benchmarks_dir.as_posix() not in sys.path:
+    sys.path.insert(0, benchmarks_dir.as_posix())
+
+  importlib.invalidate_caches()
+
+  for benchmark in sorted(benchmarks_dir.iterdir()):
+    if not (benchmark / "__init__.py").exists():
+      continue
+    if benchmark.name in sys.modules:
+      module = importlib.reload(sys.modules[benchmark.name])
+    else:
+      module = importlib.import_module(benchmark.name)
+    for bm in getattr(module, "BENCHMARKS", []):
+      if re.match(_ARGS.filter, bm["name"]):
+        bm["_dir"] = benchmark
+        yield bm
+
+
+def _assemble_benchmark(bm: dict):
+  """Assemble benchmark files into assets root."""
+  benchmark_dir = Path(_ARGS.assets_root) / bm["name"]
+  if benchmark_dir.exists():
+    shutil.rmtree(benchmark_dir)
+  benchmark_dir.mkdir(parents=True)
+
+  for asset_spec in bm.get("assets", []):
+    repo, repo_path, dst_path = (asset_spec + ("",))[:3]
+
+    # repo clones are stored in the format: <assets_root>/_git/<repo_source>/<repo_ref>
+    repo_dir = Path(_ARGS.assets_root) / "_git" / Path(repo["source"]).stem / repo["ref"]
+    ensure_pinned_clone(repo["source"], repo["ref"], repo_dir)
+
+    if "*" in repo_path:
+      parts = Path(repo_path).parts
+      offset = parts.index("*") - len(parts)
+      for path in sorted(repo_dir.glob(repo_path)):
+        if not path.is_dir():
+          continue
+        dest = benchmark_dir / dst_path / path.parts[offset]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(path, dest, dirs_exist_ok=True)
+    else:
+      shutil.copytree(repo_dir / repo_path, benchmark_dir / dst_path, dirs_exist_ok=True)
+
+  # copy benchmark module files on top
+  shutil.copytree(bm["_dir"], benchmark_dir, dirs_exist_ok=True)
+
+
+def _bm_flags(bm: dict, benchmark_root: Path, exclude: tuple = ()) -> list:
+  """Build --flag=value CLI args from a benchmark dict, shared by testspeed and viewer."""
+  skip = ("name", "assets", "mjcf", "_dir", *exclude)
+  cmd = []
+  for field, value in bm.items():
+    if field in skip:
+      continue
+    if field == "replay":
+      cmd.append(f"--replay={(benchmark_root / value)}")
+    elif isinstance(value, (list, tuple)):
+      for item in value:
+        cmd.append(f"--{field}={item}")
+    else:
+      cmd.append(f"--{field}={value}")
+  return cmd
+
+
+def _run_benchmark(bm: dict, input_dir: Path) -> dict:
+  """Run a single benchmark via uv, returning parsed JSON."""
+  benchmark_root = Path(_ARGS.assets_root) / bm["name"]
+  cmd = [
+    "mjwarp-testspeed",
+    (benchmark_root / bm["mjcf"]).as_posix(),
+    f"--clear_warp_cache={_ARGS.clear_warp_cache}",
+    "--format=short",
+    "--event_trace=true",
+    "--memory=true",
+    "--measure_solver=true",
+    "--measure_alloc=true",
+  ]
+  cmd += _bm_flags(bm, benchmark_root)
+
+  result = uv_run(*cmd, cwd=input_dir)
+
+  # parse short-format output into a dict
+  data = {}
+  for line in result.stdout.splitlines():
+    if not line.strip():
+      continue
+    parts = line.split()
+    if len(parts) >= 2:
+      data[parts[0]] = " ".join(parts[1:])
+  return data
+
+
+def _view_benchmark(bm: dict, input_dir: Path):
+  """Launch mjwarp-viewer for a single benchmark."""
+  benchmark_root = Path(_ARGS.assets_root) / bm["name"]
+  cmd = [
+    "mjwarp-viewer",
+    (benchmark_root / bm["mjcf"]).as_posix(),
+    "--nworld=1",
+  ]
+  # nworld is forced to 1 above for interactive viewing; function selects an
+  # alternate benchmark entry point (e.g. render) that mjwarp-viewer doesn't support.
+  cmd += _bm_flags(bm, benchmark_root, exclude=("nworld", "function"))
+
+  log.info("Command: uv run %s", " ".join(cmd))
+  subprocess.run(("uv", "run") + tuple(cmd), cwd=input_dir, check=True)
+
+
+def main():
+  global _ARGS
+  parser = argparse.ArgumentParser(description="Run MuJoCo Warp benchmarks.")
+  parser.add_argument("--input", default=".", help="git uri or path to mujoco_warp repo to benchmark")
+  parser.add_argument("-f", "--filter", default=".*", help="filter benchmarks by name (regex)")
+  parser.add_argument("--view", action="store_true", help="open the benchmark in mjwarp-viewer instead of running testspeed")
+  parser.add_argument("--assets_root", default="/tmp/benchmark_assets", help="root directory to assemble benchmark assets")
+  parser.add_argument(
+    "--clear_warp_cache",
+    default=True,
+    type=lambda v: v.lower() not in ("false", "0"),
+    help="clear warp caches (kernel, LTO, CUDA compute)",
+  )
+
+  _ARGS = parser.parse_args()
+
+  input_dir = clone_if_needed(_ARGS.input, "mjwarp-run-")
+  benchmarks = list(_discover_benchmarks(input_dir))
+
+  if _ARGS.view:
+    if len(benchmarks) > 1:
+      log.warning("--view: multiple benchmarks matched, truncating to first match: %s", benchmarks[0]["name"])
+    elif len(benchmarks) == 0:
+      log.error("--view: no benchmarks matched the regex filter '%s'", _ARGS.filter)
+      sys.exit(1)
+    bm = benchmarks[0]
+    _assemble_benchmark(bm)
+    _view_benchmark(bm, input_dir)
+  else:
+    log.info("Discovered %d benchmarks: [%s]", len(benchmarks), ", ".join(bm["name"] for bm in benchmarks))
+    for bm in benchmarks:
+      _assemble_benchmark(bm)
+      for key, value in _run_benchmark(bm, input_dir).items():
+        print(f"{bm['name']}.{key} {value}")
+
+  # clean up cloned temp dir on success
+  if ":" in _ARGS.input:
+    log.info("Cleaning up temp dir %s...", input_dir)
+    shutil.rmtree(input_dir, ignore_errors=True)
+
+
+if __name__ == "__main__":
+  main()

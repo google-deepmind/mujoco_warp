@@ -1,0 +1,3 @@
+# vsce package will skip packaging these file patterns
+__pycache__
+client/node_modules

@@ -1,0 +1,1806 @@
+# Copyright 2025 The Newton Developers
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+"""Tests for sensor functions."""
+
+import mujoco
+import numpy as np
+import warp as wp
+from absl.testing import absltest
+from absl.testing import parameterized
+
+import mujoco_warp as mjw
+from mujoco_warp import DisableBit
+from mujoco_warp import test_data
+from mujoco_warp._src import util_pkg
+from mujoco_warp._src.types import OverflowType
+
+# tolerance for difference between MuJoCo and MJWarp calculations - mostly
+# due to float precision
+_TOLERANCE = 5e-5
+
+
+def _assert_eq(a, b, name):
+  tol = _TOLERANCE * 10  # avoid test noise
+  err_msg = f"mismatch: {name}"
+  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+
+
+class SensorTest(parameterized.TestCase):
+  def test_sensor(self):
+    """Test sensors."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="-1 -1 -1"/>
+        <worldbody>
+          <body name="body0" pos="0.1 0.2 0.3" quat=".05 .1 .15 .2">
+            <joint name="slide" type="slide"/>
+            <geom name="geom0" type="sphere" size="0.1"/>
+            <site name="site0"/>
+            <camera name="cam0"/>
+          </body>
+          <body name="body1" pos=".5 .6 .7">
+            <joint name="ballquat" type="ball"/>
+            <geom type="sphere" size="0.1"/>
+            <site name="site1" pos=".1 .2 .3"/>
+          </body>
+          <body name="body2" pos="1 1 1">
+            <freejoint/>
+            <geom type="sphere" size="0.1"/>
+            <site name="site2"/>
+          </body>
+          <body name="body3" pos="2 2 2">
+            <joint name="hinge0" type="hinge" axis="1 0 0"/>
+            <geom type="sphere" size="0.1" pos=".1 0 0"/>
+            <body pos="2 2 2">
+              <joint name="hinge1" type="hinge" axis="1 0 0"/>
+              <geom type="sphere" size="0.1" pos=".1 0 0"/>
+            </body>
+          </body>
+          <body name="body4" pos="1 0 0">
+            <joint type="ball"/>
+            <geom type="sphere" size="0.1" pos=".1 0 0"/>
+            <body>
+              <joint type="ball"/>
+              <geom type="sphere" size="0.1" pos=".1 0 0"/>
+            </body>
+          </body>
+          <body pos="10 0 0">
+            <joint type="hinge" axis="1 2 3"/>
+            <geom type="sphere" size="0.1"/>
+            <site name="force_site" pos="1 2 3"/>
+          </body>
+          <body pos="20 0 0">
+            <joint type="slide" axis="1 2 3"/>
+            <geom type="sphere" size="0.1"/>
+            <site name="torque_site" pos="1 2 3"/>
+          </body>
+          <body name="body8">
+            <joint type="hinge"/>
+            <geom type="sphere" size="0.1" pos="1 2 3"/>
+            <body name="body9">
+              <joint type="hinge"/>
+              <geom name="geom9" type="sphere" size="0.1" pos="1 2 3"/>
+              <site name="site9" pos=".2 .4 .6"/>
+            </body>
+          </body>
+          <camera name="camera"/>
+          <site name="camera_site" pos="0 0 -1"/>
+          <!-- limit pos: slide -->
+          <body pos="1 1 1">
+            <joint name="limitslide" type="slide" limited="true" range="-.5 .5" margin=".1"/>
+            <geom type="sphere" size=".1"/>
+          </body>
+          <!-- limit pos: hinge -->
+          <body pos="2 2 2">
+            <joint name="limithinge" type="hinge" limited="true" range="-.4 .4" margin=".09"/>
+            <geom type="sphere" size=".1"/>
+          </body>
+          <!-- limit pos: ball -->
+          <body pos="3 3 3">
+            <joint name="limitball" type="ball" limited="true" range="0 .1" margin=".05"/>
+            <geom type="sphere" size=".1"/>
+          </body>
+          <!-- tendon limit pos -->
+          <site name="sitetendon0" pos="5 4 4"/>
+          <body pos="4 4 4">
+            <joint type="slide" axis="1 0 0"/>
+            <geom type="sphere" size=".1"/>
+            <site name="sitetendon1"/>
+          </body>
+          <body pos="3 3 3">
+            <joint name="tendonjoint" type="hinge"/>
+            <geom type="sphere" size=".1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="limittendon" limited="true" range="0 .5" margin=".1">
+            <site site="sitetendon0"/>
+            <site site="sitetendon1"/>
+          </spatial>
+          <fixed name="tendon">
+            <joint joint="tendonjoint" coef=".123"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <motor name="slide" joint="slide"/>
+          <motor tendon="tendon"/>
+          <motor tendon="tendon" gear="2"/>
+        </actuator>
+        <sensor>
+          <magnetometer site="site0"/>
+          <camprojection camera="camera" site="camera_site"/>
+          <camprojection camera="camera" site="camera_site" cutoff=".001"/>
+          <jointpos joint="slide"/>
+          <jointpos joint="slide" cutoff=".001"/>
+          <actuatorpos actuator="slide"/>
+          <actuatorpos actuator="slide" cutoff=".001"/>
+          <ballquat joint="ballquat"/>
+          <jointlimitpos joint="limitslide"/>
+          <jointlimitpos joint="limitslide" cutoff=".001"/>
+          <jointlimitpos joint="limithinge"/>
+          <jointlimitpos joint="limithinge" cutoff=".001"/>
+          <jointlimitpos joint="limitball"/>
+          <jointlimitpos joint="limitball" cutoff=".001"/>
+          <tendonlimitpos tendon="limittendon"/>
+          <tendonlimitpos tendon="limittendon" cutoff=".001"/>
+          <framepos objtype="body" objname="body1"/>
+          <framepos objtype="body" objname="body1" cutoff=".001"/>
+          <framepos objtype="body" objname="body1" reftype="body" refname="body0"/>
+          <framepos objtype="body" objname="body1" reftype="geom" refname="geom0"/>
+          <framepos objtype="body" objname="body1" reftype="site" refname="site0"/>
+          <framepos objtype="body" objname="body1" reftype="camera" refname="cam0"/>
+          <framepos objtype="xbody" objname="body1"/>
+          <framepos objtype="body" objname="body1" reftype="xbody" refname="body0"/>
+          <framepos objtype="geom" objname="geom0"/>
+          <framepos objtype="site" objname="site0"/>
+          <framepos objtype="camera" objname="cam0"/>
+          <framexaxis objtype="body" objname="body1"/>
+          <framexaxis objtype="body" objname="body1" reftype="body" refname="body0"/>
+          <framexaxis objtype="body" objname="body1" reftype="geom" refname="geom0"/>
+          <framexaxis objtype="body" objname="body1" reftype="site" refname="site0"/>
+          <framexaxis objtype="body" objname="body1" reftype="camera" refname="cam0"/>
+          <framexaxis objtype="xbody" objname="body1"/>
+          <framexaxis objtype="geom" objname="geom0"/>
+          <framexaxis objtype="site" objname="site0"/>
+          <framexaxis objtype="camera" objname="cam0"/>
+          <frameyaxis objtype="body" objname="body1"/>
+          <frameyaxis objtype="body" objname="body1" reftype="body" refname="body0"/>
+          <frameyaxis objtype="body" objname="body1" reftype="geom" refname="geom0"/>
+          <frameyaxis objtype="body" objname="body1" reftype="site" refname="site0"/>
+          <frameyaxis objtype="body" objname="body1" reftype="camera" refname="cam0"/>
+          <frameyaxis objtype="xbody" objname="body1"/>
+          <frameyaxis objtype="geom" objname="geom0"/>
+          <frameyaxis objtype="site" objname="site0"/>
+          <frameyaxis objtype="camera" objname="cam0"/>
+          <framezaxis objtype="body" objname="body1"/>
+          <framezaxis objtype="body" objname="body1" reftype="body" refname="body0"/>
+          <framezaxis objtype="body" objname="body1" reftype="geom" refname="geom0"/>
+          <framezaxis objtype="body" objname="body1" reftype="site" refname="site0"/>
+          <framezaxis objtype="body" objname="body1" reftype="camera" refname="cam0"/>
+          <framezaxis objtype="xbody" objname="body1"/>
+          <framezaxis objtype="geom" objname="geom0"/>
+          <framezaxis objtype="site" objname="site0"/>
+          <framezaxis objtype="camera" objname="cam0"/>
+          <framequat objtype="body" objname="body1"/>
+          <framequat objtype="body" objname="body1" reftype="body" refname="body0"/>
+          <framequat objtype="body" objname="body1" reftype="geom" refname="geom0"/>
+          <framequat objtype="body" objname="body1" reftype="site" refname="site0"/>
+          <framequat objtype="body" objname="body1" reftype="camera" refname="cam0"/>
+          <framequat objtype="xbody" objname="body1"/>
+          <framequat objtype="geom" objname="geom0"/>
+          <framequat objtype="site" objname="site0"/>
+          <framequat objtype="camera" objname="cam0"/>
+          <subtreecom body="body3"/>
+          <subtreecom body="body3" cutoff=".001"/>
+          <e_potential/>
+          <e_potential cutoff=".001"/>
+          <e_kinetic/>
+          <e_kinetic cutoff=".001"/>
+          <clock/>
+          <clock cutoff=".001"/>
+          <velocimeter site="site2"/>
+          <velocimeter site="site2" cutoff=".001"/>
+          <gyro site="site2"/>
+          <gyro site="site2" cutoff=".001"/>
+          <jointvel joint="slide"/>
+          <jointvel joint="slide" cutoff=".001"/>
+          <actuatorvel actuator="slide"/>
+          <actuatorvel actuator="slide" cutoff=".001"/>
+          <ballangvel joint="ballquat"/>
+          <ballangvel joint="ballquat" cutoff=".001"/>
+          <jointlimitvel joint="limithinge"/>
+          <jointlimitvel joint="limithinge" cutoff=".001"/>
+          <tendonlimitvel tendon="limittendon"/>
+          <tendonlimitvel tendon="limittendon" cutoff=".001"/>
+          <framelinvel objtype="body" objname="body9"/>
+          <framelinvel objtype="body" objname="body9" cutoff=".001"/>
+          <frameangvel objtype="body" objname="body9"/>
+          <frameangvel objtype="body" objname="body9" cutoff=".001"/>
+          <framelinvel objtype="xbody" objname="body9"/>
+          <frameangvel objtype="xbody" objname="body9"/>
+          <framelinvel objtype="geom" objname="geom9"/>
+          <frameangvel objtype="geom" objname="geom9"/>
+          <framelinvel objtype="site" objname="site9"/>
+          <frameangvel objtype="site" objname="site9"/>
+          <framelinvel objtype="camera" objname="cam0"/>
+          <frameangvel objtype="camera" objname="cam0"/>
+          <framelinvel objtype="body" objname="body9" reftype="xbody" refname="body0"/>
+          <frameangvel objtype="body" objname="body9" reftype="xbody" refname="body0"/>
+          <framelinvel objtype="body" objname="body9" reftype="geom" refname="geom0"/>
+          <frameangvel objtype="body" objname="body9" reftype="geom" refname="geom0"/>
+          <framelinvel objtype="body" objname="body9" reftype="site" refname="site0"/>
+          <frameangvel objtype="body" objname="body9" reftype="site" refname="site0"/>
+          <framelinvel objtype="body" objname="body9" reftype="camera" refname="cam0"/>
+          <frameangvel objtype="body" objname="body9" reftype="camera" refname="cam0"/>
+          <subtreelinvel body="body4"/>
+          <subtreelinvel body="body4" cutoff=".001"/>
+          <subtreeangmom body="body4"/>
+          <subtreeangmom body="body4" cutoff=".001"/>
+          <accelerometer site="force_site"/>
+          <accelerometer site="force_site" cutoff=".001"/>
+          <force site="force_site"/>
+          <force site="force_site" cutoff=".001"/>
+          <torque site="torque_site"/>
+          <torque site="torque_site" cutoff=".001"/>
+          <actuatorfrc actuator="slide"/>
+          <actuatorfrc actuator="slide" cutoff=".001"/>
+          <jointactuatorfrc joint="slide"/>
+          <jointactuatorfrc joint="slide" cutoff=".001"/>
+          <jointlimitfrc joint="limitslide"/>
+          <jointlimitfrc joint="limitslide" cutoff=".001"/>
+          <jointlimitfrc joint="limithinge"/>
+          <jointlimitfrc joint="limithinge" cutoff=".001"/>
+          <jointlimitfrc joint="limitball"/>
+          <jointlimitfrc joint="limitball" cutoff=".001"/>
+          <tendonlimitfrc tendon="limittendon"/>
+          <tendonlimitfrc tendon="limittendon" cutoff=".001"/>
+          <tendonactuatorfrc tendon="tendon"/>
+          <tendonactuatorfrc tendon="tendon" cutoff=".001"/>
+          <framelinacc objtype="body" objname="body9"/>
+          <framelinacc objtype="body" objname="body9" cutoff=".001"/>
+          <frameangacc objtype="body" objname="body9"/>
+          <frameangacc objtype="body" objname="body9" cutoff=".001"/>
+          <framelinacc objtype="xbody" objname="body9"/>
+          <frameangacc objtype="xbody" objname="body9"/>
+          <framelinacc objtype="geom" objname="geom9"/>
+          <frameangacc objtype="geom" objname="geom9"/>
+          <framelinacc objtype="site" objname="site9"/>
+          <frameangacc objtype="site" objname="site9"/>
+          <framelinacc objtype="camera" objname="cam0"/>
+          <frameangacc objtype="camera" objname="cam0"/>
+        </sensor>
+        <keyframe>
+          <key qpos="1 .1 .2 .3 .4 1 1 1 1 0 0 0 .25 .35 1 0 0 0 1 0 0 0 0 0 1 1 .6 .5 1 2 3 4 .5 0" qvel="2 .2 -.1 .4 .25 .35 .45 -0.1 -0.2 -0.3 .1 -.2 -.5 -0.75 -1 .1 .2 .3 0 0 2 2 0 0 0 0 0 0 0" ctrl="3 .1 .2"/>
+        </keyframe>
+      </mujoco>
+    """,
+      keyframe=0,
+      qvel_noise=0.01,
+      ctrl_noise=0.1,
+    )
+
+    d.sensordata.zero_()
+
+    mjw.sensor_pos(m, d)
+    mjw.sensor_vel(m, d)
+    mjw.sensor_acc(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
+  def test_rangefinder(self):
+    """Test rangefinder."""
+    for keyframe in range(2):
+      _, mjd, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <compiler angle="degree"/>
+          <worldbody>
+            <geom type="sphere" size=".1" pos="0 0 1"/>
+            <body>
+              <joint name="joint0" type="hinge" axis="1 0 0"/>
+              <joint type="hinge" axis="0 1 0"/>
+              <joint type="hinge" axis="0 0 1"/>
+              <geom type="sphere" size="0.1"/>
+              <site name="site0" size=".1"/>
+              <site name="site1" size=".1" pos="0 0 -.2"/>
+            </body>
+          </worldbody>
+          <sensor>
+            <rangefinder site="site0"/>
+            <jointpos joint="joint0"/>
+            <rangefinder site="site1"/>
+          </sensor>
+          <keyframe>
+            <key qpos="0 0 0"/>
+            <key qpos="0 90 0"/>
+          </keyframe>
+        </mujoco>
+      """,
+        keyframe=keyframe,
+      )
+
+      d.sensordata.zero_()
+
+      mjw.sensor_pos(m, d)
+
+      _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
+  @parameterized.parameters(1, 2)
+  def test_rangefinder_camera(self, nworld):
+    """Test camera-attached rangefinder sensors."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <hfield name="hfield" nrow="5" ncol="5" size="2 2 .3 .1"
+                  elevation=".7 .1 .4 .9 .0
+                             .3 .6 .2 .8 .5
+                             .1 .4 .7 .0 .9
+                             .2 .5 .8 .3 .6
+                             .4 .7 .1 .9 .2"/>
+          <mesh name="ss" builtin="supersphere" params="5 .2 .3" scale=".4 .42 .5"/>
+        </asset>
+        <worldbody>
+          <camera name="unused"/>
+          <camera name="world_cam" pos="0 0 2" resolution="2 2" fovy="60"/>
+          <geom type="hfield" hfield="hfield" pos="0 0 -.3"/>
+          <geom pos="0 0 .4" size=".4"/>
+          <geom type="mesh" mesh="ss" pos="1 0.5 .35" euler="20 0 30"/>
+          <geom type="cylinder" pos="-0.8 0.8 .4" size=".4 .5" euler="0 40 0"/>
+          <geom type="capsule" pos="0.5 -0.7 -.2" size=".3 .5" zaxis="1 0.5 0"/>
+          <geom type="ellipsoid" pos="-0.5 -0.5 .2" size=".4 .3 .25"/>
+          <body name="body0" pos="1 0 2" euler="0 20 90">
+            <joint name="slide0" type="slide"/>
+            <geom type="box" pos="0 0 .3" size=".2 .2 .2"/>
+            <site name="site0" pos="0 0 -.3" euler="180 0 0"/>
+            <site name="site_miss" pos="0 0 .6"/>
+            <camera name="persp" resolution="4 3" fovy="60"/>
+            <camera name="intr" resolution="3 2" sensorsize="3 2" focal="1.2 .8" principal=".1 -.1"/>
+          </body>
+          <body name="body1" pos="-1 0 2" euler="0 -20 -90">
+            <geom type="box" pos="0 0 .3" size=".2 .2 .2"/>
+            <camera name="ortho" resolution="2 3" fovy="1.5" projection="orthographic"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <jointpos joint="slide0"/>
+          <rangefinder site="site0" data="dist depth"/>
+          <rangefinder camera="persp" data="dist dir origin point normal depth" cutoff="2.5"/>
+          <framepos objtype="body" objname="body0"/>
+          <rangefinder site="site_miss" data="dist dir origin point normal depth"/>
+          <rangefinder camera="intr" delay="0.004" nsample="3" interp="linear"/>
+          <rangefinder camera="ortho" data="dist dir origin point normal depth"/>
+          <framepos objtype="body" objname="body1"/>
+          <rangefinder camera="world_cam" data="dist dir origin point normal depth" cutoff="0.5"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # verify total ray count and per-ray/per-sensor address mappings
+    self.assertEqual(m.nrangefinder, 30)
+    np.testing.assert_array_equal(m.rangefinder_sensor_adr.numpy(), [-1, 0, 1, -1, 13, 14, 20, -1, 26])
+    np.testing.assert_array_equal(m.sensor_rangefinder_adr.numpy(), np.repeat([1, 2, 4, 5, 6, 8], [1, 12, 1, 6, 6, 4]))
+    np.testing.assert_array_equal(m.sensor_rangefinder_bodyid.numpy(), np.repeat([1, 1, 1, 1, 2, 0], [1, 12, 1, 6, 6, 4]))
+
+    # perturb second world to verify per-world batched raycasting
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 0] = 0.25
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_kinematics(mjm, mjd1)
+      mujoco.mj_camlight(mjm, mjd1)
+      mjw.kinematics(m, d)
+      mjw.camlight(m, d)
+      mjds.append(mjd1)
+
+    d.sensordata.fill_(wp.inf)
+
+    mjw.sensor_pos(m, d)
+
+    # compare all sensor outputs against MuJoCo C reference per world
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      mujoco.mj_sensorPos(mjm, mjds[w])
+      _assert_eq(sensordata[w], mjds[w].sensordata, f"sensordata_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
+
+    # step to verify delayed camera rangefinder history insertion and readout
+    for _ in range(3):
+      mjw.step(m, d)
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      _assert_eq(sensordata[w], mjds[w].sensordata, f"step_sensordata_world_{w}")
+
+  def test_touch_sensor(self):
+    """Test touch sensor."""
+    for keyframe in range(2):
+      _, mjd, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <worldbody>
+            <geom type="plane" size="10 10 .001"/>
+            <body pos="0 0 .25">
+              <geom type="sphere" size="0.1" pos=".1 0 0"/>
+              <geom type="sphere" size="0.1" pos="-.1 0 0"/>
+              <geom type="sphere" size="0.1" pos="0 0 .11"/>
+              <geom type="sphere" size="0.1" pos="0 0 10"/>
+              <site name="site_sphere" type="sphere" size=".2"/>
+              <site name="site_capsule" type="capsule" size=".2 .2"/>
+              <site name="site_ellipsoid" type="ellipsoid" size=".2 .2 .2"/>
+              <site name="site_cylinder" type="cylinder" size=".2 .2"/>
+              <site name="site_box" type="box" size=".2 .2 .2"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+          <sensor>
+            <touch site="site_sphere"/>
+            <touch site="site_capsule"/>
+            <touch site="site_ellipsoid"/>
+            <touch site="site_cylinder"/>
+            <touch site="site_box"/>
+          </sensor>
+          <keyframe>
+            <key qpos="0 0 10 1 0 0 0"/>
+            <key qpos="0 0 .05 1 0 0 0"/>
+            <key qpos="0 0 0 1 0 0 0"/>
+          </keyframe>
+        </mujoco>
+      """,
+        keyframe=keyframe,
+      )
+
+      d.sensordata.zero_()
+
+      mjw.sensor_acc(m, d)
+
+      _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
+  def test_tendon_sensor(self):
+    """Test tendon sensors."""
+    _, mjd, m, d = test_data.fixture("tendon/fixed.xml", keyframe=0)
+
+    d.sensordata.zero_()
+
+    mjw.sensor_pos(m, d)
+    mjw.sensor_vel(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
+  @parameterized.parameters("humanoid/humanoid.xml", "constraints.xml")
+  def test_energy(self, xml):
+    mjm, mjd, m, d = test_data.fixture(
+      xml, qvel_noise=0.01, ctrl_noise=0.1, overrides={"opt.disableflags": DisableBit.CONSTRAINT}
+    )
+
+    d.energy.fill_(wp.inf)
+
+    mujoco.mj_energyPos(mjm, mjd)
+    mjw.energy_pos(m, d)
+    _assert_eq(d.energy.numpy()[0][0], mjd.energy[0], "potential energy")
+
+    mujoco.mj_energyVel(mjm, mjd)
+    mjw.energy_vel(m, d)
+    _assert_eq(d.energy.numpy()[0][1], mjd.energy[1], "kinetic energy")
+
+  @parameterized.parameters(
+    'type="capsule" size=".1 .1" euler="0 89 89"',
+    'type="box" size=".1 .11 .12" euler=".02 .05 .1"',
+  )
+  def test_contact_sensor(self, geom):
+    """Test contact sensor."""
+    # create contact sensors
+    contact_sensor = ""
+
+    # data combinations
+    datas = ("found", "force dist normal", "torque pos tangent", "found force torque dist pos normal tangent")
+
+    for geoms in (
+      'geom2="plane"',
+      'geom1="plane" geom2="geom"',
+      'geom1="geom" geom2="plane"',
+      'body1="plane"',
+      'body1="plane" body2="geom"',
+      'body1="geom" body2="plane"',
+    ):
+      for num in (1, 5):
+        for reduce in (None, "mindist", "maxforce"):
+          for data in datas:
+            contact_sensor += f'<contact {geoms} num="{num}"'
+            if reduce is not None:
+              contact_sensor += f' reduce="{reduce}"'
+            contact_sensor += f' data="{data}"/>'
+
+    _MJCF = f"""
+    <mujoco>
+      <compiler angle="degree"/>
+      <option cone="pyramidal"/>
+      <worldbody>
+        <body name="plane">
+          <geom name="plane" type="plane" size="10 10 .001"/>
+        </body>
+        <body name="geom">
+          <geom name="geom" {geom}/>
+          <joint type="slide" axis="0 0 1"/>
+        </body>
+        <body name="sphere">
+          <geom name="sphere" type="sphere" size=".1"/>
+          <joint type="slide" axis="0 0 1"/>
+        </body>
+      </worldbody>
+      <keyframe>
+        <key qpos=".08 1"/>
+      </keyframe>
+      <sensor>
+        {contact_sensor}
+      </sensor>
+    </mujoco>
+    """
+
+    _, mjd, m, d = test_data.fixture(xml=_MJCF, keyframe=0)
+
+    d.sensordata.zero_()
+    mjw.sensor_pos(m, d)
+    mjw.sensor_acc(m, d)
+
+    sensordata = d.sensordata.numpy()[0]
+    _assert_eq(sensordata, mjd.sensordata, "sensordata")
+    self.assertTrue(sensordata.any())  # check that sensordata is not empty
+
+  @parameterized.parameters(1, 2)
+  def test_contact_sensor_sorted_directions(self, nworld):
+    """Keep opposite contact directions attached to their sorted IDs."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" cone="elliptic"/>
+        <default>
+          <geom condim="6" friction="1 .1 .1"/>
+        </default>
+        <worldbody>
+          <geom name="left" size=".1" pos="-.18 0 0"/>
+          <body name="middle">
+            <freejoint/>
+            <geom name="middle" size=".1" mass="1"/>
+          </body>
+          <body pos=".15 0 0">
+            <geom name="right" size=".1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <contact geom1="middle" reduce="mindist" num="2" data="dist normal tangent"/>
+          <contact geom1="middle" reduce="mindist" data="force torque dist normal tangent"/>
+          <contact geom1="middle" reduce="mindist" num="2" data="force torque dist normal tangent"/>
+          <contact geom1="middle" reduce="maxforce" data="force torque dist normal tangent"/>
+          <contact geom1="middle" reduce="maxforce" num="2" data="force torque dist normal tangent"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    # Copy native contacts and prescribe nonzero signed force/torque components
+    # to isolate sensor reporting from collision detection and solver accuracy.
+    worldids = d.contact.worldid.numpy()[: d.nacon.numpy()[0]]
+    contact_geom = d.contact.geom.numpy()
+    contact_dist = d.contact.dist.numpy()
+    contact_pos = d.contact.pos.numpy()
+    contact_frame = d.contact.frame.numpy()
+    efc_force = d.efc.force.numpy()
+    expected = []
+    for worldid in range(nworld):
+      mjd.qpos[0] = -0.025 * worldid
+      mujoco.mj_forward(mjm, mjd)
+      self.assertEqual(mjd.ncon, 2)
+      indices = np.flatnonzero(worldids == worldid)
+      np.testing.assert_array_equal(contact_geom[indices], mjd.contact.geom)
+      contact_dist[indices] = mjd.contact.dist
+      contact_pos[indices] = mjd.contact.pos
+      contact_frame[indices] = mjd.contact.frame.reshape(-1, 3, 3)
+      for contactid, contact in enumerate(mjd.contact):
+        # Reverse the max-force ordering in world 1 as well as the distances.
+        normal_force = (10, 20)[contactid ^ worldid]
+        adr = contact.efc_address
+        mjd.efc_force[adr : adr + 6] = [normal_force, 1, -2, 3, -4, 5]
+      efc_force[worldid, : mjd.nefc] = mjd.efc_force
+      mujoco.mj_sensorPos(mjm, mjd)
+      mujoco.mj_sensorAcc(mjm, mjd)
+      expected.append(mjd.sensordata.copy())
+    d.contact.dist.assign(contact_dist)
+    d.contact.pos.assign(contact_pos)
+    d.contact.frame.assign(contact_frame)
+    d.efc.force.assign(efc_force)
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_pos(m, d)
+    mjw.sensor_acc(m, d)
+    np.testing.assert_allclose(d.sensordata.numpy(), expected, rtol=1e-5, atol=1e-5)
+    with wp.ScopedCapture() as capture:
+      mjw.sensor_pos(m, d)
+      mjw.sensor_acc(m, d)
+    d.sensordata.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+    sensordata = d.sensordata.numpy()
+    np.testing.assert_allclose(sensordata, expected, rtol=1e-5, atol=1e-5)
+    np.testing.assert_array_equal(d.overflow.numpy(), 0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
+
+  def test_contact_sensor_subtree(self):
+    """Test contact sensor with subtree matching semantics."""
+    _MJCF = """
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="2 2 .01"/>
+        <body name="thigh" pos="-1 0 .1">
+          <joint type="slide"/>
+          <geom type="capsule" size=".1" fromto="0 0 0 .5 0 0"/>
+          <body name="shin" pos=".7 0 0">
+            <joint axis="0 1 0"/>
+            <geom type="capsule" size=".1" fromto="0 0 0 0 0 .5"/>
+            <body name="foot" pos="0 0 .7">
+              <joint axis="0 1 0"/>
+              <geom type="capsule" size=".1" fromto="0 0 0 -.7 0 0"/>
+            </body>
+          </body>
+        </body>
+      </worldbody>
+      <sensor>
+        <contact name="all" reduce="mindist"/>
+        <contact name="world" subtree1="world" reduce="mindist"/>
+        <contact name="thigh" subtree1="thigh" reduce="mindist"/>
+        <contact name="shin" subtree1="shin" reduce="mindist"/>
+        <contact name="foot" subtree1="foot" reduce="mindist"/>
+        <contact name="foot_w" subtree1="foot" body2="world" reduce="mindist"/>
+        <contact name="foot_w2" subtree1="foot" subtree2="world" reduce="mindist"/>
+      </sensor>
+      <keyframe>
+        <key qpos="-6.96651e-05 -0.0478055 -0.746498"/>
+      </keyframe>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=_MJCF, keyframe=0)
+
+    d.sensordata.zero_()
+    if util_pkg.check_version("mujoco>=3.15.1.dev996394345"):
+      mjw.sensor_pos(m, d)
+    else:
+      mjw.sensor_acc(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], np.array([4, 4, 4, 2, 1, 0, 1]), "found")
+
+  def test_contact_sensor_subtree_found_zero(self):
+    """Test contact sensor with subtree matching semantics generates found=0."""
+    _MJCF = """
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="2 2 .01"/>
+        <body name="base">
+          <joint type="slide" axis="1 0 0"/>
+          <joint type="slide" axis="0 0 1"/>
+          <geom type="capsule" size=".1" fromto="0 0 0 1 0 0"/>
+          <body name="body0">
+            <joint axis="0 1 0"/>
+            <geom type="capsule" size=".1" fromto="0 0 0 0 0 -1"/>
+          </body>
+          <body name="body1" pos="1 0 0">
+            <joint axis="0 1 0"/>
+            <geom type="capsule" size=".1" fromto="0 0 0 0 0 -1"/>
+          </body>
+        </body>
+      </worldbody>
+      <sensor>
+        <contact subtree1="base" subtree2="base"/>
+      </sensor>
+      <keyframe>
+        <key qpos="0 1 0 0"/>
+      </keyframe>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=_MJCF, keyframe=0)
+
+    d.sensordata.fill_(wp.inf)
+    if util_pkg.check_version("mujoco>=3.15.1.dev996394345"):
+      mjw.sensor_pos(m, d)
+    else:
+      mjw.sensor_acc(m, d)
+
+    _assert_eq(d.nacon.numpy()[0], 2, "nacon")
+    _assert_eq(d.sensordata.numpy()[0], 0, "found")
+
+  @parameterized.product(site_geom=["sphere", "capsule", "ellipsoid", "cylinder", "box"], key_pos=["0 0 10", "0 0 .09"])
+  def test_contact_sensor_site(self, site_geom, key_pos):
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="10 10 .001"/>
+        <site name="site" type="{site_geom}" size=".1 .2 .3"/>
+        <body>
+          <geom type="sphere" size=".1"/>
+          <freejoint/>
+        </body>
+      </worldbody>
+      <sensor>
+        <contact site="site" reduce="mindist"/>
+      </sensor>
+      <keyframe>
+        <key qpos="{key_pos} 1 0 0 0"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    d.sensordata.zero_()
+    if util_pkg.check_version("mujoco>=3.15.1.dev996394345"):
+      mjw.sensor_pos(m, d)
+    else:
+      mjw.sensor_acc(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
+  def test_contact_sensor_netforce(self):
+    """Test contact sensor with netforce reduction."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <geom name="plane" type="plane" size="10 10 .001"/>
+        <body>
+          <geom name="box" type="box" size=".1 .1 .1"/>
+          <freejoint/>
+        </body>
+      </worldbody>
+      <sensor>
+        <contact geom1="plane" geom2="box" data="found force torque dist pos normal tangent" reduce="netforce" num="2"/>
+        <contact geom1="box" geom2="plane" data="force torque" reduce="netforce"/>
+      </sensor>
+      <keyframe>
+        <key qpos="0 0 .09 1 0 0 0"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_acc(m, d)
+    sensordata = d.sensordata.numpy()[0]
+    _assert_eq(sensordata, mjd.sensordata, "sensordata")
+    self.assertTrue(sensordata.any())  # check that sensordata is not empty
+
+  @parameterized.parameters(1, 2)
+  def test_contact_sensor_netforce_empty(self, nworld):
+    """Test contact sensor with netforce reduction when nmatch is zero."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="b1" pos="0 0 1">
+            <freejoint/>
+            <geom size="0.1"/>
+          </body>
+          <body name="b2" pos="0 0 2">
+            <freejoint/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <contact body1="b1" body2="b2" reduce="netforce" num="2" data="found force torque dist pos normal tangent"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 9] = 1.1
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjw.forward(m, d)
+      mjds.append(mjd1)
+
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_acc(m, d)
+
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      if w > 0 or util_pkg.check_version("mujoco>=3.15.1.dev996371290"):
+        _assert_eq(sensordata[w], mjds[w].sensordata, f"sensordata_world_{w}")
+    _assert_eq(sensordata[0], np.zeros(mjm.nsensordata), "sensordata_world_0_zeros")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
+
+  @absltest.skipIf(
+    not util_pkg.check_version("mujoco>=3.15.1.dev996394345"),
+    "Requires MuJoCo >= 3.15.1.dev996394345",
+  )
+  @parameterized.parameters(1, 2)
+  def test_contact_sensor_stage(self, nworld):
+    """Test contact sensor stage selection between POS and ACC stages."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="1 1 1"/>
+          <body pos="0 0 0.08">
+            <freejoint/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <contact name="pos_found" data="found dist pos normal tangent" reduce="mindist"/>
+          <contact name="acc_force" data="found force"/>
+          <contact name="acc_torque" data="torque"/>
+          <contact name="acc_maxforce" data="found dist" reduce="maxforce"/>
+          <contact name="acc_netforce" data="found dist" reduce="netforce"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 2] = 0.06
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+      mjw.forward(m, d)
+
+    pos_dim = int(mjm.sensor_dim[0])
+
+    # POS stage should populate only pos_found and leave ACC-stage contact sensors untouched
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_pos(m, d)
+    sensordata_pos = d.sensordata.numpy()
+    for w in range(nworld):
+      _assert_eq(sensordata_pos[w, :pos_dim], mjds[w].sensordata[:pos_dim], f"pos_sensordata_world_{w}")
+      self.assertTrue(np.isinf(sensordata_pos[w, pos_dim:]).all())
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata_pos[0, :pos_dim], sensordata_pos[1, :pos_dim]))
+
+    # ACC stage should populate only ACC-stage contact sensors and leave pos_found untouched
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_acc(m, d)
+    sensordata_acc = d.sensordata.numpy()
+    for w in range(nworld):
+      self.assertTrue(np.isinf(sensordata_acc[w, :pos_dim]).all())
+      _assert_eq(sensordata_acc[w, pos_dim:], mjds[w].sensordata[pos_dim:], f"acc_sensordata_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata_acc[0, pos_dim:], sensordata_acc[1, pos_dim:]))
+
+  @parameterized.parameters(1, 2)
+  def test_contact_sensor_velocity(self, nworld):
+    """Test contact sensor linvel and angvel against MuJoCo."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option cone="elliptic"/>
+        <worldbody>
+          <body name="plane">
+            <geom name="plane" type="plane" size="10 10 .001"/>
+          </body>
+          <body name="ball" pos="0 0 .09">
+            <freejoint/>
+            <geom name="ball" size=".1"/>
+          </body>
+          <body name="arm" pos=".5 0 .3">
+            <joint axis="0 1 0"/>
+            <geom type="capsule" size=".02" fromto="0 0 0 0 0 -.1" contype="0" conaffinity="0"/>
+            <body name="box" pos="0 0 -.21">
+              <joint type="slide" axis="1 0 0"/>
+              <geom name="box" type="box" size=".1 .08 .1" euler="3 4 5"/>
+            </body>
+          </body>
+        </worldbody>
+        <sensor>
+          <contact geom1="plane" num="4" data="linvel"/>
+          <contact geom1="ball" geom2="plane" num="4" data="angvel"/>
+          <contact body1="box" num="4" data="pos normal tangent linvel angvel" reduce="mindist"/>
+          <contact body2="ball" num="4" data="linvel angvel" reduce="mindist"/>
+          <contact geom1="plane" num="4" data="found force dist linvel"/>
+          <contact body1="box" num="4" data="pos normal tangent linvel angvel" reduce="maxforce"/>
+          <contact body2="ball" num="4" data="found force dist linvel" reduce="maxforce"/>
+        </sensor>
+        <keyframe>
+          <key qpos="0 0 .09 1 0 0 0 0 0" qvel=".3 -.2 -.4 1.1 -.7 .5 .8 -.6"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd1, 0)
+      mjd1.qvel[:] = -1.3 * mjd1.qvel + 0.2
+      mujoco.mj_forward(mjm, mjd1)
+      qvel = d.qvel.numpy()
+      qvel[1] = mjd1.qvel
+      d.qvel.assign(qvel)
+      mjw.forward(m, d)
+      mjds.append(mjd1)
+
+    vel_dim = int(mjm.sensor_adr[4])
+
+    # VEL stage populates only VEL-stage contact sensors
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_vel(m, d)
+    sensordata_vel = d.sensordata.numpy()
+    for w in range(nworld):
+      _assert_eq(sensordata_vel[w, :vel_dim], mjds[w].sensordata[:vel_dim], f"vel_sensordata_world_{w}")
+      self.assertTrue(np.abs(sensordata_vel[w, :vel_dim]).sum() > 0.0)
+      self.assertTrue(np.isinf(sensordata_vel[w, vel_dim:]).all())
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata_vel[0, :vel_dim], sensordata_vel[1, :vel_dim]))
+
+    # ACC stage populates only ACC-stage contact sensors
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_acc(m, d)
+    sensordata_acc = d.sensordata.numpy()
+    for w in range(nworld):
+      self.assertTrue(np.isinf(sensordata_acc[w, :vel_dim]).all())
+      _assert_eq(sensordata_acc[w, vel_dim:], mjds[w].sensordata[vel_dim:], f"acc_sensordata_world_{w}")
+      self.assertTrue(np.abs(sensordata_acc[w, vel_dim:]).sum() > 0.0)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata_acc[0, vel_dim:], sensordata_acc[1, vel_dim:]))
+
+  @parameterized.parameters(
+    ("box", "box", "box", "box"),
+    ("capsule", "capsule", "capsule", "capsule"),
+    ("sphere", "capsule", "ellipsoid", "cylinder"),
+    ("capsule", "box", "cylinder", "sphere"),
+    ("capsule", "cylinder", "box", "ellipsoid"),
+    ("cylinder", "box", "ellipsoid", "capsule"),
+  )
+  def test_sensor_collision(self, type0, type1, type2, type3):
+    """Tests collision sensors: distance, normal, fromto."""
+    _MJCF = f"""
+      <mujoco>
+        <worldbody>
+          <body name="obj0">
+            <geom name="obj0" type="{type0}" size=".1 .1 .1" euler="1 2 3"/>
+          </body>
+          <body name="obj1" pos="0 0 1">
+            <geom name="obj1" type="{type1}" size=".1 .1 .1" euler="-1 2 -1"/>
+          </body>
+          <body name="objobj" pos="0 0 -1">
+            <geom name="objobj0" pos=".01 0 0.005" type="{type2}" size=".09 .09 .09" euler="2 1 3"/>
+            <geom name="objobj1" pos="-.01 0 -0.0025" type="{type3}" size=".11 .11 .11" euler="3 1 2"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <!-- distance geom-geom -->
+          <distance geom1="obj0" geom2="obj1" cutoff="0"/>
+          <distance geom1="obj0" geom2="obj1" cutoff="10"/>
+          <distance geom1="obj1" geom2="obj0" cutoff="0"/>
+          <distance geom1="obj1" geom2="obj0" cutoff="10"/>
+          <distance body1="obj0" body2="obj1" cutoff="10"/>
+          <distance body1="obj1" body2="obj0" cutoff="10"/>
+          <distance body1="obj0" body2="obj1" cutoff="10"/>
+          <distance body1="obj1" body2="obj0" cutoff="10"/>
+          <distance geom1="obj0" body2="obj1" cutoff="10"/>
+          <distance body1="obj1" geom2="obj0" cutoff="10"/>
+
+          <!-- normal geom-geom -->
+          <normal geom1="obj0" geom2="obj1" cutoff="0"/>
+          <normal geom1="obj0" geom2="obj1" cutoff="10"/>
+          <normal geom1="obj1" geom2="obj0" cutoff="0"/>
+          <normal geom1="obj1" geom2="obj0" cutoff="10"/>
+          <normal body1="obj0" body2="obj1" cutoff="10"/>
+          <normal body1="obj1" body2="obj0" cutoff="10"/>
+          <normal body1="obj0" body2="obj1" cutoff="10"/>
+          <normal body1="obj1" body2="obj0" cutoff="10"/>
+          <normal geom1="obj0" body2="obj1" cutoff="10"/>
+          <normal body1="obj1" geom2="obj0" cutoff="10"/>
+
+          <!-- fromto geom-geom -->
+          <fromto geom1="obj0" geom2="obj1" cutoff="0"/>
+          <fromto geom1="obj0" geom2="obj1" cutoff="10"/>
+          <fromto geom1="obj1" geom2="obj0" cutoff="0"/>
+          <fromto geom1="obj1" geom2="obj0" cutoff="10"/>
+          <fromto body1="obj0" body2="obj1" cutoff="10"/>
+          <fromto body1="obj1" body2="obj0" cutoff="10"/>
+          <fromto body1="obj0" body2="obj1" cutoff="10"/>
+          <fromto body1="obj1" body2="obj0" cutoff="10"/>
+          <fromto geom1="obj0" body2="obj1" cutoff="10"/>
+          <fromto body1="obj1" geom2="obj0" cutoff="10"/>
+
+          <!-- distance geom body -->
+          <distance geom1="obj0" body2="objobj" cutoff="0"/>
+          <distance geom1="obj0" body2="objobj" cutoff="10"/>
+          <distance body1="objobj" geom2="obj0" cutoff="0"/>
+          <distance body1="objobj" geom2="obj0" cutoff="10"/>
+          <distance body1="obj0" body2="objobj" cutoff="10"/>
+          <distance body1="objobj" body2="obj0" cutoff="10"/>
+          <distance body1="obj0" body2="objobj" cutoff="10"/>
+          <distance body1="objobj" body2="obj0" cutoff="10"/>
+          <distance geom1="obj0" body2="objobj" cutoff="10"/>
+          <distance body1="objobj" geom2="obj0" cutoff="10"/>
+
+          <!-- normal geom body -->
+          <normal geom1="obj0" body2="objobj" cutoff="0"/>
+          <normal geom1="obj0" body2="objobj" cutoff="10"/>
+          <normal body1="objobj" geom2="obj0" cutoff="0"/>
+          <normal body1="objobj" geom2="obj0" cutoff="10"/>
+          <normal body1="obj0" body2="objobj" cutoff="10"/>
+          <normal body1="objobj" body2="obj0" cutoff="10"/>
+          <normal body1="obj0" body2="objobj" cutoff="10"/>
+          <normal body1="objobj" body2="obj0" cutoff="10"/>
+          <normal geom1="obj0" body2="objobj" cutoff="10"/>
+          <normal body1="objobj" geom2="obj0" cutoff="10"/>
+
+          <!-- fromto geom body -->
+          <fromto geom1="obj0" body2="objobj" cutoff="0"/>
+          <fromto geom1="obj0" body2="objobj" cutoff="10"/>
+          <fromto body1="objobj" geom2="obj0" cutoff="0"/>
+          <fromto body1="objobj" geom2="obj0" cutoff="10"/>
+          <fromto body1="obj0" body2="objobj" cutoff="10"/>
+          <fromto body1="objobj" body2="obj0" cutoff="10"/>
+          <fromto body1="obj0" body2="objobj" cutoff="10"/>
+          <fromto body1="objobj" body2="obj0" cutoff="10"/>
+          <fromto geom1="obj0" body2="objobj" cutoff="10"/>
+          <fromto body1="objobj" geom2="obj0" cutoff="10"/>
+        </sensor>
+      </mujoco>
+      """
+
+    _, mjd, m, d = test_data.fixture(xml=_MJCF)
+
+    d.sensordata.fill_(wp.inf)
+    mjw.collision(m, d)
+    mjw.sensor_pos(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
+  @parameterized.parameters("sphere", "capsule", "ellipsoid", "cylinder", "box")
+  def test_sensor_collision_plane(self, type_):
+    """Tests collision sensors: distance, normal, fromto."""
+    _MJCF = f"""
+      <mujoco>
+        <worldbody>
+          <geom name="plane" type="plane" size="10 10 .01" euler="2 2 2"/>
+          <body name="obj" pos="0 0 1">
+            <geom name="obj" type="{type_}" size=".1 .1 .1" euler="1 2 3"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <!-- distance geom-geom -->
+          <distance geom1="plane" geom2="obj" cutoff="0"/>
+          <distance geom1="plane" geom2="obj" cutoff="10"/>
+          <distance geom1="obj" geom2="plane" cutoff="0"/>
+          <distance geom1="obj" geom2="plane" cutoff="10"/>
+          <distance geom1="plane" body2="obj" cutoff="10"/>
+
+          <!-- normal geom-geom -->
+          <normal geom1="plane" geom2="obj" cutoff="0"/>
+          <normal geom1="plane" geom2="obj" cutoff="10"/>
+          <normal geom1="obj" geom2="plane" cutoff="0"/>
+          <normal geom1="obj" geom2="plane" cutoff="10"/>
+          <normal geom1="plane" body2="obj" cutoff="10"/>
+
+          <!-- fromto geom-geom -->
+          <fromto geom1="plane" geom2="obj" cutoff="0"/>
+          <fromto geom1="plane" geom2="obj" cutoff="10"/>
+          <fromto geom1="obj" geom2="plane" cutoff="0"/>
+          <fromto geom1="obj" geom2="plane" cutoff="10"/>
+          <fromto geom1="plane" body2="obj" cutoff="10"/>
+        </sensor>
+      </mujoco>
+      """
+
+    _, mjd, m, d = test_data.fixture(xml=_MJCF)
+
+    d.sensordata.fill_(wp.inf)
+    mjw.collision(m, d)
+    mjw.sensor_pos(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
+  @parameterized.product(dist=(1e-6, -1e-6), nworld=(1, 2))
+  def test_sensor_collision_shallow(self, dist, nworld):
+    """Tests collision sensors for two spheres a micrometer apart, away from the origin."""
+    direction = np.array([0.48, -0.6, 0.64])
+    pos = 1.0 + (0.2 + dist) * direction
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <geom name="sphere0" type="sphere" size=".1" pos="1 1 1"/>
+          <body pos="{pos[0]:.17g} {pos[1]:.17g} {pos[2]:.17g}">
+            <freejoint/>
+            <geom name="sphere1" type="sphere" size=".1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <normal geom1="sphere0" geom2="sphere1" cutoff="1"/>
+          <normal geom1="sphere1" geom2="sphere0" cutoff="1"/>
+          <fromto geom1="sphere0" geom2="sphere1" cutoff="1"/>
+          <fromto geom1="sphere1" geom2="sphere0" cutoff="1"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      # world 1 on the other side of contact
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, :3] = 1.0 + (0.2 - dist) * direction
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjw.kinematics(m, d)
+      mjds.append(mjd1)
+
+    d.sensordata.fill_(wp.inf)
+    mjw.collision(m, d)
+    mjw.sensor_pos(m, d)
+
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      _assert_eq(sensordata[w], mjds[w].sensordata, f"sensordata_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
+
+  def test_sensor_collision_gjk_tuned_direction(self):
+    """A distance sensor reads MuJoCo's depth where GJK tunes its support direction."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="board" vertex="-.007 -.0946 -.153  .007 -.0946 -.153  -.007 .0946 -.153  .007 .0946 -.153
+                                     -.007 -.0946  .153  .007 -.0946  .153  -.007 .0946  .153  .007 .0946  .153"/>
+          <mesh name="object" vertex="-.0007394 .002954 -.05126  .00003213 .002986 -.04854  -.0004383 .003374 .04446
+                                      -.00002483 .003162 .04452  -.0005316 .003203 .04785  .001198 .001637 .04815"/>
+        </asset>
+        <worldbody>
+          <geom name="board" type="mesh" mesh="board"/>
+          <body pos=".0096252 -.0027355 -.021315" quat=".51669 .01087 -.015833 .85596">
+            <freejoint/>
+            <geom name="object" type="mesh" mesh="object"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <distance geom1="board" geom2="object" cutoff="1"/>
+        </sensor>
+      </mujoco>
+      """
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.collision(m, d)
+    mjw.sensor_pos(m, d)
+
+    # MuJoCo: -0.141 mm; _assert_eq's 5e-4 tolerance would pass the separated reading
+    np.testing.assert_allclose(d.sensordata.numpy()[0], mjd.sensordata, atol=1e-7)
+
+  @parameterized.parameters(0, 1)
+  def test_insidesite(self, keyframe):
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <site name="refsite" type="sphere" size=".1"/>
+        <body name="body">
+          <geom name="geom" type="sphere" size=".1"/>
+          <site name="site"/>
+          <camera name="camera"/>
+          <joint type="slide" axis="1 0 0"/>
+        </body>
+      </worldbody>
+      <sensor>
+        <insidesite site="refsite" objtype="xbody" objname="body"/>
+        <insidesite site="refsite" objtype="body" objname="body"/>
+        <insidesite site="refsite" objtype="geom" objname="geom"/>
+        <insidesite site="refsite" objtype="site" objname="site"/>
+        <insidesite site="refsite" objtype="camera" objname="camera"/>
+      </sensor>
+      <keyframe>
+        <key qpos="0"/>
+        <key qpos="1"/>
+      </keyframe>
+    </mujoco>
+    """,
+      keyframe=keyframe,
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_pos(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
+  def test_sensor_callback(self):
+    """Tests sensor_callback populates user sensor data."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <geom name="myplane" type="plane" size="10 10 1"/>
+      </worldbody>
+      <sensor>
+        <user objtype="geom" objname="myplane"
+              datatype="real" needstage="vel" dim="1"/>
+      </sensor>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml)
+
+    @wp.kernel
+    def _set_sensordata(sensordata_out: wp.array2d[float]):
+      worldid = wp.tid()
+      sensordata_out[worldid, 0] = 17.0
+
+    def my_sensor(m, d, stage):
+      if stage == 1:  # VEL
+        wp.launch(_set_sensordata, dim=(d.nworld,), outputs=[d.sensordata])
+
+    m.callback.sensor = my_sensor
+    mjw.forward(m, d)
+
+    self.assertEqual(d.sensordata.numpy()[0, 0], 17.0)
+
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_geom_deduplication(self, nworld):
+    """Test tactile sensor deduplicates contacts by geom.
+
+    Without deduplication, multiple contacts with the same geom cause
+    the sensor value to be doubled (or more), resulting in incorrect output.
+    Uses mesh-sphere vs box collision with multiccd to generate multiple contacts.
+    """
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag multiccd="enable"/>
+        </option>
+        <asset>
+          <mesh name="sensor_mesh" builtin="sphere" params="0"/>
+        </asset>
+        <worldbody>
+          <body name="sensor_body" pos="0 0 1">
+            <freejoint/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"/>
+          </body>
+          <body>
+            <geom type="box" size=".7 .7 .3"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+        <keyframe>
+          <key qpos="0 0 1 1 0 0 0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_vel(m, d)
+
+    warp_sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      _assert_eq(warp_sensordata[w], mjd.sensordata, f"tactile_sensordata_world_{w}")
+      self.assertTrue(warp_sensordata[w].any(), f"Warp sensordata world {w} should not be all zeros")
+
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_cutoff_and_zeroing(self, nworld):
+    """Test tactile sensor cutoff clamping and zeroing on contact break."""
+    cutoff_val = 0.01
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="sensor_mesh" builtin="sphere" params="0"/>
+        </asset>
+        <worldbody>
+          <body name="sensor_body" pos="0 0 1">
+            <freejoint/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"/>
+          </body>
+          <body>
+            <geom type="box" size=".7 .7 .3"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+        <keyframe>
+          <key qpos="0 0 1 1 0 0 0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+
+    # Cutoff is applied by MuJoCo C engine (engine_sensor.c), but omitted in mjcf.schema;
+    # set on mjModel.
+    mjm.sensor_cutoff[0] = cutoff_val
+    m.sensor_cutoff.fill_(cutoff_val)
+    if util_pkg.check_version("mujoco>=3.15.1.dev996371290"):
+      mujoco.mj_sensorVel(mjm, mjd)
+    else:
+      mujoco.mj_sensorAcc(mjm, mjd)
+
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_vel(m, d)
+
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      self.assertTrue(sensordata[w].any(), f"Sensordata world {w} should not be zero")
+      self.assertLessEqual(np.max(sensordata[w]), cutoff_val + 1e-6)
+      _assert_eq(sensordata[w], mjd.sensordata, f"tactile_cutoff_world_{w}")
+
+    # For multi-world, move only world 1 away to test isolation between contact and free space
+    if nworld > 1:
+      qpos = d.qpos.numpy()
+      qpos[1, 2] = 10.0
+      d.qpos.assign(qpos)
+      d.sensordata.fill_(wp.inf)
+      mjw.forward(m, d)
+      self.assertTrue(d.sensordata.numpy()[0].any(), "World 0 should still detect contact")
+      np.testing.assert_allclose(d.sensordata.numpy()[1], 0.0, atol=1e-6)
+
+    # Move all worlds to free space; sensordata should be completely zeroed
+    qpos = d.qpos.numpy()
+    qpos[:, 2] = 10.0
+    d.qpos.assign(qpos)
+    d.sensordata.fill_(wp.inf)
+    mjw.forward(m, d)
+    np.testing.assert_allclose(d.sensordata.numpy(), 0.0, atol=1e-6)
+
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_overflow(self, nworld):
+    """Test tactile sensor sets OverflowType.TACTILE when contact pairs exceed limit."""
+    spheres = "\n".join(f'<geom type="sphere" size="0.05" pos="{0.001 * i} 0 0.95"/>' for i in range(55))
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <mesh name="sensor_mesh" builtin="sphere" params="0"/>
+        </asset>
+        <worldbody>
+          <body name="sensor_body" pos="0 0 1">
+            <freejoint/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"/>
+          </body>
+          {spheres}
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=200,
+    )
+    d.overflow.fill_(0)
+    mjw.forward(m, d)
+    for w in range(nworld):
+      self.assertTrue(bool(d.overflow.numpy()[w] & OverflowType.TACTILE))
+
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_non_octree_mesh_skipped(self, nworld):
+    """Test tactile sensor gracefully skips colliding meshes without octrees."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="sensor_mesh" builtin="sphere" params="0"/>
+          <mesh
+            name="other_mesh"
+            vertex="-0.5 -0.5 -0.5 0.5 -0.5 -0.5 0.5 0.5 -0.5 -0.5 0.5 -0.5 -0.5 -0.5 0.5 0.5 -0.5 0.5 0.5 0.5 0.5 -0.5 0.5 0.5"
+          />
+        </asset>
+        <worldbody>
+          <body name="sensor_body" pos="0 0 1">
+            <freejoint/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"/>
+          </body>
+          <body>
+            <geom type="mesh" mesh="other_mesh"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+        <keyframe>
+          <key qpos="0 0 1 1 0 0 0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.forward(m, d)
+    np.testing.assert_allclose(d.sensordata.numpy(), 0.0, atol=1e-6)
+
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_dynamic_parity(self, nworld):
+    """Test tactile sensor 3-axis output against MuJoCo C with non-zero velocities."""
+    # Note: refquat aligns the wedge's principal axes so mesh_quat is identity.
+    # Combined with identity geom frame and pure translation, this exercises pipeline
+    # execution and channel layout on a reference scene compatible with MuJoCo C 3.12.0.
+    # Coverage for non-degenerate tangent rotation and contact-point velocity is gated
+    # on the reference implementation.
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag multiccd="enable" nativeccd="disable"/>
+        </option>
+        <asset>
+          <mesh name="sensor_mesh" builtin="wedge" params="3 3 45 45 0" scale=".2 .2 .2"
+                refquat="0.5 0.5 0.5 -0.5"/>
+        </asset>
+        <worldbody>
+          <body>
+            <geom type="box" size=".25 .25 .25"/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"
+                  mass="0" contype="0" conaffinity="0"/>
+          </body>
+          <body name="slider">
+            <joint type="slide" axis="1 0 0"/>
+            <geom type="box" size=".3 .3 .3"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+        <keyframe>
+          <key qvel="2.0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    sensordata = d.sensordata.numpy()
+    ntaxel = mjm.mesh_vertnum[0]
+    for w in range(nworld):
+      self.assertTrue(sensordata[w, 0 * ntaxel : 1 * ntaxel].any(), f"Depth channel empty for world {w}")
+      self.assertTrue(sensordata[w, 1 * ntaxel : 2 * ntaxel].any(), f"Slip U channel empty for world {w}")
+      self.assertTrue(sensordata[w, 2 * ntaxel : 3 * ntaxel].any(), f"Slip V channel empty for world {w}")
+      _assert_eq(sensordata[w], mjd.sensordata, f"tactile_dynamic_world_{w}")
+
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_dynamic_discriminating(self, nworld):
+    """Test tactile sensor with non-identity mesh_quat and contacting-body angular velocity."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag multiccd="enable" nativeccd="disable"/>
+        </option>
+        <asset>
+          <mesh name="sensor_mesh" builtin="wedge" params="3 3 45 45 0" scale=".2 .2 .2"/>
+        </asset>
+        <worldbody>
+          <body>
+            <geom type="box" size=".25 .25 .25"/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"
+                  mass="0" contype="0" conaffinity="0"/>
+          </body>
+          <body name="rotator">
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="box" size=".3 .3 .3"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+        <keyframe>
+          <key qvel="2.0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    sensordata = d.sensordata.numpy()
+    ntaxel = mjm.mesh_vertnum[0]
+    for w in range(nworld):
+      self.assertTrue(sensordata[w, 0 * ntaxel : 1 * ntaxel].any(), f"Depth channel empty for world {w}")
+      self.assertTrue(sensordata[w, 1 * ntaxel : 2 * ntaxel].any(), f"Slip U channel empty for world {w}")
+      if util_pkg.check_version("mujoco>=3.12.1.dev972096410"):
+        _assert_eq(sensordata[w], mjd.sensordata, f"tactile_discriminating_world_{w}")
+
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_duplicate_pressure_retention(self, nworld):
+    """Test distinct geoms are retained without overflow under duplicate contact pressure."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="sensor_mesh" builtin="sphere" params="0"/>
+        </asset>
+        <worldbody>
+          <body name="sensor_body" pos="0 0 1">
+            <freejoint/>
+            <geom name="sensor_geom" type="mesh" mesh="sensor_mesh"/>
+          </body>
+          <body name="body_a" pos="0 -0.525 1.85">
+            <geom name="geom_a" type="sphere" size="0.2"/>
+          </body>
+          <body name="body_b" pos="0 0.525 1.85">
+            <geom name="geom_b" type="sphere" size="0.2"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom" mesh="sensor_mesh"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=200,
+    )
+
+    geom_sensor_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "sensor_geom")
+    geom_a_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "geom_a")
+    geom_b_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "geom_b")
+
+    con_a = mujoco.MjContact()
+    con_a.geom1 = geom_sensor_id
+    con_a.geom2 = geom_a_id
+    con_b = mujoco.MjContact()
+    con_b.geom1 = geom_sensor_id
+    con_b.geom2 = geom_b_id
+
+    # Add 60 duplicate contacts for geom_a and 1 contact for geom_b
+    for _ in range(60):
+      mujoco.mj_addContact(mjm, mjd, con_a)
+    mujoco.mj_addContact(mjm, mjd, con_b)
+
+    ncon_per_world = mjd.ncon
+    total_ncon = nworld * ncon_per_world
+
+    contact_geom_np = np.zeros((d.naconmax, 2), dtype=np.int32)
+    contact_worldid_np = np.zeros(d.naconmax, dtype=np.int32)
+    for w in range(nworld):
+      start = w * ncon_per_world
+      end = start + ncon_per_world
+      contact_geom_np[start:end, 0] = mjd.contact.geom1[:ncon_per_world]
+      contact_geom_np[start:end, 1] = mjd.contact.geom2[:ncon_per_world]
+      contact_worldid_np[start:end] = w
+
+    d.contact.geom.assign(contact_geom_np)
+    d.contact.worldid.assign(contact_worldid_np)
+    d.nacon.fill_(total_ncon)
+
+    d.overflow.fill_(0)
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_vel(m, d)
+
+    # Overflow should NOT be set because there are only 2 distinct contacting geoms
+    overflow_vals = d.overflow.numpy()
+    for w in range(nworld):
+      self.assertFalse(bool(overflow_vals[w] & OverflowType.TACTILE), f"Overflow set for world {w}")
+
+    if util_pkg.check_version("mujoco>=3.15.1.dev996371290"):
+      mujoco.mj_sensorVel(mjm, mjd)
+    else:
+      mujoco.mj_sensorAcc(mjm, mjd)
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      # Vertex 4 corresponds to geom_a, vertex 5 corresponds to geom_b
+      self.assertGreater(sensordata[w, 4], 0.0, f"Geom A taxel 4 empty for world {w}")
+      self.assertGreater(sensordata[w, 5], 0.0, f"Geom B taxel 5 empty for world {w}")
+      _assert_eq(sensordata[w], mjd.sensordata, f"tactile_dedup_pressure_world_{w}")
+
+  @parameterized.parameters(1, 2)
+  def test_tactile_sensor_dense_weld_indexing(self, nworld):
+    """Test tactile sensor weld buffers use dense indexing (ntactileweld << nbody)."""
+    # Verify model with no tactile sensors initializes ntactileweld=0 and weld_tactile_id=-1
+    mjm_no_tactile = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body name="b1"><geom type="sphere" size="0.1"/></body>
+      </worldbody>
+    </mujoco>
+    """)
+    m_no_tactile = mjw.put_model(mjm_no_tactile)
+    self.assertEqual(m_no_tactile.ntactileweld, 0)
+    self.assertTrue((m_no_tactile.weld_tactile_id.numpy() == -1).all())
+
+    # Multi-body model where only a subset of bodies have tactile sensors
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag multiccd="enable" nativeccd="disable"/>
+        </option>
+        <asset>
+          <mesh name="sensor_mesh" builtin="wedge" params="3 3 45 45 0" scale=".2 .2 .2"
+                refquat="0.5 0.5 0.5 -0.5"/>
+        </asset>
+        <worldbody>
+          <body name="body_with_sensor_1">
+            <joint name="jnt1" type="hinge" axis="0 0 1"/>
+            <geom type="box" size=".25 .25 .25"/>
+            <geom name="sensor_geom_1" type="mesh" mesh="sensor_mesh"
+                  mass="0" contype="0" conaffinity="0"/>
+          </body>
+          <body name="inert_body_no_sensor" pos="5 0 0">
+            <joint name="jnt2" type="hinge" axis="0 0 1"/>
+            <geom type="sphere" size=".1"/>
+          </body>
+          <body name="body_with_sensor_2" pos="0 5 0">
+            <joint name="jnt3" type="hinge" axis="0 0 1"/>
+            <geom type="box" size=".25 .25 .25"/>
+            <geom name="sensor_geom_2" type="mesh" mesh="sensor_mesh"
+                  mass="0" contype="0" conaffinity="0"/>
+          </body>
+          <body name="slider">
+            <joint name="jnt4" type="slide" axis="1 0 0"/>
+            <geom type="box" size=".3 .3 .3"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <tactile geom="sensor_geom_1" mesh="sensor_mesh"/>
+          <tactile geom="sensor_geom_2" mesh="sensor_mesh"/>
+        </sensor>
+        <keyframe>
+          <key qvel="0 0 0 2.0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+    # Bodies: world(0), body_with_sensor_1(1), inert_body(2), body_with_sensor_2(3), slider(4)
+    # Only bodies 1 and 3 have tactile sensors, so ntactileweld == 2 while nbody == 5
+    self.assertEqual(m.ntactileweld, 2)
+    self.assertEqual(mjm.nbody, 5)
+    weld_tactile_id = m.weld_tactile_id.numpy()
+    self.assertEqual(weld_tactile_id[0], -1)
+    self.assertEqual(weld_tactile_id[1], 0)
+    self.assertEqual(weld_tactile_id[2], -1)
+    self.assertEqual(weld_tactile_id[3], 1)
+    self.assertEqual(weld_tactile_id[4], -1)
+
+    d.sensordata.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    sensordata = d.sensordata.numpy()
+    for w in range(nworld):
+      _assert_eq(sensordata[w], mjd.sensordata, f"tactile_dense_world_{w}")
+
+  def test_sensor_acc_skip_rne_postconstraint(self):
+    """Tests skip_rne_postconstraint parameter in sensor_acc."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="body0" pos="0 0 1">
+            <freejoint/>
+            <geom type="sphere" size=".1" mass="1"/>
+            <site name="site0"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <accelerometer site="site0"/>
+        </sensor>
+      </mujoco>
+      """
+    )
+    self.assertFalse(m.opt.run_rne_postconstraint)
+
+    # Default (skip_rne_postconstraint=False): RNE runs and populates cacc
+    d.cacc.zero_()
+    mjw.sensor_acc(m, d)
+    self.assertTrue(d.cacc.numpy().any())
+
+    # skip_rne_postconstraint=True: RNE is skipped, cacc remains zeros
+    d.cacc.zero_()
+    mjw.sensor_acc(m, d, skip_rne_postconstraint=True)
+    self.assertFalse(d.cacc.numpy().any())
+
+  @parameterized.parameters(1, 2)
+  def test_camprojection_depth_guard(self, nworld):
+    """Tests camprojection depth guard at zero, near-zero, and normal depth."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <camera name="cam" pos="0 0 0"/>
+          <body name="body" pos="0 0 0">
+            <joint name="slide_x" type="slide" axis="1 0 0"/>
+            <geom type="sphere" size="0.01"/>
+            <site name="site_zero" pos="0.1 0 0"/>
+            <site name="site_near_neg" pos="0.1 0 1e-16"/>
+            <site name="site_near_pos" pos="0.1 0 -1e-16"/>
+            <site name="site_normal" pos="0.1 0 -1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <camprojection camera="cam" site="site_zero"/>
+          <camprojection camera="cam" site="site_near_neg"/>
+          <camprojection camera="cam" site="site_near_pos"/>
+          <camprojection camera="cam" site="site_normal"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1] += 0.05
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+      mjw.kinematics(m, d)
+      mjw.com_pos(m, d)
+
+    d.sensordata.fill_(wp.inf)
+    mjw.sensor_pos(m, d)
+
+    sensordata = d.sensordata.numpy()
+    self.assertTrue(np.all(np.isfinite(sensordata)))
+
+    for w in range(nworld):
+      _assert_eq(sensordata[w], mjds[w].sensordata, f"camprojection_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
+
+
+if __name__ == "__main__":
+  wp.init()
+  absltest.main()

@@ -1,0 +1,21 @@
+{
+    "compilerOptions": {
+        "module": "commonjs",    // VS Code extensions use CommonJS modules
+        "target": "ES2020",      // Target a recent ECMAScript version supported by VS Code's Node.js runtime
+        "lib": ["ES2020"],
+        "outDir": "../out",      // IMPORTANT: Compile output goes to the parent's 'out' directory
+        "rootDir": "src",        // Source files are in the 'src' subdirectory
+        "sourceMap": true,       // Generate source maps for debugging
+        "strict": true,          // Enable strict type checking
+        "esModuleInterop": true, // Allows cleaner imports
+        "skipLibCheck": true,    // Skip type checking of declaration files (speeds up compilation)
+        "forceConsistentCasingInFileNames": true
+    },
+    "include": [
+        "src/**/*" // Only compile files in the 'src' directory
+    ],
+    "exclude": [
+        "node_modules",
+        ".vscode-test" // Exclude VS Code test runner files if you add tests later
+    ]
+}

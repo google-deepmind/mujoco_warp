@@ -1,0 +1,43 @@
+<mujoco model="unitree_g1 scene hfield">
+  <include file="unitree_g1_mjlab.xml" />
+
+  <visual>
+    <map znear="0.01" zfar="200" />
+    <quality shadowsize="8192" />
+    <headlight diffuse=".8 .8 .8" ambient=".2 .2 .2" specular="1 1 1" />
+    <global azimuth="140" elevation="-20" />
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="1 1 1" rgb2="1 1 1" width="800" height="800" />
+    <hfield name="terrain" size="4.0 4.0 0.1 0.05" file="hfield.png" />
+  </asset>
+
+
+  <worldbody>
+    <geom name="terrain_hfield" type="hfield" hfield="terrain"
+          pos="0.0 0.0 -0.05" contype="1" conaffinity="1" />
+    <light pos="0 0 3" dir="0 0 -1" directional="true" />
+  </worldbody>
+
+
+  <keyframe>
+    <key name="home"
+      qpos="
+      0 0 0.783675
+      1 0 0 0
+      -0.1 0 0 0.3 -0.2 0
+      -0.1 0 0 0.3 -0.2 0
+      0 0 0
+      0.2 0.2 0 1.28 0 0 0
+      0.2 -0.2 0 1.28 0 0 0
+      "
+      ctrl="
+      -0.1 0 0 0.3 -0.2 0
+      -0.1 0 0 0.3 -0.2 0
+      0 0 0
+      0.2 0.2 0 1.28 0 0 0
+      0.2 -0.2 0 1.28 0 0 0
+      "/>
+  </keyframe>
+</mujoco>

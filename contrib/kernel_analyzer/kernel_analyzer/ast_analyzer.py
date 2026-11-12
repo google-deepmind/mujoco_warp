@@ -1,0 +1,802 @@
+# Copyright 2025 The Newton Developers
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""AST analyzer for kernel functions."""
+
+import ast
+import dataclasses
+import logging
+import re
+from typing import Dict, List, Optional, Tuple
+
+
+@dataclasses.dataclass
+class Issue:
+  node: ast.AST
+  kernel: str
+
+
+@dataclasses.dataclass
+class DefaultForbidden(Issue):
+  def __str__(self):
+    return f'"{self.node.arg}" default not allowed.'
+
+
+@dataclasses.dataclass
+class VarArgsForbidden(Issue):
+  def __str__(self):
+    return f'"{self.node.arg}" varargs not allowed.'
+
+
+@dataclasses.dataclass
+class KwArgsForbidden(Issue):
+  def __str__(self):
+    return f'"{self.node.arg}" kwargs not allowed.'
+
+
+@dataclasses.dataclass
+class MissingType(Issue):
+  def __str__(self):
+    return f'"{self.node.arg}" missing type annotation.'
+
+
+@dataclasses.dataclass
+class TypeMismatch(Issue):
+  expected_type: str
+  source: Optional[str]
+
+  def __str__(self):
+    ret = f'"{self.node.arg}" type mismatch, expected {self.expected_type}'
+    ret += "." if self.source is None else f" from {self.source}."
+    return ret
+
+
+@dataclasses.dataclass
+class InvalidSuffix(Issue):
+  source: Optional[str]
+
+  def __str__(self):
+    if self.source == "Model":
+      return f'"{self.node.arg}" invalid suffix, _in/_out not allowed on Model parameters.'
+    elif self.source == "Data":
+      return f'"{self.node.arg}" invalid suffix, _in/_out required on Data parameters.'
+    else:
+      return f'"{self.node.arg}" invalid suffix, _in/_out required.'
+
+
+@dataclasses.dataclass
+class InvalidParamOrder(Issue):
+  expected: List[str]
+  expected_full: List[str]  # with comments and types
+  # function arg range ((start_lineno, start_col), (end_lineno, end_col))
+  arg_range: Tuple[Tuple[int, int], Tuple[int, int]]
+
+  def __str__(self):
+    return f'"{self.kernel}" invalid parameter order, expected: {", ".join(self.expected)}'
+
+
+@dataclasses.dataclass
+class MissingComment(Issue):
+  expected_comment: str
+
+  def __str__(self):
+    return f'"{self.node.arg}" should be preceded by comment: {self.expected_comment}'
+
+
+@dataclasses.dataclass
+class InvalidWrite(Issue):
+  def __str__(self):
+    return f'"{self.node.id}" invalid write: parameter is read-only'
+
+
+@dataclasses.dataclass
+class MissingModuleUnique(Issue):
+  def __str__(self):
+    return f'"{self.kernel}" nested kernel missing module="unique"'
+
+
+@dataclasses.dataclass
+class SharedModuleCustomBlockDim(Issue):
+  def __str__(self):
+    return f'"{self.kernel}" is launched with custom block_dim but shares a module. Use @wp.kernel(module="unique").'
+
+
+@dataclasses.dataclass
+class ParenthesizedArraySyntax(Issue):
+  def __str__(self):
+    return f'"{self.node.arg}" uses parenthesized wp.array(dtype=X) syntax, use wp.array[X] instead'
+
+
+@dataclasses.dataclass
+class MissingBatchModulo(Issue):
+  param_name: str
+
+  def __str__(self):
+    return f'"{self.param_name}" is a *-dimensioned field; first index must use "% {self.param_name}.shape[0]"'
+
+
+@dataclasses.dataclass
+class DirectWpArrayForbidden(Issue):
+  attr_name: str
+  class_name: str
+
+  def __str__(self):
+    return f'"{self.attr_name}" in class "{self.class_name}" must use array(...) annotation instead of direct wp.array.'
+
+
+@dataclasses.dataclass
+class AmbiguousPrecedence(Issue):
+  description: str
+
+  def __str__(self):
+    return f"ambiguous operator precedence: {self.description}"
+
+
+@dataclasses.dataclass
+class BitwiseInversionInBoolean(Issue):
+  def __str__(self):
+    return 'bitwise NOT (~) used as boolean condition; use "not (...)", "!= 0", or explicit flag checks'
+
+
+@dataclasses.dataclass
+class WarpCallInStatic(Issue):
+  def __str__(self):
+    return f'"wp.{self.node.func.attr}" not allowed inside wp.static(); use pure Python or math.*'
+
+
+@dataclasses.dataclass
+class MissingDeterministicFactory(Issue):
+  def __str__(self):
+    return f'"{self.kernel}" contains atomic operations but is not enclosed in a kernel factory with a "deterministic" argument'
+
+
+@dataclasses.dataclass
+class MissingDeterministicMaxRecords(Issue):
+  def __str__(self):
+    return f'"{self.kernel}" contains atomic operations in a dynamic loop and must set "deterministic_max_records"'
+
+
+# TODO(team): add argument order analyzer.
+# this one is tricky because just verifying order does not tell you if the arguments
+# match the parameter signature.
+
+
+def _get_classes(src: str) -> Dict[str, List[Tuple[str, str]]]:
+  """Return classes and fields and annotations."""
+  ret = {}
+  class_name = None
+  in_docstring = False
+  field_pattern = re.compile(r"^\s+(\w+)\s*:\s*(.*?)(?:\s*#.*)?$")
+
+  for line in src.splitlines():
+    if line.startswith("class "):
+      class_name = line[len("class ") : -1]
+    if line.strip().startswith('"""'):
+      in_docstring = True
+    if line.strip().endswith('"""'):
+      in_docstring = False
+
+    m = field_pattern.match(line)
+    if not class_name or not m or in_docstring:
+      continue
+
+    ret.setdefault(class_name, []).append((m.group(1), m.group(2)))
+
+  return ret
+
+
+def _get_function_arg_range(node: ast.FunctionDef, source: str) -> tuple[tuple[int, int], tuple[int, int]]:
+  """Gets the function arg range."""
+  start_line = node.lineno - 1
+  start_char = node.col_offset + len(node.name)
+  lines = source.splitlines()
+  open_paren = lines[start_line].find("(", start_char)
+  start_pos = (start_line, open_paren + 1)
+
+  balance = 1
+  curr_line, curr_char = start_line, open_paren + 1
+  while balance > 0 and curr_line < len(lines):
+    search_line = lines[curr_line]
+    while curr_char < len(search_line):
+      if search_line[curr_char] == "(":
+        balance += 1
+      elif search_line[curr_char] == ")":
+        balance -= 1
+        if balance == 0:
+          return start_pos, (curr_line, curr_char)
+      curr_char += 1
+    curr_line += 1
+    curr_char = 0
+  return start_pos, (node.end_lineno - 1, node.end_col_offset)
+
+
+def _get_arg_expected_comment(param_source: str, param_out: bool) -> str:
+  if param_source == "Model":
+    expected_comment = "# Model:"
+  elif param_source == "Data":
+    expected_comment = f"# Data {'out' if param_out else 'in'}:"
+  else:
+    expected_comment = f"# {'Out' if param_out else 'In'}:"
+  return expected_comment
+
+
+def _is_parenthesized(source_lines: List[str], node: ast.AST) -> bool:
+  """Check if an AST node is immediately enclosed in parentheses."""
+  # Scan backward for '('
+  start_l, start_c = node.lineno - 1, node.col_offset - 1
+  has_open = False
+  while start_l >= 0:
+    line = source_lines[start_l]
+    while start_c >= 0:
+      ch = line[start_c]
+      if not ch.isspace() and ch != "\\":
+        has_open = ch == "("
+        break
+      start_c -= 1
+    if has_open or (start_c >= 0 and line[start_c] not in (" ", "\t", "\\")):
+      break
+    start_l -= 1
+    if start_l >= 0:
+      start_c = len(source_lines[start_l]) - 1
+
+  # Scan forward for ')'
+  end_l, end_c = node.end_lineno - 1, node.end_col_offset
+  has_close = False
+  while end_l < len(source_lines):
+    line = source_lines[end_l]
+    while end_c < len(line):
+      ch = line[end_c]
+      if not ch.isspace() and ch != "\\":
+        has_close = ch == ")"
+        break
+      end_c += 1
+    if has_close or (end_c < len(line) and line[end_c] not in (" ", "\t", "\\")):
+      break
+    end_l += 1
+    end_c = 0
+
+  return has_open and has_close
+
+
+def _is_wp_call(node: ast.AST) -> bool:
+  return (
+    isinstance(node, ast.Call)
+    and isinstance(node.func, ast.Attribute)
+    and isinstance(node.func.value, ast.Name)
+    and node.func.value.id == "wp"
+  )
+
+
+def analyze(
+  source: str,
+  filename: str,
+  type_source: str,
+  check_atomic: bool = False,
+) -> List[Issue]:
+  """Parses Python code and finds functions with unsorted simple parameters."""
+  logging.info(f"Analyzing {filename}...")
+
+  # get class fields and types for Model and Data
+  type_classes = _get_classes(type_source)
+  field_info = {}
+  star_fields = set()  # fields with "*" first dimension
+
+  for field, typ in type_classes.get("Model", []):
+    if field == "opt":
+      for sfield, styp in type_classes.get("Option", []):
+        full_name = field + "_" + sfield
+        field_info[full_name] = ("Model", styp, len(field_info))
+        if styp.startswith('array("*"'):
+          star_fields.add(full_name)
+    elif field == "stat":
+      for sfield, styp in type_classes.get("Statistic", []):
+        full_name = field + "_" + sfield
+        field_info[full_name] = ("Model", styp, len(field_info))
+        if styp.startswith('array("*"'):
+          star_fields.add(full_name)
+    else:
+      field_info[field] = ("Model", typ, len(field_info))
+      if typ.startswith('array("*"'):
+        star_fields.add(field)
+
+  for field, typ in type_classes.get("Data", []):
+    if field == "efc":
+      for sfield, styp in type_classes["Constraint"]:
+        field_info[field + "_" + sfield] = ("Data", styp, len(field_info))
+    elif field == "contact":
+      for sfield, styp in type_classes["Contact"]:
+        field_info[field + "_" + sfield] = ("Data", styp, len(field_info))
+    else:
+      field_info[field] = ("Data", typ, len(field_info))
+
+  try:
+    tree = ast.parse(source, filename=filename)
+  except SyntaxError as e:
+    logging.error(f"Syntax error in {filename}:{e.lineno}: {e.msg}")
+    return []
+
+  issues: List[Issue] = []
+  for cls_name in ("Model", "Data", "Option", "Statistic", "Constraint"):
+    if cls_name in type_classes:
+      for attr_name, attr_type in type_classes[cls_name]:
+        if attr_type.startswith("wp.array"):
+          dummy_node = ast.AST()
+          dummy_node.lineno = 1
+          dummy_node.end_lineno = 1
+          issues.append(DirectWpArrayForbidden(dummy_node, "", attr_name, cls_name))
+  source_lines = source.splitlines()
+
+  def _is_kernel(name: str) -> bool:
+    """Check if decorator is wp.kernel."""
+    return name and (name == "wp.kernel" or name.startswith("wp.kernel("))
+
+  def _is_func(name: str) -> bool:
+    """Check if decorator is wp.func."""
+    return name and (name == "wp.func" or name.startswith("wp.func("))
+
+  top_kernels: dict[str, bool] = {}
+
+  # Supports # kernel_analyzer: ignore, ignore[rule], off/on, off[rule]/on[rule]
+  ignore_lines: Dict[int, set[str]] = {}
+  active_off_rules: set[str] = set()
+
+  for lineno, line in enumerate(source_lines, 1):  # lineno is 1-indexed
+    for action, rule in re.findall(r"#\s*kernel_analyzer:\s*(off|on|ignore)(?:\[(.*?)\])?", line):
+      rule = rule.strip() or "*"
+      if action == "off":
+        active_off_rules.add(rule)
+      elif action == "on":
+        active_off_rules.clear() if rule == "*" else active_off_rules.discard(rule)
+      elif action == "ignore":
+        ignore_lines.setdefault(lineno, set()).add(rule)
+    if active_off_rules:
+      ignore_lines.setdefault(lineno, set()).update(active_off_rules)
+
+  def _is_ignored(iss: Issue) -> bool:
+    if isinstance(iss.node, ast.FunctionDef):
+      start_line = min((d.lineno for d in iss.node.decorator_list), default=iss.node.lineno)
+      end_line = iss.node.body[0].lineno - 1 if iss.node.body else iss.node.lineno
+    else:
+      start_line = iss.node.lineno
+      end_line = iss.node.end_lineno or start_line
+    rules = {r for l in range(start_line, end_line + 1) for r in ignore_lines.get(l, ())}
+    return "*" in rules or (
+      isinstance(iss, (MissingDeterministicFactory, MissingDeterministicMaxRecords))
+      and any("atomic" in r.lower() for r in rules)
+    )
+
+  def _is_atomic_call(sub: ast.AST) -> bool:
+    return (
+      isinstance(sub, ast.Call)
+      and isinstance(sub.func, ast.Attribute)
+      and isinstance(sub.func.value, ast.Name)
+      and sub.func.value.id == "wp"
+      and sub.func.attr.startswith("atomic_")
+      and sub.func.attr not in ("atomic_or", "atomic_and", "atomic_xor")
+    )
+
+  def _is_wp_static(sub: ast.AST) -> bool:
+    return (
+      isinstance(sub, ast.Call)
+      and isinstance(sub.func, ast.Attribute)
+      and isinstance(sub.func.value, ast.Name)
+      and sub.func.value.id == "wp"
+      and sub.func.attr == "static"
+    )
+
+  def _has_loop_break(stmts: List[ast.stmt]) -> bool:
+    for s in stmts:
+      if isinstance(s, (ast.Break, ast.Continue)):
+        return True
+      if isinstance(s, ast.If) and (_has_loop_break(s.body) or _has_loop_break(s.orelse)):
+        return True
+    return False
+
+  def _is_unrolled_for(loop: ast.For) -> bool:
+    it = loop.iter
+    if not (isinstance(it, ast.Call) and isinstance(it.func, ast.Name) and it.func.id == "range" and 1 <= len(it.args) <= 3):
+      return False
+    if _has_loop_break(loop.body):
+      return False
+    vals = []
+    for a in it.args:
+      if isinstance(a, ast.Constant) and isinstance(a.value, int):
+        vals.append(a.value)
+      elif (
+        isinstance(a, ast.UnaryOp)
+        and isinstance(a.op, ast.USub)
+        and isinstance(a.operand, ast.Constant)
+        and isinstance(a.operand.value, int)
+      ):
+        vals.append(-a.operand.value)
+      elif _is_wp_static(a):
+        vals.append(None)
+      else:
+        return False
+    if None in vals:
+      return True
+    start = 0 if len(vals) == 1 else vals[0]
+    end = vals[0] if len(vals) == 1 else vals[1]
+    step = 1 if len(vals) < 3 else vals[2]
+    return step != 0 and abs(end - start) // abs(step) <= 16
+
+  top_level_atomic_funcs: Dict[str, List[ast.Call]] = {}
+  called_top_level_atomic_funcs: set[str] = set()
+  atomic_funcs: set[str] = set()
+  dyn_atomic_funcs: set[str] = set()
+
+  def _find_dyn_atomics(curr: ast.AST, in_dyn_loop: bool = False) -> List[ast.Call]:
+    found: List[ast.Call] = []
+    if isinstance(curr, ast.While):
+      found.extend(_find_dyn_atomics(curr.test, in_dyn_loop))
+      for s in curr.body + curr.orelse:
+        found.extend(_find_dyn_atomics(s, True))
+      return found
+    if isinstance(curr, ast.For):
+      found.extend(_find_dyn_atomics(curr.iter, in_dyn_loop))
+      dyn = in_dyn_loop or not _is_unrolled_for(curr)
+      for s in curr.body + curr.orelse:
+        found.extend(_find_dyn_atomics(s, dyn))
+      return found
+    if isinstance(curr, ast.Call):
+      fname = curr.func.id if isinstance(curr.func, ast.Name) else None
+      if ((in_dyn_loop and (_is_atomic_call(curr) or fname in atomic_funcs)) or fname in dyn_atomic_funcs) and not _is_ignored(
+        MissingDeterministicMaxRecords(curr, "")
+      ):
+        found.append(curr)
+    for child in ast.iter_child_nodes(curr):
+      if not isinstance(child, ast.FunctionDef):
+        found.extend(_find_dyn_atomics(child, in_dyn_loop))
+    return found
+
+  def _analyze_function(node: ast.FunctionDef, is_nested: bool, enclosing_func: Optional[ast.FunctionDef] = None):
+    """Analyze a function definition for kernel issues."""
+    # Recursively check nested functions first
+    for child in ast.iter_child_nodes(node):
+      if isinstance(child, ast.FunctionDef):
+        _analyze_function(child, is_nested=True, enclosing_func=node)
+
+    # Find wp.kernel or wp.func decorator
+    decorator = None
+    for d in node.decorator_list:
+      decorator = ast.get_source_segment(source, d)
+      if _is_kernel(decorator) or _is_func(decorator):
+        break
+    else:
+      return  # not a kernel/func
+
+    # Nested wp.kernel must have module="unique" (wp.func doesn't need it)
+    if _is_kernel(decorator):
+      has_unique = 'module="unique"' in decorator or "module='unique'" in decorator
+      if is_nested:
+        if not has_unique:
+          issues.append(MissingModuleUnique(node, node.name))
+      else:
+        top_kernels[node.name] = has_unique
+
+    # Kernels and functions with atomics must be inside a deterministic factory.
+    if check_atomic and (_is_kernel(decorator) or _is_func(decorator)):
+      has_det = (
+        is_nested
+        and enclosing_func is not None
+        and any(a.arg == "deterministic" for a in enclosing_func.args.args + enclosing_func.args.kwonlyargs)
+      )
+      for sub in ast.walk(node):
+        is_atomic_func_call = isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id in atomic_funcs
+        if is_atomic_func_call and sub.func.id in top_level_atomic_funcs:
+          called_top_level_atomic_funcs.add(sub.func.id)
+        if (is_atomic_func_call or _is_atomic_call(sub)) and not _is_ignored(MissingDeterministicFactory(sub, node.name)):
+          if _is_func(decorator):
+            atomic_funcs.add(node.name)
+          if not is_nested and _is_func(decorator):
+            top_level_atomic_funcs.setdefault(node.name, []).append(sub)
+          elif not has_det:
+            issues.append(MissingDeterministicFactory(sub, node.name))
+
+      dyn_atomics = _find_dyn_atomics(node)
+      if _is_func(decorator) and dyn_atomics:
+        dyn_atomic_funcs.add(node.name)
+      elif _is_kernel(decorator) and has_det and dyn_atomics:
+        has_max_records = any(
+          isinstance(c, ast.Constant) and c.value == "deterministic_max_records" for c in ast.walk(enclosing_func)
+        )
+        if not has_max_records:
+          for sub in dyn_atomics:
+            issues.append(MissingDeterministicMaxRecords(sub, node.name))
+
+    _analyze_kernel(node)
+
+  def _analyze_kernel(node: ast.FunctionDef):
+    """Analyze kernel parameters and body."""
+    kernel, args = node.name, node.args
+
+    # defaults not allowed
+    if args.defaults:
+      for param in args.args[-len(args.defaults) :]:
+        issues.append(DefaultForbidden(param, kernel))
+
+    # kw defaults not allowed.
+    if args.kwonlyargs:
+      for param, default in zip(args.kwonlyargs, args.kw_defaults):
+        if default:
+          issues.append(DefaultForbidden(param, kernel))
+
+    # varargs not allowed.
+    if args.vararg:
+      issues.append(VarArgsForbidden(args.vararg, kernel))
+
+    # kwargs not allowed.
+    if args.kwarg:
+      issues.append(KwArgsForbidden(args.kwarg, kernel))
+
+    param_names = set()
+    params_ordering = []
+    params_multiline = any(a.lineno != args.args[0].lineno for a in args.args)
+    param_groups = set()
+    param_types = {}
+    param_outs = set()
+    param_reftypes = set()
+    expected_types = {}
+
+    # TODO(team): we might also want to check return types of wp.func
+    for param in args.args:
+      param_name = param.arg
+      param_names.add(param_name)
+
+      # params must be type annotated
+      if param.annotation is None:
+        issues.append(MissingType(param, kernel))
+        continue
+
+      param_type = ast.get_source_segment(source, param.annotation)
+      param_type = param_type.replace("types.", "")  # ignore types module prefix
+      param_types[param_name] = param_type
+
+      # enforce bracket syntax: wp.array[X] not wp.array(dtype=X)
+      if re.search(r"wp\.array\d*d?\(dtype=", param_type):
+        issues.append(ParenthesizedArraySyntax(param, kernel))
+
+      has_suffix = param_name.endswith("_in") or param_name.endswith("_out")
+      field_name = param_name[: param_name.rfind("_")] if has_suffix else param_name
+      param_out = param_name.endswith("_out") or param_name in ("res", "out")
+      if param_out:
+        param_outs.add(param_name)
+      if "array" in param_type:
+        param_reftypes.add(param_name)
+      param_source, expected_type, param_order = field_info.get(field_name, (None, None, None))
+
+      # TODO(team): indicate array slice with suffix and check type?
+
+      # if parameters are multi-line, parameters must be grouped by comments of the form
+      # "{source} {in | out | ""}:" e.g. "Model:" or "Data in:" or "Out:"
+      if params_multiline and (param_out, param_source) not in param_groups:
+        param_groups.add((param_out, param_source))
+        expected_comment = _get_arg_expected_comment(param_source, param_out)
+        if param.lineno < 2 or source_lines[param.lineno - 2].strip() != expected_comment:
+          issues.append(MissingComment(param, kernel, expected_comment))
+
+      # paramater type must match field type (or generic types if no corresponding field)
+      if expected_type is None:
+        # if the parameter does not correspond to Model/Data fields, it has no expected type
+        # still, there are a few type conventions we stick to
+        if "wp.int32" in param_type:
+          expected_type = "int"
+        elif "wp.float32" in param_type:
+          expected_type = "float"
+        elif "wp.bool" in param_type:
+          expected_type = "bool"
+      elif expected_type.startswith("array("):
+        # array(...) is our custom annotation that we can translate to wp.array
+        expected_dtype = expected_type[expected_type.rfind(" ") + 1 : -1]
+        expected_ndim = expected_type.count(",")
+        if expected_ndim == 1:
+          expected_type = f"wp.array[{expected_dtype}]"
+        else:
+          expected_type = f"wp.array{expected_ndim}d[{expected_dtype}]"
+      elif m := re.match(r"wp\.array(\d?)d?\(dtype=([\w.]+)\)", expected_type):
+        # wp.array(dtype=X) or wp.arrayNd(dtype=X) from types.py field specs
+        ndim_str, dtype = m.group(1), m.group(2)
+        if ndim_str and ndim_str != "1":
+          expected_type = f"wp.array{ndim_str}d[{dtype}]"
+        else:
+          expected_type = f"wp.array[{dtype}]"
+
+      expected_types[param_name] = expected_type
+      if expected_type and param_type != expected_type:
+        issues.append(TypeMismatch(param, kernel, expected_type, param_source))
+
+      # Model params must not have in/out suffix, Data params must, other params optional
+      if param_source == "Model" and has_suffix:
+        issues.append(InvalidSuffix(param, kernel, param_source))
+      elif param_source == "Data" and not has_suffix:
+        issues.append(InvalidSuffix(param, kernel, param_source))
+
+      source_order = {"Model": 0, "Data": 1, None: 2}[param_source]
+      param_order = len(params_ordering) if param_order is None else param_order
+      params_ordering.append((param_out, source_order, param_order, param_name))
+
+    # parameters must follow a specified order:
+    # 1) in fields, then out fields
+    # 2) Model, then Data, then other
+    # 3) matching Model field order or Data field order
+    expected_ordering = sorted(params_ordering)
+    if params_ordering != expected_ordering:
+      expected_names = [p[3] for p in expected_ordering]
+      node.col_offset = node.col_offset + 4
+      node.end_lineno = node.lineno
+      node.end_col_offset = node.col_offset + len(node.name)
+      arg_range = _get_function_arg_range(node, source)
+      # Build the full arg strings with comments and types.
+      expected_full, prev = [], None
+      for e in expected_ordering:
+        if prev != e[:2]:
+          src = {0: "Model", 1: "Data", 2: None}[e[1]]
+          is_out = e[0]
+          expected_full.append(_get_arg_expected_comment(src, is_out))
+        type_ = expected_types[e[3]] or param_types[e[3]]
+        expected_full.append(e[3] + ": " + type_ + ",")
+        prev = e[:2]
+      issues.append(InvalidParamOrder(node, kernel, expected_names, expected_full, arg_range))
+
+    # don't allow assignments to in parameters
+    for sub_node in ast.walk(node):
+      # simple assignments:
+      if isinstance(sub_node, ast.Assign):
+        for target in sub_node.targets:
+          assignee = ast.get_source_segment(source, target)
+          if assignee in param_names and assignee not in param_outs and assignee in param_reftypes:
+            issues.append(InvalidWrite(target, kernel))
+      # augmented assignments (+=, -=, etc)
+      elif isinstance(sub_node, ast.AugAssign):
+        assignee = ast.get_source_segment(source, sub_node.target)
+        if assignee in param_names and assignee not in param_outs and assignee in param_reftypes:
+          issues.append(InvalidWrite(sub_node.target, kernel))
+      # in-place operations like a[i] = value
+      elif isinstance(sub_node, ast.Subscript) and isinstance(sub_node.ctx, ast.Store):
+        assignee = ast.get_source_segment(source, sub_node.value)
+        if assignee in param_names and assignee not in param_outs and assignee in param_reftypes:
+          issues.append(InvalidWrite(sub_node.value, kernel))
+      # TODO: atomic_add, atomic_sub
+
+    # check *-dimensioned Model fields are indexed with % shape[0]
+    star_params = {p for p in param_names if p in star_fields and p in param_reftypes}
+    if star_params:
+
+      def _is_modulo_shape0(index_node: ast.AST, param_name: str) -> bool:
+        """Check if index is `expr % param.shape[0]`."""
+        if not isinstance(index_node, ast.BinOp):
+          return False
+        if not isinstance(index_node.op, ast.Mod):
+          return False
+        # right side must be param.shape[0]
+        rhs = index_node.right
+        if not isinstance(rhs, ast.Subscript):
+          return False
+        rhs_src = ast.get_source_segment(source, rhs)
+        return rhs_src == f"{param_name}.shape[0]"
+
+      # Pass 1: find precomputed safe indices
+      # e.g., `gear_id = worldid % actuator_gear.shape[0]`
+      safe_indices: Dict[str, str] = {}  # var_name -> param_name
+      for sub_node in ast.walk(node):
+        if isinstance(sub_node, ast.Assign) and len(sub_node.targets) == 1:
+          target = sub_node.targets[0]
+          if isinstance(target, ast.Name) and isinstance(sub_node.value, ast.BinOp):
+            for sp in star_params:
+              if _is_modulo_shape0(sub_node.value, sp):
+                safe_indices[target.id] = sp
+                break
+
+      # Pass 2: check all subscript accesses on *-dimensioned params
+      for sub_node in ast.walk(node):
+        if not isinstance(sub_node, ast.Subscript):
+          continue
+        # check if the subscript target is a *-dimensioned param
+        if not isinstance(sub_node.value, ast.Name):
+          continue
+        param_name = sub_node.value.id
+        if param_name not in star_params:
+          continue
+
+        # get the first index (the batch/world dimension)
+        idx = sub_node.slice
+        if isinstance(idx, ast.Tuple) and idx.elts:
+          first_idx = idx.elts[0]
+        else:
+          first_idx = idx
+
+        # check: inline modulo pattern
+        if _is_modulo_shape0(first_idx, param_name):
+          continue
+
+        # check: precomputed safe index variable
+        if isinstance(first_idx, ast.Name) and safe_indices.get(first_idx.id) == param_name:
+          continue
+
+        issues.append(MissingBatchModulo(sub_node, kernel, param_name))
+
+  # Analyze all top-level function definitions
+  for node in ast.iter_child_nodes(tree):
+    if isinstance(node, ast.FunctionDef):
+      _analyze_function(node, is_nested=False)
+
+  if check_atomic:
+    for fname, atomics in top_level_atomic_funcs.items():
+      if fname not in called_top_level_atomic_funcs:
+        for sub in atomics:
+          issues.append(MissingDeterministicFactory(sub, fname))
+
+  # Check operator precedence disambiguation throughout the file
+  for sub_node in ast.walk(tree):
+    # 1. Compare with bitwise operator
+    if isinstance(sub_node, ast.Compare):
+      for child in [sub_node.left] + sub_node.comparators:
+        if isinstance(child, ast.BinOp) and isinstance(child.op, (ast.BitAnd, ast.BitOr, ast.BitXor)):
+          if not _is_parenthesized(source_lines, child):
+            issues.append(AmbiguousPrecedence(child, "", "parenthesize bitwise operation inside comparison"))
+
+    # 2. Logical not with bitwise operator
+    elif isinstance(sub_node, ast.UnaryOp) and isinstance(sub_node.op, ast.Not):
+      if isinstance(sub_node.operand, ast.BinOp) and isinstance(sub_node.operand.op, (ast.BitAnd, ast.BitOr, ast.BitXor)):
+        if not _is_parenthesized(source_lines, sub_node.operand):
+          issues.append(AmbiguousPrecedence(sub_node, "", 'parenthesize bitwise operation after "not"'))
+
+    # 3. Bitwise shift inside bitwise AND/OR/XOR
+    elif isinstance(sub_node, ast.BinOp) and isinstance(sub_node.op, (ast.BitAnd, ast.BitOr, ast.BitXor)):
+      for child in (sub_node.left, sub_node.right):
+        if isinstance(child, ast.BinOp) and isinstance(child.op, (ast.LShift, ast.RShift)):
+          if not _is_parenthesized(source_lines, child):
+            issues.append(AmbiguousPrecedence(child, "", "parenthesize bitwise shift inside bitwise operation"))
+
+    # 4. Bitwise NOT (~) in boolean condition
+    elif isinstance(sub_node, (ast.If, ast.While, ast.Assert)):
+      tests = [sub_node.test]
+      if isinstance(sub_node.test, ast.BoolOp):
+        tests = sub_node.test.values
+      for t in tests:
+        if isinstance(t, ast.UnaryOp) and isinstance(t.op, ast.Invert):
+          issues.append(BitwiseInversionInBoolean(t, ""))
+
+    # wp.* calls inside wp.static(...)
+    elif _is_wp_call(sub_node) and sub_node.func.attr == "static":
+      for inner in ast.walk(sub_node):
+        if inner is not sub_node and _is_wp_call(inner):
+          issues.append(WarpCallInStatic(inner, ""))
+
+  # Check wp.launch and wp.launch_tiled calls with custom block_dim
+  for sub_node in ast.walk(tree):
+    if isinstance(sub_node, ast.Call):
+      func = sub_node.func
+      if (
+        isinstance(func, ast.Attribute)
+        and func.attr in ("launch", "launch_tiled")
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "wp"
+      ):
+        has_launch_bdim = any(kw.arg == "block_dim" for kw in sub_node.keywords)
+        if has_launch_bdim:
+          first_arg = (
+            sub_node.args[0] if sub_node.args else next((kw.value for kw in sub_node.keywords if kw.arg == "kernel"), None)
+          )
+          if isinstance(first_arg, ast.Name):
+            target_name = first_arg.id
+            if target_name in top_kernels and not top_kernels[target_name]:
+              issues.append(SharedModuleCustomBlockDim(sub_node, target_name))
+
+  filtered_issues = [i for i in issues if not _is_ignored(i)]
+  filter_count, ignore_count = len(filtered_issues), len(issues) - len(filtered_issues)
+
+  logging.info(f"Finished analyzing {filename}. Found {filter_count} issues, ignoring {ignore_count} issues.")
+
+  return filtered_issues

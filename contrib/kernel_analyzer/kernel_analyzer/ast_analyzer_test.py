@@ -1,0 +1,778 @@
+# Copyright 2025 The Newton Developers
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""Tests for the kernel analyzer using direct string testing."""
+
+import os
+import pathlib
+from typing import Any, List, Type
+
+from absl.testing import absltest
+
+from . import ast_analyzer
+
+# Test code snippets
+_DEFAULT_PARAMS_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_default_params(qpos0: int, qvel: int = 0):
+    pass
+"""
+
+_VARARGS_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_varargs(qpos0: int, *args):
+    pass
+"""
+
+_KWARGS_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_kwargs(qpos0: int, **kwargs):
+    pass
+"""
+
+_TYPE_ISSUE_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_type_issue(qpos0: str, qvel):
+    pass
+"""
+
+_TYPE_MISMATCH_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_type_mismatch(qpos0: array, geom_pos: array2d):
+    pass
+"""
+
+_MODEL_SUFFIX_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_model_suffix(qpos0_in: int):
+    pass
+"""
+
+_DATA_SUFFIX_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_data_suffix(qpos: int):
+    pass
+"""
+
+_MISSING_COMMENT_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_missing_comment(
+    qpos0: int,
+    qvel: int,
+):
+    pass
+"""
+
+_WRITE_READONLY_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_write_readonly(qpos0: wp.array[int], qvel_in: wp.array[int]):
+    qpos0 = 1  # Writing to Model field
+    qvel_in = 2  # Writing to Data _in field
+"""
+
+_ALL_ISSUES_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_all_issues(
+    haha,                         # No type
+    qpos0: str,                   # Type mismatch with Model field
+    qvel_invalid: int,            # Invalid data field suffix
+    geom_pos_in: int,             # Model field with suffix
+    custom_param: int,            # Non-model/data in the middle
+    act_in: wp.array[int],  # Data order issue (in after out)
+    qvel_out: int,                # Out before in
+    qpos: int = 0,                # Default param
+    *args,                        # Varargs
+    **kwargs                      # Kwargs
+):
+    qpos0 = 1  # actually this is OK because it's a value type
+    act_in = 2  # Writing to Data _in field
+"""
+
+_NO_ISSUES_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_no_issues(
+    # Model:
+    qpos0: wp.array2d[float],
+    geom_pos: wp.array2d[wp.vec3],
+    # Data in:
+    qpos_in: wp.array2d[float],
+    qvel_in: wp.array2d[float],
+    act_in: wp.array2d[float],
+    # Data out:
+    act_out: wp.array2d[float]
+):
+    x = qpos0  # Reading Model field is fine
+    y = act_in  # Reading Data _in field is fine
+    act_out = 1  # Writing to Data _out field is fine
+"""
+
+_NON_KERNEL_CODE = """
+import warp as wp
+
+@wp.func
+def foo(x: wp.array[int]) -> wp.array[int]:
+  return x + 1
+
+def test_non_kernel(qpos0: int = 0, *args, **kwargs):
+    qpos0 = 1
+"""
+
+_IGNORE_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_ignore(
+    # Data in:
+    act_in: wp.array2d[float]
+):
+    act_in[0] = 2  # kernel_analyzer: ignore
+"""
+
+_MULTILINE_IGNORE_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_multiline_ignore(
+    # kernel_analyzer: off
+    qpos0: wp.array[int],   # Type mismatch with Model field
+    qvel_invalid: int,            # Invalid data field suffix
+    # kernel_analyzer: on
+):
+    qpos0[3] = 3  # this should still be reported
+"""
+
+_NESTED_KERNEL_MISSING_UNIQUE_CODE = """
+import warp as wp
+
+def kernel_factory(nv: int):
+    @wp.kernel
+    def nested_kernel(x: int):
+        pass
+    return nested_kernel
+"""
+
+_NESTED_KERNEL_WITH_UNIQUE_CODE = """
+import warp as wp
+
+def kernel_factory(nv: int):
+    @wp.kernel(module="unique")
+    def nested_kernel(x: int):
+        pass
+    return nested_kernel
+"""
+
+_NESTED_KERNEL_WITH_UNIQUE_SINGLE_QUOTES_CODE = """
+import warp as wp
+
+def kernel_factory(nv: int):
+    @wp.kernel(module='unique')
+    def nested_kernel(x: int):
+        pass
+    return nested_kernel
+"""
+
+
+def _analyze_str(code_str: str) -> List[Any]:
+  full_path = os.path.realpath(__file__)
+  path = pathlib.Path(full_path).parent / "../../../mujoco_warp/_src/types.py"
+  return ast_analyzer.analyze(code_str, "somefile.py", path.read_text())
+
+
+def _assert_has_issue(issues, issue_type: Type):
+  """Assert that the issues list contains at least one issue of the given type."""
+  if not any(isinstance(issue, issue_type) for issue in issues):
+    raise AssertionError(f"Expected issue of type {issue_type.__name__} not found in issues.")
+
+
+class TestAnalyzer(absltest.TestCase):
+  """Tests for the kernel analyzer."""
+
+  def test_default_params_issue(self):
+    """Test that default parameters raise an issue."""
+    issues = _analyze_str(_DEFAULT_PARAMS_CODE)
+    _assert_has_issue(issues, ast_analyzer.DefaultForbidden)
+
+  def test_varargs_issue(self):
+    """Test that varargs raise an issue."""
+    issues = _analyze_str(_VARARGS_CODE)
+    _assert_has_issue(issues, ast_analyzer.VarArgsForbidden)
+
+  def test_kwargs_issue(self):
+    """Test that kwargs raise an issue."""
+    issues = _analyze_str(_KWARGS_CODE)
+    _assert_has_issue(issues, ast_analyzer.KwArgsForbidden)
+
+  def test_type_issue(self):
+    """Test that invalid types raise an issue."""
+    issues = _analyze_str(_TYPE_ISSUE_CODE)
+    _assert_has_issue(issues, ast_analyzer.MissingType)
+
+  def test_type_mismatch_issue(self):
+    """Test that type mismatches raise an issue."""
+    issues = _analyze_str(_TYPE_MISMATCH_CODE)
+    _assert_has_issue(issues, ast_analyzer.TypeMismatch)
+
+  def test_model_field_suffix_issue(self):
+    """Test that model fields with suffixes raise an issue."""
+    issues = _analyze_str(_MODEL_SUFFIX_CODE)
+    _assert_has_issue(issues, ast_analyzer.InvalidSuffix)
+
+  def test_data_field_suffix_issue(self):
+    """Test that data fields with invalid suffixes raise an issue."""
+    issues = _analyze_str(_DATA_SUFFIX_CODE)
+    _assert_has_issue(issues, ast_analyzer.InvalidSuffix)
+
+  def test_missing_comment_issue(self):
+    """Test that missing comments raise an issue."""
+    issues = _analyze_str(_MISSING_COMMENT_CODE)
+    _assert_has_issue(issues, ast_analyzer.MissingComment)
+
+  def test_write_to_readonly_field_issue(self):
+    """Test that writing to readonly fields raises an issue."""
+    issues = _analyze_str(_WRITE_READONLY_CODE)
+    _assert_has_issue(issues, ast_analyzer.InvalidWrite)
+    # There should be 2 instances - one for Model and one for Data _in
+    write_issues = [i for i in issues if isinstance(i, ast_analyzer.InvalidWrite)]
+    self.assertEqual(len(write_issues), 2)
+
+  def test_all_issues(self):
+    """Test a function with all issue types."""
+    issues = _analyze_str(_ALL_ISSUES_CODE)
+    expected_types = [
+      ast_analyzer.DefaultForbidden,
+      ast_analyzer.VarArgsForbidden,
+      ast_analyzer.KwArgsForbidden,
+      ast_analyzer.MissingType,
+      ast_analyzer.TypeMismatch,
+      ast_analyzer.InvalidSuffix,
+      ast_analyzer.MissingComment,
+      ast_analyzer.InvalidWrite,
+    ]
+    for issue_type in expected_types:
+      _assert_has_issue(issues, issue_type)
+
+  def test_no_issues(self):
+    """Test a function with no issues."""
+    issues = _analyze_str(_NO_ISSUES_CODE)
+    self.assertEqual(len(issues), 0, issues)
+
+  def test_non_kernel_function(self):
+    """Test that non-kernel functions aren't analyzed."""
+    issues = _analyze_str(_NON_KERNEL_CODE)
+    self.assertEqual(len(issues), 0)  # Not a kernel, so no issues
+
+  def test_ignore_issues(self):
+    """Test that ignored issues are not reported."""
+    issues = _analyze_str(_IGNORE_CODE)
+    self.assertEqual(len(issues), 0, issues)
+
+  def test_multiline_ignore(self):
+    """Test that multiline ignore works."""
+    issues = _analyze_str(_MULTILINE_IGNORE_CODE)
+    self.assertEqual(len(issues), 2, issues)
+
+  def test_nested_kernel_missing_module_unique(self):
+    """Test that nested kernels without module='unique' raise an issue."""
+    issues = _analyze_str(_NESTED_KERNEL_MISSING_UNIQUE_CODE)
+    _assert_has_issue(issues, ast_analyzer.MissingModuleUnique)
+
+  def test_nested_kernel_with_module_unique(self):
+    """Test that nested kernels with module='unique' don't raise an issue."""
+    issues = _analyze_str(_NESTED_KERNEL_WITH_UNIQUE_CODE)
+    # Filter out other issue types - we only care about MissingModuleUnique
+    unique_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingModuleUnique)]
+    self.assertEqual(len(unique_issues), 0, unique_issues)
+
+  def test_nested_kernel_with_module_unique_single_quotes(self):
+    """Test that nested kernels with module='unique' (single quotes) don't raise an issue."""
+    issues = _analyze_str(_NESTED_KERNEL_WITH_UNIQUE_SINGLE_QUOTES_CODE)
+    # Filter out other issue types - we only care about MissingModuleUnique
+    unique_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingModuleUnique)]
+    self.assertEqual(len(unique_issues), 0, unique_issues)
+
+
+_PARENTHESIZED_ARRAY_SYNTAX_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_paren_syntax(x: wp.array(dtype=float), y: wp.array2d(dtype=int)):
+    pass
+"""
+
+_BRACKET_ARRAY_SYNTAX_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_bracket_syntax(x: wp.array[float], y: wp.array2d[int]):
+    pass
+"""
+
+
+_BATCH_MODULO_INCORRECT_ACCESS_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_incorrect_access(dof_armature: wp.array2d[float]):
+    worldid = wp.tid()
+    x = dof_armature[worldid, 0]
+"""
+
+_BATCH_MODULO_INLINE_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_inline_modulo(dof_armature: wp.array2d[float]):
+    worldid = wp.tid()
+    x = dof_armature[worldid % dof_armature.shape[0], 0]
+"""
+
+_BATCH_MODULO_PRECOMPUTED_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_precomputed_modulo(dof_armature: wp.array2d[float]):
+    worldid = wp.tid()
+    dof_armature_id = worldid % dof_armature.shape[0]
+    x = dof_armature[dof_armature_id, 0]
+"""
+
+_BATCH_MODULO_IGNORE_CODE = """
+import warp as wp
+
+@wp.kernel
+def test_ignore_modulo(dof_armature: wp.array2d[float]):
+    worldid = wp.tid()
+    x = dof_armature[worldid, 0]  # kernel_analyzer: ignore
+"""
+
+
+class TestArrayBracketSyntax(absltest.TestCase):
+  """Tests for bracket array syntax enforcement."""
+
+  def test_parenthesized_syntax_raises_issue(self):
+    """Parenthesized wp.array(dtype=X) should raise an issue."""
+    issues = _analyze_str(_PARENTHESIZED_ARRAY_SYNTAX_CODE)
+    paren_issues = [i for i in issues if isinstance(i, ast_analyzer.ParenthesizedArraySyntax)]
+    self.assertEqual(len(paren_issues), 2, paren_issues)
+
+  def test_bracket_syntax_no_issue(self):
+    """Bracket wp.array[X] should not raise an issue."""
+    issues = _analyze_str(_BRACKET_ARRAY_SYNTAX_CODE)
+    paren_issues = [i for i in issues if isinstance(i, ast_analyzer.ParenthesizedArraySyntax)]
+    self.assertEqual(len(paren_issues), 0, paren_issues)
+
+
+class TestBatchModulo(absltest.TestCase):
+  """Tests for the *-dimensioned batch modulo check."""
+
+  def test_incorrect_access_raises_issue(self):
+    """A *-dimensioned field accessed with incorrect worldid should raise an issue."""
+    issues = _analyze_str(_BATCH_MODULO_INCORRECT_ACCESS_CODE)
+    modulo_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingBatchModulo)]
+    self.assertEqual(len(modulo_issues), 1, modulo_issues)
+    self.assertIn("dof_armature", str(modulo_issues[0]))
+
+  def test_inline_modulo_no_issue(self):
+    """Inline % shape[0] should not raise an issue."""
+    issues = _analyze_str(_BATCH_MODULO_INLINE_CODE)
+    modulo_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingBatchModulo)]
+    self.assertEqual(len(modulo_issues), 0, modulo_issues)
+
+  def test_precomputed_modulo_no_issue(self):
+    """Precomputed modulo variable should not raise an issue."""
+    issues = _analyze_str(_BATCH_MODULO_PRECOMPUTED_CODE)
+    modulo_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingBatchModulo)]
+    self.assertEqual(len(modulo_issues), 0, modulo_issues)
+
+  def test_ignore_suppresses_issue(self):
+    """The kernel_analyzer: ignore annotation should suppress the issue."""
+    issues = _analyze_str(_BATCH_MODULO_IGNORE_CODE)
+    modulo_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingBatchModulo)]
+    self.assertEqual(len(modulo_issues), 0, modulo_issues)
+
+  def test_direct_wp_array_forbidden(self):
+    """Direct wp.array in Model, Data, Option, or Statistic must raise an issue."""
+    type_code = """
+class Option:
+  tolerance: float
+  bad_opt_array: wp.array[float]
+
+class Statistic:
+  mean_pos: array("nv", float)
+  bad_stat_array: wp.array2d[int]
+
+class Model:
+  nv: int
+  qpos0: array("nq", float)
+  bad_model_1: wp.array[float]
+  bad_model_2: wp.array3d[int]
+  opt: Option
+  stat: Statistic
+
+class Data:
+  qpos: array("nworld", "nq", float)
+  bad_data_1: wp.array[float]
+
+class Constraint:
+  pos: array("nworld", "njmax", float)
+  bad_constraint_1: wp.array[float]
+"""
+    kernel_code = "pass"
+    issues = ast_analyzer.analyze(kernel_code, "test.py", type_code)
+    forbidden_issues = [i for i in issues if isinstance(i, ast_analyzer.DirectWpArrayForbidden)]
+    self.assertEqual(len(forbidden_issues), 6, forbidden_issues)
+
+    flagged_attrs = {f"{i.class_name}.{i.attr_name}" for i in forbidden_issues}
+    expected_attrs = {
+      "Model.bad_model_1",
+      "Model.bad_model_2",
+      "Data.bad_data_1",
+      "Option.bad_opt_array",
+      "Statistic.bad_stat_array",
+      "Constraint.bad_constraint_1",
+    }
+    self.assertEqual(flagged_attrs, expected_attrs)
+
+  def test_ambiguous_precedence(self):
+    bad_code = """
+import warp as wp
+
+def foo(a: int, b: int, c: int):
+  x = a & b == 0
+  y = not a & b
+  z = a & b << c
+"""
+    issues = ast_analyzer.analyze(bad_code, "test.py", "")
+    prec_issues = [i for i in issues if isinstance(i, ast_analyzer.AmbiguousPrecedence)]
+    self.assertEqual(len(prec_issues), 3)
+
+    good_code = """
+import warp as wp
+
+def foo(a: int, b: int, c: int):
+  x = (a & b) == 0
+  y = not (a & b)
+  z = a & (b << c)
+"""
+    issues = ast_analyzer.analyze(good_code, "test.py", "")
+    prec_issues = [i for i in issues if isinstance(i, ast_analyzer.AmbiguousPrecedence)]
+    self.assertEqual(len(prec_issues), 0)
+
+  def test_bitwise_inversion_in_boolean(self):
+    bad_code = """
+def foo(a: int):
+  if ~a:
+    pass
+  while ~a:
+    pass
+  assert ~a
+"""
+    issues = ast_analyzer.analyze(bad_code, "test.py", "")
+    inv_issues = [i for i in issues if isinstance(i, ast_analyzer.BitwiseInversionInBoolean)]
+    self.assertEqual(len(inv_issues), 3)
+
+    good_code = """
+def foo(a: int):
+  if not a:
+    pass
+  if ~a != 0:
+    pass
+  assert (a & 1) != 0
+"""
+    issues = ast_analyzer.analyze(good_code, "test.py", "")
+    inv_issues = [i for i in issues if isinstance(i, ast_analyzer.BitwiseInversionInBoolean)]
+    self.assertEqual(len(inv_issues), 0)
+
+  def test_warp_call_in_static(self):
+    bad_code = """
+import warp as wp
+
+def foo():
+  x = wp.static(wp.asin(wp.float64(0.5)))
+"""
+    issues = ast_analyzer.analyze(bad_code, "test.py", "")
+    static_issues = [i for i in issues if isinstance(i, ast_analyzer.WarpCallInStatic)]
+    self.assertEqual(len(static_issues), 2)
+    self.assertEqual({i.node.func.attr for i in static_issues}, {"asin", "float64"})
+
+    good_code = """
+import math
+import warp as wp
+
+def foo():
+  x = wp.static(0.5 * wp.pi)
+  y = wp.static(math.cos(0.1))
+  z = wp.static(wp.asin(0.5))  # kernel_analyzer: ignore
+"""
+    issues = ast_analyzer.analyze(good_code, "test.py", "")
+    static_issues = [i for i in issues if isinstance(i, ast_analyzer.WarpCallInStatic)]
+    self.assertEqual(len(static_issues), 0)
+
+
+class TestSharedModuleCustomBlockDim(absltest.TestCase):
+  """Tests for shared module custom block_dim enforcement."""
+
+  def test_shared_kernel_custom_block_dim_raises_issue(self):
+    """Top-level kernel launched with block_dim without unique module must raise issue."""
+    code = """
+import warp as wp
+
+@wp.kernel
+def bad_shared_kernel(x: int):
+  pass
+
+def launch_it():
+  wp.launch(bad_shared_kernel, dim=1, inputs=[1], block_dim=64)
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "")
+    shared_issues = [i for i in issues if isinstance(i, ast_analyzer.SharedModuleCustomBlockDim)]
+    self.assertEqual(len(shared_issues), 1, shared_issues)
+    self.assertEqual(shared_issues[0].kernel, "bad_shared_kernel")
+
+  def test_shared_kernel_launch_tiled_custom_block_dim_raises_issue(self):
+    """Shared kernel launched via launch_tiled with block_dim must raise issue."""
+    code = """
+import warp as wp
+
+@wp.kernel
+def bad_tiled_kernel(x: int):
+  pass
+
+def launch_it():
+  wp.launch_tiled(bad_tiled_kernel, dim=1, inputs=[1], block_dim=64)
+  wp.launch_tiled(kernel=bad_tiled_kernel, dim=1, inputs=[1], block_dim=64)
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "")
+    shared_issues = [i for i in issues if isinstance(i, ast_analyzer.SharedModuleCustomBlockDim)]
+    self.assertEqual(len(shared_issues), 2, shared_issues)
+    self.assertEqual(shared_issues[0].kernel, "bad_tiled_kernel")
+    self.assertEqual(shared_issues[1].kernel, "bad_tiled_kernel")
+
+  def test_unique_kernel_custom_block_dim_no_issue(self):
+    """Kernel with module='unique' launched with custom block_dim raises no issue."""
+    code = """
+import warp as wp
+
+@wp.kernel(module="unique")
+def ok_unique_kernel(x: int):
+  pass
+
+def launch_it():
+  wp.launch(ok_unique_kernel, dim=1, inputs=[1], block_dim=64)
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "")
+    shared_issues = [i for i in issues if isinstance(i, ast_analyzer.SharedModuleCustomBlockDim)]
+    self.assertEqual(len(shared_issues), 0, shared_issues)
+
+
+class TestDeterministicFactory(absltest.TestCase):
+  def test_missing_deterministic_factory(self):
+    bad_code = """
+import warp as wp
+
+@wp.kernel
+def top_kernel(arr_out: wp.array[int]):
+  wp.atomic_add(arr_out, 0, 1)
+
+@wp.func
+def uncalled_helper(arr_out: wp.array[int]):
+  wp.atomic_add(arr_out, 0, 1)
+
+def bad_factory(n: int):
+  @wp.kernel(module="unique")
+  def nested_kernel(arr_out: wp.array[int]):
+    wp.atomic_add(arr_out, 0, 1)
+"""
+    issues = ast_analyzer.analyze(bad_code, "test.py", "", check_atomic=True)
+    det_issues = [i.kernel for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(det_issues, ["top_kernel", "nested_kernel", "uncalled_helper"])
+
+    good_code = """
+import warp as wp
+
+@wp.kernel
+def bitwise_kernel(flags_out: wp.array[int]):
+  wp.atomic_or(flags_out, 0, 1)
+  wp.atomic_and(flags_out, 0, 2)
+  wp.atomic_xor(flags_out, 0, 4)
+
+def non_atomic_factory(n: int):
+  @wp.kernel(module="unique")
+  def plain_kernel(arr_out: wp.array[int]):
+    arr_out[0] = 1
+
+def det_factory(n: int, deterministic: bool = False):
+  @wp.func
+  def helper(arr_out: wp.array[int]):
+    wp.atomic_add(arr_out, 0, 1)
+
+  @wp.kernel(module="unique")
+  def kernel(arr_out: wp.array[int]):
+    wp.atomic_add(arr_out, 0, 1)
+"""
+    issues = ast_analyzer.analyze(good_code, "test.py", "", check_atomic=True)
+    det_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues), 0)
+
+  def test_top_level_func_with_atomics_called_by_kernels(self):
+    code = """
+import warp as wp
+
+@wp.func
+def scatter_helper(arr_out: wp.array[float]):
+  wp.atomic_add(arr_out, 0, 1.0)
+
+def good_factory(deterministic: bool = False):
+  @wp.kernel(module="unique")
+  def good_kernel(arr_out: wp.array[float]):
+    scatter_helper(arr_out)
+
+def bad_factory(n: int):
+  @wp.kernel(module="unique")
+  def bad_kernel(arr_out: wp.array[float]):
+    scatter_helper(arr_out)
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "", check_atomic=True)
+    det_issues = [i.kernel for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(det_issues, ["bad_kernel"])
+
+  def test_ignore_and_scoping(self):
+    code = """
+import warp as wp
+
+# kernel_analyzer: off[atomic]
+@wp.kernel
+def off_kernel(arr_out: wp.array[int]):
+  wp.atomic_add(arr_out, 0, 1)
+# kernel_analyzer: on[atomic]
+
+@wp.kernel
+def ignored_kernel(arr_out: wp.array[int]):
+  wp.atomic_add(arr_out, 0, 1)  # kernel_analyzer: ignore[atomic]
+
+def factory(n: int):
+  @wp.kernel
+  def missing_unique_kernel(arr_out: wp.array[int]):
+    wp.atomic_add(arr_out, 0, 1)  # kernel_analyzer: ignore
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "", check_atomic=True)
+    det_issues = [i for i in issues if isinstance(i, ast_analyzer.MissingDeterministicFactory)]
+    self.assertEqual(len(det_issues), 0)
+    unique_issues = [i.kernel for i in issues if isinstance(i, ast_analyzer.MissingModuleUnique)]
+    self.assertEqual(unique_issues, ["missing_unique_kernel"])
+
+  def test_deterministic_max_records(self):
+    code = """
+import warp as wp
+
+@wp.func
+def dyn_helper(n: int, arr_out: wp.array[float]):
+  i = 0
+  while i < n:
+    wp.atomic_add(arr_out, i, 1.0)
+    i += 1
+
+def unrolled_factory(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def unrolled_kernel(arr_out: wp.array[float]):
+    for r in range(3):
+      for c in range(3):
+        wp.atomic_add(arr_out, r * 3 + c, 1.0)
+
+def missing_dyn_for_factory(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def dyn_for_kernel(n: int, arr_out: wp.array[float]):
+    for i in range(n):
+      wp.atomic_add(arr_out, i, 1.0)
+
+def missing_continue_factory(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def continue_kernel(arr_out: wp.array[float]):
+    for i in range(4):
+      if i == 0:
+        continue
+      wp.atomic_add(arr_out, i, 1.0)
+
+def missing_func_factory(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def func_kernel(n: int, arr_out: wp.array[float]):
+    dyn_helper(n, arr_out)
+
+def missing_body_static_factory(flag: bool, deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def body_static_kernel(arr_out: wp.array[float]):
+    for i in range(32):
+      if wp.static(flag):
+        wp.atomic_add(arr_out, i, 1.0)
+
+def valid_dyn_factory(nv: int, deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+    module_options["deterministic_max_records"] = nv
+
+  @wp.kernel(module="unique", module_options=module_options)
+  def valid_dyn_kernel(n: int, arr_out: wp.array[float]):
+    for i in range(n):
+      wp.atomic_add(arr_out, i, 1.0)
+"""
+    issues = ast_analyzer.analyze(code, "test.py", "", check_atomic=True)
+    max_rec_issues = [i.kernel for i in issues if isinstance(i, ast_analyzer.MissingDeterministicMaxRecords)]
+    self.assertEqual(max_rec_issues, ["dyn_for_kernel", "continue_kernel", "func_kernel", "body_static_kernel"])
+
+
+if __name__ == "__main__":
+  absltest.main()

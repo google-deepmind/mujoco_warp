@@ -1,0 +1,1050 @@
+# Copyright 2025 The Newton Developers
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+"""Tests for miscellaneous utilities."""
+
+from typing import Tuple
+
+import mujoco
+import numpy as np
+import warp as wp
+from absl.testing import absltest
+from absl.testing import parameterized
+
+import mujoco_warp as mjw
+from mujoco_warp._src import util_misc
+from mujoco_warp._src.types import MJ_MAXVAL
+from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import ObjType
+from mujoco_warp._src.types import WrapType
+from mujoco_warp._src.types import vec10
+
+
+def _assert_eq(a, b, name):
+  tol = 1e-3  # avoid test noise
+  err_msg = f"mismatch: {name}"
+  np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+
+
+def _is_intersect(p1: np.array, p2: np.array, p3: np.array, p4: np.array) -> bool:
+  intersect = wp.empty(1, dtype=bool)
+
+  @wp.kernel(module="unique")
+  def is_intersect(
+    # In:
+    p1: wp.vec2,
+    p2: wp.vec2,
+    p3: wp.vec2,
+    p4: wp.vec2,
+    # Out:
+    intersect_out: wp.array[bool],
+  ):
+    intersect_out[0] = util_misc.is_intersect(p1, p2, p3, p4)
+
+  wp.launch(
+    is_intersect,
+    dim=(1,),
+    inputs=[
+      wp.vec2(p1[0], p1[1]),
+      wp.vec2(p2[0], p2[1]),
+      wp.vec2(p3[0], p3[1]),
+      wp.vec2(p4[0], p4[1]),
+    ],
+    outputs=[
+      intersect,
+    ],
+  )
+  return intersect.numpy()[0]
+
+
+def _length_circle(p0: np.array, p1: np.array, ind: int, radius: float) -> float:
+  length = wp.full(1, wp.inf, dtype=float)
+
+  @wp.kernel(module="unique")
+  def length_circle(
+    # In:
+    p0: wp.vec2,
+    p1: wp.vec2,
+    ind: int,
+    radius: float,
+    # Out:
+    length_out: wp.array[float],
+  ):
+    length_out[0] = util_misc.length_circle(p0, p1, ind, radius)
+
+  wp.launch(
+    length_circle,
+    dim=(1,),
+    inputs=[wp.vec2(p0[0], p0[1]), wp.vec2(p1[0], p1[1]), ind, radius],
+    outputs=[
+      length,
+    ],
+  )
+  return length.numpy()[0]
+
+
+def _wrap_circle(end: np.array, side: np.array, radius: float) -> Tuple[float, np.array, np.array]:
+  length = wp.full(1, wp.inf, dtype=float)
+  wpnt0 = wp.full(1, wp.vec2(wp.inf), dtype=wp.vec2)
+  wpnt1 = wp.full(1, wp.vec2(wp.inf), dtype=wp.vec2)
+
+  @wp.kernel(module="unique")
+  def wrap_circle(
+    # In:
+    end: wp.vec4,
+    side: wp.vec2,
+    radius: float,
+    # Out:
+    length_out: wp.array[float],
+    wpnt0_out: wp.array[wp.vec2],
+    wpnt1_out: wp.array[wp.vec2],
+  ):
+    length_, wpnt0_, wpnt1_ = util_misc.wrap_circle(end, side, radius)
+    length_out[0] = length_
+    wpnt0_out[0] = wpnt0_
+    wpnt1_out[0] = wpnt1_
+
+  wp.launch(
+    wrap_circle,
+    dim=(1,),
+    inputs=[
+      wp.vec4(end[0], end[1], end[2], end[3]),
+      wp.vec2(side[0], side[1]),
+      radius,
+    ],
+    outputs=[
+      length,
+      wpnt0,
+      wpnt1,
+    ],
+  )
+  return length.numpy()[0], wpnt0.numpy()[0], wpnt1.numpy()[0]
+
+
+def _wrap_inside(end: np.array, radius: float) -> Tuple[float, np.array, np.array]:
+  length = wp.full(1, wp.inf, dtype=float)
+  wpnt0 = wp.full(1, wp.vec2(wp.inf), dtype=wp.vec2)
+  wpnt1 = wp.full(1, wp.vec2(wp.inf), dtype=wp.vec2)
+
+  @wp.kernel(module="unique")
+  def wrap_inside(
+    # In:
+    end: wp.vec4,
+    radius: float,
+    # Out:
+    length_out: wp.array[float],
+    wpnt0_out: wp.array[wp.vec2],
+    wpnt1_out: wp.array[wp.vec2],
+  ):
+    length_, wpnt0_, wpnt1_ = util_misc.wrap_inside(end, radius)
+    length_out[0] = length_
+    wpnt0_out[0] = wpnt0_
+    wpnt1_out[0] = wpnt1_
+
+  wp.launch(
+    wrap_inside,
+    dim=(1,),
+    inputs=[wp.vec4(end[0], end[1], end[2], end[3]), radius],
+    outputs=[
+      length,
+      wpnt0,
+      wpnt1,
+    ],
+  )
+  return length.numpy()[0], wpnt0.numpy()[0], wpnt1.numpy()[0]
+
+
+def _wrap(
+  x0: np.array,
+  x1: np.array,
+  xpos: np.array,
+  xmat: np.array,
+  radius: float,
+  geomtype: int,
+  side: np.array,
+) -> Tuple[float, np.array, np.array]:
+  length = wp.full(1, wp.inf, dtype=float)
+  wpnt0 = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+  wpnt1 = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+
+  @wp.kernel(module="unique")
+  def wrap(
+    # In:
+    x0: wp.vec3,
+    x1: wp.vec3,
+    pos: wp.vec3,
+    mat: wp.mat33,
+    radius: float,
+    geomtype: int,
+    side: wp.vec3,
+    # Out:
+    length_out: wp.array[float],
+    wpnt0_out: wp.array[wp.vec3],
+    wpnt1_out: wp.array[wp.vec3],
+  ):
+    length_, wpnt0_, wpnt1_ = util_misc.wrap(x0, x1, pos, mat, radius, geomtype, side)
+    length_out[0] = length_
+    wpnt0_out[0] = wpnt0_
+    wpnt1_out[0] = wpnt1_
+
+  wp.launch(
+    wrap,
+    dim=(1,),
+    inputs=[
+      wp.vec3(x0[0], x0[1], x0[2]),
+      wp.vec3(x1[0], x1[1], x1[2]),
+      wp.vec3(xpos[0], xpos[1], xpos[2]),
+      wp.mat33(
+        xmat[0, 0],
+        xmat[0, 1],
+        xmat[0, 2],
+        xmat[1, 0],
+        xmat[1, 1],
+        xmat[1, 2],
+        xmat[2, 0],
+        xmat[2, 1],
+        xmat[2, 2],
+      ),
+      radius,
+      geomtype,
+      wp.vec3(side[0], side[1], side[2]),
+    ],
+    outputs=[
+      length,
+      wpnt0,
+      wpnt1,
+    ],
+  )
+  return length.numpy()[0], wpnt0.numpy()[0], wpnt1.numpy()[0]
+
+
+def _muscle_dynamics_millard(ctrl, act, prm):
+  """Compute time constant as in Millard et al. (2013) https://doi.org/10.1115/1.4023390."""
+  # clamp control
+  ctrlclamp = np.clip(ctrl, 0.0, 1.0)
+
+  # clamp activation
+  actclamp = np.clip(act, 0.0, 1.0)
+
+  if ctrlclamp > act:
+    tau = prm[0] * (0.5 + 1.5 * actclamp)
+  else:
+    tau = prm[1] / (0.5 + 1.5 * actclamp)
+
+  # filter output
+  return (ctrlclamp - act) / np.maximum(MJ_MINVAL, tau)
+
+
+def _muscle_dynamics(ctrl, act, prm):
+  @wp.kernel(module="unique")
+  def muscle_dynamics(control: float, activation: float, prm: vec10, dynamics_out: wp.array[float]):
+    dynamics_out[0] = util_misc.muscle_dynamics(control, activation, prm)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(
+    muscle_dynamics,
+    dim=(1,),
+    inputs=[
+      ctrl,
+      act,
+      vec10(prm[0], prm[1], prm[2], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    ],
+    outputs=[output],
+  )
+
+  return output.numpy()[0]
+
+
+def _muscle_gain_length(length, lmin, lmax):
+  @wp.kernel(module="unique")
+  def muscle_gain_length(length: float, lmin: float, lmax: float, gain_length_out: wp.array[float]):
+    gain_length_out[0] = util_misc.muscle_gain_length(length, lmin, lmax)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(muscle_gain_length, dim=(1,), inputs=[length, lmin, lmax], outputs=[output])
+
+  return output.numpy()[0]
+
+
+def _muscle_gain_length_deriv(length, lmin, lmax):
+  @wp.kernel(module="unique")
+  def muscle_gain_length_deriv(length: float, lmin: float, lmax: float, out: wp.array[float]):
+    out[0] = util_misc.muscle_gain_length_deriv(length, lmin, lmax)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(muscle_gain_length_deriv, dim=(1,), inputs=[length, lmin, lmax], outputs=[output])
+
+  return output.numpy()[0]
+
+
+def _muscle_gain(len_, vel, lengthrange, acc0, prm):
+  @wp.kernel(module="unique")
+  def muscle_gain(len_: float, vel: float, lengthrange: wp.vec2, acc0: float, prm: vec10, out: wp.array[float]):
+    out[0] = util_misc.muscle_gain(len_, vel, lengthrange, acc0, prm)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(
+    muscle_gain,
+    dim=(1,),
+    inputs=[len_, vel, wp.vec2(*lengthrange), acc0, vec10(*prm)],
+    outputs=[output],
+  )
+
+  return output.numpy()[0]
+
+
+def _muscle_gain_len_deriv(len_, vel, lengthrange, acc0, prm):
+  @wp.kernel(module="unique")
+  def muscle_gain_len_deriv(len_: float, vel: float, lengthrange: wp.vec2, acc0: float, prm: vec10, out: wp.array[float]):
+    out[0] = util_misc.muscle_gain_len_deriv(len_, vel, lengthrange, acc0, prm)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(
+    muscle_gain_len_deriv,
+    dim=(1,),
+    inputs=[len_, vel, wp.vec2(*lengthrange), acc0, vec10(*prm)],
+    outputs=[output],
+  )
+
+  return output.numpy()[0]
+
+
+def _muscle_bias(len_, lengthrange, acc0, prm):
+  @wp.kernel(module="unique")
+  def muscle_bias(len_: float, lengthrange: wp.vec2, acc0: float, prm: vec10, out: wp.array[float]):
+    out[0] = util_misc.muscle_bias(len_, lengthrange, acc0, prm)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(
+    muscle_bias,
+    dim=(1,),
+    inputs=[len_, wp.vec2(*lengthrange), acc0, vec10(*prm)],
+    outputs=[output],
+  )
+
+  return output.numpy()[0]
+
+
+def _muscle_bias_len_deriv(len_, lengthrange, acc0, prm):
+  @wp.kernel(module="unique")
+  def muscle_bias_len_deriv(len_: float, lengthrange: wp.vec2, acc0: float, prm: vec10, out: wp.array[float]):
+    out[0] = util_misc.muscle_bias_len_deriv(len_, lengthrange, acc0, prm)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(
+    muscle_bias_len_deriv,
+    dim=(1,),
+    inputs=[len_, wp.vec2(*lengthrange), acc0, vec10(*prm)],
+    outputs=[output],
+  )
+
+  return output.numpy()[0]
+
+
+def _muscle_gain_vel_deriv(len_, vel, lengthrange, acc0, prm):
+  @wp.kernel(module="unique")
+  def muscle_gain_vel_deriv(len_: float, vel: float, lengthrange: wp.vec2, acc0: float, prm: vec10, out: wp.array[float]):
+    out[0] = util_misc.muscle_gain_vel_deriv(len_, vel, lengthrange, acc0, prm)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(
+    muscle_gain_vel_deriv,
+    dim=(1,),
+    inputs=[len_, vel, wp.vec2(*lengthrange), acc0, vec10(*prm)],
+    outputs=[output],
+  )
+
+  return output.numpy()[0]
+
+
+def _muscle_dynamics_timescale(dctrl, tau_act, tau_deact, smooth_width):
+  @wp.kernel(module="unique")
+  def muscle_gain_length(
+    dctrl: float, tau_act: float, tau_deact: float, smooth_width: float, dynamics_timescale_out: wp.array[float]
+  ):
+    dynamics_timescale_out[0] = util_misc.muscle_dynamics_timescale(dctrl, tau_act, tau_deact, smooth_width)
+
+  output = wp.empty(1, dtype=float)
+  wp.launch(
+    muscle_gain_length,
+    dim=(1,),
+    inputs=[dctrl, tau_act, tau_deact, smooth_width],
+    outputs=[output],
+  )
+
+  return output.numpy()[0]
+
+
+def _dcmotor_resistance(
+  act: np.ndarray,
+  worldid: int,
+  actadr: int,
+  dynprm: np.ndarray,
+  gainprm: np.ndarray,
+) -> float:
+  res = wp.empty(1, dtype=float)
+  res.fill_(wp.inf)
+  act_wp = wp.array2d(act, dtype=float)
+
+  @wp.kernel(module="unique")
+  def dcmotor_resistance_kernel(
+    # Data in:
+    act_in: wp.array2d[float],
+    # In:
+    worldid: int,
+    actadr: int,
+    dynprm: vec10,
+    gainprm: vec10,
+    # Out:
+    res_out: wp.array[float],
+  ):
+    res_out[0] = util_misc.dcmotor_resistance(act_in, worldid, actadr, dynprm, gainprm)
+
+  wp.launch(
+    dcmotor_resistance_kernel,
+    dim=(1,),
+    inputs=[
+      act_wp,
+      worldid,
+      actadr,
+      vec10(*dynprm),
+      vec10(*gainprm),
+    ],
+    outputs=[
+      res,
+    ],
+  )
+  return float(res.numpy()[0])
+
+
+# multiple actuators on tendon t1 and a joint actuator on j1 with the same transmission id
+_TENDON_ACTUATORS = """
+          <motor tendon="t1" gear="2" damping="3 .5 .1" armature=".5"/>
+          <motor joint="j1" gear="10" damping="100" armature="100"/>
+          <motor tendon="t0" gear="4" damping="1" armature=".25"/>
+          <motor tendon="t1" gear="-3" damping="1 .2 0" armature="2"/>
+"""
+
+
+def _actuator_damping_armature(xml: str, objtype: int, objid: int) -> Tuple[float, np.ndarray, float]:
+  mjm = mujoco.MjModel.from_xml_string(xml)
+  m = mjw.put_model(mjm)
+  actuatorid = mjm.jnt_actuatorid[objid] if objtype == ObjType.JOINT else mjm.tendon_actuatorid[objid]
+  damping = wp.empty(1, dtype=float)
+  dpoly = wp.empty(1, dtype=wp.vec2)
+  armature = wp.empty(1, dtype=float)
+
+  @wp.kernel(module="unique")
+  def actuator_damping_armature(
+    # Model:
+    actuator_trntype: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_damping: wp.array2d[float],
+    actuator_dampingpoly: wp.array2d[wp.vec2],
+    actuator_armature: wp.array2d[float],
+    actuator_gear: wp.array2d[wp.spatial_vector],
+    # In:
+    objtype: int,
+    objid: int,
+    actuatorid: int,
+    # Out:
+    damping_out: wp.array[float],
+    dpoly_out: wp.array[wp.vec2],
+    armature_out: wp.array[float],
+  ):
+    damping, dpoly = util_misc.actuator_target_damping(
+      actuator_trntype, actuator_trnid, actuator_damping, actuator_dampingpoly, actuator_gear, 0, objtype, objid, actuatorid
+    )
+    damping_out[0] = damping
+    dpoly_out[0] = dpoly
+    armature_out[0] = util_misc.actuator_target_armature(
+      actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, 0, objtype, objid, actuatorid
+    )
+
+  wp.launch(
+    actuator_damping_armature,
+    dim=(1,),
+    inputs=[
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.actuator_damping,
+      m.actuator_dampingpoly,
+      m.actuator_armature,
+      m.actuator_gear,
+      int(objtype),
+      int(objid),
+      int(actuatorid),
+    ],
+    outputs=[damping, dpoly, armature],
+  )
+  return damping.numpy()[0], dpoly.numpy()[0], armature.numpy()[0]
+
+
+class UtilMiscTest(parameterized.TestCase):
+  def test_is_intersect(self):
+    self.assertFalse(
+      _is_intersect(
+        np.array([0, 0]),
+        np.array([1, 0]),
+        np.array([0, 1]),
+        np.array([1, 1]),
+      )
+    )
+
+    self.assertTrue(
+      _is_intersect(
+        np.array([0, 0]),
+        np.array([1, 0]),
+        np.array([0.5, -1]),
+        np.array([0.5, 1]),
+      )
+    )
+
+    self.assertFalse(
+      _is_intersect(
+        np.array([0, 0]),
+        np.array([0, 0]),
+        np.array([0, 0]),
+        np.array([0, 0]),
+      )
+    )
+
+    # wrap-onset tangent segments that meet just past their endpoints (a > 1, b > 1)
+    self.assertFalse(
+      _is_intersect(
+        np.array([0.158835, -0.02149], dtype=np.float32),
+        np.array([0.00339341, 0.01461112], dtype=np.float32),
+        np.array([-0.190895, 0.059719], dtype=np.float32),
+        np.array([0.00339232, 0.01461137], dtype=np.float32),
+      )
+    )
+
+    # Two segments that meet at their shared tangent point are not crossing.
+    self.assertFalse(
+      _is_intersect(
+        np.array([0.112450145, 0.138992026], dtype=np.float32),
+        np.array([-0.010828755, 0.010379695], dtype=np.float32),
+        np.array([-0.138847992, -0.12317808], dtype=np.float32),
+        np.array([-0.010828755, 0.010379695], dtype=np.float32),
+      )
+    )
+
+  def test_length_circle(self):
+    _assert_eq(
+      _length_circle(np.array([0, 1]), np.array([1, 0]), 0, 1.0),
+      0.5 * np.pi,
+      "length_circle",
+    )
+    _assert_eq(
+      _length_circle(np.array([0, 1]), np.array([1, 0]), 1, 1.0),
+      1.5 * np.pi,
+      "length_circle",
+    )
+    _assert_eq(
+      _length_circle(np.array([1, 0]), np.array([0, 1]), 0, 1.0),
+      1.5 * np.pi,
+      "length_circle",
+    )
+    _assert_eq(
+      _length_circle(np.array([1, 0]), np.array([0, 1]), 1, 1.0),
+      0.5 * np.pi,
+      "length_circle",
+    )
+
+    # small wrap-onset arc angle (theta ~ 7.5e-5 rad) where dot(p0n, p1n) rounds to 1.0 in float32
+    np.testing.assert_allclose(
+      _length_circle(
+        np.array([0.00339341, 0.01461112], dtype=np.float32),
+        np.array([0.00339232, 0.01461137], dtype=np.float32),
+        1,
+        0.015,
+      ),
+      1.12535e-6,
+      atol=1e-8,
+      rtol=1e-3,
+    )
+
+    # Vanishing arc with a rounding-scale cross product sign.
+    np.testing.assert_allclose(
+      _length_circle(
+        np.array([-0.0111310557, 0.0100548286], dtype=np.float32),
+        np.array([-0.0111310557, 0.0100548295], dtype=np.float32),
+        1,
+        0.015,
+      ),
+      0.0,
+      atol=1e-8,
+    )
+
+    for p0, p1, ind in (
+      ((0.015, 0.0), (0.015, 4.0e-10), 0),
+      ((0.015, 0.0), (0.015, -4.0e-10), 1),
+    ):
+      length = _length_circle(np.array(p0, dtype=np.float32), np.array(p1, dtype=np.float32), ind, 0.015)
+      self.assertGreaterEqual(length, 0.0)
+      self.assertLess(length, 1.0e-8)
+
+  def test_wrap_circle(self):
+    # no wrap
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1, 0, 0, 1]), np.array([MJ_MAXVAL, MJ_MAXVAL]), 0.1)
+    _assert_eq(wlen, -1.0, "wlen")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
+
+    # no wrap: sidesite in the homotopy class of the straight segment
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1, 0, 0, 1]), np.array([0.1, 0.1]) / np.sqrt(2.0), 0.1)
+    _assert_eq(wlen, -1.0, "wlen")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
+
+    # wrap
+    wlen, wpnt0, wpnt1 = _wrap_circle(
+      np.array([np.sqrt(2.0), 0, 0, np.sqrt(2.0)]), np.array([MJ_MAXVAL, MJ_MAXVAL]), 1.0 + 5e-4
+    )
+    _assert_eq(wlen, 1e-3, "wlen")
+    _assert_eq(wpnt0, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt0")
+    _assert_eq(wpnt1, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt1")
+
+    # wrap w/ sidesite on the short arc
+    radius = 1.0 + 5e-4
+    wlen, wpnt0, wpnt1 = _wrap_circle(
+      np.array([np.sqrt(2.0), 0, 0, np.sqrt(2.0)]), radius * np.array([1.0, 1.0]) / np.sqrt(2.0), radius
+    )
+    _assert_eq(wlen, 1e-3, "wlen")
+    _assert_eq(wpnt0, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt0")
+    _assert_eq(wpnt1, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt1")
+
+    # wrap w/ sidesite on the short arc
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1.0, 0, 0, 1.0]), np.array([1.0, 1.0]) / np.sqrt(2.0), 1.0)
+    _assert_eq(wlen, 0.5 * np.pi, "wlen")
+    _assert_eq(wpnt0, np.array([1.0, 0.0]), "wpnt0")
+    _assert_eq(wpnt1, np.array([0.0, 1.0]), "wpnt1")
+
+    # wrap w/ sidesite on the long arc
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1.0, 0, 0, 1.0]), np.array([-1.0, -1.0]) / np.sqrt(2.0), 1.0)
+    _assert_eq(wlen, 1.5 * np.pi, "wlen")
+    _assert_eq(wpnt0, np.array([1.0, 0.0]), "wpnt0")
+    _assert_eq(wpnt1, np.array([0.0, 1.0]), "wpnt1")
+
+    # sidesite more than 90 degrees from the clear segment: no wrap
+    side = np.array([-0.79, 0.61]) / np.hypot(0.79, 0.61)
+    wlen, _, _ = _wrap_circle(np.array([-4.17, -0.44, -1.13, -1.53]), side, 1.0)
+    _assert_eq(wlen, -1.0, "wlen")
+
+    # sidesite on the far side of a clear segment: wrap longer than pi
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([2.0, -0.1, 2.0, 0.1]), np.array([-1.0, 0.0]), 1.0)
+    angle = np.arctan2(0.1, 2.0) + np.arccos(1.0 / np.hypot(2.0, 0.1))
+    _assert_eq(wlen, 2.0 * np.pi - 2.0 * angle, "wlen")
+    _assert_eq(wpnt0, np.array([np.cos(angle), -np.sin(angle)]), "wpnt0")
+    _assert_eq(wpnt1, np.array([np.cos(angle), np.sin(angle)]), "wpnt1")
+
+    # sidesite on the far side: wrap close to 2 * pi
+    wlen, _, _ = _wrap_circle(np.array([1.0, -1e-7, 1.0, 1e-7]), np.array([-1.0, 0.0]), 1.0)
+    _assert_eq(wlen, 2.0 * np.pi, "wlen")
+
+    # wrap w/ sidesite
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([0, -100, 0, 100]), np.array([0.2, 0.0]), 0.1)
+
+    # wlen, wpnt0[1], wpnt1[1] are ~0
+    _assert_eq(wlen, 0.0, "wlen")
+    _assert_eq(wpnt0, np.array([0.1, 0]), "wpnt0")
+    _assert_eq(wpnt1, np.array([0.1, 0]), "wpnt1")
+
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([0, -100, 0, 100]), np.array([-0.2, 0.0]), 0.1)
+
+    # wlen, wpnt0[1], wpnt1[1] are ~0
+    _assert_eq(wlen, 0.0, "wlen")
+    _assert_eq(wpnt0, np.array([-0.1, 0]), "wpnt0")
+    _assert_eq(wpnt1, np.array([-0.1, 0]), "wpnt1")
+
+    # wrap onset where tangent segments are nearly collinear
+    for side in (np.array([MJ_MAXVAL, MJ_MAXVAL]), np.array([0.0, 0.015])):
+      wlen, wpnt0, wpnt1 = _wrap_circle(
+        np.array([0.158835, -0.02149, -0.190895, 0.059719], dtype=np.float32),
+        side,
+        0.015,
+      )
+      np.testing.assert_allclose(wlen, 1.12535e-6, atol=1e-8, rtol=1e-3)
+      _assert_eq(wpnt0, np.array([0.00339341, 0.01461112]), "wpnt0")
+      _assert_eq(wpnt1, np.array([0.00339232, 0.01461137]), "wpnt1")
+
+    # Wrap onset: nearly collinear segments, vanishing arc, and coincident tangent points.
+    for end, expected_wlen, expected_wpnt0, expected_wpnt1 in (
+      (
+        np.array([0.158835, -0.02149, -0.190895, 0.059719], dtype=np.float32),
+        1.12535e-6,
+        np.array([0.00339341, 0.01461112]),
+        np.array([0.00339232, 0.01461137]),
+      ),
+      (
+        np.array([0.102367133, 0.135701373, -0.106919013, -0.0959858745], dtype=np.float32),
+        0.0,
+        np.array([-0.0111310557, 0.0100548286]),
+        np.array([-0.0111310557, 0.0100548295]),
+      ),
+      (
+        np.array([0.112450145, 0.138992026, -0.138847992, -0.12317808], dtype=np.float32),
+        0.0,
+        np.array([-0.010828755, 0.010379695]),
+        np.array([-0.010828755, 0.010379695]),
+      ),
+    ):
+      for side in (np.array([MJ_MAXVAL, MJ_MAXVAL]), np.array([0.0, 0.015])):
+        wlen, wpnt0, wpnt1 = _wrap_circle(end, side, 0.015)
+        np.testing.assert_allclose(wlen, expected_wlen, atol=1e-8, rtol=1e-3)
+        _assert_eq(wpnt0, expected_wpnt0, "wpnt0")
+        _assert_eq(wpnt1, expected_wpnt1, "wpnt1")
+
+    # Original issue reproducer: near-coincident tangents with and without a side site.
+    for side in ((MJ_MAXVAL, MJ_MAXVAL), (-0.0160741229, -0.0119005293)):
+      wlen, wpnt0, wpnt1 = _wrap_circle(
+        np.array([0.0526477359, -0.0963205993, -0.0934890732, 0.101067334], dtype=np.float32),
+        np.array(side),
+        0.015,
+      )
+      self.assertGreaterEqual(wlen, 0.0)
+      self.assertLess(wlen, 1.0e-6)
+      np.testing.assert_allclose(np.linalg.norm(wpnt0), 0.015, rtol=1.0e-5)
+      np.testing.assert_allclose(np.linalg.norm(wpnt1), 0.015, rtol=1.0e-5)
+
+  def test_wrap_inside(self):
+    wlen, wpnt0, wpnt1 = _wrap_inside(np.array([1, 0, 0, 1]), 0.7071)
+    _assert_eq(wlen, 0.0, "wlen")
+    _assert_eq(wpnt0, np.array([0.5, 0.5]), "wpnt0")
+    _assert_eq(wpnt1, np.array([0.5, 0.5]), "wpnt1")
+
+    wlen, wpnt0, wpnt1 = _wrap_inside(np.array([0, 0, 1, 0]), 1.0)
+    _assert_eq(wlen, -1.0, "wlen")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
+
+    wlen, wpnt0, wpnt1 = _wrap_inside(np.array([1, 0, 0, 0]), 1.0)
+    _assert_eq(wlen, -1.0, "wlen")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
+
+    wlen, wpnt0, wpnt1 = _wrap_inside(np.array([0, 0, 0, 0]), 1.0)
+    _assert_eq(wlen, -1.0, "wlen")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
+
+    wlen, wpnt0, wpnt1 = _wrap_inside(np.array([1, 0, 0, 0]), 2.0)
+    _assert_eq(wlen, -1.0, "wlen")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
+
+    wlen, wpnt0, wpnt1 = _wrap_inside(np.array([0, 0, 1, 0]), 2.0)
+    _assert_eq(wlen, -1.0, "wlen")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
+
+    wlen, wpnt0, wpnt1 = _wrap_inside(np.array([1, 1, 1, 1]), 0.1 * MJ_MINVAL)
+    _assert_eq(wlen, -1.0, "wlen")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
+
+    wlen, wpnt0, wpnt1 = _wrap_inside(np.array([-1, 0, 1, 0]), 0.1)
+    _assert_eq(wlen, -1.0, "wlen")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
+
+    wlen, wpnt0, wpnt1 = _wrap_inside(np.array([-1, 0.2, 1, 0.2]), 0.1)
+    _assert_eq(wlen, 0.0, "wlen")
+    _assert_eq(wpnt0, np.array([0, 0.1]), "wpnt0")
+    _assert_eq(wpnt1, np.array([0, 0.1]), "wpnt1")
+
+    for end, radius, pnt in (
+      (np.array([2.0, 0.0, -0.7, 0.7]), 0.5, np.array([0.125786, 0.483919])),
+      (np.array([2.0, 0.0, -0.7, -0.7]), 0.5, np.array([0.125786, -0.483919])),
+      (np.array([1.0, 0.0, -1.4, 1.4]), 0.5, np.array([0.251405, 0.432199])),
+      (np.array([1.666667, 0.0, -2.185531, 1.213859]), 0.5, np.array([0.150223, 0.4769])),
+      (np.array([1.0, 0.0, -1.425755, 1.402577]), 0.5, np.array([0.2502, 0.432897])),
+    ):
+      wlen, wpnt0, wpnt1 = _wrap_inside(end, radius)
+      _assert_eq(wlen, 0.0, "wlen")
+      _assert_eq(wpnt0, pnt, "wpnt0")
+      _assert_eq(wpnt1, pnt, "wpnt1")
+
+  @parameterized.parameters(WrapType.SPHERE, WrapType.CYLINDER)
+  def test_wrap(self, wraptype):
+    # no wrap
+    x0 = np.array([1, 1, 1])
+    x1 = np.array([2, 2, 2])
+    xpos = np.array([0, 0, 0])
+    xmat = np.eye(3)
+    radius = 0.1
+    side = np.array([MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL])
+
+    wlen, wpnt0, wpnt1 = _wrap(x0, x1, xpos, xmat, radius, wraptype, side)
+
+    _assert_eq(wlen, -1.0, "wlen")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
+
+    # wrap
+    x0 = np.array([0.1, -1.0, 0.0])
+    x1 = np.array([0.1, 1.0, 0.0])
+    xpos = np.array([0, 0, 0])
+    xmat = np.eye(3)
+    radius = 0.1
+    side = np.array([MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL])
+
+    wlen, wpnt0, wpnt1 = _wrap(x0, x1, xpos, xmat, radius, wraptype, side)
+
+    _assert_eq(wlen, 0.0, "wlen")
+    _assert_eq(wpnt0, np.array([0.1, 0.0, 0.0]), "wpnt0")
+    _assert_eq(wpnt1, np.array([0.1, 0.0, 0.0]), "wpnt1")
+
+    # outside wrap w/ sidesite
+    x0 = np.array([MJ_MINVAL, -100.0, 0.0])
+    x1 = np.array([MJ_MINVAL, 100.0, 0.0])
+    xpos = np.array([0, 0, 0])
+    xmat = np.eye(3)
+    radius = 0.1
+    side = np.array([radius + 10 * MJ_MINVAL, 0, 0])
+
+    wlen, wpnt0, wpnt1 = _wrap(x0, x1, xpos, xmat, radius, wraptype, side)
+
+    # wlen, wpnt0[1], wpnt1[1] are ~0
+    _assert_eq(wlen, 0, "wlen")
+    _assert_eq(wpnt0, np.array([0.1, 0, 0]), "wpnt0")
+    _assert_eq(wpnt1, np.array([0.1, 0, 0]), "wpnt1")
+
+    # inside no wrap w/ sidesite
+    x0 = np.array([0.0, -1.0, 0.0])
+    x1 = np.array([0.0, 1.0, 0.0])
+    xpos = np.array([0, 0, 0])
+    xmat = np.eye(3)
+    radius = 0.1
+    wraptype = WrapType.CYLINDER
+    side = np.array([0, 0, 0])
+
+    wlen, wpnt0, wpnt1 = _wrap(x0, x1, xpos, xmat, radius, wraptype, side)
+
+    _assert_eq(wlen, -1.0, "wlen")
+    _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
+    _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
+
+    # inside wrap w/ sidesite
+    x0 = np.array([1.0, -1.0, 0.0])
+    x1 = np.array([1.0, 1.0, 0.0])
+    xpos = np.array([0, 0, 0])
+    xmat = np.eye(3)
+    radius = 0.1
+    side = np.array([0.0, 0.0, 0.0])
+
+    wlen, wpnt0, wpnt1 = _wrap(x0, x1, xpos, xmat, radius, wraptype, side)
+
+    _assert_eq(wlen, 0.0, "wlen")
+    _assert_eq(wpnt0, np.array([0.1, 0.0, 0.0]), "wpnt0")
+    _assert_eq(wpnt1, np.array([0.1, 0.0, 0.0]), "wpnt1")
+
+  @parameterized.product(ctrl=[-0.1, 0.0, 0.4, 0.5, 1.0, 1.1], act=[-0.1, 0.0, 0.4, 0.5, 1.0, 1.1])
+  def test_muscle_dynamics_tausmooth0(self, ctrl, act):
+    # exact equality if tau_smooth = 0
+    prm = np.array([0.01, 0.04, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+    actdot_old = _muscle_dynamics_millard(ctrl, act, prm)
+    actdot_new = _muscle_dynamics(ctrl, act, prm)
+
+    _assert_eq(actdot_new, actdot_old, "actdot")
+
+  def test_muscle_dynamics_tausmooth_positive(self):
+    # positive tau_smooth
+    prm = np.array([0.01, 0.04, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    act = 0.5
+    eps = 1.0e-6
+
+    ctrl = 0.4 - eps  # smaller than act by just over 0.5 * tau_smooth
+    _assert_eq(
+      _muscle_dynamics(ctrl, act, prm),
+      _muscle_dynamics_millard(ctrl, act, prm),
+      "actdot",
+    )
+
+    ctrl = 0.6 + eps  # larger than act by just over 0.5 * tau_smooth
+    _assert_eq(
+      _muscle_dynamics(ctrl, act, prm),
+      _muscle_dynamics_millard(ctrl, act, prm),
+      "actdot",
+    )
+
+  @parameterized.parameters(0.0, 0.1, 0.2, 1.0, 1.1)
+  def test_muscle_dynamics_timescale(self, dctrl):
+    # right in the middle should give average of time constants
+    tau_smooth = 0.2
+    tau_act = 0.2
+    tau_deact = 0.3
+
+    lower = _muscle_dynamics_timescale(-dctrl, tau_act, tau_deact, tau_smooth)
+    upper = _muscle_dynamics_timescale(dctrl, tau_act, tau_deact, tau_smooth)
+
+    _assert_eq(0.5 * (lower + upper), 0.5 * (tau_act + tau_deact), "muscle_dynamics_timescale")
+
+  @parameterized.parameters(
+    (0.0, 0.0),
+    (0.5, 0.0),
+    (0.75, 0.5),
+    (1.0, 1.0),
+    (1.25, 0.5),
+    (1.5, 0.0),
+    (2.0, 0.0),
+  )
+  def test_muscle_gain_length(self, input, output):
+    _assert_eq(_muscle_gain_length(input, 0.5, 1.5), output, "length-gain")
+
+  @parameterized.parameters(
+    (0.25, 0.0),
+    (0.5, 0.0),
+    (0.625, 2.0),
+    (0.75, 4.0),
+    (0.875, 2.0),
+    (1.0, 0.0),
+    (1.125, -2.0),
+    (1.25, -4.0),
+    (1.375, -2.0),
+    (1.5, 0.0),
+    (1.75, 0.0),
+  )
+  def test_muscle_gain_length_deriv(self, length, expected):
+    lmin, lmax = 0.5, 1.5
+    deriv = _muscle_gain_length_deriv(length, lmin, lmax)
+    _assert_eq(deriv, expected, "muscle_gain_length_deriv")
+    if length in (0.25, 0.625, 0.875, 1.125, 1.375, 1.75):
+      eps = 1e-2
+      fd = (_muscle_gain_length(length + eps, lmin, lmax) - _muscle_gain_length(length - eps, lmin, lmax)) / (2.0 * eps)
+      _assert_eq(deriv, fd, "muscle_gain_length_deriv_fd")
+
+  @parameterized.product(
+    len_=(-0.5, -0.05, 0.45, 1.0, 1.6, 2.1),
+    vel=(-3.5, -1.5, 0.3, 0.9),
+    force=(-1.0, 150.0),
+  )
+  def test_muscle_gain_len_deriv(self, len_, vel, force):
+    lengthrange = (0.2, 0.8)
+    acc0 = 2.0
+    prm = np.array([0.75, 1.05, force, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2, 0.0], dtype=np.float32)
+    deriv = _muscle_gain_len_deriv(len_, vel, lengthrange, acc0, prm)
+    eps = 1e-2
+    fd = (_muscle_gain(len_ + eps, vel, lengthrange, acc0, prm) - _muscle_gain(len_ - eps, vel, lengthrange, acc0, prm)) / (
+      2.0 * eps
+    )
+    _assert_eq(deriv, fd, "muscle_gain_len_deriv")
+
+  @parameterized.product(
+    len_=(0.4, 1.0, 1.6),
+    force=(-1.0, 150.0),
+  )
+  def test_muscle_bias_len_deriv(self, len_, force):
+    lengthrange = (0.2, 0.8)
+    acc0 = 2.0
+    prm = np.array([0.75, 1.05, force, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2, 0.0], dtype=np.float32)
+    deriv = _muscle_bias_len_deriv(len_, lengthrange, acc0, prm)
+    eps = 1e-2
+    fd = (_muscle_bias(len_ + eps, lengthrange, acc0, prm) - _muscle_bias(len_ - eps, lengthrange, acc0, prm)) / (2.0 * eps)
+    _assert_eq(deriv, fd, "muscle_bias_len_deriv")
+
+  @parameterized.product(
+    vel=(-3.5, -1.5, 0.3, 0.9),
+    force=(-1.0, 150.0),
+  )
+  def test_muscle_gain_vel_deriv(self, vel, force):
+    len_ = 0.45
+    lengthrange = (0.2, 0.8)
+    acc0 = 2.0
+    prm = np.array([0.75, 1.05, force, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2, 0.0], dtype=np.float32)
+    deriv = _muscle_gain_vel_deriv(len_, vel, lengthrange, acc0, prm)
+    eps = 1e-2
+    fd = (_muscle_gain(len_, vel + eps, lengthrange, acc0, prm) - _muscle_gain(len_, vel - eps, lengthrange, acc0, prm)) / (
+      2.0 * eps
+    )
+    _assert_eq(deriv, fd, "muscle_gain_vel_deriv")
+
+  def test_dcmotor_resistance(self):
+    # Non-thermal motor (dynprm[2] == 0) returns nominal resistance
+    dynprm = np.zeros(10)
+    gainprm = np.zeros(10)
+    gainprm[0] = 2.5
+    act = np.zeros((1, 5))
+    r = _dcmotor_resistance(act, 0, 0, dynprm, gainprm)
+    self.assertAlmostEqual(r, 2.5)
+
+    # Thermal motor (dynprm[2] > 0) with temperature rise
+    dynprm[2] = 1.0  # thermal resistance
+    dynprm[4] = 25.0  # Ta
+    gainprm[0] = 2.0  # R0
+    gainprm[2] = 0.004  # alpha
+    gainprm[3] = 25.0  # T0
+    act[0, 0] = 250.0  # T rise
+    # R = R0 * (1 + alpha * (T + Ta - T0)) = 2.0 * (1 + 0.004 * 250) = 4.0
+    r = _dcmotor_resistance(act, 0, 0, dynprm, gainprm)
+    self.assertAlmostEqual(r, 4.0)
+
+    # Minimum clamp check
+    gainprm[0] = -1.0
+    dynprm[2] = 0.0
+    r = _dcmotor_resistance(act, 0, 0, dynprm, gainprm)
+    self.assertAlmostEqual(r, MJ_MINVAL)
+
+  # TODO(team): test util_misc.muscle_gain
+  # TODO(team): test util_misc.muscle_bias
+
+  @parameterized.named_parameters(
+    # C UtilityFunctionValues
+    ("values", '<motor joint="j0" gear="5" damping="7" armature="3"/>', ObjType.JOINT, 0, 175.0, [0.0, 0.0], 75.0),
+    # C NonlinearDamping
+    ("nonlinear", '<motor joint="j0" gear="3" damping="2 0.5 0.1"/>', ObjType.JOINT, 0, 18.0, [4.5, 0.9], 0.0),
+    ("tendon_single", _TENDON_ACTUATORS, ObjType.TENDON, 0, 16.0, [0.0, 0.0], 4.0),
+    ("tendon_multiple", _TENDON_ACTUATORS, ObjType.TENDON, 1, 3.0 * 4 + 9, [0.5 * 4 + 0.2 * 9, 0.1 * 4], 0.5 * 4 + 2.0 * 9),
+  )
+  def test_actuator_damping_armature(self, actuators, objtype, objid, damping, dpoly, armature):
+    """Tests actuator damping and armature contributions to joints and tendons."""
+    actual_damping, actual_dpoly, actual_armature = _actuator_damping_armature(
+      f"""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0" type="slide" axis="1 0 0"/>
+            <geom size="1"/>
+          </body>
+          <body pos="3 0 0">
+            <joint name="j1" type="slide" axis="1 0 0"/>
+            <geom size="1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t0">
+            <joint joint="j0" coef="1"/>
+          </fixed>
+          <fixed name="t1">
+            <joint joint="j1" coef="1"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          {actuators}
+        </actuator>
+      </mujoco>
+      """,
+      objtype,
+      objid,
+    )
+    _assert_eq(actual_damping, damping, "damping")
+    _assert_eq(actual_dpoly, dpoly, "dpoly")
+    _assert_eq(actual_armature, armature, "armature")
+
+
+if __name__ == "__main__":
+  wp.init()
+  absltest.main()
