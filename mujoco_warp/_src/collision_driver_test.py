@@ -287,6 +287,28 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    "plane_capsule_steep": """
+        <mujoco>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            <body pos="0 0 0.0" euler="0 20 0">
+              <freejoint/>
+              <geom size="0.05 0.05" type="capsule"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "plane_capsule_steep_diagonal": """
+        <mujoco>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            <body pos="0 0 0.0" euler="15 10 0">
+              <freejoint/>
+              <geom size="0.05 0.05" type="capsule"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
     "convex_convex": """
         <mujoco>
           <asset>
