@@ -2548,7 +2548,7 @@ def rne_postconstraint(m: Model, d: Data):
 
     wp.launch(
       _cfrc_ext_tendon_actuator(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-      dim=(d.nworld, m.nu),
+      dim=(d.nworld, m.nactuator),
       inputs=[
         m.actuator_trntype,
         m.actuator_trnid,

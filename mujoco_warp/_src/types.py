@@ -408,6 +408,7 @@ class DynType(enum.IntEnum):
     MUSCLE: piece-wise linear filter with two time constants
     USER: user-defined dynamics via act_dyn_callback
     DCMOTOR: DC motor dynamics
+    PID: PID actuator dynamics
   """
 
   NONE = mujoco.mjtDyn.mjDYN_NONE
@@ -417,6 +418,7 @@ class DynType(enum.IntEnum):
   MUSCLE = mujoco.mjtDyn.mjDYN_MUSCLE
   USER = mujoco.mjtDyn.mjDYN_USER
   DCMOTOR = mujoco.mjtDyn.mjDYN_DCMOTOR
+  PID = mujoco.mjtDyn.mjDYN_PID
 
 
 class GainType(enum.IntEnum):
@@ -428,6 +430,8 @@ class GainType(enum.IntEnum):
     MUSCLE: muscle FLV curve computed by muscle_gain
     USER: user-defined gain via act_gain_callback
     DCMOTOR: DC motor gain
+    PID: PID actuator gain
+    SO3: SO(3) orientation servo gain
   """
 
   FIXED = mujoco.mjtGain.mjGAIN_FIXED
@@ -435,6 +439,7 @@ class GainType(enum.IntEnum):
   MUSCLE = mujoco.mjtGain.mjGAIN_MUSCLE
   USER = mujoco.mjtGain.mjGAIN_USER
   DCMOTOR = mujoco.mjtGain.mjGAIN_DCMOTOR
+  PID = mujoco.mjtGain.mjGAIN_PID
   SO3 = mujoco.mjtGain.mjGAIN_SO3
 
 
