@@ -5254,7 +5254,14 @@ def solve_compact(m: types.Model, d: types.Data):
   gc = m.opt.graph_conditional and wp.get_device().is_cuda
   opt2 = dataclasses.replace(m.opt, graph_conditional=gc)
   m2 = dataclasses.replace(
-    m, opt=opt2, nv=nvp, nv_pad=nvp, is_sparse=False, dof_tri_row=d.cdof_tri_row, dof_tri_col=d.cdof_tri_col
+    m,
+    opt=opt2,
+    nv=nvp,
+    nv_pad=nvp,
+    is_sparse=False,
+    M_tile_full=False,  # describes the uncompacted M
+    dof_tri_row=d.cdof_tri_row,
+    dof_tri_col=d.cdof_tri_col,
   )
   efc2 = dataclasses.replace(d.efc, J=d.cJ, Ma=d.cMa)
   d2 = dataclasses.replace(
