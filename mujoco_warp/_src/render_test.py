@@ -82,6 +82,32 @@ class RenderTest(parameterized.TestCase):
     rgb = _unpack_rgb(with_splat[0]).reshape(48, 48, 3)
     self.assertGreater(int(rgb[..., 0].max()), int(rgb[..., 1].max()))
 
+  @parameterized.product(background_only=(False, True), opacity=(0.5, 0.95))
+  def test_splat_depth_transmittance(self, background_only: bool, opacity: float):
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <camera/>
+          <geom type="box" pos="0 0 {1 if background_only else -2}" size="10 10 0.1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(3, 3),
+      render_rgb=True,
+      render_depth=True,
+      **_sample_splats([0.0, 0.0, -1.0], [0.2, 0.2, 0.2], [1.0, 0.0, 0.0, opacity]),
+    )
+    rc.depth_data.fill_(wp.inf)
+    mjw.render(m, d, rc)
+    expected_depth = 1.0 if opacity > 0.9 else (0.0 if background_only else 1.9)
+    np.testing.assert_allclose(rc.depth_data.numpy()[0, 4], expected_depth, atol=1e-5)
+    rgb = _unpack_rgb(rc.rgb_data.numpy())[0, 4]
+    self.assertGreater(int(rgb[0]), int(rgb[1]) + 100)
+
   def test_splat_is_occluded_by_geometry(self):
     xml = """
     <mujoco>
