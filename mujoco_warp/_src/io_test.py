@@ -585,17 +585,37 @@ class IOTest(parameterized.TestCase):
       <mujoco>
         <worldbody>
           <geom type="plane" size="5 5 .1"/>
-          <body name="b0" pos="0 0 .049"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
-          <body name="b1" pos="0 0 .148"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
-          <body name="b2" pos="0 0 .247"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
-          <body name="b3" pos="0 0 .346"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
-          <body name="b4" pos="1 0 1"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
+          <body name="b0" pos="0 0 .049">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b1" pos="0 0 .148">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b2" pos="0 0 .247">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b3" pos="0 0 .346">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b4" pos="1 0 1">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
           <body name="b5" pos="1.2 0 1">
-            <joint type="free" frictionloss=".1"/><geom type="box" size=".05 .05 .05"/>
+            <joint type="free" frictionloss=".1"/>
+            <geom type="box" size=".05 .05 .05"/>
           </body>
         </worldbody>
-        <equality><weld body1="b4" body2="b5"/></equality>
-        <keyframe><key qvel="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 2 3"/></keyframe>
+        <equality>
+          <weld body1="b4" body2="b5"/>
+        </equality>
+        <keyframe>
+          <key qvel="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 2 3"/>
+        </keyframe>
       </mujoco>
       """,
       keyframe=0,
@@ -616,9 +636,13 @@ class IOTest(parameterized.TestCase):
         np.testing.assert_array_equal(colind[rowadr[r] : rowadr[r] + rownnz[r]], colind[rowadr[a] : rowadr[a] + rownnz[a]])
 
     # solving the loaded state from a cold start reaches MuJoCo's solution
+    d.qacc.fill_(wp.inf)
     d.qacc_warmstart.zero_()
     mjwarp.solve(m, d)
     np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-4, atol=1e-4)
+
+    with self.assertRaises(ValueError):
+      mjwarp.put_data(mjm, mjd, njmax_nnz=1)
 
   @parameterized.parameters(types.Model, types.Data, types.RenderContext)
   def test_is_batched_metadata(self, dataclass_type):
