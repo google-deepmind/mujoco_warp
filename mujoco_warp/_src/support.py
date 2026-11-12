@@ -1803,6 +1803,8 @@ def eval_basis_trilinear(local: wp.vec3, node_idx: int) -> float:
   return _phi(local[0], i) * _phi(local[1], j) * _phi(local[2], k)
 
 
+# Warp zero-initializes kernel locals in every thread: only use these in functions called for
+# interpolated flexes
 MAX_INTERP_BODIES = 64
 vec_interp_body = wp.types.vector(length=MAX_INTERP_BODIES, dtype=int)
 vec_interp_weight = wp.types.vector(length=MAX_INTERP_BODIES, dtype=float)

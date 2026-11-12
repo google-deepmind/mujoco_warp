@@ -1233,6 +1233,12 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.qLD_block_total = _lay["total"]  # packed dense region length / offset of the LDL region
   m.qLD_block_adr = _lay["dof_adr"]
 
+  # inv(M) is block diagonal per tree: one dense block per tree
+  tree_area = mjm.tree_dofnum * mjm.tree_dofnum
+  m.Minv_block_total = int(tree_area.sum())
+  m.Minv_block_adr = (np.cumsum(tree_area) - tree_area)[mjm.dof_treeid]
+  m.Minv_block_dofmax = int(mjm.tree_dofnum.max(initial=0))
+
   scalar_tiles = [
     types.TileSet(
       adr=wp.array(_lay["scalar_tiles"][size], dtype=int),
@@ -2655,7 +2661,9 @@ def put_data(
     np.pad(np.tile(con_type, nworld), (0, naconmax - nworld * mjd.ncon), constant_values=1),
     dtype=int,
   )
-  contact.geomcollisionid = wp.empty((naconmax,), dtype=int)  # TODO(team): set values
+  # Native contacts have no collision-local ID and are not collision-sensor contacts.
+  # Use a neutral tie breaker; physical contact fields distinguish imported contacts.
+  contact.geomcollisionid = wp.zeros((naconmax,), dtype=int)
 
   # create efc
   efc = _create_constraint(mjm, nworld, njmax, sizes, mjd)

@@ -62,7 +62,7 @@ FLEX_INTERP_MAX_NODES = 27
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
 class BlockDim:
-  """Block dimension 'block_dim' settings for wp.launch_tiled.
+  """Block dimension settings for kernel launches.
 
   TODO(team): experimental and may be removed
 
@@ -70,6 +70,7 @@ class BlockDim:
     segmented_sort: segmented sort block dimension (collision_driver)
     nxn_broadphase: NXN broadphase block dimension (collision_driver)
     convex_ccd: convex CCD kernel block dimension (collision_convex)
+    flex_fps: flex contact FPS block dimension (collision_flex)
     island_dsu: island discovery DSU block dimension (island)
     ray: ray block dimension (ray)
     contact_sort: contact sort block dimension (sensor)
@@ -89,6 +90,7 @@ class BlockDim:
     solve_search_update_cg: solve search update CG block dimension (solver)
     solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
+    contact_jac_sparse: sparse contact Jacobian block dimension (constraint)
     eff_pcg: effective-metric PCG block dimension (derivative)
     render: render block dimension (render)
   """
@@ -98,6 +100,8 @@ class BlockDim:
   nxn_broadphase: int = 128
   # collision_convex
   convex_ccd: int = 64
+  # collision_flex
+  flex_fps: int = 256
   # island
   island_dsu: int = 32
   # ray
@@ -122,6 +126,8 @@ class BlockDim:
   solve_search_update_cg: int = 256
   solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
+  # constraint
+  contact_jac_sparse: int = 128
   # derivative
   eff_pcg: int = 128
   # render
@@ -1393,7 +1399,7 @@ class Model:
     flex_solimp: constraint solver impedance: contact        (nflex, mjNIMP)
     flex_friction: friction for (slide, spin, roll)          (nflex, 3)
     flex_margin: detect contact if dist<margin               (nflex,)
-    flex_gap: include in solver if dist<margin-gap           (nflex,)
+    flex_gap: additional contact detection buffer            (nflex,)
     flex_selfcollide: self-collision mode                    (nflex,)
     flex_activelayers: active element layers                 (nflex,)
     flex_passive: passive contact mode                       (nflex,)
@@ -1622,6 +1628,9 @@ class Model:
       factorization is a per-block decision -- see M_tiles and m_block_layout
     qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
     qLD_block_adr: packed factor offset; Q_LD_BLOCK_* sentinel otherwise (nv,)
+    Minv_block_total: packed length of the inverse inertia blocks, one per tree, per world
+    Minv_block_adr: offset of the dof's tree block in the packed inverse inertia (nv,)
+    Minv_block_dofmax: number of dofs of the largest tree
     flg_adhesion: flag indicating if model has passive adhesion
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     flg_surfacevel: whether model has non-zero surfacevel
@@ -2195,6 +2204,9 @@ class Model:
   is_sparse: bool
   qLD_block_total: int
   qLD_block_adr: array("nv", int)
+  Minv_block_total: int
+  Minv_block_adr: array("nv", int)
+  Minv_block_dofmax: int
   flg_adhesion: bool
   has_fluid: bool
   flg_surfacevel: bool

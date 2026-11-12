@@ -2992,7 +2992,8 @@ class FlexCollisionTest(parameterized.TestCase):
     np.testing.assert_allclose(pos_sat[idx_sat], pos_nosat[idx_nosat], atol=1e-5)
     np.testing.assert_allclose(dist_sat[idx_sat], dist_nosat[idx_nosat], atol=1e-5)
 
-  def test_parallel_fps_numpy_parity(self):
+  @parameterized.parameters(32, 256)
+  def test_parallel_fps_numpy_parity(self, block_dim):
     """Test that parallel FPS selects candidates matching a serial NumPy reference."""
     _, _, m, d = test_data.fixture(
       xml="""
@@ -3016,9 +3017,11 @@ class FlexCollisionTest(parameterized.TestCase):
     d.nacon.fill_(-1)
     d.contact.dist.fill_(wp.inf)
 
+    m.block_dim.flex_fps = block_dim
     mjw.kinematics(m, d)
 
     ws = collision_flex._allocate_flex_workspace(m, d)
+    ws.flex_fps_min_dist.fill_(wp.inf)
     sap_data = collision_flex._run_flex_sap_sort(m, d)
     ctx = collision_core.create_collision_context(d.naconmax)
     collision_flex._flex_sap_collision(m, d, ctx, ws, is_self=False, sap_data=sap_data)
@@ -3556,6 +3559,7 @@ class FlexContactParityTest(parameterized.TestCase):
           contacts.append(
             {
               "dist": d.contact.dist.numpy()[i],
+              "includemargin": d.contact.includemargin.numpy()[i],
               "pos": d.contact.pos.numpy()[i],
               "frame": d.contact.frame.numpy()[i],
               "geom": d.contact.geom.numpy()[i],
@@ -3570,6 +3574,7 @@ class FlexContactParityTest(parameterized.TestCase):
         contacts.append(
           {
             "dist": c.dist,
+            "includemargin": c.includemargin,
             "pos": c.pos,
             "frame": c.frame.reshape(3, 3),
             "geom": c.geom,
@@ -3604,6 +3609,12 @@ class FlexContactParityTest(parameterized.TestCase):
         mc["dist"],
         atol=atol,
         err_msg=f"Contact {i} dist mismatch",
+      )
+      np.testing.assert_allclose(
+        wc["includemargin"],
+        mc["includemargin"],
+        atol=atol,
+        err_msg=f"Contact {i} includemargin mismatch",
       )
       np.testing.assert_allclose(wc["pos"], mc["pos"], atol=atol, err_msg=f"Contact {i} pos mismatch")
       np.testing.assert_allclose(
@@ -3654,69 +3665,89 @@ class FlexContactParityTest(parameterized.TestCase):
 
   @parameterized.parameters(1, 2)
   def test_contact_plane_multi_vertex(self, nworld):
-    xml = """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
-        <geom type="plane" size="1 1 0.1"/>
+        <geom type="plane" size="1 1 0.1" margin="0.002" gap="0.006"/>
         <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" pos="0 0 0.02" dim="2" mass="1">
-          <contact condim="3"/>
+          <contact margin="0.003" gap="0.007"/>
         </flexcomp>
       </worldbody>
     </mujoco>
-    """
-    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
+    """,
+      nworld=nworld,
+    )
 
     # Displace 4 corner vertices (0, 2, 6, 8) Z downward
     mjd.qpos[2] = -0.025
     mjd.qpos[8] = -0.025
     mjd.qpos[20] = -0.025
     mjd.qpos[26] = -0.025
-    d.qpos.assign(np.tile(mjd.qpos, (nworld, 1)).astype(np.float32))
+    qpos = np.tile(mjd.qpos, (nworld, 1)).astype(np.float32)
+
+    if nworld == 2:
+      qpos[1, 2::3] += 0.001
+    d.qpos.assign(qpos)
 
     d.nacon.fill_(-1)
+    for arr in (d.contact.dist, d.contact.includemargin, d.contact.pos, d.contact.frame):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert):
+      arr.fill_(-1)
     mjw.kinematics(m, d)
     mjw.flex(m, d)
     mjw.collision(m, d)
 
-    mujoco.mj_kinematics(mjm, mjd)
-    mujoco.mj_flex(mjm, mjd)
-    mujoco.mj_collision(mjm, mjd)
-
-    self.assertEqual(d.nacon.numpy()[0], nworld * 4)
-    self.assertEqual(mjd.ncon, 4)
+    self.assertEqual(d.nacon.numpy()[0], nworld * 9)
 
     for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_flex(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
       w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
       m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
       self._assert_contact_parity(w_contacts, m_contacts)
 
   @parameterized.parameters(1, 2)
   def test_contact_sphere_localized(self, nworld):
-    xml = """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
-        <geom type="sphere" size="0.02" pos="-0.066 -0.033 0.06"/>
+        <geom type="sphere" size="0.02" pos="-0.066 -0.033 0.06" margin="0.002" gap="0.003"/>
         <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" pos="0 0 0.05" dim="2" mass="1">
-          <contact condim="3"/>
+          <contact margin="0.003" gap="0.004"/>
         </flexcomp>
       </worldbody>
     </mujoco>
-    """
-    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
+    """,
+      nworld=nworld,
+    )
+
+    qpos = d.qpos.numpy()
+
+    if nworld == 2:
+      qpos[1, 2::3] += 0.001
+    d.qpos.assign(qpos)
 
     d.nacon.fill_(-1)
+    for arr in (d.contact.dist, d.contact.includemargin, d.contact.pos, d.contact.frame):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert):
+      arr.fill_(-1)
     mjw.kinematics(m, d)
     mjw.flex(m, d)
     mjw.collision(m, d)
 
-    mujoco.mj_kinematics(mjm, mjd)
-    mujoco.mj_flex(mjm, mjd)
-    mujoco.mj_collision(mjm, mjd)
-
-    self.assertEqual(d.nacon.numpy()[0], nworld * 1)
-    self.assertEqual(mjd.ncon, 1)
+    self.assertEqual(d.nacon.numpy()[0], nworld * 3)
 
     for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_flex(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
       w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
       m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
       self._assert_contact_parity(w_contacts, m_contacts)
@@ -3887,31 +3918,44 @@ class FlexContactParityTest(parameterized.TestCase):
 
   @parameterized.parameters(1, 2)
   def test_contact_flex_flex_rope_margin(self, nworld):
-    xml = """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <flexcomp name="rope1" type="grid" count="2 1 1" spacing="0.2 0.2 0.1" pos="0 0 0" radius="0.02" dim="1" mass="0.5">
-          <contact selfcollide="none" contype="1" conaffinity="1" margin="0.01"/>
+          <contact selfcollide="none" contype="1" conaffinity="1" margin="0.002" gap="0.008"/>
         </flexcomp>
         <flexcomp name="rope2" type="grid" count="2 1 1" spacing="0.2 0.2 0.1" pos="0 0 0.045" euler="0 0 90" radius="0.02" dim="1" mass="0.5">
-          <contact selfcollide="none" contype="1" conaffinity="1" margin="0.01"/>
+          <contact selfcollide="none" contype="1" conaffinity="1" margin="0.002" gap="0.008"/>
         </flexcomp>
       </worldbody>
     </mujoco>
-    """
-    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
+    """,
+      nworld=nworld,
+    )
+
+    qpos = d.qpos.numpy()
+
+    if nworld == 2:
+      qpos[1, [2, 5]] += 0.001
+    d.qpos.assign(qpos)
 
     d.nacon.fill_(-1)
+    for arr in (d.contact.dist, d.contact.includemargin, d.contact.pos, d.contact.frame):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert):
+      arr.fill_(-1)
     mjw.kinematics(m, d)
+    mjw.flex(m, d)
     mjw.collision(m, d)
 
-    mujoco.mj_kinematics(mjm, mjd)
-    mujoco.mj_collision(mjm, mjd)
-
     self.assertEqual(d.nacon.numpy()[0], nworld * 1)
-    self.assertEqual(mjd.ncon, 1)
 
     for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_flex(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
       w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
       m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
       self._assert_contact_parity(w_contacts, m_contacts)
@@ -4716,7 +4760,7 @@ class FlexContactConstraintTest(parameterized.TestCase):
 
     # tilt the cloth onto the plane: the lower vertices are active, the upper ones in the gap zone
     qpos = mjd.qpos.reshape(-1, 3).copy()
-    qpos[:, 2] = np.linspace(-0.995, -0.975, len(qpos))
+    qpos[:, 2] = np.linspace(-0.995, -0.965, len(qpos))
     d.qpos.assign(qpos.reshape(1, -1))
 
     d.contact.efc_address.fill_(0)
