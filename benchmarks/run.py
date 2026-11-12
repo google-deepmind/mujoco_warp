@@ -163,8 +163,8 @@ def _view_benchmark(bm: dict, input_dir: Path):
   # alternate benchmark entry point (e.g. render) that mjwarp-viewer doesn't support.
   cmd += _bm_flags(bm, benchmark_root, exclude=("nworld", "function"))
 
-  log.info("Command: uv run %s", " ".join(cmd))
-  subprocess.run(("uv", "run") + tuple(cmd), cwd=input_dir, check=True)
+  log.info("Command: uv run --extra viewer %s", " ".join(cmd))
+  subprocess.run(("uv", "run", "--extra", "viewer") + tuple(cmd), cwd=input_dir, check=True)
 
 
 def main():

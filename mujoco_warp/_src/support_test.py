@@ -32,6 +32,8 @@ from mujoco_warp._src.block_cholesky import create_blocked_cholesky_augmented_fa
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_factorize_solve_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_newton_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_sparse_tiles_factorize_solve_newton_func
+from mujoco_warp._src.block_cholesky import create_blocked_cholesky_sparse_tiles_solve_newton_func
 
 # tolerance for difference between MuJoCo and MJWarp support calculations - mostly
 # due to float precision
@@ -82,8 +84,8 @@ class SupportTest(parameterized.TestCase):
       mujoco.mj_applyFT(mjm, mjd, xfrc[i, :3], xfrc[i, 3:], mjd.xipos[i], i, qfrc_expected)
     np.testing.assert_almost_equal(qfrc.numpy()[0], qfrc_expected, 6)
 
-  @parameterized.product(nworld=(1, 2), flg_add=(False, True), zero_force=(False, True))
-  def test_apply_ft_subtrees(self, nworld, flg_add, zero_force):
+  @parameterized.product(nworld=(1, 2), flg_add=(False, True), zero_force=(False, True), sparse=(False, True))
+  def test_apply_ft_subtrees(self, nworld, flg_add, zero_force, sparse):
     """Tests force projection across branches, welded bodies, and independent trees."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -138,10 +140,7 @@ class SupportTest(parameterized.TestCase):
     d.xfrc_applied.assign(force)
     initial = np.linspace(-0.2, 0.3, nworld * mjm.nv).reshape(nworld, mjm.nv).astype(np.float32)
     qfrc = wp.array(initial, dtype=float) if flg_add else wp.full((nworld, mjm.nv), wp.inf, dtype=float)
-    if flg_add:
-      mjwarp.xfrc_accumulate(m, d, qfrc)
-    else:
-      support.apply_ft(m, d, d.xfrc_applied, qfrc, False)
+    support.apply_ft(m, d, d.xfrc_applied, qfrc, flg_add, sparse=sparse)
 
     result = qfrc.numpy()
     for world in range(nworld):
@@ -567,6 +566,217 @@ class SupportTest(parameterized.TestCase):
     np.testing.assert_allclose(Mgrad_augmented.numpy()[0, :nv], x_numpy, rtol=1e-3, atol=1e-3)
     np.testing.assert_allclose(Mgrad_solve.numpy()[0, :nv], np.linalg.solve(SPD_active_hessian, solve_b), rtol=1e-3, atol=1e-3)
 
+  @parameterized.parameters(7, 66)
+  def test_tiled_cholesky_sparse_tiles(self, ntiles):
+    """Tests reverse sparse-tile blocked Cholesky factorization and solve."""
+    rng = np.random.default_rng(123 + ntiles)
+    nworld = 1
+    tile_size = 16
+    nv = ntiles * tile_size - 6
+    nv_pad = ntiles * tile_size
+    nmask_words = (ntiles + 63) // 64
+    npairs = ntiles * (ntiles + 1) // 2
+
+    if ntiles == 7:
+      # Single 64-bit word (nwords = 1):
+      # - Tiles 0 and 4 are purely diagonal
+      # - Tiles (1, 3) and (3, 5) have off-diagonal coupling
+      dense_diag_tiles = [1, 2, 3, 5, 6]
+      off_diag_pairs = [(1, 3), (3, 5)]
+    else:
+      # Multi-word 64-bit masks (ntiles = 66, nwords = 2):
+      # - Couplings across the bit-64 boundary: (1, 64), (63, 64), (2, 65), (35, 65), (64, 65)
+      # - Eliminating tk = 65 induces cross-word fill-in (w_r = 0 < w_i = 1) at (2, 64) and
+      #   (35, 64), and intra-word fill-in at (2, 35)
+      # - Eliminating tk = 64 induces intra-word fill-in at (1, 63), (1, 2), (1, 35), (2, 63),
+      #   and (35, 63)
+      dense_diag_tiles = [1, 2, 10, 35, 63, 64, 65]
+      off_diag_pairs = [(1, 64), (63, 64), (2, 65), (35, 65), (64, 65)]
+
+    H_active = np.diag(rng.uniform(8.0, 12.0, size=nv).astype(np.float32))
+    for t in dense_diag_tiles:
+      r0 = t * tile_size
+      r1 = min((t + 1) * tile_size, nv)
+      sz = r1 - r0
+      B = rng.standard_normal((sz, sz)).astype(np.float32) * 0.2
+      H_active[r0:r1, r0:r1] += B @ B.T + 4.0 * np.eye(sz, dtype=np.float32)
+
+    for ti, tj in off_diag_pairs:
+      r0, r1 = ti * tile_size, (ti + 1) * tile_size
+      c0, c1 = tj * tile_size, min((tj + 1) * tile_size, nv)
+      C = rng.standard_normal((r1 - r0, c1 - c0)).astype(np.float32) * 0.1
+      H_active[r0:r1, c0:c1] = C
+      H_active[c0:c1, r0:r1] = C.T
+
+    H_np = np.zeros((nworld, nv_pad, nv_pad), dtype=np.float32)
+    H_np[0, :nv, :nv] = H_active
+    H_np[0, nv:, nv:] = np.eye(nv_pad - nv, dtype=np.float32)
+
+    b = rng.standard_normal(nv).astype(np.float32)
+    grad_np = np.zeros((nworld, nv_pad), dtype=np.float32)
+    grad_np[0, :nv] = b
+
+    h = wp.array(H_np, dtype=float)
+    grad = wp.array(grad_np, dtype=float)
+    done = wp.zeros(nworld, dtype=bool)
+    nefc = wp.ones(nworld, dtype=int)
+    tile_nz = wp.zeros((nworld, ntiles, ntiles), dtype=int)
+    row_mask = wp.zeros((nworld, ntiles, nmask_words), dtype=wp.uint64)
+    col_mask = wp.zeros((nworld, ntiles, nmask_words), dtype=wp.uint64)
+    tile_is_diag = wp.zeros((nworld, ntiles), dtype=int)
+    rhs_work = wp.zeros((nworld, nv_pad, 1), dtype=float)
+    hfactor = wp.zeros((nworld, nv_pad, nv_pad), dtype=float)
+
+    # Run sparsity detection, reverse symbolic factorization, and diagonal RHS prep kernels
+    wp.launch_tiled(
+      mjwarp._src.solver._detect_h_tile_sparsity(tile_size, False, False),
+      dim=(nworld, npairs),
+      inputs=[done, h, nefc, nefc],
+      outputs=[tile_nz],
+      block_dim=32,
+    )
+    wp.launch(
+      mjwarp._src.solver._symbolic_h_tile_cholesky(ntiles, False, False),
+      dim=nworld,
+      inputs=[done, tile_nz, nefc, nefc],
+      outputs=[row_mask, col_mask, tile_is_diag],
+    )
+    wp.launch(
+      mjwarp._src.solver._prepare_h_rhs_work(tile_size, nv, False, False),
+      dim=(nworld, nv_pad),
+      inputs=[done, grad, h, tile_is_diag, nefc, nefc],
+      outputs=[hfactor, rhs_work],
+    )
+
+    if ntiles == 66:
+      # Verify cross-word symbolic fill-in (from eliminating tk = 65 into (2, 64) and (35, 64))
+      # and intra-word fill-in (from eliminating tk = 65 and tk = 64 into (2, 35) and (1, 63))
+      row_mask_np = row_mask.numpy()[0]
+      self.assertNotEqual(row_mask_np[2, 1] & np.uint64(1 << (64 - 64)), 0)
+      self.assertNotEqual(row_mask_np[35, 1] & np.uint64(1 << (64 - 64)), 0)
+      self.assertNotEqual(row_mask_np[2, 0] & np.uint64(1 << 35), 0)
+      self.assertNotEqual(row_mask_np[1, 0] & np.uint64(1 << 63), 0)
+      self.assertEqual(tile_is_diag.numpy()[0, 0], 1)
+
+    search_factor = wp.zeros((nworld, nv), dtype=float)
+    sums_factor = wp.zeros(nworld, dtype=wp.vec2)
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def sparse_factorize_solve_kernel(
+      h_in: wp.array3d[float],
+      grad_in: wp.array3d[float],
+      rhs_work_in: wp.array3d[float],
+      row_mask_in: wp.array3d[wp.uint64],
+      col_mask_in: wp.array3d[wp.uint64],
+      tile_is_diag_in: wp.array2d[int],
+      hfactor_out: wp.array3d[float],
+      search_out: wp.array3d[float],
+      sums_out: wp.array[wp.vec2],
+    ):
+      worldid = wp.tid()
+      sums_out[worldid] = wp.static(create_blocked_cholesky_sparse_tiles_factorize_solve_newton_func(tile_size, nv_pad, nv))(
+        h_in[worldid],
+        grad_in[worldid],
+        rhs_work_in[worldid],
+        row_mask_in[worldid],
+        col_mask_in[worldid],
+        tile_is_diag_in[worldid],
+        nv_pad,
+        hfactor_out[worldid],
+        search_out[worldid],
+      )
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def sparse_solve_kernel(
+      hfactor_in: wp.array3d[float],
+      grad_in: wp.array3d[float],
+      rhs_work_in: wp.array3d[float],
+      row_mask_in: wp.array3d[wp.uint64],
+      col_mask_in: wp.array3d[wp.uint64],
+      tile_is_diag_in: wp.array2d[int],
+      search_out: wp.array3d[float],
+      sums_out: wp.array[wp.vec2],
+    ):
+      worldid = wp.tid()
+      sums_out[worldid] = wp.static(create_blocked_cholesky_sparse_tiles_solve_newton_func(tile_size, nv_pad, nv))(
+        hfactor_in[worldid],
+        grad_in[worldid],
+        rhs_work_in[worldid],
+        row_mask_in[worldid],
+        col_mask_in[worldid],
+        tile_is_diag_in[worldid],
+        nv_pad,
+        search_out[worldid],
+      )
+
+    wp.launch_tiled(
+      sparse_factorize_solve_kernel,
+      dim=nworld,
+      inputs=[
+        h,
+        grad.reshape(shape=(nworld, nv_pad, 1)),
+        rhs_work,
+        row_mask,
+        col_mask,
+        tile_is_diag,
+      ],
+      outputs=[
+        hfactor,
+        search_factor.reshape(shape=(nworld, nv, 1)),
+        sums_factor,
+      ],
+      block_dim=64,
+    )
+
+    x_expected = np.linalg.solve(H_active, b)
+    np.testing.assert_allclose(search_factor.numpy()[0], -x_expected, rtol=1e-3, atol=1e-3)
+    np.testing.assert_allclose(
+      sums_factor.numpy()[0],
+      [x_expected @ x_expected, b @ x_expected],
+      rtol=1e-3,
+      atol=1e-3,
+    )
+
+    # Also test cached-factor solve with a second RHS vector (skip_unchanged=True)
+    b2 = rng.standard_normal(nv).astype(np.float32)
+    grad2_np = np.zeros((nworld, nv_pad), dtype=np.float32)
+    grad2_np[0, :nv] = b2
+    grad2 = wp.array(grad2_np, dtype=float)
+    zero_changed = wp.zeros(nworld, dtype=int)
+    wp.launch(
+      mjwarp._src.solver._prepare_h_rhs_work(tile_size, nv, True, False),
+      dim=(nworld, nv_pad),
+      inputs=[done, grad2, h, tile_is_diag, zero_changed, nefc],
+      outputs=[hfactor, rhs_work],
+    )
+    search_solve = wp.zeros((nworld, nv), dtype=float)
+    sums_solve = wp.zeros(nworld, dtype=wp.vec2)
+    wp.launch_tiled(
+      sparse_solve_kernel,
+      dim=nworld,
+      inputs=[
+        hfactor,
+        grad2.reshape(shape=(nworld, nv_pad, 1)),
+        rhs_work,
+        row_mask,
+        col_mask,
+        tile_is_diag,
+      ],
+      outputs=[
+        search_solve.reshape(shape=(nworld, nv, 1)),
+        sums_solve,
+      ],
+      block_dim=64,
+    )
+    x2_expected = np.linalg.solve(H_active, b2)
+    np.testing.assert_allclose(search_solve.numpy()[0], -x2_expected, rtol=1e-3, atol=1e-3)
+    np.testing.assert_allclose(
+      sums_solve.numpy()[0],
+      [x2_expected @ x2_expected, b2 @ x2_expected],
+      rtol=1e-3,
+      atol=1e-3,
+    )
+
   @parameterized.parameters(
     ("pendula.xml", 1),
     ("pendula.xml", 2),
@@ -911,8 +1121,6 @@ class SupportTest(parameterized.TestCase):
 
   def test_rod_support_lookups(self):
     """Tests precomputed 1D DER rod lookups: twist joints and incident elements."""
-    if io.types.ROD_HINGE_SIZE != 10:
-      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
     mjm, _, m, _ = test_data.fixture(
       xml="""
       <mujoco>
@@ -1051,8 +1259,6 @@ class SupportTest(parameterized.TestCase):
 
   def test_rod_box_elem_pose_and_no_state_roll(self):
     """Tests rod_box_elem orthonormal frame, twist rotation, and rotated-root no-state start."""
-    if io.types.ROD_HINGE_SIZE != 10:
-      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
