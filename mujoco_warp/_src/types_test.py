@@ -23,7 +23,6 @@ import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
-from mujoco_warp._src import util_pkg
 from mujoco_warp._src.io import override_model
 from mujoco_warp._src.io import put_model
 from mujoco_warp._src.types import Data
@@ -57,15 +56,10 @@ class TypesTest(parameterized.TestCase):
       mj_fields.insert(mj_fields.index("nbuffer") + 1, "opt")
       mj_fields.insert(mj_fields.index("nbuffer") + 2, "vis")
       mj_fields.insert(mj_fields.index("nbuffer") + 3, "stat")
-      if not util_pkg.check_version("mujoco>=3.17.1.dev1006378379"):
-        mj_fields.insert(mj_fields.index("flex_vertbodyid") + 1, "flex_vertcell")
     elif mjw_class is Data:
       # TODO(team): remove this reordering after MjData._all_fields order is fixed
       # there's a bug in _all_fields where solver_niter is in the wrong place
       mj_fields.insert(0, mj_fields.pop(mj_fields.index("solver_niter")))
-      if not util_pkg.check_version("mujoco>=3.14.1.dev990351372"):
-        idx = mj_fields.index("flexvert_xpos") + 1
-        mj_fields[idx:idx] = ["flex_hessian_valid", "flexvert_hessian", "flexedge_hessian"]
     mj_set, mjw_set = set(mj_fields), set(mjw_fields)
 
     # first, put any union fields

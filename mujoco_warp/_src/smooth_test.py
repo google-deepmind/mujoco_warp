@@ -15,6 +15,9 @@
 
 """Tests for smooth dynamics functions."""
 
+import contextlib
+from unittest import mock
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -25,8 +28,8 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src import solver
 from mujoco_warp._src import types
-from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
 # due to float precision
@@ -37,6 +40,159 @@ def _assert_eq(a, b, name):
   tol = _TOLERANCE * 10  # avoid test noise
   err_msg = f"mismatch: {name}"
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+
+
+# branching trees, a static subtree and a massless body, placed at an offset from the origin
+_TREE_XML = """
+<mujoco>
+  <worldbody>
+    <body pos="{offset} {offset} 1">
+      <freejoint/>
+      <geom size=".1"/>
+      <body pos=".2 0 0">
+        <joint axis="1 0 0"/>
+        <geom size=".05"/>
+        <body pos="0 0 -.3">
+          <joint axis="0 1 0"/>
+          <geom size=".05"/>
+          <body pos="0 0 -.3">
+            <joint type="ball"/>
+            <geom size=".05"/>
+          </body>
+        </body>
+      </body>
+      <body pos="-.2 0 0">
+        <body pos="0 0 .1">
+          <joint axis="0 0 1"/>
+          <geom size=".05"/>
+          <body pos=".3 0 0">
+            <joint type="slide" axis="1 0 0"/>
+            <geom size=".05"/>
+          </body>
+        </body>
+        <body pos="0 0 -.1">
+          <joint axis="0 1 0"/>
+          <geom size=".05"/>
+        </body>
+      </body>
+    </body>
+    <body pos="{offset} 0 0">
+      <geom size=".1"/>
+      <body pos="0 0 .5">
+        <joint axis="0 1 0"/>
+        <geom size=".05"/>
+        <body pos="0 0 .4">
+          <joint axis="1 0 0"/>
+          <geom size=".05"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+_TREE_MODELS = ("pendula", "tree", "tree_far")
+
+
+def _tree_cases(*params):
+  """Named cases for each model in _TREE_MODELS, crossed with (name, value) params."""
+  if not params:
+    return [(f"_{model}", model) for model in _TREE_MODELS]
+  return [(f"_{model}_{name}", value, model) for model in _TREE_MODELS for name, value in params]
+
+
+def _tree_fixture(model, **kwargs):
+  if model == "pendula":
+    return test_data.fixture("pendula.xml", **kwargs)
+  offset = 100.0 if model == "tree_far" else 0.0
+  return test_data.fixture(xml=_TREE_XML.format(offset=offset), qpos_noise=0.3, qvel_noise=1.0, **kwargs)
+
+
+def _sidesite_wrap_xml(geomtype: str) -> str:
+  """Returns a model with sidesite wrapping tendons, with and without sidesites."""
+  # wrap geom in a rotated frame with radius 0.5, and unrotated geoms with radius 0.5 and 1
+  pos = np.array([0.1, -0.2, 0.3])
+  quat = np.array([0.8, 0.2, -0.3, 0.4]) / np.linalg.norm([0.8, 0.2, -0.3, 0.4])
+  mat = np.zeros(9)
+  mujoco.mju_quat2Mat(mat, quat)
+  mat = mat.reshape(3, 3)
+
+  # local endpoints and sidesite, geom name, tendon name
+  cases = []
+
+  # wraps constructed from their arcs (start angle a, wrap angle th, direction), including arcs
+  # longer than pi, with the sidesite at the arc midpoint and the segment cutting the circle
+  r = 0.5
+  for a in (0.1, 1.3, 2.9, 4.4, 5.8):
+    for th in (0.4, 1.5, 2.8, 3.5, 4.5, 5.5):
+      for direction in (1, -1):
+        for len0, len1 in ((0.1, 0.15), (0.6, 0.8), (2.0, 1.7), (0.6, 1.7)):
+          b = a + direction * th
+          p0 = r * np.array([np.cos(a), np.sin(a)]) + len0 * direction * np.array([np.sin(a), -np.cos(a)])
+          p1 = r * np.array([np.cos(b), np.sin(b)]) - len1 * direction * np.array([np.sin(b), -np.cos(b)])
+
+          # keep segments that cut the circle with a margin
+          dif = p1 - p0
+          s = np.clip(-np.dot(dif, p0) / np.dot(dif, dif), 0, 1)
+          if np.linalg.norm(p0 + s * dif) > 0.9 * r:
+            continue
+
+          m = a + direction * th / 2
+          cases.append(([*p0, 0], [*p1, 0], [2 * r * np.cos(m), 2 * r * np.sin(m), 0], "rotated", ""))
+
+  # sidesite more than 90 degrees from the segment: no wrap
+  cases.append(([-4.17, -0.44, 0], [-1.13, -1.53, 0], [-0.79 * 1.5, 0.61 * 1.5, 0], "r1", "nowrap"))
+
+  # segment through the center wraps on the side of the sidesite
+  cases.append(([0, 2, 0], [0, -1, 0], [1.5, 0, 0], "r05", ""))
+  cases.append(([0, 2, 0], [0, -1, 0], [-1.5, 0, 0], "r05", ""))
+
+  # wraps close to 2 * pi
+  cases.append(([1.001, -1e-2, 0], [1.001, 1e-2, 0], [-2, 0, 0], "r1", ""))
+  cases.append(([1, -1e-7, 0], [1, 1e-7, 0], [-2, 0, 0], "r1", "fullwrap"))
+
+  sites, tendons = [], []
+  for i, (p0, p1, side, geom, name) in enumerate(cases):
+    p0, p1, side = np.array(p0, dtype=float), np.array(p1, dtype=float), np.array(side, dtype=float)
+
+    # cylinder: endpoints at different heights
+    if geomtype == "cylinder":
+      p0[2], p1[2] = 0.3, -0.2
+
+    if geom == "rotated":
+      p0, p1, side = (mat @ p for p in (p0, p1, side))
+      p0, p1, side = p0 + pos, p1 + pos, side + pos
+
+    for site, p in (("a", p0), ("b", p1), ("side", side)):
+      sites.append(f'<site name="{site}{i}" pos="{p[0]:.17g} {p[1]:.17g} {p[2]:.17g}"/>')
+    # no sidesite: skip endpoints on the circle, whose wrap is below float32 resolution
+    sidesites = [f'sidesite="side{i}"'] + ([] if name == "fullwrap" else [""])
+    for sidesite in sidesites:
+      tendon_name = f'name="{name}"' if name and sidesite else ""
+      path = f'<site site="a{i}"/><geom geom="{geom}" {sidesite}/><site site="b{i}"/>'
+      tendons.append(f"<spatial {tendon_name}>{path}</spatial>")
+
+  pos_str = " ".join(f"{x:.17g}" for x in pos)
+  quat_str = " ".join(f"{x:.17g}" for x in quat)
+  sites_str = "\n".join(sites)
+  tendons_str = "\n".join(tendons)
+  return f"""
+    <mujoco>
+      <worldbody>
+        <geom name="rotated" type="{geomtype}" size="0.5 1" pos="{pos_str}" quat="{quat_str}"/>
+        <geom name="r05" type="{geomtype}" size="0.5 1"/>
+        <geom name="r1" type="{geomtype}" size="1 1"/>
+        {sites_str}
+        <body>
+          <joint type="slide"/>
+          <geom size="0.1" contype="0" conaffinity="0"/>
+        </body>
+      </worldbody>
+      <tendon>
+        {tendons_str}
+      </tendon>
+    </mujoco>
+  """
 
 
 class SmoothTest(parameterized.TestCase):
@@ -123,7 +279,7 @@ class SmoothTest(parameterized.TestCase):
       mjd = mujoco.MjData(mjm)
       d = mjw.make_data(mjm, nworld=nworld)
 
-    for arr in (d.xpos, d.xipos, d.xquat, d.xmat, d.ximat, d.xanchor, d.xaxis, d.site_xpos, d.site_xmat):
+    for arr in (d.xpos, d.xipos, d.xquat, d.xiquat, d.xanchor, d.xaxis, d.site_xpos, d.site_xquat):
       arr_view = arr[:, 1:]  # skip world body
       arr_view.fill_(wp.inf)
 
@@ -147,19 +303,20 @@ class SmoothTest(parameterized.TestCase):
       _assert_eq(d.xaxis.numpy()[i], mjd.xaxis, "xaxis")
       _assert_eq(d.xpos.numpy()[i], mjd.xpos, "xpos")
       _assert_eq(d.xquat.numpy()[i], mjd.xquat, "xquat")
-      _assert_eq(d.xmat.numpy()[i], mjd.xmat.reshape((-1, 3, 3)), "xmat")
+      _assert_eq(test_data.quat_to_mat(d.xquat.numpy()[i]), mjd.xmat.reshape((-1, 3, 3)), "xmat")
       _assert_eq(d.xipos.numpy()[i], mjd.xipos, "xipos")
-      _assert_eq(d.ximat.numpy()[i], mjd.ximat.reshape((-1, 3, 3)), "ximat")
+      _assert_eq(test_data.quat_to_mat(d.xiquat.numpy()[i]), mjd.ximat.reshape((-1, 3, 3)), "ximat")
       _assert_eq(d.geom_xpos.numpy()[i], mjd.geom_xpos, "geom_xpos")
-      _assert_eq(d.geom_xmat.numpy()[i], mjd.geom_xmat.reshape((-1, 3, 3)), "geom_xmat")
+      _assert_eq(test_data.quat_to_mat(d.geom_xquat.numpy()[i]), mjd.geom_xmat.reshape((-1, 3, 3)), "geom_xmat")
       _assert_eq(d.site_xpos.numpy()[i], mjd.site_xpos, "site_xpos")
-      _assert_eq(d.site_xmat.numpy()[i], mjd.site_xmat.reshape((-1, 3, 3)), "site_xmat")
+      _assert_eq(test_data.quat_to_mat(d.site_xquat.numpy()[i]), mjd.site_xmat.reshape((-1, 3, 3)), "site_xmat")
       _assert_eq(d.mocap_pos.numpy()[i], mjd.mocap_pos, "mocap_pos")
       _assert_eq(d.mocap_quat.numpy()[i], mjd.mocap_quat, "mocap_quat")
 
-  def test_com_pos(self):
+  @parameterized.named_parameters(_tree_cases())
+  def test_com_pos(self, model):
     """Tests com_pos."""
-    _, mjd, m, d = test_data.fixture("pendula.xml")
+    _, mjd, m, d = _tree_fixture(model)
 
     for arr in (d.subtree_com, d.cinert, d.cdof):
       arr.fill_(wp.inf)
@@ -168,6 +325,54 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.subtree_com.numpy()[0], mjd.subtree_com, "subtree_com")
     _assert_eq(d.cinert.numpy()[0], mjd.cinert, "cinert")
     _assert_eq(d.cdof.numpy()[0], mjd.cdof, "cdof")
+
+  @parameterized.parameters(1, 2)
+  def test_com_pos_massless_subtree(self, nworld):
+    """Tests com_pos for a subtree without mass."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body pos="0 0 1">
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .5 0 0"/>
+            <body name="massless" pos=".5 0 0">
+              <site name="site"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos=".5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd1, 0)
+      qpos = d.qpos.numpy()
+      qpos[1] += 0.5
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+      mjw.kinematics(m, d)
+      for w in range(nworld):
+        mujoco.mj_kinematics(mjm, mjds[w])
+
+    d.subtree_com.fill_(wp.inf)
+    mjw.com_pos(m, d)
+
+    subtree_com = d.subtree_com.numpy()
+    for w in range(nworld):
+      mujoco.mj_comPos(mjm, mjds[w])
+      _assert_eq(subtree_com[w], mjds[w].subtree_com, f"subtree_com_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(subtree_com[0], subtree_com[1]))
 
   def test_camlight(self):
     """Tests camlight."""
@@ -184,12 +389,15 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.light_xpos.numpy()[0], mjd.light_xpos, "light_xpos")
     _assert_eq(d.light_xdir.numpy()[0], mjd.light_xdir, "light_xdir")
 
-  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
-  def test_crb(self, jacobian):
+  @parameterized.named_parameters(
+    _tree_cases(("sparse", mujoco.mjtJacobian.mjJAC_SPARSE), ("dense", mujoco.mjtJacobian.mjJAC_DENSE))
+  )
+  def test_crb(self, jacobian, model):
     """Tests crb."""
-    mjm, mjd, m, d = test_data.fixture("pendula.xml", overrides={"opt.jacobian": jacobian})
+    mjm, mjd, m, d = _tree_fixture(model, overrides={"opt.jacobian": jacobian})
 
     d.crb.fill_(wp.inf)
+    d.M.fill_(wp.inf)
 
     mjw.crb(m, d)
     _assert_eq(d.crb.numpy()[0], mjd.crb, "crb")
@@ -234,20 +442,75 @@ class SmoothTest(parameterized.TestCase):
     mjw.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
     _assert_eq(d.qacc_smooth.numpy()[0], qacc_smooth[0], "qacc_smooth")
 
-  @parameterized.parameters(0, DisableBit.GRAVITY)
-  def test_rne(self, gravity):
+  @parameterized.parameters(1, 2)
+  def test_world_sums_many_trees(self, nworld):
+    """Tests ordered world sums across chunk boundaries and nontrivial mass-matrix rows."""
+    bodies = "".join(
+      f'<body pos="{i % 23 * 0.1} {i // 23 * 0.1} 0"><joint type="slide"/><geom size=".0{1 + i % 9}"/></body>'
+      for i in range(519)
+    )
+    chain = (
+      '<body pos="0 0 5"><joint/><geom size=".1"/>'
+      '<body pos="1 0 0"><joint axis="1 0 0"/><geom size=".1"/>'
+      '<body pos="0 1 0"><joint/><geom size=".5"/></body></body></body>'
+    )
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"<mujoco><worldbody>{chain}{bodies}</worldbody></mujoco>",
+      qpos_noise=0.3,
+      qvel_noise=1.0,
+      nworld=nworld,
+    )
+    mjds = [mjd]
+    if nworld == 2:
+      qpos, qvel = d.qpos.numpy(), d.qvel.numpy()
+      qpos[1] += 0.8
+      qvel[1] += 0.5
+      d.qpos.assign(qpos)
+      d.qvel.assign(qvel)
+      mjd1 = mujoco.MjData(mjm)
+      mjd1.qpos[:] = qpos[1]
+      mjd1.qvel[:] = qvel[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+      mjw.forward(m, d)
+
+    for mjd_w in mjds:
+      mujoco.mj_rnePostConstraint(mjm, mjd_w)
+    inertia_scale = wp.full(d.nworld, wp.inf, dtype=float)
+    for arr in (d.subtree_com, d.M, d.cfrc_int):
+      arr.fill_(wp.inf)
+
+    mjw.com_pos(m, d)
+    mjw.crb(m, d)
+    mjw.rne_postconstraint(m, d)
+    solver.launch_inertia_scale(m, d.M, inertia_scale)
+
+    subtree_com = d.subtree_com.numpy()[:, 0]
+    cfrc_int = d.cfrc_int.numpy()[:, 0]
+    iscale = inertia_scale.numpy()
+    for w, mjd_w in enumerate(mjds):
+      _assert_eq(subtree_com[w], mjd_w.subtree_com[0], f"subtree_com_world_{w}")
+      _assert_eq(cfrc_int[w], mjd_w.cfrc_int[0], f"cfrc_int_world_{w}")
+      _assert_eq(iscale[w], 1.0 / mjd_w.M[mjm.M_rowadr + mjm.M_rownnz - 1].sum(), f"inertia_scale_world_{w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(subtree_com[0], subtree_com[1]))
+      self.assertFalse(np.allclose(cfrc_int[0], cfrc_int[1]))
+      self.assertFalse(np.allclose(iscale[0], iscale[1]))
+
+  @parameterized.named_parameters(_tree_cases(("gravity", 0), ("nogravity", DisableBit.GRAVITY)))
+  def test_rne(self, gravity, model):
     """Tests rne."""
-    _, mjd, m, d = test_data.fixture("pendula.xml", overrides={"opt.disableflags": DisableBit.CONTACT | gravity})
+    _, mjd, m, d = _tree_fixture(model, overrides={"opt.disableflags": DisableBit.CONTACT | gravity})
 
     d.qfrc_bias.fill_(wp.inf)
 
     mjw.rne(m, d)
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
 
-  @parameterized.parameters(0, DisableBit.GRAVITY)
-  def test_rne_postconstraint(self, gravity):
+  @parameterized.named_parameters(_tree_cases(("gravity", 0), ("nogravity", DisableBit.GRAVITY)))
+  def test_rne_postconstraint(self, gravity, model):
     """Tests rne_postconstraint."""
-    mjm, mjd, m, d = test_data.fixture("pendula.xml", overrides={"opt.disableflags": DisableBit.CONTACT | gravity})
+    mjm, mjd, m, d = _tree_fixture(model, overrides={"opt.disableflags": DisableBit.CONTACT | gravity})
 
     mjd.xfrc_applied = np.random.uniform(low=-0.01, high=0.01, size=mjd.xfrc_applied.shape)
     d.xfrc_applied = wp.array(np.expand_dims(mjd.xfrc_applied, axis=0), dtype=wp.spatial_vector)
@@ -307,8 +570,7 @@ class SmoothTest(parameterized.TestCase):
     d.cfrc_ext.zero_()
     mjw.rne_postconstraint(m, d)
 
-    if util_pkg.check_version("mujoco>=3.13.1"):
-      _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, "cfrc_ext (equality)")
+    _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, "cfrc_ext (equality)")
 
     mjm, mjd, m, d = test_data.fixture("constraints.xml", keyframe=1, overrides={"opt.disableflags": DisableBit.EQUALITY})
 
@@ -1031,9 +1293,10 @@ class SmoothTest(parameterized.TestCase):
     )
     _assert_eq(wp_actuator_moment, actuator_moment, "actuator_moment")
 
-  def test_subtree_vel(self):
+  @parameterized.named_parameters(_tree_cases())
+  def test_subtree_vel(self, model):
     """Tests subtree_vel."""
-    mjm, mjd, m, d = test_data.fixture("pendula.xml")
+    mjm, mjd, m, d = _tree_fixture(model)
 
     for arr in (d.subtree_linvel, d.subtree_angmom):
       arr.fill_(wp.inf)
@@ -1234,6 +1497,35 @@ class SmoothTest(parameterized.TestCase):
       self.assertFalse(np.allclose(d.ten_J.numpy()[0], d.ten_J.numpy()[1]))
       self.assertFalse(np.allclose(d.wrap_xpos.numpy()[0], d.wrap_xpos.numpy()[1]))
 
+  @parameterized.parameters("sphere", "cylinder")
+  def test_tendon_wrap_sidesite(self, geomtype):
+    """Tests that the sidesite selects the wrap homotopy class as in MuJoCo."""
+    mjm, mjd, m, d = test_data.fixture(xml=_sidesite_wrap_xml(geomtype))
+
+    for arr in (d.ten_length, d.ten_J, d.wrap_xpos):
+      arr.fill_(wp.inf)
+    for arr in (d.wrap_obj, d.ten_wrapnum, d.ten_wrapadr):
+      arr.fill_(-1)
+
+    mjw.tendon(m, d)
+
+    _assert_eq(d.ten_length.numpy()[0], mjd.ten_length, "ten_length")
+    _assert_eq(d.ten_J.numpy()[0], mjd.ten_J, "ten_J")
+    _assert_eq(d.wrap_xpos.numpy()[0], mjd.wrap_xpos, "wrap_xpos")
+    _assert_eq(d.wrap_obj.numpy()[0], mjd.wrap_obj, "wrap_obj")
+    _assert_eq(d.ten_wrapnum.numpy()[0], mjd.ten_wrapnum, "ten_wrapnum")
+    _assert_eq(d.ten_wrapadr.numpy()[0], mjd.ten_wrapadr, "ten_wrapadr")
+
+    # most tendons wrap, including wraps longer than pi
+    self.assertGreater(np.sum(mjd.ten_wrapnum == 4), mjm.ntendon // 2)
+
+    # sidesite more than 90 degrees from the segment: no wrap
+    self.assertEqual(mjd.ten_wrapnum[mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TENDON, "nowrap")], 2)
+
+    # sidesite on the far side: wrap close to 2 * pi
+    tendon = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_TENDON, "fullwrap")
+    self.assertGreater(d.ten_length.numpy()[0, tendon], 2 * np.pi - 1e-3)
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_factor_solve_i(self, jacobian):
     mjm, mjd, m, d = test_data.fixture(
@@ -1389,6 +1681,69 @@ class SmoothTest(parameterized.TestCase):
     result.zero_()
     mjw.solve_m(m, d, result, rhs)
     _assert_eq(result.numpy()[0], expected, "heterogeneous factor + solve")
+
+  @parameterized.product(nworld=(1, 2), sparse_blocks=(False, True))
+  def test_inv_m(self, nworld, sparse_blocks):
+    """Tests inv_m for compact, scalar, tile, and sparse blocks with per-world masses."""
+    # the 7-dof tree exceeds the patched dense block size and joins the sparse LDL region
+    blocks = mock.patch.multiple("mujoco_warp._src.types", M_BLOCK_DENSE_MAX=6)
+    with blocks if sparse_blocks else contextlib.nullcontext():
+      mjm, mjd, m, d = test_data.fixture(
+        xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint/>
+            <geom pos=".2 0 0" size=".1" mass="1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint axis="1 0 0"/>
+            <joint axis="0 1 0"/>
+            <geom pos=".1 .1 .1" type="box" size=".1 .2 .1" mass=".7"/>
+          </body>
+          <body pos="2 0 0">
+            <freejoint/>
+            <geom type="box" size=".1 .2 .3" mass="2"/>
+            <body pos=".2 0 0">
+              <joint axis="0 1 0"/>
+              <geom pos=".1 0 0" size=".05" mass=".5"/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+        qpos_noise=0.3,
+        nworld=nworld,
+        batch_sizes={"body_mass": nworld},
+      )
+    block_adr = m.qLD_block_adr.numpy()[mjm.tree_dofadr]
+    # the 2-dof scalar block takes the first 4 entries of qLD, ahead of the 7-dof tile block
+    expected_blocks = [types.Q_LD_BLOCK_COMPACT, 0, types.Q_LD_BLOCK_SPARSE if sparse_blocks else 4]
+    self.assertEqual(sorted(block_adr), sorted(expected_blocks))
+
+    body_mass = m.body_mass.numpy()
+    body_mass[nworld - 1] *= 1.0 + np.arange(mjm.nbody) / mjm.nbody
+    m.body_mass.assign(body_mass)
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.crb(m, d)
+    mjw.factor_m(m, d)
+    Minv = wp.full((nworld, m.Minv_block_total), wp.inf, dtype=float)
+    mjw._src.smooth.inv_m(m, d, Minv)
+
+    Minv, Minv_block_adr = Minv.numpy(), m.Minv_block_adr.numpy()
+    for w in range(nworld):
+      mjm.body_mass[:] = body_mass[w]
+      mujoco.mj_forward(mjm, mjd)
+      M = np.zeros((mjm.nv, mjm.nv))
+      mujoco.mj_fullM(mjm, mjd, M)
+      expected = np.linalg.inv(M)
+      for start, size in zip(mjm.tree_dofadr, mjm.tree_dofnum):
+        dofs = slice(start, start + size)
+        adr = Minv_block_adr[start]
+        _assert_eq(Minv[w, adr : adr + size * size], expected[dofs, dofs].reshape(-1), f"block {start} world {w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(Minv[0], Minv[1]))
 
   def test_factor_solve_mixed_blocks(self):
     """Per-block factor/solve: sparse LDL, scalar, and tile blocks all share one qLD."""

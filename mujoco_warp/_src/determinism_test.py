@@ -38,7 +38,8 @@ from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import render_util
 from mujoco_warp._src import set_const
-from mujoco_warp._src import util_pkg
+from mujoco_warp._src import sleep
+from mujoco_warp._src import sort
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import override_model
 from mujoco_warp._src.types import DeterminismType
@@ -169,7 +170,7 @@ def _spy(module, name, tag, events, d):
 
   def wrapper(*args, **kwargs):
     out = fn(*args, **kwargs)
-    events.append((tag, args[1] is d, _snapshot(_flatten(d, "d"))))
+    events.append((tag, any(arg is d for arg in args), _snapshot(_flatten(d, "d"))))
     return out
 
   return mock.patch.object(module, name, wrapper)
@@ -178,9 +179,9 @@ def _spy(module, name, tag, events, d):
 class _Replay:
   """Replays the contact and constraint rows of the first run in later runs.
 
-  CONTACTS and CONSTRAINT are not implemented yet, so collision and make_constraint emit rows in a
-  racy order. Later runs check that the inputs of these stages are bitwise equal to the first run
-  and that their float outputs are bitwise equal up to order, then restore the first run's outputs.
+  These ATOMICS-only tests deliberately leave CONTACTS and CONSTRAINT disabled. Later runs check
+  that stage inputs and float outputs agree up to order, then restore the first run's row order to
+  isolate atomic reductions. Unpatched sorting and capture regressions live in sort_test.py.
   """
 
   def __init__(self, test, d):
@@ -230,25 +231,18 @@ _TREE_CASES = (
     covers=(
       "forward._qfrc_actuator",
       "forward._tendon_actuator_force",
-      "passive._gravity_force",
       "passive._spring_damper_tendon_passive",
       "sensor._energy_pos_gravity",
       "sensor._energy_pos_passive_joint",
       "sensor._energy_pos_passive_tendon",
       "sensor._tendon_actuator_force",
-      "set_const._accumulate_subtreemass",
-      "smooth._angular_momentum",
-      "smooth._cfrc_backward",
       "smooth._cfrc_ext_equality",
       "smooth._cfrc_ext_spatial_tendon",
       "smooth._cfrc_ext_tendon_actuator",
       "smooth._cfrc_ext_tendon_constraint",
-      "smooth._crb_accumulate",
       "smooth._joint_tendon",
-      "smooth._linear_momentum",
       "smooth._spatial_geom_tendon",
       "smooth._spatial_site_tendon",
-      "smooth._subtree_com_acc",
       "smooth._tendon_armature",
       "smooth._tendon_bias_coef",
       "smooth._tendon_bias_qfrc",
@@ -260,6 +254,7 @@ _TREE_CASES = (
       "solver._update_constraint_init_qfrc_constraint_sparse",
       "solver._update_gradient_grad",
       "solver._update_gradient_h_incremental_sparse",
+      "support._apply_ft_scatter",
     ),
   ),
   dict(
@@ -289,7 +284,11 @@ _TREE_CASES = (
       "solver._add_tendon_metric_dense",
     ),
   ),
-  dict(testcase_name="discrete_cg", overrides={"opt.integrator": "DISCRETE", "opt.solver": "CG"}, covers=()),
+  dict(
+    testcase_name="discrete_cg",
+    overrides={"opt.integrator": "DISCRETE", "opt.solver": "CG", "opt.tolerance": "1e-10"},
+    covers=(),
+  ),
   dict(
     testcase_name="dense_blocks",
     overrides={"opt.jacobian": "DENSE"},
@@ -337,7 +336,7 @@ _FLEX_SHELL_CASES = (dict(testcase_name="euler", overrides={}, covers=("passive.
 
 _FLEX_CONTACT_CASES = (
   dict(testcase_name="sparse", overrides={"opt.jacobian": "SPARSE"}, covers=()),
-  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=("constraint._efc_contact_jac_dense_flex",)),
+  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=()),
 )
 
 _FLEX_PASSIVE_CASES = (
@@ -346,10 +345,8 @@ _FLEX_PASSIVE_CASES = (
     overrides={"opt.solver": "CG"},
     covers=(
       "derivative._eff_contact_shift",
-      "derivative._eff_fold_actuator",
       "derivative._eff_fold_contact_rank1",
       "derivative._eff_fold_efc_sparse",
-      "derivative._eff_fold_tendon",
       "derivative._eff_mul_add_contact",
       "passive._eff_contact_force",
     ),
@@ -370,7 +367,7 @@ _CONTACT_CASES = (
       "smooth._transmission_body_moment",
     ),
   ),
-  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=("constraint._efc_contact_jac_dense",)),
+  dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=()),
   dict(
     testcase_name="elliptic_dense",
     overrides={"opt.jacobian": "DENSE", "opt.cone": "ELLIPTIC"},
@@ -553,6 +550,12 @@ class DeterminismTest(parameterized.TestCase):
         ctrl_noise=0.5,
       )
 
+    # wrenches on bodies with shared ancestor dofs: the applied-force scatter has colliding atomics
+    xfrc = np.zeros((d.nworld, mjm.nbody, 6), dtype=np.float32)
+    for name in ("arm2", "arm3", "leg2"):
+      xfrc[:, mjm.body(name).id] = np.linspace(-0.3, 0.4, 6)
+    d.xfrc_applied.assign(xfrc)
+
     def extra(m, d):
       set_const.set_const(m, d)
       mjw.inverse(m, d)
@@ -599,11 +602,6 @@ class DeterminismTest(parameterized.TestCase):
       nworld=2,
       qvel_noise=0.1,
     )
-    # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-    if not util_pkg.check_version("mujoco>=3.16.1"):
-      covers = tuple(
-        c for c in covers if c not in ("derivative._eff_flex_rod_stiff", "passive._flex_rod_bending", "passive._flex_rod_mul")
-      )
     with _record_launches() as launches:
       rc = render_util.create_render_context(mjm, nworld=2, cam_res=(8, 8), deterministic=True)
     if not overrides:
@@ -650,6 +648,7 @@ class DeterminismTest(parameterized.TestCase):
             <joint axis="0 1 0"/>
             <geom size=".1"/>
             <flexcomp name="interp" type="grid" count="3 3 3" spacing=".1 .1 .1" dim="3" dof="trilinear">
+              <pin id="0"/>
               <contact selfcollide="none"/>
               <elasticity young="1e4" poisson=".3" damping="1e-3"/>
             </flexcomp>
@@ -703,6 +702,9 @@ class DeterminismTest(parameterized.TestCase):
           <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" pos="0 0 .19" mass=".09">
             <contact passive="true"/>
             <elasticity young="1e3" poisson=".3" thickness="1e-3" elastic2d="both"/>
+          </flexcomp>
+          <flexcomp name="rod" type="grid" count="3 1 1" spacing=".1 .1 .1" dim="1" pos="0 .5 1" mass=".03">
+            <elasticity young="1e3" damping="1e-2"/>
           </flexcomp>
           <body pos="1 0 1">
             <joint name="hinge0" axis="0 1 0" damping=".1"/>
@@ -924,7 +926,7 @@ class DeterminismTest(parameterized.TestCase):
             <freejoint/>
             <geom type="box" size=".05 .05 .05"/>
           </body>
-          <body pos=".5 0 .3">
+          <body pos="0 0 .12">
             <freejoint/>
             <geom size=".05"/>
           </body>
@@ -933,6 +935,11 @@ class DeterminismTest(parameterized.TestCase):
       """,
       qvel_noise=0.1,
     )
+    qvel = d.qvel.numpy()
+    qvel[:, :6] = 0.0
+    d.qvel.assign(qvel)
+    d.tree_asleep.assign(np.array([[0, sleep.K_AWAKE_VAL]], dtype=np.int32))
+    sleep.update_sleep(m, d)
     m.opt.deterministic = mask
     events = []
 
@@ -941,9 +948,9 @@ class DeterminismTest(parameterized.TestCase):
 
     m.callback.contactfilter = contactfilter
     spies = (
-      (collision_driver, "_sort_contacts", "contacts"),
+      (sort, "contacts", "contacts"),
       (collision_driver, "collision", "collision"),
-      (constraint, "_sort_constraints", "constraint"),
+      (sort, "constraints", "constraint"),
       (constraint, "make_constraint", "make_constraint"),
     )
     with contextlib.ExitStack() as stack:
@@ -994,7 +1001,7 @@ class DeterminismTest(parameterized.TestCase):
             <freejoint/>
             <geom type="box" size=".05 .05 .05"/>
           </body>
-          <body pos=".5 0 .3">
+          <body pos="0 0 .12">
             <freejoint/>
             <geom size=".05"/>
           </body>
@@ -1004,10 +1011,15 @@ class DeterminismTest(parameterized.TestCase):
       overrides=overrides,
       qvel_noise=0.1,
     )
+    qvel = d.qvel.numpy()
+    qvel[:, :6] = 0.0
+    d.qvel.assign(qvel)
+    d.tree_asleep.assign(np.array([[0, sleep.K_AWAKE_VAL]], dtype=np.int32))
+    sleep.update_sleep(m, d)
     m.opt.deterministic = DeterminismType.ALL
     with (
-      mock.patch.object(collision_driver, "_sort_contacts") as contacts,
-      mock.patch.object(constraint, "_sort_constraints") as constraints,
+      mock.patch.object(sort, "contacts") as contacts,
+      mock.patch.object(sort, "constraints") as constraints,
     ):
       mjw.forward(m, d)
     self.assertEqual((contacts.call_count, constraints.call_count), ncalls)
@@ -1157,6 +1169,7 @@ class DeterminismTest(parameterized.TestCase):
     )
     m.opt.deterministic = DeterminismType.ALL
     d.body_awake_ind.fill_(-1)
+    mjw.reset_data(m, d)
     mjw.step(m, d)
     np.testing.assert_array_equal(d.body_awake_ind.numpy(), [[0, 1]])
 
