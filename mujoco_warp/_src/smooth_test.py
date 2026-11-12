@@ -314,60 +314,71 @@ class SmoothTest(parameterized.TestCase):
       _assert_eq(d.mocap_pos.numpy()[i], mjd.mocap_pos, "mocap_pos")
       _assert_eq(d.mocap_quat.numpy()[i], mjd.mocap_quat, "mocap_quat")
 
-  @parameterized.product(phase=(1, 2), nworld=(1, 2))
-  def test_kinematics_phases(self, phase, nworld):
-    """The two C-style phases compute their own outputs from the expected inputs."""
+  @parameterized.parameters(1, 2)
+  def test_kinematics_phases(self, nworld):
+    """Tests kinematics1 and kinematics2 phases."""
     mjm, _, m, d = test_data.fixture(
       xml="""
-      <mujoco><worldbody>
-        <body pos=".2 -.3 .4" euler="10 20 -15">
-          <joint pos=".03 .02 .01" axis=".2 .7 .5"/>
-          <inertial pos=".1 .03 -.02" euler="20 -10 30" mass="1" diaginertia=".02 .03 .04"/>
-          <geom type="box" size=".05 .1 .15" pos=".1 -.1 .2" euler="5 10 15"/>
-          <site pos=".2 .1 -.1" euler="-10 20 5"/>
-        </body>
-      </worldbody></mujoco>
+      <mujoco>
+        <worldbody>
+          <body pos=".2 -.3 .4" euler="10 20 -15">
+            <joint pos=".03 .02 .01" axis=".2 .7 .5"/>
+            <inertial pos=".1 .03 -.02" euler="20 -10 30" mass="1" diaginertia=".02 .03 .04"/>
+            <geom type="box" size=".05 .1 .15" pos=".1 -.1 .2" euler="5 10 15"/>
+            <site pos=".2 .1 -.1" euler="-10 20 5"/>
+          </body>
+        </worldbody>
+      </mujoco>
       """,
       nworld=nworld,
     )
     qpos = np.array([[0.35], [-0.45]], dtype=np.float32)[:nworld]
     d.qpos.assign(qpos)
-    body_fields = ("xpos", "xquat", "xanchor", "xaxis")
-    frame_fields = ("xipos", "xiquat", "geom_xpos", "geom_xquat", "site_xpos", "site_xquat")
-    for name in body_fields + frame_fields:
-      array = getattr(d, name)
-      # The world body's constant frames are initialized by make_data.
-      if name in ("xpos", "xquat", "xipos", "xiquat"):
-        array = array[:, 1:]
-      array.fill_(wp.inf)
 
-    smooth.kinematics1(m, d)
-    if phase == 1:
-      for name in frame_fields:
-        value = getattr(d, name).numpy()
-        if name in ("xipos", "xiquat"):
-          value = value[:, 1:]
-        self.assertTrue(np.isinf(value).all(), name)
-      fields = body_fields
-    else:
-      before = {name: getattr(d, name).numpy().copy() for name in body_fields}
-      d.qpos.fill_(wp.nan)  # Phase 2 must use the computed body poses, not qpos.
-      smooth.kinematics2(m, d)
-      for name, value in before.items():
-        np.testing.assert_array_equal(getattr(d, name).numpy(), value, err_msg=name)
-      fields = frame_fields
-
+    refs = []
     for world in range(nworld):
       ref = mujoco.MjData(mjm)
       ref.qpos[:] = qpos[world]
       mujoco.mj_kinematics(mjm, ref)
-      for name in fields:
-        actual = getattr(d, name).numpy()[world]
-        expected = getattr(ref, name).reshape(actual.shape)
-        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5, err_msg=name)
+      refs.append(ref)
+
+    # Skip constant worldbody frames initialized by make_data.
+    for arr in (d.xpos, d.xquat, d.xipos, d.xiquat):
+      arr[:, 1:].fill_(wp.inf)
+    for arr in (d.xanchor, d.xaxis, d.geom_xpos, d.geom_xquat, d.site_xpos, d.site_xquat):
+      arr.fill_(wp.inf)
+
+    # Phase 1 computes body poses and joint anchors/axes without touching the other frames.
+    smooth.kinematics1(m, d)
+    for arr in (d.xipos[:, 1:], d.xiquat[:, 1:], d.geom_xpos, d.geom_xquat, d.site_xpos, d.site_xquat):
+      self.assertTrue(np.isinf(arr.numpy()).all())
+
+    # Copy the snapshots because numpy() can return a view of CPU arrays.
+    xpos, xquat = d.xpos.numpy().copy(), d.xquat.numpy().copy()
+    xanchor, xaxis = d.xanchor.numpy().copy(), d.xaxis.numpy().copy()
+    np.testing.assert_allclose(xpos, [ref.xpos for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(xquat, [ref.xquat for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(xanchor, [ref.xanchor for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(xaxis, [ref.xaxis for ref in refs], rtol=1e-5, atol=1e-5)
+
+    # Phase 2 computes inertial, geom, and site frames from body poses without reading qpos.
+    d.qpos.fill_(wp.inf)
+    smooth.kinematics2(m, d)
+    for arr, before in ((d.xpos, xpos), (d.xquat, xquat), (d.xanchor, xanchor), (d.xaxis, xaxis)):
+      np.testing.assert_array_equal(arr.numpy(), before)
+
+    xipos, xiquat = d.xipos.numpy(), d.xiquat.numpy()
+    geom_xpos, geom_xquat = d.geom_xpos.numpy(), d.geom_xquat.numpy()
+    site_xpos, site_xquat = d.site_xpos.numpy(), d.site_xquat.numpy()
+    np.testing.assert_allclose(xipos, [ref.xipos for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(xiquat, [ref.xiquat for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(geom_xpos, [ref.geom_xpos for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(geom_xquat, [ref.geom_xquat for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(site_xpos, [ref.site_xpos for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(site_xquat, [ref.site_xquat for ref in refs], rtol=1e-5, atol=1e-5)
     if nworld == 2:
-      values = d.xquat.numpy() if phase == 1 else d.site_xpos.numpy()
-      self.assertFalse(np.allclose(values[0], values[1]))
+      self.assertFalse(np.allclose(xquat[0], xquat[1]))
+      self.assertFalse(np.allclose(site_xpos[0], site_xpos[1]))
 
   @parameterized.named_parameters(_tree_cases())
   def test_com_pos(self, model):
