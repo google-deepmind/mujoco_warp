@@ -4648,7 +4648,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
 
   warmstart = not (m.opt.disableflags & types.DisableBit.WARMSTART)
   wp.launch(
-    _solve_init_dof(warmstart, m.is_sparse, not smooth.skip_qacc_smooth(m, d)),
+    _solve_init_dof(warmstart, m.is_sparse or _sparse_compact(ctx), not smooth.skip_qacc_smooth(m, d)),
     dim=(d.nworld, m.nv),
     inputs=[d.nefc, d.qacc_warmstart, d.qacc_smooth],
     outputs=[d.qacc, d.qfrc_constraint],

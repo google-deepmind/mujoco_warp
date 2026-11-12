@@ -2272,8 +2272,7 @@ def _allocate_compact_arrays(
   d.cqacc_smooth = wp.empty((nw, nvp), dtype=float)
   d.cqacc_warmstart = wp.empty((nw, nvp), dtype=float)
   d.cqacc = wp.empty((nw, nvp), dtype=float)
-  # the solve updates it from its last value
-  d.cqfrc_constraint = wp.zeros((nw, nvp), dtype=float)
+  d.cqfrc_constraint = wp.empty((nw, nvp), dtype=float)
 
 
 def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> np.ndarray:
