@@ -15,6 +15,9 @@
 
 """Tests for smooth dynamics functions."""
 
+import contextlib
+from unittest import mock
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -25,8 +28,8 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src import solver
 from mujoco_warp._src import types
-from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and MJWarp smooth calculations - mostly
 # due to float precision
@@ -394,6 +397,7 @@ class SmoothTest(parameterized.TestCase):
     mjm, mjd, m, d = _tree_fixture(model, overrides={"opt.jacobian": jacobian})
 
     d.crb.fill_(wp.inf)
+    d.M.fill_(wp.inf)
 
     mjw.crb(m, d)
     _assert_eq(d.crb.numpy()[0], mjd.crb, "crb")
@@ -437,6 +441,61 @@ class SmoothTest(parameterized.TestCase):
 
     mjw.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
     _assert_eq(d.qacc_smooth.numpy()[0], qacc_smooth[0], "qacc_smooth")
+
+  @parameterized.parameters(1, 2)
+  def test_world_sums_many_trees(self, nworld):
+    """Tests ordered world sums across chunk boundaries and nontrivial mass-matrix rows."""
+    bodies = "".join(
+      f'<body pos="{i % 23 * 0.1} {i // 23 * 0.1} 0"><joint type="slide"/><geom size=".0{1 + i % 9}"/></body>'
+      for i in range(519)
+    )
+    chain = (
+      '<body pos="0 0 5"><joint/><geom size=".1"/>'
+      '<body pos="1 0 0"><joint axis="1 0 0"/><geom size=".1"/>'
+      '<body pos="0 1 0"><joint/><geom size=".5"/></body></body></body>'
+    )
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"<mujoco><worldbody>{chain}{bodies}</worldbody></mujoco>",
+      qpos_noise=0.3,
+      qvel_noise=1.0,
+      nworld=nworld,
+    )
+    mjds = [mjd]
+    if nworld == 2:
+      qpos, qvel = d.qpos.numpy(), d.qvel.numpy()
+      qpos[1] += 0.8
+      qvel[1] += 0.5
+      d.qpos.assign(qpos)
+      d.qvel.assign(qvel)
+      mjd1 = mujoco.MjData(mjm)
+      mjd1.qpos[:] = qpos[1]
+      mjd1.qvel[:] = qvel[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+      mjw.forward(m, d)
+
+    for mjd_w in mjds:
+      mujoco.mj_rnePostConstraint(mjm, mjd_w)
+    inertia_scale = wp.full(d.nworld, wp.inf, dtype=float)
+    for arr in (d.subtree_com, d.M, d.cfrc_int):
+      arr.fill_(wp.inf)
+
+    mjw.com_pos(m, d)
+    mjw.crb(m, d)
+    mjw.rne_postconstraint(m, d)
+    solver.launch_inertia_scale(m, d.M, inertia_scale)
+
+    subtree_com = d.subtree_com.numpy()[:, 0]
+    cfrc_int = d.cfrc_int.numpy()[:, 0]
+    iscale = inertia_scale.numpy()
+    for w, mjd_w in enumerate(mjds):
+      _assert_eq(subtree_com[w], mjd_w.subtree_com[0], f"subtree_com_world_{w}")
+      _assert_eq(cfrc_int[w], mjd_w.cfrc_int[0], f"cfrc_int_world_{w}")
+      _assert_eq(iscale[w], 1.0 / mjd_w.M[mjm.M_rowadr + mjm.M_rownnz - 1].sum(), f"inertia_scale_world_{w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(subtree_com[0], subtree_com[1]))
+      self.assertFalse(np.allclose(cfrc_int[0], cfrc_int[1]))
+      self.assertFalse(np.allclose(iscale[0], iscale[1]))
 
   @parameterized.named_parameters(_tree_cases(("gravity", 0), ("nogravity", DisableBit.GRAVITY)))
   def test_rne(self, gravity, model):
@@ -511,8 +570,7 @@ class SmoothTest(parameterized.TestCase):
     d.cfrc_ext.zero_()
     mjw.rne_postconstraint(m, d)
 
-    if util_pkg.check_version("mujoco>=3.13.1"):
-      _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, "cfrc_ext (equality)")
+    _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, "cfrc_ext (equality)")
 
     mjm, mjd, m, d = test_data.fixture("constraints.xml", keyframe=1, overrides={"opt.disableflags": DisableBit.EQUALITY})
 
@@ -1439,8 +1497,6 @@ class SmoothTest(parameterized.TestCase):
       self.assertFalse(np.allclose(d.ten_J.numpy()[0], d.ten_J.numpy()[1]))
       self.assertFalse(np.allclose(d.wrap_xpos.numpy()[0], d.wrap_xpos.numpy()[1]))
 
-  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
   @parameterized.parameters("sphere", "cylinder")
   def test_tendon_wrap_sidesite(self, geomtype):
     """Tests that the sidesite selects the wrap homotopy class as in MuJoCo."""
@@ -1625,6 +1681,69 @@ class SmoothTest(parameterized.TestCase):
     result.zero_()
     mjw.solve_m(m, d, result, rhs)
     _assert_eq(result.numpy()[0], expected, "heterogeneous factor + solve")
+
+  @parameterized.product(nworld=(1, 2), sparse_blocks=(False, True))
+  def test_inv_m(self, nworld, sparse_blocks):
+    """Tests inv_m for compact, scalar, tile, and sparse blocks with per-world masses."""
+    # the 7-dof tree exceeds the patched dense block size and joins the sparse LDL region
+    blocks = mock.patch.multiple("mujoco_warp._src.types", M_BLOCK_DENSE_MAX=6)
+    with blocks if sparse_blocks else contextlib.nullcontext():
+      mjm, mjd, m, d = test_data.fixture(
+        xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint/>
+            <geom pos=".2 0 0" size=".1" mass="1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint axis="1 0 0"/>
+            <joint axis="0 1 0"/>
+            <geom pos=".1 .1 .1" type="box" size=".1 .2 .1" mass=".7"/>
+          </body>
+          <body pos="2 0 0">
+            <freejoint/>
+            <geom type="box" size=".1 .2 .3" mass="2"/>
+            <body pos=".2 0 0">
+              <joint axis="0 1 0"/>
+              <geom pos=".1 0 0" size=".05" mass=".5"/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+        qpos_noise=0.3,
+        nworld=nworld,
+        batch_sizes={"body_mass": nworld},
+      )
+    block_adr = m.qLD_block_adr.numpy()[mjm.tree_dofadr]
+    # the 2-dof scalar block takes the first 4 entries of qLD, ahead of the 7-dof tile block
+    expected_blocks = [types.Q_LD_BLOCK_COMPACT, 0, types.Q_LD_BLOCK_SPARSE if sparse_blocks else 4]
+    self.assertEqual(sorted(block_adr), sorted(expected_blocks))
+
+    body_mass = m.body_mass.numpy()
+    body_mass[nworld - 1] *= 1.0 + np.arange(mjm.nbody) / mjm.nbody
+    m.body_mass.assign(body_mass)
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.crb(m, d)
+    mjw.factor_m(m, d)
+    Minv = wp.full((nworld, m.Minv_block_total), wp.inf, dtype=float)
+    mjw._src.smooth.inv_m(m, d, Minv)
+
+    Minv, Minv_block_adr = Minv.numpy(), m.Minv_block_adr.numpy()
+    for w in range(nworld):
+      mjm.body_mass[:] = body_mass[w]
+      mujoco.mj_forward(mjm, mjd)
+      M = np.zeros((mjm.nv, mjm.nv))
+      mujoco.mj_fullM(mjm, mjd, M)
+      expected = np.linalg.inv(M)
+      for start, size in zip(mjm.tree_dofadr, mjm.tree_dofnum):
+        dofs = slice(start, start + size)
+        adr = Minv_block_adr[start]
+        _assert_eq(Minv[w, adr : adr + size * size], expected[dofs, dofs].reshape(-1), f"block {start} world {w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(Minv[0], Minv[1]))
 
   def test_factor_solve_mixed_blocks(self):
     """Per-block factor/solve: sparse LDL, scalar, and tile blocks all share one qLD."""

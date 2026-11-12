@@ -1659,7 +1659,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
     # TODO(team): directly utilize M for these settings
     wp.copy(out, d.M)
 
-  if not (m.opt.disableflags & DisableBit.DAMPER):
+  if m.ntendon and not (m.opt.disableflags & DisableBit.DAMPER):
     # flex_edgedamping is omitted: tree-only M sparsity drops inter-tree flexcomp blocks
     wp.launch(
       _qderiv_tendon_damping,
@@ -3206,7 +3206,7 @@ def _eff_flex_rod_stiff(deterministic: bool = False):
 
     j_psi = mat43()
     wt = float(0.0)
-    if wp.static(ROD_HINGE_SIZE == 10) and verts[3] < 0 and ok_chain:
+    if verts[3] < 0 and ok_chain:
       wt_cand = (s1 + sd) * 2.0 * flex_bending[adr + 8]
       if wt_cand > 0.0:
         x0 = flexvert_xpos_in[worldid, verts[0]]
