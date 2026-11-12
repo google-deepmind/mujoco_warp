@@ -29,6 +29,7 @@ from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import mat66
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
@@ -164,7 +165,8 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d[float]):
   elif m.opt.integrator == IntegratorType.IMPLICIT:
     # set qLU = M - dt * qDeriv, in scratch: d.qLU holds the forward factorization
     qLU = wp.empty((d.nworld, m.nD), dtype=float)
-    forward.implicit_qlu(m, d, qLU)
+    free_block = wp.empty((d.nworld, m.body_freeadr.size), dtype=mat66)
+    forward.implicit_qlu(m, d, qLU, free_block)
 
     # set qfrc = qLU * qacc
     wp.launch(
@@ -173,15 +175,16 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d[float]):
       inputs=[m.D_rownnz, m.D_rowadr, m.D_colind, qLU, d.qacc],
       outputs=[qfrc],
     )
-    forward.implicit_free_body(m, d, d.qacc, qfrc, solve=False)
+    forward.implicit_free_body(m, d, free_block, d.qacc, qfrc, solve=False)
   elif m.opt.integrator == IntegratorType.IMPLICITFAST:
     qDeriv = wp.empty((d.nworld, m.nC), dtype=float)
-    derivative.deriv_smooth_vel(m, d, qDeriv)
+    free_block = wp.empty((d.nworld, m.body_freeadr.size), dtype=mat66)
+    derivative.deriv_smooth_vel(m, d, qDeriv, free_block)
     mul_m(m, d, qfrc, d.qacc, M=qDeriv)
 
     # standalone free bodies: overwrite block rows with the unsymmetric local product,
     # including the bias (gyroscopic) derivative
-    forward.implicit_free_body(m, d, d.qacc, qfrc, solve=False)
+    forward.implicit_free_body(m, d, free_block, d.qacc, qfrc, solve=False)
   elif m.opt.integrator == IntegratorType.DISCRETE:
     # Under discrete, qacc is already the discrete step map: INVDISCRETE is implied.
     wp.copy(qacc, d.qacc)

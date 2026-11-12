@@ -44,7 +44,6 @@ from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
-from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import SleepState
 from mujoco_warp._src.types import SolverType
@@ -2020,7 +2019,6 @@ def _implicit_free_body(
   opt_density: wp.array[float],
   opt_viscosity: wp.array[float],
   opt_integrator: int,
-  opt_disableflags: int,
   opt_enableflags: int,
   body_rootid: wp.array[int],
   body_dofadr: wp.array[int],
@@ -2028,22 +2026,10 @@ def _implicit_free_body(
   body_geomadr: wp.array[int],
   body_mass: wp.array2d[float],
   body_inertia: wp.array2d[wp.vec3],
-  jnt_actuatorid: wp.array[int],
-  dof_jntid: wp.array[int],
   dof_treeid: wp.array[int],
-  dof_damping: wp.array2d[float],
-  dof_dampingpoly: wp.array2d[wp.vec2],
   geom_type: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
   geom_fluid: wp.array2d[float],
-  actuator_trntype: wp.array[int],
-  actuator_trnid: wp.array[wp.vec2i],
-  actuator_damping: wp.array2d[float],
-  actuator_dampingpoly: wp.array2d[wp.vec2],
-  actuator_gear: wp.array2d[wp.spatial_vector],
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  M_colind: wp.array[int],
   body_fluid_ellipsoid: wp.array[bool],
   body_freeadr: wp.array[int],
   # Data in:
@@ -2057,10 +2043,10 @@ def _implicit_free_body(
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
   crb_in: wp.array2d[vec10],
-  M_in: wp.array2d[float],
   tree_awake_in: wp.array2d[int],
   cvel_in: wp.array2d[wp.spatial_vector],
   # In:
+  block_in: wp.array2d[mat66],
   solve: bool,
   vec_in: wp.array2d[float],
   # Out:
@@ -2078,40 +2064,11 @@ def _implicit_free_body(
 
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
-  # 1. A = M block (gather from sparse lower triangle)
-  A = mat66(0.0)
-  for r in range(6):
-    row = dof_adr + r
-    start = M_rowadr[row]
-    nnz = M_rownnz[row]
-    for k in range(nnz):
-      c = M_colind[start + k] - dof_adr
-      val = M_in[worldid, start + k]
-      A[r, c] = val
-      A[c, r] = val
+  # 1. A = block of M - h * (joint, actuator and tendon damping derivatives) from deriv_smooth_vel,
+  # i.e. the qDeriv block of MuJoCo's mjd_freeMhat without the fluid terms added below
+  A = block_in[worldid, freeid]
 
-  # 2. Add joint damping (with damper disable check and polynomial damping)
-  if not (opt_disableflags & DisableBit.DAMPER):
-    jntid = dof_jntid[dof_adr]
-    act_damp, act_dpoly = util_misc.actuator_target_damping(
-      actuator_trntype,
-      actuator_trnid,
-      actuator_damping,
-      actuator_dampingpoly,
-      actuator_gear,
-      worldid,
-      ObjType.JOINT,
-      jntid,
-      jnt_actuatorid[jntid],
-    )
-    for r in range(6):
-      dof = dof_adr + r
-      damp = dof_damping[worldid % dof_damping.shape[0], dof] + act_damp
-      dpoly = dof_dampingpoly[worldid % dof_dampingpoly.shape[0], dof] + act_dpoly
-      v = qvel_in[worldid, dof]
-      A[r, r] += timestep * util_misc._poly_force_deriv(damp, dpoly, v, 1)
-
-  # 3. Add gyroscopic bias velocity derivative
+  # 2. Add gyroscopic bias velocity derivative
   crb = crb_in[worldid, bodyid]
   subtree_mass = crb[9]
   R = math.quat_to_mat(xquat_in[worldid, bodyid])
@@ -2139,7 +2096,7 @@ def _implicit_free_body(
       A[r, 3 + c] += h_mass * lin[r, c]
       A[3 + r, 3 + c] += timestep * rot[r, c]
 
-  # 4. Fluid force derivatives
+  # 3. Fluid force derivatives (unsymmetrized; deriv_smooth_vel's block excludes them)
   density = opt_density[worldid % opt_density.shape[0]]
   viscosity = opt_viscosity[worldid % opt_viscosity.shape[0]]
   wind = opt_wind[worldid % opt_wind.shape[0]]
@@ -2280,11 +2237,20 @@ def _implicit_free_body(
     vec_out[worldid, dof_adr + r] = Ax
 
 
-def implicit_free_body(m: Model, d: Data, vec_in: wp.array2d[float], vec_out: wp.array2d[float], solve: bool):
+def implicit_free_body(
+  m: Model,
+  d: Data,
+  block: wp.array2d[mat66],
+  vec_in: wp.array2d[float],
+  vec_out: wp.array2d[float],
+  solve: bool,
+):
   """Solves or multiplies by the implicit mass matrix of standalone free bodies.
 
   Overwrites the free-body rows of vec_out with A^-1 * vec_in (solve) or A * vec_in, where A is
-  the free-body block of M - h * D including the gyroscopic bias derivative.
+  the free-body block of M - h * D (MuJoCo's mjd_freeMhat): block is deriv_smooth_vel's free_block
+  (joint, actuator and tendon damping derivatives); the gyroscopic and unsymmetrized fluid
+  derivatives are added here.
   """
   wp.launch(
     _implicit_free_body,
@@ -2296,7 +2262,6 @@ def implicit_free_body(m: Model, d: Data, vec_in: wp.array2d[float], vec_out: wp
       m.opt.density,
       m.opt.viscosity,
       m.opt.integrator,
-      m.opt.disableflags,
       m.opt.enableflags,
       m.body_rootid,
       m.body_dofadr,
@@ -2304,22 +2269,10 @@ def implicit_free_body(m: Model, d: Data, vec_in: wp.array2d[float], vec_out: wp
       m.body_geomadr,
       m.body_mass,
       m.body_inertia,
-      m.jnt_actuatorid,
-      m.dof_jntid,
       m.dof_treeid,
-      m.dof_damping,
-      m.dof_dampingpoly,
       m.geom_type,
       m.geom_size,
       m.geom_fluid,
-      m.actuator_trntype,
-      m.actuator_trnid,
-      m.actuator_damping,
-      m.actuator_dampingpoly,
-      m.actuator_gear,
-      m.M_rownnz,
-      m.M_rowadr,
-      m.M_colind,
       m.body_fluid_ellipsoid,
       m.body_freeadr,
       d.qvel,
@@ -2332,9 +2285,9 @@ def implicit_free_body(m: Model, d: Data, vec_in: wp.array2d[float], vec_out: wp
       d.subtree_com,
       d.cdof,
       d.crb,
-      d.M,
       d.tree_awake,
       d.cvel,
+      block,
       solve,
       vec_in,
     ],
@@ -2578,13 +2531,16 @@ def _launch_discrete_free_gyro(m: Model, d: Data, out: wp.array2d[float], qacc: 
   )
 
 
-def implicit_qlu(m: Model, d: Data, qLU: Optional[wp.array2d[float]] = None):
-  """Sets qLU (d.qLU if None) = M - dt * qDeriv in D-structure, including RNE derivatives."""
+def implicit_qlu(m: Model, d: Data, qLU: Optional[wp.array2d[float]] = None, free_block: Optional[wp.array2d[mat66]] = None):
+  """Sets qLU (d.qLU if None) = M - dt * qDeriv in D-structure, including RNE derivatives.
+
+  free_block: optional (nworld, nfree) output of deriv_smooth_vel's standalone free-body blocks.
+  """
   qLU = d.qLU if qLU is None else qLU
 
   # Smooth velocity derivatives into M-structure
   qH_M = wp.empty((d.nworld, m.nC), dtype=float)
-  derivative.deriv_smooth_vel(m, d, qH_M)
+  derivative.deriv_smooth_vel(m, d, qH_M, free_block)
 
   # Map qH_M (M-structure) to qLU (D-structure) via mapM2D.
   wp.launch(
@@ -2604,12 +2560,13 @@ def implicit_qlu(m: Model, d: Data, qLU: Optional[wp.array2d[float]] = None):
 def implicit(m: Model, d: Data):
   """Integrates fully implicit in velocity."""
   if m.opt.integrator == IntegratorType.IMPLICIT:
-    implicit_qlu(m, d)
+    free_block = wp.empty((d.nworld, m.body_freeadr.size), dtype=mat66)
+    implicit_qlu(m, d, free_block=free_block)
 
     # Factorize and solve: qacc = qLU \ Ma
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
     smooth.factor_solve_lu(m, d, d.qLU, qacc, d.efc.Ma)
-    implicit_free_body(m, d, d.efc.Ma, qacc, solve=True)
+    implicit_free_body(m, d, free_block, d.efc.Ma, qacc, solve=True)
     _advance(m, d, qacc)
   elif (m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER)) != (
     DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
@@ -2618,7 +2575,9 @@ def implicit(m: Model, d: Data):
     qDeriv = wp.empty((d.nworld, m.nC), dtype=float)
     qLD = wp.empty_like(d.qLD)
     qLDiagInv = wp.empty((d.nworld, m.nv), dtype=float)
-    derivative.deriv_smooth_vel(m, d, qDeriv)
+    # free-body blocks keep their damping derivatives; their rows of qDeriv are reset to M below
+    free_block = wp.empty((d.nworld, m.body_freeadr.size), dtype=mat66)
+    derivative.deriv_smooth_vel(m, d, qDeriv, free_block)
     wp.launch(
       _implicit_free_body_reset_m,
       dim=(d.nworld, m.body_freeadr.size),
@@ -2633,7 +2592,7 @@ def implicit(m: Model, d: Data):
     )
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
     smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma)
-    implicit_free_body(m, d, d.efc.Ma, qacc, solve=True)
+    implicit_free_body(m, d, free_block, d.efc.Ma, qacc, solve=True)
     _advance(m, d, qacc)
   else:
     _advance(m, d, d.qacc)
