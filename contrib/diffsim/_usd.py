@@ -27,6 +27,7 @@ import scipy.spatial.transform as st
 import warp as wp
 
 import mujoco_warp as mjw
+from mujoco_warp._src import io
 
 _ASSETS = Path(__file__).with_name("assets")
 _ROLLOUT_LENGTHS_ATTRIBUTE = "mjwarp:rolloutLengths"
@@ -346,9 +347,9 @@ def _forward_animation(visualizer):
   frame_qvel = wp.array(qvel, dtype=float)
   frame_ctrl = wp.array(ctrl, dtype=float)
   geom_xpos = wp.empty((frame_count, world_count, mjm.ngeom), dtype=wp.vec3)
-  geom_xmat = wp.empty((frame_count, world_count, mjm.ngeom), dtype=wp.mat33)
+  geom_xquat = wp.empty((frame_count, world_count, mjm.ngeom), dtype=wp.quat)
   site_xpos = wp.empty((frame_count, world_count, mjm.nsite), dtype=wp.vec3)
-  site_xmat = wp.empty((frame_count, world_count, mjm.nsite), dtype=wp.mat33)
+  site_xquat = wp.empty((frame_count, world_count, mjm.nsite), dtype=wp.quat)
   body_xpos = wp.empty((frame_count, world_count, mjm.nbody), dtype=wp.vec3) if visualizer.trace_body else None
 
   contacts = None
@@ -373,10 +374,10 @@ def _forward_animation(visualizer):
     data.qacc_warmstart.zero_()
     mjw.forward(model, data)
     wp.copy(geom_xpos[frame], data.geom_xpos)
-    wp.copy(geom_xmat[frame], data.geom_xmat)
+    wp.copy(geom_xquat[frame], data.geom_xquat)
     if mjm.nsite:
       wp.copy(site_xpos[frame], data.site_xpos)
-      wp.copy(site_xmat[frame], data.site_xmat)
+      wp.copy(site_xquat[frame], data.site_xquat)
     if body_xpos is not None:
       wp.copy(body_xpos[frame], data.xpos)
     if contacts is not None:
@@ -388,9 +389,9 @@ def _forward_animation(visualizer):
 
   result = {
     "geom_xpos": geom_xpos.numpy(),
-    "geom_xmat": geom_xmat.numpy(),
+    "geom_xmat": io._quat_to_mat(geom_xquat.numpy()),
     "site_xpos": site_xpos.numpy(),
-    "site_xmat": site_xmat.numpy(),
+    "site_xmat": io._quat_to_mat(site_xquat.numpy()),
     "body_xpos": None if body_xpos is None else body_xpos.numpy(),
     "contacts": None,
   }
