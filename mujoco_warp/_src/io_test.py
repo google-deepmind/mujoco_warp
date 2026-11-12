@@ -3062,6 +3062,32 @@ class IOTest(parameterized.TestCase):
       warnings.simplefilter("error")
       mjwarp.put_model(mjm)
 
+  def test_get_data_into_nu_zero_nJmom(self):
+    """get_data_into copies actuator_moment when nu == 0 and nJmom > 0."""
+    mjm, mjd, _, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0"/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <dcmotor joint="j0" gear="2" motorconst="1" resistance="1" input="none"/>
+        </actuator>
+      </mujoco>
+      """
+    )
+    self.assertEqual(mjm.nu, 0)
+    self.assertEqual(mjm.nactuator, 1)
+    self.assertEqual(mjm.nJmom, 1)
+
+    result = mujoco.MjData(mjm)
+    mjwarp.get_data_into(result, mjm, d)
+    _assert_eq(result.moment_colind, mjd.moment_colind, "moment_colind")
+    _assert_eq(result.actuator_moment, mjd.actuator_moment, "actuator_moment")
+
 
 if __name__ == "__main__":
   wp.init()

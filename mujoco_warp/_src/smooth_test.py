@@ -1901,6 +1901,66 @@ class SmoothTest(parameterized.TestCase):
       self.assertFalse(np.allclose(M[0], M[1]))
       self.assertFalse(np.allclose(qfrc_bias[0], qfrc_bias[1]))
 
+  @parameterized.product(
+    nworld=(1, 2),
+    actuator=(
+      '<dcmotor tendon="t0" gear="3" motorconst="2" resistance="1" input="none"/>',
+      '<pid tendon="t0" gear="3" input="pos vel ff" kp="10" kv="2"/>',
+    ),
+  )
+  def test_rne_postconstraint_tendon_actuator_nu_mismatch(self, nworld, actuator):
+    """Tests rne_postconstraint tendon actuator forces when nu != nactuator."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <site name="s0"/>
+          <body pos="0.3 0 0">
+            <joint name="j0" type="slide" axis="1 0 0"/>
+            <geom size="0.1"/>
+            <site name="s1" pos="0.1 0 0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="t0">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          {actuator}
+        </actuator>
+        <keyframe>
+          <key qvel="1.5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+    self.assertNotEqual(m.nu, m.nactuator)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qvel = d.qvel.numpy()
+      qvel[1] = -2.0
+      d.qvel.assign(qvel)
+      mjd1.qvel[:] = qvel[1]
+      mjds.append(mjd1)
+
+    mjw.forward(m, d)
+    d.cfrc_ext.fill_(wp.inf)
+    mjw.rne_postconstraint(m, d)
+
+    cfrc_ext = d.cfrc_ext.numpy()
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      mujoco.mj_rnePostConstraint(mjm, mjds[w])
+      _assert_eq(cfrc_ext[w], mjds[w].cfrc_ext, f"cfrc_ext_world_{w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(cfrc_ext[0], cfrc_ext[1]))
+
 
 if __name__ == "__main__":
   wp.init()

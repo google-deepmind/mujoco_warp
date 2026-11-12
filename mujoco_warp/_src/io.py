@@ -677,7 +677,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     )
   )
   m.has_efm_actuator = bool(
-    mjm.nu > 0
+    mjm.nactuator > 0
     and np.any(
       (
         (mjm.actuator_gaintype == mujoco.mjtGain.mjGAIN_AFFINE)
@@ -705,7 +705,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     ):
       gaintype = int(mjm.actuator_gaintype[i])
       biastype = int(mjm.actuator_biastype[i])
-      if (
+      if gaintype == int(mujoco.mjtGain.mjGAIN_PID) or (
         gaintype == int(mujoco.mjtGain.mjGAIN_FIXED)
         and biastype == int(mujoco.mjtBias.mjBIAS_AFFINE)
         and mjm.actuator_gainprm[i, 0] == -mjm.actuator_biasprm[i, 1]
@@ -2918,7 +2918,7 @@ def get_data_into(
   result.actuator_length[:] = d.actuator_length.numpy()[world_id]
   result.moment_rownnz[:] = d.moment_rownnz.numpy()[world_id]
   result.moment_rowadr[:] = d.moment_rowadr.numpy()[world_id]
-  if mjm.nu:
+  if mjm.nJmom:
     result.moment_colind[:] = d.moment_colind.numpy()[world_id]
     result.actuator_moment[:] = d.actuator_moment.numpy()[world_id]
   result.crb[:] = d.crb.numpy()[world_id]

@@ -3946,6 +3946,311 @@ class ActuatorDampingTest(parameterized.TestCase):
       self.assertFalse(np.allclose(qvel[0], qvel[1]))
 
 
+class PIDTest(parameterized.TestCase):
+  """Tests for <pid> actuator dynamics and gain."""
+
+  @parameterized.parameters(1, 2)
+  def test_pid_matches_position_servo(self, nworld):
+    """<pid kp dampratio/> with vref=0 matches <position kp dampratio/> across worlds."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0" type="slide" axis="1 0 0"/>
+            <geom size="0.1"/>
+          </body>
+          <body pos="0 1 0">
+            <joint name="j1" type="slide" axis="1 0 0"/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <position joint="j0" kp="10" dampratio="1"/>
+          <pid joint="j1" kp="10" dampratio="1"/>
+        </actuator>
+        <keyframe>
+          <key qpos="0.2 0.2" qvel="-0.3 -0.3" ctrl="0.5 0.5 0.0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+    self.assertEqual(m.actuator_gaintype.numpy()[1], GainType.PID)
+    self.assertEqual(m.actuator_dyntype.numpy()[1], DynType.NONE)
+    self.assertEqual(m.actuator_ctrladr.numpy()[1], 1)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd1, 0)
+      ctrl = d.ctrl.numpy()
+      ctrl[1] = [-0.4, -0.4, 0.0]
+      d.ctrl.assign(ctrl)
+      mjd1.ctrl[:] = ctrl[1]
+      mjds.append(mjd1)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    for _ in range(20):
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+      wp.capture_launch(capture.graph)
+
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    force = d.actuator_force.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(qpos[w], mjds[w].qpos, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(qvel[w], mjds[w].qvel, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(force[w], mjds[w].actuator_force, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(qpos[w, 0], qpos[w, 1], rtol=1e-5, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos[0], qpos[1]))
+
+  @parameterized.parameters(0, DisableBit.CLAMPCTRL)
+  def test_pid_input_subsets_and_ranges(self, disableflags):
+    """Tests [pos, vel, ff] input subsets, per-input ranges, forcerange, and tendon actfrcrange."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <site name="s0"/>
+          <body pos="0.3 0 0">
+            <joint name="j0" type="slide" axis="1 0 0"/>
+            <joint name="j1" type="slide" axis="0 1 0"/>
+            <geom size="0.1"/>
+            <site name="s1" pos="0.1 0 0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="t0" actuatorfrcrange="-2 2">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <pid joint="j0" input="pos" kp="10" kv="3" posrange="-0.5 0.5"/>
+          <pid joint="j0" input="vel" kp="10" kv="3" velrange="-0.4 0.4"/>
+          <pid joint="j0" input="ff" kp="10" kv="3" ffrange="-1.5 1.5"/>
+          <pid joint="j0" input="pos vel" kp="10" kv="3" posrange="-0.5 0.5" velrange="-0.4 0.4"/>
+          <pid joint="j1" input="pos ff" kp="8" kv="2" posrange="-0.6 0.6" ffrange="-1.2 1.2"/>
+          <pid joint="j1" input="vel ff" kp="8" kv="2" velrange="-0.3 0.3" ffrange="-1.2 1.2" forcerange="-3 3"/>
+          <pid tendon="t0" input="pos vel ff" kp="6" kv="1.5" posrange="-0.5 0.5" velrange="-0.4 0.4" ffrange="-1 1"/>
+        </actuator>
+        <keyframe>
+          <key qpos="0.15 -0.25" qvel="0.4 -0.35"
+               ctrl="1.2 -0.9 2.5 -1.1 0.8 0.9 -2.0 -0.7 2.2 0.8 -0.9 1.7"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.disableflags": disableflags},
+    )
+
+    for arr in (d.actuator_force, d.qfrc_actuator):
+      arr.fill_(wp.inf)
+    mjw.fwd_actuation(m, d)
+
+    np.testing.assert_allclose(d.actuator_force.numpy()[0], mjd.actuator_force, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(d.qfrc_actuator.numpy()[0], mjd.qfrc_actuator, rtol=1e-5, atol=1e-5)
+
+  @parameterized.product(
+    integrator=(IntegratorType.EULER, IntegratorType.IMPLICITFAST, IntegratorType.RK4, IntegratorType.DISCRETE),
+    actearly=(False, True),
+    nworld=(1, 2),
+  )
+  def test_pid_dynamics(self, integrator, actearly, nworld):
+    """Tests slew-only, integral with imax anti-windup, combined [slew, integral], and actrange."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0" type="slide" axis="1 0 0"/>
+            <joint name="j1" type="slide" axis="0 1 0"/>
+            <joint name="j2" type="slide"/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <general joint="j0" dyntype="filter" dynprm="0.05"/>
+          <pid joint="j0" kp="20" kv="4" slewmax="2.0"/>
+          <pid joint="j1" kp="15" kv="3" ki="50" imax="0.02"/>
+          <general joint="j2" input="pos vel" dyntype="pid" gaintype="pid" biastype="affine"
+                   gainprm="30" biasprm="0 -12 -2" dynprm="0.05 1.5"
+                   actlimited="true" actrange="-0.03 0.03"/>
+        </actuator>
+        <keyframe>
+          <key qpos="0.05 -0.05 0.02" qvel="0.1 -0.1 0.05"
+               act="0.1 0.0 0.02 0.0 0.01"
+               ctrl="0.3 0.8 -0.2 0.6 0.1 -0.5 0.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+      overrides={
+        "opt.integrator": integrator,
+        "actuator_actearly": np.array([False, actearly, actearly, actearly], dtype=bool),
+      },
+    )
+    self.assertEqual(m.actuator_dyntype.numpy()[1], DynType.PID)
+    self.assertEqual(m.actuator_actadr.numpy()[1], 1)
+    self.assertEqual(m.actuator_actnum.numpy()[3], 2)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd1, 0)
+      ctrl = d.ctrl.numpy()
+      ctrl[1] = [-0.2, -0.7, 0.3, -0.5, -0.1, 0.4, -0.2]
+      d.ctrl.assign(ctrl)
+      mjd1.ctrl[:] = ctrl[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+
+    for arr in (d.act_dot, d.actuator_force, d.qfrc_actuator):
+      arr.fill_(wp.inf)
+    mjw.fwd_actuation(m, d)
+
+    act_dot = d.act_dot.numpy()
+    force = d.actuator_force.numpy()
+    for w in range(nworld):
+      mujoco.mj_fwdActuation(mjm, mjds[w])
+      np.testing.assert_allclose(act_dot[w], mjds[w].act_dot, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(force[w], mjds[w].actuator_force, rtol=1e-5, atol=1e-5)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    for _ in range(15):
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+      wp.capture_launch(capture.graph)
+
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    act = d.act.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(qpos[w], mjds[w].qpos, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(qvel[w], mjds[w].qvel, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(act[w], mjds[w].act, rtol=1e-5, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(act[0], act[1]))
+
+  def test_pid_rotational_wrapping(self):
+    """Tests ball-joint and site/refsite wrapping for stateless, input='vel', slew, and ki."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <site name="s0"/>
+          <body>
+            <joint name="ball" type="ball"/>
+            <geom size="0.1"/>
+            <site name="s1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <pid joint="ball" gear="1.5 0 0" kp="20" kv="2" ki="5" slewmax="4"/>
+          <pid joint="ball" gear="0 1 0" input="vel" kp="15" kv="2"/>
+          <pid site="s1" refsite="s0" gear="0 0 0 0 0 1.2" kp="10" kv="1" ki="3"/>
+        </actuator>
+        <keyframe>
+          <key qpos="{np.cos(1.4)} {np.sin(1.4)} 0 0"
+               act="4.2 0.05 -0.02"
+               ctrl="-4.1 0.3 0.2 -3.8 -0.1"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    for arr in (d.act_dot, d.actuator_force, d.qfrc_actuator):
+      arr.fill_(wp.inf)
+    mjw.fwd_actuation(m, d)
+
+    np.testing.assert_allclose(d.act_dot.numpy()[0], mjd.act_dot, rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(d.actuator_force.numpy()[0], mjd.actuator_force, rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(d.qfrc_actuator.numpy()[0], mjd.qfrc_actuator, rtol=1e-4, atol=1e-4)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    for _ in range(10):
+      mujoco.mj_step(mjm, mjd)
+      wp.capture_launch(capture.graph)
+
+    np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(d.act.numpy()[0], mjd.act, rtol=1e-4, atol=1e-4)
+
+  def test_pid_batched_params(self):
+    """Tests per-world batched gainprm, biasprm, dynprm, and ctrlrange on <pid>."""
+    nworld = 2
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0" type="slide" axis="1 0 0"/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <pid joint="j0" input="pos vel ff" kp="10" kv="2" ki="5" imax="0.5" slewmax="3"
+               posrange="-1 1" velrange="-1 1" ffrange="-1 1"/>
+        </actuator>
+        <keyframe>
+          <key qpos="0.1" qvel="-0.2" act="0.0 0.05" ctrl="0.8 1.5 -1.5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+      batch_sizes={
+        "actuator_gainprm": nworld,
+        "actuator_biasprm": nworld,
+        "actuator_dynprm": nworld,
+        "actuator_ctrlrange": nworld,
+      },
+    )
+
+    gainprm = m.actuator_gainprm.numpy()
+    biasprm = m.actuator_biasprm.numpy()
+    dynprm = m.actuator_dynprm.numpy()
+    ctrlrange = m.actuator_ctrlrange.numpy()
+    gainprm[1, 0, 0] = 12.0  # ki
+    biasprm[1, 0, 1] = -25.0  # -kp
+    biasprm[1, 0, 2] = -6.0  # -kv
+    dynprm[1, 0, 1] = 1.0  # slewmax
+    ctrlrange[1] *= 0.5
+    m.actuator_gainprm.assign(gainprm)
+    m.actuator_biasprm.assign(biasprm)
+    m.actuator_dynprm.assign(dynprm)
+    m.actuator_ctrlrange.assign(ctrlrange)
+
+    for arr in (d.act_dot, d.actuator_force, d.qfrc_actuator):
+      arr.fill_(wp.inf)
+    mjw.fwd_actuation(m, d)
+
+    act_dot = d.act_dot.numpy()
+    force = d.actuator_force.numpy()
+    for w in range(nworld):
+      mjm.actuator_gainprm[:] = gainprm[w]
+      mjm.actuator_biasprm[:] = biasprm[w]
+      mjm.actuator_dynprm[:] = dynprm[w]
+      mjm.actuator_ctrlrange[:] = ctrlrange[w]
+      mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+      mujoco.mj_forward(mjm, mjd)
+      np.testing.assert_allclose(act_dot[w], mjd.act_dot, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(force[w], mjd.actuator_force, rtol=1e-5, atol=1e-5)
+    self.assertFalse(np.allclose(force[0], force[1]))
+    self.assertFalse(np.allclose(act_dot[0], act_dot[1]))
+
+
 if __name__ == "__main__":
   wp.init()
   absltest.main()

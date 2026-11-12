@@ -904,12 +904,9 @@ def set_length_range(m: types.Model, d: types.Data, index: int = -1):
     d: The data object (unused, kept for API compatibility with MuJoCo C).
     index: Actuator index to compute for, or -1 for all actuators.
   """
-  if m.nu == 0:
-    return
-
   wp.launch(
     _set_length_range,
-    dim=(d.nworld, m.nu),
+    dim=(d.nworld, m.nactuator),
     inputs=[
       m.actuator_trntype,
       m.actuator_trnid,

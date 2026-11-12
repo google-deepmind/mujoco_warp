@@ -896,6 +896,35 @@ class SetConstTest(parameterized.TestCase):
     np.testing.assert_allclose(lr_np[0, 0, 0], expected_lo, atol=1e-5)
     np.testing.assert_allclose(lr_np[0, 0, 1], expected_hi, atol=1e-5)
 
+  @parameterized.parameters(
+    '<dcmotor joint="j1" gear="2" motorconst="1" resistance="1" input="none"/>',
+    '<pid joint="j1" gear="2" input="pos vel ff" kp="10"/>',
+  )
+  def test_set_length_range_nu_mismatch(self, actuator):
+    """Test set_length_range when nu != nactuator."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j1" limited="true" range="-90 90"/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          {actuator}
+        </actuator>
+      </mujoco>
+      """
+    )
+    self.assertNotEqual(m.nu, m.nactuator)
+
+    m.actuator_lengthrange.fill_(wp.inf)
+    set_length_range(m, d)
+
+    lr_np = m.actuator_lengthrange.numpy()
+    np.testing.assert_allclose(lr_np[0, 0], mjm.jnt_range[0] * 2.0, rtol=1e-5, atol=1e-5)
+
   @parameterized.parameters(1, 2)
   def test_set_const_geom_bound(self, nworld):
     """Test geom bounds follow geom_size and hfield_size as in mj_setConst."""

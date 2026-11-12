@@ -35,6 +35,7 @@ from mujoco_warp._src.types import FLEX_INTERP_MAX_NODES
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ROD_HINGE_SIZE
 from mujoco_warp._src.types import BiasType
+from mujoco_warp._src.types import CtrlInput
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import DisableBit
@@ -182,10 +183,14 @@ def _dcmotor_saturation(
   spec = actuator_ctrlspec[actid]
   u_first = float(0.0)
   if ctrlnum > 0:
-    u_first = ctrl_in[worldid, uadr]
-    if actuator_ctrllimited[uadr] and not (opt_disableflags & DisableBit.CLAMPCTRL):
-      ctrlrange = actuator_ctrlrange[worldid % actuator_ctrlrange.shape[0], uadr]
-      u_first = wp.clamp(u_first, ctrlrange[0], ctrlrange[1])
+    u_first = util_misc.clamp_ctrl(
+      actuator_ctrllimited,
+      actuator_ctrlrange,
+      ctrl_in,
+      worldid,
+      uadr,
+      opt_disableflags & DisableBit.CLAMPCTRL,
+    )
     if actadr >= 0 and slots[0] >= 0:
       u_prev = act_in[worldid, actadr + slots[0]]
       slew = dynprm[7] * h
@@ -194,11 +199,20 @@ def _dcmotor_saturation(
   # terminal voltage, with controller Vmax saturation
   V = float(0.0)
   if ctrlnum > 0:
-    if (spec & 7) != 0:
+    if (spec & (CtrlInput.POS | CtrlInput.VEL | CtrlInput.FF)) != 0:
       x_I = float(0.0)
       if actadr >= 0 and slots[1] >= 0:
         x_I = act_in[worldid, actadr + slots[1]]
-      u4 = util_misc.unpack_servo_inputs(ctrl_in, worldid, uadr, spec, u_first)
+      u4 = util_misc.unpack_servo_inputs(
+        actuator_ctrllimited,
+        actuator_ctrlrange,
+        ctrl_in,
+        worldid,
+        uadr,
+        spec,
+        u_first,
+        opt_disableflags & DisableBit.CLAMPCTRL,
+      )
       length = actuator_length_in[worldid, actid]
       torque = gainprm[4] * (u4[0] - length) + gainprm[6] * (u4[1] - velocity) + gainprm[5] * x_I + u4[2]
       V = gainprm[0] / K * torque + K * velocity
@@ -369,7 +383,7 @@ def _qderiv_actuator_passive_vel(
     if (sat_dcmotor & 1) == 0:
       # controller velocity derivative dV/dω using nameplate resistance, zero under Vmax
       dVdw = 0.0
-      if (actuator_ctrlspec[actid] & 7) != 0 and (sat_dcmotor & 2) == 0:
+      if (actuator_ctrlspec[actid] & (CtrlInput.POS | CtrlInput.VEL | CtrlInput.FF)) != 0 and (sat_dcmotor & 2) == 0:
         R0 = wp.max(MJ_MINVAL, gainprm[0])
         dVdw = -gainprm[6] * R0 / K + K
 
@@ -473,7 +487,17 @@ def _qderiv_actuator_passive_vel(
       vel += gain * act
   else:
     if gain != 0.0:
-      vel += gain * ctrl_in[worldid, actid]
+      cadr = actuator_ctrladr[actid]
+      if cadr >= 0:
+        u_val = util_misc.clamp_ctrl(
+          actuator_ctrllimited,
+          actuator_ctrlrange,
+          ctrl_in,
+          worldid,
+          cadr,
+          opt_disableflags & DisableBit.CLAMPCTRL,
+        )
+        vel += gain * u_val
 
   vel_out[worldid, actid] = vel
 
@@ -2449,7 +2473,7 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
         # controller derivatives through the tau->V map, zero under Vmax
         dVdl = float(0.0)
         dVdw = float(0.0)
-        if (actuator_ctrlspec[actid] & 7) != 0 and (sat_dc & 2) == 0:
+        if (actuator_ctrlspec[actid] & (CtrlInput.POS | CtrlInput.VEL | CtrlInput.FF)) != 0 and (sat_dc & 2) == 0:
           dVdl = math.safe_div(-gainprm[4] * R0, K)
           dVdw = math.safe_div(-gainprm[6] * R0, K) + K
 
@@ -2489,10 +2513,14 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
       else:
         cadr = actuator_ctrladr[actid]
         if cadr >= 0:
-          u_val = ctrl_in[worldid, cadr]
-          if not (opt_disableflags & DisableBit.CLAMPCTRL) and actuator_ctrllimited[cadr]:
-            crange = actuator_ctrlrange[worldid % actuator_ctrlrange.shape[0], cadr]
-            u_val = wp.clamp(u_val, crange[0], crange[1])
+          u_val = util_misc.clamp_ctrl(
+            actuator_ctrllimited,
+            actuator_ctrlrange,
+            ctrl_in,
+            worldid,
+            cadr,
+            opt_disableflags & DisableBit.CLAMPCTRL,
+          )
       bias_len += gain_len * u_val
       bias_vel += gain_vel * u_val
 
