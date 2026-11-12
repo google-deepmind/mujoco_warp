@@ -169,6 +169,41 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qfrc_smooth.numpy()[0], mjd.qfrc_smooth, "qfrc_smooth")
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
 
+  @parameterized.parameters(SolverType.NEWTON, SolverType.CG)
+  def test_forward_qld_store_factor(self, solver):
+    """Forward stores the dense-block factor of M only for CG, which reads it."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag warmstart="disable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="2 2 0.1"/>
+          <body pos="0 0 0.08">
+            <freejoint/>
+            <geom size="0.1"/>
+            <body pos="0.2 0 0">
+              <joint/>
+              <geom size="0.05"/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.solver": solver},
+    )
+    self.assertTrue(any(tile.elemid.size for tile in m.M_tiles))
+    self.assertGreater(mjd.nefc, 0)
+
+    d.qLD.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    dense = d.qLD.numpy()[0, : m.qLD_block_total]
+    self.assertEqual(np.isinf(dense).all(), solver != SolverType.CG)
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+
   @parameterized.product(
     jacobian=(mujoco.mjtJacobian.mjJAC_AUTO, mujoco.mjtJacobian.mjJAC_DENSE), disableflags=(0, DisableBit.EULERDAMP)
   )

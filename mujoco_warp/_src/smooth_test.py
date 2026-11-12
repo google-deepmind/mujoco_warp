@@ -1508,21 +1508,28 @@ class SmoothTest(parameterized.TestCase):
     elif m.M_tiles and d.qLD.shape[1] == 0:
       _assert_eq(d.qLDiagInv.numpy()[0], mjd.qLDiagInv, "qLDiagInv")
 
-  def test_factor_solve_i_store_factor(self):
+  @parameterized.parameters(1, 2)
+  def test_factor_solve_i_store_factor(self, nworld):
     """Without the factor stored, a dense block solves the same and leaves L untouched."""
-    mjm, _, m, d = test_data.fixture("humanoid/humanoid.xml")
+    mjm, _, m, d = test_data.fixture("humanoid/humanoid.xml", nworld=nworld)
     self.assertTrue(any(tile.elemid.size for tile in m.M_tiles))
 
-    vec = wp.array(np.linspace(-1.0, 1.0, mjm.nv)[None], dtype=float)
+    # distinct right-hand side per world
+    rhs = np.linspace(-1.0, 1.0, mjm.nv) * np.arange(1, nworld + 1)[:, None]
+    vec = wp.array(rhs, dtype=float)
     res = {}
     for store_factor in (True, False):
       L = wp.full(d.qLD.shape, wp.inf, dtype=float)
       D = wp.full(d.qLDiagInv.shape, wp.inf, dtype=float)
-      res[store_factor] = wp.zeros((1, mjm.nv), dtype=float)
-      mjw._src.smooth.factor_solve_i(m, d, d.M, L, D, res[store_factor], vec, store_factor=store_factor)
-      dense = L.numpy()[0, : m.qLD_block_total]
+      x = wp.full((nworld, mjm.nv), wp.inf, dtype=float)
+      mjw._src.smooth.factor_solve_i(m, d, d.M, L, D, x, vec, store_factor=store_factor)
+      dense = L.numpy()[:, : m.qLD_block_total]
       self.assertEqual(np.isinf(dense).all(), not store_factor)
-    np.testing.assert_array_equal(res[True].numpy(), res[False].numpy())
+      res[store_factor] = x.numpy()
+    self.assertTrue(np.isfinite(res[True]).all())
+    np.testing.assert_array_equal(res[True], res[False])
+    if nworld == 2:
+      self.assertFalse(np.allclose(res[True][0], res[True][1]))
 
   def test_factor_solve_i_coupled_small_block(self):
     """A full small block handles coupling introduced outside rigid-body inertia."""
