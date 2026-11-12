@@ -580,22 +580,22 @@ def _finalize_dsu(
   nisland_out: wp.array[int],
   tree_island_out: wp.array2d[int],
 ):
-  """Compress roots, number islands in ascending tree order, and propagate labels in one pass.
+  """Number islands in ascending tree order and propagate labels in one pass.
 
-  Because _dsu_union hooks higher roots to lower roots, root(treeid) <= treeid. Therefore
-  by the time the loop visits treeid, its root has already been visited and assigned its
-  final island label in tree_island_out[worldid, root].
+  Because _dsu_union hooks higher roots to lower roots, parent(treeid) <= treeid. Therefore
+  by the time the loop visits treeid, its parent has already been visited and assigned its
+  final island label in tree_island_out[worldid, parent].
   """
   worldid = wp.tid()
   nisland = int(0)
   for treeid in range(ntree):
     if tree_island_out[worldid, treeid] >= 0:
-      root = _dsu_find(island_parent_in, worldid, treeid)
-      if root == treeid:
+      parent = island_parent_in[worldid, treeid]
+      if parent == treeid:
         tree_island_out[worldid, treeid] = nisland
         nisland += 1
       else:
-        tree_island_out[worldid, treeid] = tree_island_out[worldid, root]
+        tree_island_out[worldid, treeid] = tree_island_out[worldid, parent]
   nisland_out[worldid] = nisland
 
 
@@ -1130,12 +1130,12 @@ def _island_count_constraints(
   efc_island_out[worldid, efcid] = island_id
 
   if island_id >= 0:
-    wp.atomic_add(island_nefc_out, worldid, island_id, 1)
+    wp.atomic_add(island_nefc_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
 
     if efc_type == ConstraintType.EQUALITY:
-      wp.atomic_add(island_ne_out, worldid, island_id, 1)
+      wp.atomic_add(island_ne_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
     elif efc_type == ConstraintType.FRICTION_DOF or efc_type == ConstraintType.FRICTION_TENDON:
-      wp.atomic_add(island_nf_out, worldid, island_id, 1)
+      wp.atomic_add(island_nf_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
 
 
 @wp.kernel

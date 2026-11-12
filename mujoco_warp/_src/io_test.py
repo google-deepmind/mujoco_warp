@@ -514,7 +514,7 @@ class IOTest(parameterized.TestCase):
     )
     self.assertEqual(m.nv_pad, expected)
 
-  @parameterized.parameters((15, 16), (16, 32), (31, 32), (32, 48))
+  @parameterized.parameters((15, 16), (16, 16), (31, 32), (32, 32), (33, 48), (47, 48), (48, 64))
   def test_augmented_cholesky_nvmax_padding(self, nvmax, expected):
     self.assertEqual(io._nvmax_pad(nvmax), expected)
 
