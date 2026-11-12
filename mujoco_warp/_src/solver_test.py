@@ -31,6 +31,7 @@ from mujoco_warp import test_data
 from mujoco_warp._src import island
 from mujoco_warp._src import solver
 from mujoco_warp._src import types
+from mujoco_warp._src import warp_util
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
 # due to float precision
@@ -1243,6 +1244,28 @@ class SolverTest(parameterized.TestCase):
         _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
         _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
         _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
+
+  @absltest.skipIf(not wp.get_device().is_cuda, "CUDA graph capture requires CUDA")
+  def test_solve_graph_capture_sparse(self):
+    """A captured sparse solve forks jv onto a second stream, joins it and matches eager."""
+    _, _, m, d = test_data.fixture(
+      "humanoid/humanoid.xml",
+      keyframe=0,
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": SolverType.CG},
+    )
+
+    mjw.solve(m, d)
+    qacc = d.qacc.numpy().copy()
+
+    d.qacc.zero_()
+    warp_util._SIDE_STREAMS.clear()
+    # ending the capture raises if the fork was not joined
+    with wp.ScopedCapture() as capture:
+      mjw.solve(m, d)
+    self.assertLen(warp_util._SIDE_STREAMS, 1)
+    wp.capture_launch(capture.graph)
+
+    _assert_eq(d.qacc.numpy(), qacc, "qacc")
 
   @parameterized.named_parameters(
     ("max3", (3,)),
