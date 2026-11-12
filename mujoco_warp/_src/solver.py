@@ -3255,7 +3255,8 @@ def _mark_h_tile_pattern_efc(nwords: int, skip_unchanged: bool = False, skip_nof
       conid = efc_id_in[worldid, efcid]
       if efcid != contact_efc_address_in[conid, 0]:
         return
-      nrow = contact_dim_in[conid]
+      # a contact that overflows njmax keeps only its leading rows
+      nrow = wp.min(contact_dim_in[conid], efc_J_rownnz_in.shape[1] - efcid)
 
     rownnz = efc_J_rownnz_in[worldid, efcid]
     rowadr = efc_J_rowadr_in[worldid, efcid]
