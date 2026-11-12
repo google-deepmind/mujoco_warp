@@ -84,8 +84,8 @@ class SupportTest(parameterized.TestCase):
       mujoco.mj_applyFT(mjm, mjd, xfrc[i, :3], xfrc[i, 3:], mjd.xipos[i], i, qfrc_expected)
     np.testing.assert_almost_equal(qfrc.numpy()[0], qfrc_expected, 6)
 
-  @parameterized.product(nworld=(1, 2), flg_add=(False, True), zero_force=(False, True))
-  def test_apply_ft_subtrees(self, nworld, flg_add, zero_force):
+  @parameterized.product(nworld=(1, 2), flg_add=(False, True), zero_force=(False, True), sparse=(False, True))
+  def test_apply_ft_subtrees(self, nworld, flg_add, zero_force, sparse):
     """Tests force projection across branches, welded bodies, and independent trees."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -140,10 +140,7 @@ class SupportTest(parameterized.TestCase):
     d.xfrc_applied.assign(force)
     initial = np.linspace(-0.2, 0.3, nworld * mjm.nv).reshape(nworld, mjm.nv).astype(np.float32)
     qfrc = wp.array(initial, dtype=float) if flg_add else wp.full((nworld, mjm.nv), wp.inf, dtype=float)
-    if flg_add:
-      mjwarp.xfrc_accumulate(m, d, qfrc)
-    else:
-      support.apply_ft(m, d, d.xfrc_applied, qfrc, False)
+    support.apply_ft(m, d, d.xfrc_applied, qfrc, flg_add, sparse=sparse)
 
     result = qfrc.numpy()
     for world in range(nworld):
@@ -1124,8 +1121,6 @@ class SupportTest(parameterized.TestCase):
 
   def test_rod_support_lookups(self):
     """Tests precomputed 1D DER rod lookups: twist joints and incident elements."""
-    if io.types.ROD_HINGE_SIZE != 10:
-      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
     mjm, _, m, _ = test_data.fixture(
       xml="""
       <mujoco>
@@ -1264,8 +1259,6 @@ class SupportTest(parameterized.TestCase):
 
   def test_rod_box_elem_pose_and_no_state_roll(self):
     """Tests rod_box_elem orthonormal frame, twist rotation, and rotated-root no-state start."""
-    if io.types.ROD_HINGE_SIZE != 10:
-      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -1317,7 +1310,7 @@ class SupportTest(parameterized.TestCase):
       flex_elem_rodedge: wp.array[wp.vec2i],
       qpos_in: wp.array2d[float],
       plastic_in: wp.array2d[float],
-      xmat_in: wp.array2d[wp.mat33],
+      xquat_in: wp.array2d[wp.quat],
       flexvert_xpos_in: wp.array2d[wp.vec3],
       flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
       flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
@@ -1349,7 +1342,7 @@ class SupportTest(parameterized.TestCase):
         flex_elem_rodedge,
         qpos_in,
         plastic_in,
-        xmat_in,
+        xquat_in,
         flexvert_xpos_in,
         flex_rod_frame0_loc_in,
         flex_rod_frame0_ref_in,
@@ -1391,7 +1384,7 @@ class SupportTest(parameterized.TestCase):
         m.flex_elem_rodedge,
         d.qpos,
         d.plastic,
-        d.xmat,
+        d.xquat,
         d.flexvert_xpos,
         d.flex_rod_frame0_loc,
         d.flex_rod_frame0_ref,

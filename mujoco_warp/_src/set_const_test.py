@@ -15,7 +15,9 @@
 
 """Tests for set_const functions."""
 
+import contextlib
 import copy
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -25,7 +27,6 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
-from mujoco_warp._src import util_pkg
 from mujoco_warp._src.set_const import set_length_range
 
 
@@ -189,8 +190,6 @@ class SetConstTest(parameterized.TestCase):
 
     _assert_eq(m.eq_data.numpy()[0, :, : mjm.eq_data.shape[1]], mjm.eq_data, "eq_data")
 
-  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.parameters(1, 2)
   def test_set_const_eq_data_weld(self, nworld):
     """Test set_const recomputes eq_data for marked weld constraints."""
@@ -613,11 +612,7 @@ class SetConstTest(parameterized.TestCase):
     )
 
     mjwarp.set_const(m, d)
-    # TODO(team): remove version check after mujoco>=3.17.0 is required
-    if util_pkg.check_version("mujoco>=3.17.0"):
-      output_fields = sorted(_setconst_output_fields())
-    else:
-      output_fields = ["actuator_acc0", "body_invweight0", "body_subtreemass", "dof_invweight0"]
+    output_fields = sorted(_setconst_output_fields())
     saved = {f: getattr(m, f).numpy().copy() for f in output_fields}
 
     mjwarp.set_const(m, d)
@@ -723,19 +718,9 @@ class SetConstTest(parameterized.TestCase):
     mujoco.mj_setConst(mjm, mjd)
     mjwarp.set_const(m, d)
 
-    # TODO(team): remove version check after mujoco>=3.17.0 is required
-    if util_pkg.check_version("mujoco>=3.17.0"):
-      for f in sorted(_setconst_output_fields()):
-        mjm_val = getattr(mjm, f)
-        _assert_eq(getattr(m, f).numpy()[0].reshape(mjm_val.shape), mjm_val, f)
-    else:
-      _assert_eq(m.body_subtreemass.numpy()[0], mjm.body_subtreemass, "body_subtreemass")
-      _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
-      _assert_eq(m.tendon_invweight0.numpy()[0], mjm.tendon_invweight0, "tendon_invweight0")
-      _assert_eq(m.tendon_length0.numpy()[0], mjm.tendon_length0, "tendon_length0")
-      _assert_eq(m.actuator_acc0.numpy()[0], mjm.actuator_acc0, "actuator_acc0")
-      for i in range(mjm.nbody):
-        _assert_eq(m.body_invweight0.numpy()[0, i], mjm.body_invweight0[i], f"body_invweight0[{i}]")
+    for f in sorted(_setconst_output_fields()):
+      mjm_val = getattr(mjm, f)
+      _assert_eq(getattr(m, f).numpy()[0].reshape(mjm_val.shape), mjm_val, f)
     _assert_eq(m.tendon_lengthspring.numpy()[0], mjm.tendon_lengthspring, "tendon_lengthspring")
 
   @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
@@ -781,8 +766,6 @@ class SetConstTest(parameterized.TestCase):
     self.assertEqual(acc0_np.shape, (1, mjm.nu))
     _assert_eq(acc0_np[0], mjm.actuator_acc0, "actuator_acc0")
 
-  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.parameters(1, 2)
   def test_set_const_compiled_constants(self, nworld):
     """Test set_const preserves compiled spec conventions, as mj_setConst."""
@@ -848,6 +831,86 @@ class SetConstTest(parameterized.TestCase):
       _assert_eq(m.tendon_lengthspring.numpy()[w, 0], mjm.tendon_lengthspring[0], f"lengthspring_world_{w}")
     _assert_eq(mjm.actuator_biasprm[0, 2], 1, "mj_setConst biasprm[2]")
     _assert_eq(mjm.tendon_lengthspring[0], [-1, -1], "mj_setConst lengthspring")
+
+  @parameterized.product(nworld=(1, 2), sparse_blocks=(False, True))
+  def test_set_const_invweight0_blocks(self, nworld, sparse_blocks):
+    """Test inverse weights for compact, scalar, tile, and sparse inertia blocks vs mj_setConst."""
+    # the 7-dof tree exceeds the patched dense block size and joins the sparse LDL region
+    blocks = mock.patch.multiple("mujoco_warp._src.types", M_BLOCK_DENSE_MAX=6)
+    with blocks if sparse_blocks else contextlib.nullcontext():
+      mjm, _, m, d = test_data.fixture(
+        xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="single"/>
+            <geom pos=".2 0 0" size=".1" mass="1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint name="pair1" axis="1 0 0"/>
+            <joint name="pair2" axis="0 1 0"/>
+            <geom pos=".1 .1 .1" type="box" size=".1 .2 .1" mass=".7"/>
+          </body>
+          <body pos="2 0 0">
+            <freejoint/>
+            <geom type="box" size=".1 .2 .3" mass="2"/>
+            <body pos=".2 0 0">
+              <joint name="hinge" axis="0 1 0"/>
+              <geom pos=".1 0 0" size=".05" mass=".5"/>
+              <body pos=".2 .1 0">
+                <geom size=".05" mass=".3"/>
+              </body>
+            </body>
+          </body>
+          <body pos="3 0 0">
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="tendon">
+            <joint joint="hinge" coef="1"/>
+            <joint joint="single" coef="-.5"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <motor joint="hinge" gear="2"/>
+          <position joint="pair1" kp="10"/>
+          <motor tendon="tendon"/>
+        </actuator>
+      </mujoco>
+      """,
+        nworld=nworld,
+        batch_sizes={
+          "body_mass": nworld,
+          "dof_invweight0": nworld,
+          "body_invweight0": nworld,
+          "tendon_invweight0": nworld,
+          "actuator_acc0": nworld,
+        },
+      )
+    self.assertEqual(d.qLD.shape[1] > m.qLD_block_total, sparse_blocks)
+
+    body_mass = m.body_mass.numpy()
+    body_mass[nworld - 1] *= 1.0 + np.arange(mjm.nbody) / mjm.nbody
+    m.body_mass.assign(body_mass)
+    for arr in (m.dof_invweight0, m.body_invweight0, m.tendon_invweight0, m.actuator_acc0):
+      arr.fill_(wp.inf)
+    mjwarp.set_const(m, d)
+
+    dof_invweight0 = m.dof_invweight0.numpy()
+    body_invweight0 = m.body_invweight0.numpy()
+    tendon_invweight0 = m.tendon_invweight0.numpy()
+    actuator_acc0 = m.actuator_acc0.numpy()
+    for w in range(nworld):
+      mjm.body_mass[:] = body_mass[w]
+      mujoco.mj_setConst(mjm, mujoco.MjData(mjm))
+      _assert_eq(dof_invweight0[w], mjm.dof_invweight0, f"dof_invweight0_world_{w}")
+      _assert_eq(body_invweight0[w], mjm.body_invweight0, f"body_invweight0_world_{w}")
+      _assert_eq(tendon_invweight0[w], mjm.tendon_invweight0, f"tendon_invweight0_world_{w}")
+      _assert_eq(actuator_acc0[w], mjm.actuator_acc0, f"actuator_acc0_world_{w}")
+    if nworld == 2:
+      for actual in (dof_invweight0, body_invweight0, tendon_invweight0, actuator_acc0):
+        self.assertFalse(np.allclose(actual[0], actual[1]))
 
   def test_set_length_range_joint_limited(self):
     """Test set_length_range for joint-limited actuator matches joint range."""
@@ -967,8 +1030,6 @@ class SetConstTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(rbound[0], rbound[1]))
 
-  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   def test_set_const_ignores_contacts(self):
     """Test actuator_acc0 of an adhesion actuator does not depend on the contacts in d."""
     mjm, mjd, m, d = test_data.fixture(
@@ -996,8 +1057,6 @@ class SetConstTest(parameterized.TestCase):
     _assert_eq(m.actuator_acc0.numpy()[0], mjm.actuator_acc0, "actuator_acc0")
     self.assertEqual(d.nacon.numpy()[0], nacon)  # the contacts are restored
 
-  # TODO(team): remove version check after mujoco>=3.17.0 is required
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.0"), "Requires MuJoCo >= 3.17.0")
   @parameterized.parameters(1, 2)
   def test_set_const_groups(self, nworld):
     """Test set_const with FIXED, KIN0, and INERT0 groups recomputes only their group outputs."""
@@ -1121,8 +1180,6 @@ class SetConstTest(parameterized.TestCase):
       for f in sorted(poisoned_other_outputs):
         self.assertTrue(np.isinf(getattr(m, f).numpy()).all(), f"{group_name} modified unrelated output {f}")
 
-  # TODO(team): remove version check after mujoco>=3.17.0 is required
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.0"), "Requires MuJoCo >= 3.17.0")
   def test_set_const_group_inputs(self):
     """Test observed set_const group inputs are a subset of MjModel._setconst_fields."""
     _, _, m, d = test_data.fixture(

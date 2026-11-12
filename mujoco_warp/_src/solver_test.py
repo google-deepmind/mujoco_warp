@@ -33,6 +33,7 @@ from mujoco_warp import test_data
 from mujoco_warp._src import island
 from mujoco_warp._src import solver
 from mujoco_warp._src import types
+from mujoco_warp._src import warp_util
 
 # tolerance for difference between MuJoCo and MJWarp solver calculations - mostly
 # due to float precision
@@ -49,7 +50,7 @@ def _assert_eq(a, b, name, tol=_TOLERANCE * 20):
 
 def _set_inertia_scale(m, d, ctx):
   """Set the inverse trace of M, as init_context does, for tests which skip it."""
-  wp.launch(solver._inertia_scale, dim=d.nworld, inputs=[m.nv, m.M_rownnz, m.M_rowadr, d.M], outputs=[ctx.inertia_scale])
+  solver.launch_inertia_scale(m, d.M, ctx.inertia_scale)
 
 
 def _noslip_model(mjm, noslip_iterations):
@@ -145,10 +146,6 @@ def _qcqp_kernel(
   d_in: wp.array[types.vec5],
   r_in: wp.array[float],
   # Out:
-  res2_out: wp.array[types.vec5],
-  active2_out: wp.array[int],
-  res3_out: wp.array[types.vec5],
-  active3_out: wp.array[int],
   res_out: wp.array[types.vec5],
   active_out: wp.array[int],
 ):
@@ -157,15 +154,14 @@ def _qcqp_kernel(
   b = b_in[tid]
   d = d_in[tid]
   r = r_in[tid]
+  res = types.vec5(0.0)
+  active = bool(False)
   if n == 2:
-    res2, active2 = solver._qcqp2(A, b, d, r)
-    res2_out[tid] = res2
-    active2_out[tid] = int(active2)
-  if n == 3:
-    res3, active3 = solver._qcqp3(A, b, d, r)
-    res3_out[tid] = res3
-    active3_out[tid] = int(active3)
-  res, active = solver._qcqp(A, b, d, r, n)
+    res, active = solver._qcqp2(A, b, d, r)
+  elif n == 3:
+    res, active = solver._qcqp3(A, b, d, r)
+  else:
+    res, active = solver._qcqp5(A, b, d, r)
   res_out[tid] = res
   active_out[tid] = int(active)
 
@@ -1048,6 +1044,80 @@ class SolverTest(parameterized.TestCase):
 
     np.testing.assert_allclose(d.qacc.numpy()[:, 0], targets, rtol=1e-6)
 
+  @parameterized.product(
+    case=(
+      # Inactive at alpha=0 (Jaref > 0), active at lo_alpha_in = 2^-20 with |lo_in[1]| < 1e-6.
+      dict(
+        nf=0, qfrc_smooth=2.0**-20, efc_j=(-1.0, -1.0), jaref=(2.0**-22, 2.0**-21), expected=(2.5 * 2.0**-22, 1.5 * 2.0**-21)
+      ),
+      # Quadratic frictionloss (|x| < rf): unshifted cost(0) ulp >= 4.0 hides improvement.
+      dict(nf=1, efc_j=(-(2.0**-13), -(2.0**-13)), frictionloss=16384.0, jaref=(8192.0, 12288.0), expected=(1.0, 1.5)),
+      # Linear frictionloss (|x| >= rf): unshifted x = start + dx rounds to start.
+      dict(nf=1, efc_j=(-(2.0**-13), 2.0**-12), frictionloss=8192.0, jaref=(16384.0, -16384.0), expected=(1.0, 2.0)),
+      # Linear-to-quadratic crossing (+/-rf): unshifted cost(x) - cost(start) rounds to 0.
+      dict(
+        nf=1,
+        efc_d=11.0,
+        m=(15.0 * 2.0**-27, 3.75 * 2.0**-27),
+        efc_j=(-3.0 * 2.0**-27, 1.5 * 2.0**-27),
+        frictionloss=5.0,
+        jaref=(float(np.float32(5.0) / np.float32(11.0)), -float(np.float32(5.0) / np.float32(11.0))),
+        expected=(1.0, 2.0),
+      ),
+    ),
+    nworld=(1, 2),
+  )
+  def test_linesearch_small_gtol_and_shifted_frictionloss(self, case, nworld):
+    """Linesearch brackets slopes below 1e-6 and preserves sub-ulp frictionloss deltas."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" jacobian="dense"/>
+        <worldbody>
+          <body>
+            <joint type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=1,
+    )
+    ctx = solver._create_solver_context(m, d)
+    _set_inertia_scale(m, d, ctx)
+    d.ne.zero_()
+    d.nf.fill_(case["nf"])
+    d.nefc.fill_(1)
+    d.nacon.zero_()
+    mass = np.zeros(d.M.shape, dtype=np.float32)
+    mass[:, 0] = case.get("m", (1.0, 1.0))[:nworld]
+    d.M.assign(mass)
+    d.qacc.zero_()
+    d.efc.Ma.zero_()
+    d.qfrc_smooth.fill_(case.get("qfrc_smooth", 0.0))
+    efc_j = np.zeros(d.efc.J.shape, dtype=np.float32)
+    efc_j[:, 0, 0] = case["efc_j"][:nworld]
+    d.efc.J.assign(efc_j)
+    d.efc.D.fill_(case.get("efc_d", 1.0))
+    d.efc.frictionloss.fill_(case.get("frictionloss", 0.0))
+    jaref = np.zeros(ctx.Jaref.shape, dtype=np.float32)
+    jaref[:, 0] = case["jaref"][:nworld]
+    ctx.Jaref.assign(jaref)
+    ctx.search.fill_(1.0)
+    ctx.search_dot.fill_(1.0)
+    ctx.done.fill_(False)
+    ctx.search_unchanged.fill_(False)
+    d.overflow.zero_()
+    ctx.alpha.fill_(wp.inf)
+
+    solver._linesearch(m, d, ctx)
+
+    expected = np.array(case["expected"][:nworld], dtype=np.float32)
+    np.testing.assert_allclose(ctx.alpha.numpy(), expected, rtol=1e-6)
+    if nworld == 2:
+      self.assertFalse(np.allclose(ctx.alpha.numpy()[0], ctx.alpha.numpy()[1]))
+
   def test_linesearch_iterations_overflow(self):
     """Linesearch records overflow when iteration limit reached without convergence."""
     _, _, m, d = test_data.fixture(
@@ -1093,6 +1163,33 @@ class SolverTest(parameterized.TestCase):
     solver._linesearch(m, d, ctx)
 
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.LS_ITERATIONS)
+
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    xml_jacobian=(
+      ("humanoid/humanoid.xml", mujoco.mjtJacobian.mjJAC_DENSE),
+      ("humanoid/humanoid.xml", mujoco.mjtJacobian.mjJAC_SPARSE),
+      ("constraints.xml", mujoco.mjtJacobian.mjJAC_DENSE),
+      ("constraints.xml", mujoco.mjtJacobian.mjJAC_SPARSE),
+      # dense Jacobians are limited to 60 DOFs
+      ("humanoid/n_humanoid.xml", mujoco.mjtJacobian.mjJAC_SPARSE),
+    ),
+  )
+  def test_solve_cholesky(self, cone, xml_jacobian):
+    """Newton from a cold start: one-tile (nv 27 padded, 48) and blocked (nv 81) Cholesky."""
+    xml, jacobian = xml_jacobian
+    for keyframe in range(3):
+      _, mjd, m, d = test_data.fixture(
+        xml,
+        keyframe=keyframe,
+        overrides={"opt.jacobian": jacobian, "opt.cone": cone, "opt.solver": SolverType.NEWTON, "opt.iterations": 50},
+      )
+      d.qacc_warmstart.zero_()
+      d.qacc.fill_(wp.inf)
+      d.efc.force.fill_(wp.inf)
+      mjw.solve(m, d)
+      _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+      _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
@@ -1145,6 +1242,28 @@ class SolverTest(parameterized.TestCase):
         _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
         _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
+  @absltest.skipIf(not wp.get_device().is_cuda, "CUDA graph capture requires CUDA")
+  def test_solve_graph_capture_sparse(self):
+    """A captured sparse solve forks jv onto a second stream, joins it and matches eager."""
+    _, _, m, d = test_data.fixture(
+      "humanoid/humanoid.xml",
+      keyframe=0,
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": SolverType.CG},
+    )
+
+    mjw.solve(m, d)
+    qacc = d.qacc.numpy().copy()
+
+    d.qacc.zero_()
+    warp_util._SIDE_STREAMS.clear()
+    # ending the capture raises if the fork was not joined
+    with wp.ScopedCapture() as capture:
+      mjw.solve(m, d)
+    self.assertLen(warp_util._SIDE_STREAMS, 1)
+    wp.capture_launch(capture.graph)
+
+    _assert_eq(d.qacc.numpy(), qacc, "qacc")
+
   @parameterized.named_parameters(
     ("max3", (3,)),
     ("max4_mixed", (3, 4)),
@@ -1183,7 +1302,7 @@ class SolverTest(parameterized.TestCase):
     ctx.done.fill_(False)
     wp.launch(
       solver._update_gradient_init_h_sparse(False),
-      dim=(d.nworld, m.nv_pad, solver._INIT_H_LANES),
+      dim=(d.nworld, m.nv_pad, solver._INIT_H_SECTOR),
       inputs=[m.nv, m.M_elemid, d.nf, d.M, d.efc.D, d.efc.state, d.dof_frictionadr, d.cdof_dof, ctx.done],
       outputs=[ctx.h],
     )
@@ -1589,14 +1708,17 @@ class SolverTest(parameterized.TestCase):
       mujoco.mjtJacobian.mjJAC_SPARSE,
     ),
     nworld=(1, 2),
+    load=(False, True),
   )
-  def test_noslip(self, cone, condim, jacobian, nworld):
+  def test_noslip(self, cone, condim, jacobian, nworld, load):
     """Tests noslip solver against MuJoCo."""
+    # load: tilted gravity and a spinning sphere put force on every frictional row (condim 4, 6)
+    gravity, spin = ("3 2 -9.81", ".5") if load else ("3 0 -9.81", "0")
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
         <option noslip_iterations="3" noslip_tolerance="0" impratio="3"
-                gravity="3 0 -9.81"/>
+                gravity="{gravity}"/>
         <worldbody>
           <geom type="plane" size="5 5 .1" condim="{condim}" friction="1 .05 .01"/>
           <body pos="0 0 .099">
@@ -1613,7 +1735,7 @@ class SolverTest(parameterized.TestCase):
           </body>
         </worldbody>
         <keyframe>
-          <key qvel="0 0 0 0 0 0 2 0"/>
+          <key qvel="0 0 0 0 0 {spin} 2 0"/>
         </keyframe>
       </mujoco>
       """,
@@ -1621,7 +1743,9 @@ class SolverTest(parameterized.TestCase):
       overrides={"opt.jacobian": jacobian, "opt.cone": cone},
       nworld=nworld,
     )
-    mjds = _perturb_worlds(mjm, mjd, d, nworld, [0.3, -0.2, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5])
+    # with load, world 1 spins faster instead of sliding (sliding matches MuJoCo only to 1.5e-4)
+    dqvel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.2, -1.0, 0.5] if load else [0.3, -0.2, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5]
+    mjds = _perturb_worlds(mjm, mjd, d, nworld, dqvel)
 
     # main solver forces without noslip, used to check that noslip has an effect
     mjm_slip = _noslip_model(mjm, noslip_iterations=0)
@@ -1956,7 +2080,7 @@ class SolverTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
-  @parameterized.parameters(2, 3, 4, 5)
+  @parameterized.parameters(2, 3, 5)
   def test_qcqp(self, n):
     """Tests the QCQP solvers against a reference implementation of mju_QCQP."""
     rng = np.random.default_rng(n)
@@ -1991,38 +2115,26 @@ class SolverTest(parameterized.TestCase):
     b_in = wp.array(np.array(b), dtype=types.vec5)
     d_in = wp.array(np.array(d), dtype=types.vec5)
     r_in = wp.array(np.array(r), dtype=float)
-    res_out = [wp.zeros(ncase, dtype=types.vec5) for _ in range(3)]
-    active_out = [wp.full(ncase, -1, dtype=int) for _ in range(3)]
-    wp.launch(
-      _qcqp_kernel,
-      dim=ncase,
-      inputs=[n, A_in, b_in, d_in, r_in],
-      outputs=[res_out[0], active_out[0], res_out[1], active_out[1], res_out[2], active_out[2]],
-    )
+    res_out = wp.zeros(ncase, dtype=types.vec5)
+    active_out = wp.full(ncase, -1, dtype=int)
+    wp.launch(_qcqp_kernel, dim=ncase, inputs=[n, A_in, b_in, d_in, r_in], outputs=[res_out, active_out])
 
-    # mju_QCQP2 for n = 2, mju_QCQP3 for n = 3, mju_QCQP for all n
-    outputs = [(res_out[2], active_out[2])]
-    if n == 2:
-      outputs.append((res_out[0], active_out[0]))
-    if n == 3:
-      outputs.append((res_out[1], active_out[1]))
+    # mju_QCQP2 for n = 2, mju_QCQP3 for n = 3, mju_QCQP for n = 5
+    res = res_out.numpy()
+    active = active_out.numpy()
+    for case, (res_expected, active_expected) in enumerate(expected):
+      self.assertEqual(active[case], int(active_expected), f"active{case}")
+      _assert_eq(res[case, :n], res_expected, f"res{case}", tol=1e-3)
+      np.testing.assert_array_equal(res[case, n:], 0.0)
 
-    for res, active in outputs:
-      res = res.numpy()
-      active = active.numpy()
-      for case, (res_expected, active_expected) in enumerate(expected):
-        self.assertEqual(active[case], int(active_expected), f"active{case}")
-        _assert_eq(res[case, :n], res_expected, f"res{case}", tol=1e-3)
-        np.testing.assert_array_equal(res[case, n:], 0.0)
-
-        if case == 0:
-          np.testing.assert_array_equal(res[case], 0.0)
-        elif case % 2:
-          # solution on the constraint boundary
-          self.assertTrue(active[case])
-          _assert_eq(np.linalg.norm(res[case, :n] / d[case][:n]), r[case], f"norm{case}", tol=1e-3)
-        else:
-          self.assertFalse(active[case])
+      if case == 0:
+        np.testing.assert_array_equal(res[case], 0.0)
+      elif case % 2:
+        # solution on the constraint boundary
+        self.assertTrue(active[case])
+        _assert_eq(np.linalg.norm(res[case, :n] / d[case][:n]), r[case], f"norm{case}", tol=1e-3)
+      else:
+        self.assertFalse(active[case])
 
   @parameterized.parameters(False, True)
   def test_incremental_vs_full_hessian(self, f64):
@@ -2069,6 +2181,89 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(qacc_inc, qacc_full, f"qacc keyframe={keyframe}")
 
     self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
+
+  @parameterized.parameters(1, 2)
+  def test_dense_hessian_incremental_strided(self, nworld):
+    """Strided dense incremental H update matches exact rank-1 updates."""
+    self.assertEqual(solver._jtdaj_groups_per_world(10**7, 12, solver._update_gradient_h_incremental, 2), 2)
+
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0" frictionloss="1"/>
+            <geom size="0.1"/>
+            <body pos="0.2 0 0">
+              <joint frictionloss="2"/>
+              <geom size="0.1"/>
+              <body pos="0.2 0 0">
+                <joint name="j2"/>
+                <joint name="j3" type="slide"/>
+                <geom size="0.1"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed frictionloss="5">
+            <joint joint="j0" coef="1"/>
+            <joint joint="j2" coef="-0.5"/>
+            <joint joint="j3" coef="0.25"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertFalse(m.is_sparse)
+
+    ctx = solver._create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=True)
+
+    state = np.full((nworld, d.njmax), types.ConstraintState.QUADRATIC.value, dtype=int)
+    state[:, 0] = types.ConstraintState.LINEARPOS.value
+    d.efc.state.assign(state)
+    ctx.done.fill_(False)
+    ctx.h.fill_(wp.inf)
+    solver._update_gradient(m, d, ctx)
+
+    # the last world adds row 0 and removes row 2, world 0 stays idle when nworld == 2
+    ids = np.zeros(ctx.quad_changed_ids.shape, dtype=int)
+    counts = np.zeros(nworld, dtype=int)
+    active_world = nworld - 1
+    state[active_world, 0] = types.ConstraintState.QUADRATIC.value
+    state[active_world, 2] = types.ConstraintState.LINEARPOS.value
+    ids[active_world, :2] = [0, 2]
+    counts[active_world] = 2
+    d.efc.state.assign(state)
+    ctx.quad_changed_ids.assign(ids)
+    ctx.quad_changed_count.assign(counts)
+
+    # fewer threads than upper-triangle elements, so each thread strides over several
+    threads_per_world = 3
+    self.assertLess(threads_per_world, m.nv * (m.nv + 1) // 2)
+    wp.launch(
+      solver._update_gradient_h_incremental,
+      dim=(nworld, threads_per_world),
+      inputs=[m.nv, d.efc.J, d.efc.D, d.efc.state, ctx.quad_changed_ids, ctx.quad_changed_count, threads_per_world],
+      outputs=[ctx.h],
+    )
+
+    h_actual = ctx.h.numpy()
+    J = d.efc.J.numpy()
+    D = d.efc.D.numpy()
+    nefc = d.nefc.numpy()
+    m_dense = np.zeros((m.nv, m.nv))
+    mujoco.mj_fullM(mjm, mjd, m_dense)
+    for w in range(nworld):
+      h_ref = m_dense.copy()
+      for efcid in np.flatnonzero(state[w, : nefc[w]] == types.ConstraintState.QUADRATIC.value):
+        row = J[w, efcid, : m.nv]
+        h_ref += D[w, efcid] * np.outer(row, row)
+      np.testing.assert_allclose(np.triu(h_actual[w, : m.nv, : m.nv]), np.triu(h_ref), rtol=1e-5, atol=1e-6)
+    if nworld == 2:
+      self.assertFalse(np.allclose(np.triu(h_actual[0, : m.nv, : m.nv]), np.triu(h_actual[1, : m.nv, : m.nv])))
 
   @parameterized.product(nworld=(1, 2), rows_from=("put_data", "make_constraint"), f64=(False, True))
   def test_sparse_hessian_dof_friction(self, nworld, rows_from, f64):
@@ -2305,7 +2500,7 @@ class SolverTest(parameterized.TestCase):
       <mujoco>
         <option cone="elliptic"/>
         <worldbody>
-          <replicate count="7" offset="0.2 0 0">
+          <replicate count="9" offset="0.2 0 0">
             <body>
               <freejoint/>
               <geom size="0.05"/>
@@ -2315,10 +2510,10 @@ class SolverTest(parameterized.TestCase):
       </mujoco>
       """,
     )
-    self.assertGreater(m.nv, solver._BLOCK_CHOLESKY_DIM)
+    self.assertGreater(m.nv, types.H_ONE_TILE_MAX)
     h_shape = (d.nworld, m.nv_pad, m.nv_pad)
 
-    # Non-incremental Newton with nv > _BLOCK_CHOLESKY_DIM aliases hfactor to h only when requested.
+    # Non-incremental Newton with nv > H_ONE_TILE_MAX aliases hfactor to h only when requested.
     ctx_inplace = solver._create_solver_context(m, d, inplace_cholesky=True)
     ctx_default = solver._create_solver_context(m, d)
     self.assertEqual(ctx_inplace.hfactor.shape, h_shape)
@@ -2337,7 +2532,7 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(ctx_cg.h.shape, (d.nworld, 0, 0))
     self.assertEqual(ctx_cg.hfactor.shape, (d.nworld, 0, 0))
 
-    m_small = dataclasses.replace(m, nv=solver._BLOCK_CHOLESKY_DIM)
+    m_small = dataclasses.replace(m, nv=types.H_ONE_TILE_MAX)
     self.assertEqual(solver._create_solver_context(m_small, d, inplace_cholesky=True).hfactor.shape, (d.nworld, 0, 0))
 
     # Runtime guards reject missing augmented RHS padding and skip_unchanged with aliased buffers.
@@ -2366,7 +2561,7 @@ class SolverTest(parameterized.TestCase):
         </option>
         <worldbody>
           <geom type="plane" size="5 5 0.1"/>
-          <replicate count="7" offset="0.25 0 0">
+          <replicate count="9" offset="0.25 0 0">
             <body pos="-0.75 0 0.03" euler="8 -6 12">
               <freejoint/>
               <geom type="box" size="0.05 0.04 0.04" condim="6"/>
@@ -2382,7 +2577,7 @@ class SolverTest(parameterized.TestCase):
         "opt.deterministic": types.DeterminismType.ALL,
       },
       nworld=nworld,
-      nvmax=42 if compact else -1,
+      nvmax=54 if compact else -1,
     )
     mjds = _perturb_worlds(mjm, mjd, d, nworld, 0.5)
 
