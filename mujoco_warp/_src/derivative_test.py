@@ -26,7 +26,6 @@ from mujoco_warp import test_data
 from mujoco_warp._src import derivative
 from mujoco_warp._src import forward
 from mujoco_warp._src import types
-from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -647,8 +646,6 @@ class DerivativeTest(parameterized.TestCase):
       "implicitfast should be more accurate than Euler at large timestep when forcerange derivatives are correctly handled",
     )
 
-  # TODO(team): remove version check after mujoco>=3.17.1 is required
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1012047207"), "Requires MuJoCo >= 3.17.1.dev1012047207")
   @parameterized.parameters(
     mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
     mujoco.mjtIntegrator.mjINT_IMPLICIT,
@@ -776,11 +773,6 @@ class DerivativeTest(parameterized.TestCase):
         else:
           np.testing.assert_allclose(efm_as[w, 1:], 0.0, atol=0.0)
 
-  # TODO(team): remove version check after mujoco>=3.17.1 is required
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.17.1.dev1012047207"),
-    "Requires MuJoCo >= 3.17.1.dev1012047207",
-  )
   @parameterized.product(
     integrator=(
       mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
@@ -1499,8 +1491,6 @@ class DerivativeTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(out_np[0], out_np[1]))
 
-  # TODO(team): remove version check after mujoco>=3.17.1 is required
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
   @parameterized.product(
     integrator=(mujoco.mjtIntegrator.mjINT_IMPLICITFAST, mujoco.mjtIntegrator.mjINT_DISCRETE),
     nworld=(1, 2),
@@ -1911,10 +1901,6 @@ class DerivativeTest(parameterized.TestCase):
       self.assertFalse(np.allclose(d.efm_K_val.numpy()[0], d.efm_K_val.numpy()[1]))
       self.assertFalse(np.allclose(d.efm_c.numpy()[0], d.efm_c.numpy()[1]))
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
-    "Requires MuJoCo >= 3.14.1.dev990351372",
-  )
   @parameterized.product(
     config=["deformed", "collapsed", "inverted"],
     nworld=[1, 2],
@@ -2156,8 +2142,6 @@ class DerivativeTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qfrc_spring.numpy()[0], d.qfrc_spring.numpy()[1]))
 
-  # TODO(team): remove version check once mujoco >= 3.17.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1.dev1005593014"), "Requires MuJoCo >= 3.17.1.dev1005593014")
   @parameterized.product(dim=(2, 3), nworld=(1, 2))
   def test_eff_contact_element_weights(self, dim, nworld):
     """Passive flex element contacts weight the element vertices as MuJoCo C does."""
@@ -2338,9 +2322,7 @@ class DerivativeTest(parameterized.TestCase):
     res = wp.zeros_like(d.qacc)
     derivative.eff_prec(m, d, res, d.qfrc_smooth)
 
-    # TODO(team): remove version check once mujoco >= 4.0.0 is required.
-    if util_pkg.check_version("mujoco>=4.0.0.dev1014669023"):
-      _assert_eq(d.qHDiagInv.numpy()[0], mjd.qHDiagInv, "qHDiagInv")
+    _assert_eq(d.qHDiagInv.numpy()[0], mjd.qHDiagInv, "qHDiagInv")
     self.assertTrue(np.all(np.isfinite(res.numpy())))
     self.assertGreater(np.linalg.norm(res.numpy()), 0.0)
 
@@ -2569,9 +2551,7 @@ class DerivativeTest(parameterized.TestCase):
     mujoco.mj_forward(mjm, mjd)
     mjw.forward(m, d)
 
-    # TODO(team): remove version check once mujoco >= 4.0.0 is required.
-    if util_pkg.check_version("mujoco>=4.0.0.dev1014669023"):
-      _assert_eq(d.qHDiagInv.numpy()[0], mjd.qHDiagInv, "qHDiagInv")
+    _assert_eq(d.qHDiagInv.numpy()[0], mjd.qHDiagInv, "qHDiagInv")
     _assert_eq(d.efm_c.numpy()[0], mjd.efm_c, "efm_c")
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
     if nworld == 2:
@@ -3182,10 +3162,6 @@ class DerivativeTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc_smooth.numpy()[0], d.qacc_smooth.numpy()[1]))
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
-    "Requires MuJoCo >= 3.14.1.dev990351372",
-  )
   @parameterized.product(
     solver=(mujoco.mjtSolver.mjSOL_CG, mujoco.mjtSolver.mjSOL_NEWTON),
     nworld=(1, 2),
@@ -3238,10 +3214,6 @@ class DerivativeTest(parameterized.TestCase):
       self.assertGreater(z_final, 0.9)
       np.testing.assert_allclose(qpos_final[w], 0.0, atol=1e-3)
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
-    "Requires MuJoCo >= 3.14.1.dev990351372",
-  )
   @parameterized.product(
     case=((2, False), (3, False), (3, True)),
     nworld=(1, 2),
@@ -3384,10 +3356,6 @@ class DerivativeTest(parameterized.TestCase):
       mjw.forward(m, d)
       self.assertFalse(bool(np.any(d.flex_hessian_valid.numpy())))
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
-    "Requires MuJoCo >= 3.14.1.dev990351372",
-  )
   @parameterized.parameters(1, 2)
   def test_snh_stiffness_through_inversion(self, nworld):
     """Tests two-tetrahedron SNH stiffness matrix and damping across rank collapse and inversion."""
@@ -3557,10 +3525,6 @@ class DerivativeTest(parameterized.TestCase):
         if nworld == 2 and rank < 3:
           self.assertFalse(np.allclose(d.efm_K_val.numpy()[0], d.efm_K_val.numpy()[1]))
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
-    "Requires MuJoCo >= 3.14.1.dev990351372",
-  )
   @parameterized.parameters(0.0, 0.3, 0.499)
   def test_snh_projection_spectral_reference(self, poisson):
     """Tests SNH PSD projection across spectral cases (repeated, negative, near-zero, zero SVs)."""
@@ -3707,10 +3671,6 @@ class DerivativeTest(parameterized.TestCase):
         trans_sum = K_dense[:, axis::3].sum(axis=1)
         self.assertLessEqual(float(np.linalg.norm(trans_sum)) / norm_F, 1e-5)
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
-    "Requires MuJoCo >= 3.14.1.dev990351372",
-  )
   @parameterized.product(
     case=((2, False), (3, False), (3, True), ("mixed", True)),
     nworld=(1, 2),
@@ -3861,10 +3821,6 @@ class DerivativeTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
-    "Requires MuJoCo >= 3.14.1.dev990351372",
-  )
   @parameterized.product(
     case=("hinge", "ball", "free", "reordered_slides", "moving_ancestor"),
     nworld=(1, 2),
@@ -3962,8 +3918,6 @@ class DerivativeTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
-  # TODO(team): remove version check after mujoco>=3.17.1 is required
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
   @parameterized.parameters(
     mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
     mujoco.mjtIntegrator.mjINT_DISCRETE,
@@ -4044,9 +3998,6 @@ class DerivativeTest(parameterized.TestCase):
   @parameterized.parameters(1, 2)
   def test_eff_twist_solve_long_rod_and_ktheta(self, nworld):
     """Tests exact O(nedge) _eff_twist_solve on >64 edges and twist-twist Hessian vs FD."""
-    if types.ROD_HINGE_SIZE != 10:
-      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
-
     # 1. 70-edge circular rod (> old ROD_MAX_EDGES=64): eff_prec inverts eff_mul_m on twist chain
     mjm, _, m, d = test_data.fixture(
       xml="""
@@ -4148,8 +4099,6 @@ class DerivativeTest(parameterized.TestCase):
   )
   def test_eff_prec_fold_tw_diag_parity(self, cone, jacobian):
     """tw_diag folds contact/efc rows without double-counting tendon or actuator diagonals."""
-    if types.ROD_HINGE_SIZE != 10:
-      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>

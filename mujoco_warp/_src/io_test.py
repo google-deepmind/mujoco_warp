@@ -32,7 +32,6 @@ from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
 from mujoco_warp._src import io
 from mujoco_warp._src import types
-from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import put_model
 
@@ -515,7 +514,7 @@ class IOTest(parameterized.TestCase):
     )
     self.assertEqual(m.nv_pad, expected)
 
-  @parameterized.parameters((15, 16), (16, 32), (31, 32), (32, 48))
+  @parameterized.parameters((15, 16), (16, 16), (31, 32), (32, 32), (33, 48), (47, 48), (48, 48), (49, 64), (63, 64), (64, 80))
   def test_augmented_cholesky_nvmax_padding(self, nvmax, expected):
     self.assertEqual(io._nvmax_pad(nvmax), expected)
 
@@ -867,15 +866,14 @@ class IOTest(parameterized.TestCase):
       "act_dot",
       "xpos",
       "xquat",
-      "xmat",
       "xipos",
-      "ximat",
+      "xiquat",
       "xanchor",
       "xaxis",
       "geom_xpos",
-      "geom_xmat",
+      "geom_xquat",
       "site_xpos",
-      "site_xmat",
+      "site_xquat",
       "cam_xpos",
       "cam_xmat",
       "light_xpos",
@@ -925,6 +923,10 @@ class IOTest(parameterized.TestCase):
         getattr(mjd, field).reshape(-1),
         field,
       )
+    _assert_eq(mjd.xmat.reshape((-1, 3, 3)), test_data.quat_to_mat(d.xquat.numpy()[world_id]), "xmat")
+    _assert_eq(mjd.ximat.reshape((-1, 3, 3)), test_data.quat_to_mat(d.xiquat.numpy()[world_id]), "ximat")
+    _assert_eq(mjd.geom_xmat.reshape((-1, 3, 3)), test_data.quat_to_mat(d.geom_xquat.numpy()[world_id]), "geom_xmat")
+    _assert_eq(mjd.site_xmat.reshape((-1, 3, 3)), test_data.quat_to_mat(d.site_xquat.numpy()[world_id]), "site_xmat")
 
     # actuator_moment
     actuator_moment_dense = np.zeros((mjm.nu, mjm.nv))
@@ -959,8 +961,7 @@ class IOTest(parameterized.TestCase):
       "geom",
       # TODO(team): efc_address
     ]
-    if util_pkg.check_version("mujoco>=3.17.1"):
-      contact_fields.append("surfacevel")
+    contact_fields.append("surfacevel")
     for field in contact_fields:
       _assert_eq(
         getattr(d.contact, field).numpy()[world_id * ncon : world_id * ncon + ncon].reshape(-1),
@@ -2151,17 +2152,11 @@ class IOTest(parameterized.TestCase):
       """
     )
 
-    # older mujoco: tendon_type is implied by the first wrap object
-    with mock.patch.object(util_pkg, "check_version", return_value=False):
-      m_old = put_model(mjm)
-
     expected = [types.TendonType.SPATIAL, types.TendonType.FIXED]
     np.testing.assert_array_equal(m.tendon_type.numpy(), expected)
-    np.testing.assert_array_equal(m_old.tendon_type.numpy(), expected)
-    if util_pkg.check_version("mujoco>=3.17.1"):
-      np.testing.assert_array_equal(mjm.tendon_type, expected)
-      self.assertEqual(types.TendonType.FIXED, mujoco.mjtTendon.mjTENDON_FIXED)
-      self.assertEqual(types.TendonType.SPATIAL, mujoco.mjtTendon.mjTENDON_SPATIAL)
+    np.testing.assert_array_equal(mjm.tendon_type, expected)
+    self.assertEqual(types.TendonType.FIXED, mujoco.mjtTendon.mjTENDON_FIXED)
+    self.assertEqual(types.TendonType.SPATIAL, mujoco.mjtTendon.mjTENDON_SPATIAL)
 
   def test_model_batched_fields(self):
     """Test Model batched fields."""
@@ -2785,8 +2780,6 @@ class IOTest(parameterized.TestCase):
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
-  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   def test_flex_rod_hinge_map(self):
     """Verify put_model maps each 1D rod bending hinge to its flex and flex_bending address."""
     mjm, _, m, _ = test_data.fixture(
@@ -2811,8 +2804,6 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_array_equal(m.flex_rodhinge_map.numpy(), [[rod, adr + 1], [rod, adr + 1 + types.ROD_HINGE_SIZE]])
     self.assertFalse(m.has_flex_edge_stiff_damp)
 
-  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.parameters(
     # quadratic flexes are rejected before the self-collision check
     ("trilinear", "Self-collision of interpolated flexes"),
@@ -2960,8 +2951,7 @@ class IOTest(parameterized.TestCase):
       "dim",
       "geom",
     ]
-    if util_pkg.check_version("mujoco>=3.17.1"):
-      contact_fields.append("surfacevel")
+    contact_fields.append("surfacevel")
     for field in contact_fields:
       val_device = getattr(d.contact, field).numpy()
       val_host = getattr(mjd.contact, field)
@@ -2970,7 +2960,6 @@ class IOTest(parameterized.TestCase):
         host_slice = val_host[:ncon].reshape(-1)
         _assert_eq(device_slice, host_slice, f"{field} mismatch in world {w}")
 
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.17.1"), "Requires MuJoCo >= 3.17.1")
   @parameterized.parameters(1, 2)
   def test_contact_surfacevel_roundtrip(self, nworld):
     """Tests put_data, get_data_into, and reset_data for non-zero contact.surfacevel."""
@@ -2995,11 +2984,6 @@ class IOTest(parameterized.TestCase):
     surfacevel = d.contact.surfacevel.numpy()
     for w in range(nworld):
       np.testing.assert_allclose(surfacevel[w], expected, rtol=1e-5, atol=1e-5)
-
-    with mock.patch.object(util_pkg, "check_version", return_value=False):
-      d_legacy = mjwarp.put_data(mjm, mjd, nworld=nworld)
-    for w in range(nworld):
-      np.testing.assert_allclose(d_legacy.contact.surfacevel.numpy()[w], expected, rtol=1e-5, atol=1e-5)
 
     if nworld == 2:
       surfacevel[1] = [-0.5, 0.3, -0.7]
@@ -3080,6 +3064,66 @@ class IOTest(parameterized.TestCase):
     with warnings.catch_warnings():
       warnings.simplefilter("error")
       mjwarp.put_model(mjm)
+
+  @parameterized.parameters(1, 2)
+  def test_make_put_data_sleep_arrays(self, nworld):
+    """Tests that make_data and put_data initialize all sleep arrays consistently."""
+    mjm, mjd, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <body mocap="true">
+            <geom size=".1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint type="slide"/>
+            <geom size=".1"/>
+          </body>
+          <body pos="2 0 0">
+            <joint type="slide"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # make_data initializes awake counts and indices without requiring a step
+    d_make = mjwarp.make_data(mjm, nworld=nworld)
+    for w in range(nworld):
+      self.assertEqual(d_make.ntree_awake.numpy()[w], 2)
+      self.assertEqual(d_make.nbody_awake.numpy()[w], 4)
+      self.assertEqual(d_make.nv_awake.numpy()[w], 2)
+      np.testing.assert_array_equal(d_make.body_awake_ind.numpy()[w], [0, 1, 2, 3])
+      np.testing.assert_array_equal(d_make.dof_awake_ind.numpy()[w], [0, 1])
+
+    # put_data derives body_awake, counts, and indices from tree_asleep
+    mjd.tree_asleep[:] = [0, -(1 + types.MJ_MINAWAKE)]
+    d_put = mjwarp.put_data(mjm, mjd, nworld=nworld)
+    for w in range(nworld):
+      self.assertEqual(d_put.ntree_awake.numpy()[w], 1)
+      self.assertEqual(d_put.nbody_awake.numpy()[w], 3)
+      self.assertEqual(d_put.nv_awake.numpy()[w], 1)
+      np.testing.assert_array_equal(
+        d_put.body_awake.numpy()[w],
+        [types.SleepState.STATIC, types.SleepState.AWAKE, types.SleepState.ASLEEP, types.SleepState.AWAKE],
+      )
+      np.testing.assert_array_equal(d_put.body_awake_ind.numpy()[w, :3], [0, 1, 3])
+      np.testing.assert_array_equal(d_put.dof_awake_ind.numpy()[w, :1], [1])
+
+    if nworld == 2:
+      qvel = d_put.qvel.numpy()
+      qvel[1, 0] = 1.0
+      d_put.qvel.assign(qvel)
+    mjwarp.step(m, d_put)
+    self.assertEqual(d_put.tree_awake.numpy()[0, 0], 0)
+    if nworld == 2:
+      self.assertEqual(d_put.tree_awake.numpy()[1, 0], 1)
+      self.assertFalse(np.allclose(d_put.qpos.numpy()[0], d_put.qpos.numpy()[1]))
 
 
 if __name__ == "__main__":

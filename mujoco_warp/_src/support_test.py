@@ -1121,8 +1121,6 @@ class SupportTest(parameterized.TestCase):
 
   def test_rod_support_lookups(self):
     """Tests precomputed 1D DER rod lookups: twist joints and incident elements."""
-    if io.types.ROD_HINGE_SIZE != 10:
-      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
     mjm, _, m, _ = test_data.fixture(
       xml="""
       <mujoco>
@@ -1261,8 +1259,6 @@ class SupportTest(parameterized.TestCase):
 
   def test_rod_box_elem_pose_and_no_state_roll(self):
     """Tests rod_box_elem orthonormal frame, twist rotation, and rotated-root no-state start."""
-    if io.types.ROD_HINGE_SIZE != 10:
-      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -1314,7 +1310,7 @@ class SupportTest(parameterized.TestCase):
       flex_elem_rodedge: wp.array[wp.vec2i],
       qpos_in: wp.array2d[float],
       plastic_in: wp.array2d[float],
-      xmat_in: wp.array2d[wp.mat33],
+      xquat_in: wp.array2d[wp.quat],
       flexvert_xpos_in: wp.array2d[wp.vec3],
       flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
       flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
@@ -1346,7 +1342,7 @@ class SupportTest(parameterized.TestCase):
         flex_elem_rodedge,
         qpos_in,
         plastic_in,
-        xmat_in,
+        xquat_in,
         flexvert_xpos_in,
         flex_rod_frame0_loc_in,
         flex_rod_frame0_ref_in,
@@ -1388,7 +1384,7 @@ class SupportTest(parameterized.TestCase):
         m.flex_elem_rodedge,
         d.qpos,
         d.plastic,
-        d.xmat,
+        d.xquat,
         d.flexvert_xpos,
         d.flex_rod_frame0_loc,
         d.flex_rod_frame0_ref,

@@ -20,7 +20,6 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src.collision_primitive_core import tri_weights
 from mujoco_warp._src.math import motion_cross
-from mujoco_warp._src.types import FLEX_INTERP_PHYS_JAC
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ConeType
@@ -188,17 +187,16 @@ def compute_interp_cell_quat(
 
           idx += 1
 
-  if wp.static(FLEX_INTERP_PHYS_JAC):
-    node_0 = nstart + (ci * order) * ny_g * nz_g + (cj * order) * nz_g + (ck * order)
-    node_last = nstart + ((ci + 1) * order) * ny_g * nz_g + ((cj + 1) * order) * nz_g + ((ck + 1) * order)
-    dref = flex_node0[node_last] - flex_node0[node_0]
-    for c in range(3):
-      dc = dref[c]
-      if dc > MJ_MINVAL:
-        inv_dc = 1.0 / dc
-        F[0, c] *= inv_dc
-        F[1, c] *= inv_dc
-        F[2, c] *= inv_dc
+  node_0 = nstart + (ci * order) * ny_g * nz_g + (cj * order) * nz_g + (ck * order)
+  node_last = nstart + ((ci + 1) * order) * ny_g * nz_g + ((cj + 1) * order) * nz_g + ((ck + 1) * order)
+  dref = flex_node0[node_last] - flex_node0[node_0]
+  for c in range(3):
+    dc = dref[c]
+    if dc > MJ_MINVAL:
+      inv_dc = 1.0 / dc
+      F[0, c] *= inv_dc
+      F[1, c] *= inv_dc
+      F[2, c] *= inv_dc
 
   return mat33_to_quat_polar(F)
 
@@ -372,7 +370,7 @@ def rod_edge_director(
   flex_rodedge_vert: wp.array[wp.vec2i],
   # Data in:
   plastic_in: wp.array2d[float],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
   flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
@@ -411,7 +409,7 @@ def rod_edge_director(
       if wp.dot(t0_loc, t0_loc) < 0.25:
         return False, wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0)
       b0 = flex_vertbodyid[va + verts_k[0]]
-      R_b0 = xmat_in[worldid, b0]
+      R_b0 = math.quat_to_mat(xquat_in[worldid, b0])
       t0 = R_b0 @ t0_loc
       u0 = R_b0 @ flex_rod_frame0_loc_in[worldid, f, 1]
       ok_pt, u_out, v_out = rod_parallel_transport(t0, t_out, u0)
@@ -424,7 +422,7 @@ def rod_edge_director(
       if wp.dot(tT_loc, tT_loc) < 0.25:
         return False, wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0)
       bT = flex_vertbodyid[va + verts_k[1]]
-      R_bT = xmat_in[worldid, bT]
+      R_bT = math.quat_to_mat(xquat_in[worldid, bT])
       tT = R_bT @ tT_loc
       uT = R_bT @ flex_rod_tail_loc_in[worldid, f, 1]
       ok_pt, u_out, v_out = rod_parallel_transport(tT, t_out, uT)
@@ -482,7 +480,7 @@ def rod_chain_edge_director(
   flex_rodedge_vert: wp.array[wp.vec2i],
   # Data in:
   plastic_in: wp.array2d[float],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
   flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
@@ -517,7 +515,7 @@ def rod_chain_edge_director(
       if wp.dot(tc_loc, tc_loc) < 0.25:
         return False, False, z3, z3, z3, z3, 0.0
       bc = flex_vertbodyid[va + verts_e[0]]
-      R_bc = xmat_in[worldid, bc]
+      R_bc = math.quat_to_mat(xquat_in[worldid, bc])
       tc = R_bc @ tc_loc
       uc = R_bc @ flex_rod_frame0_loc_in[worldid, f, 1]
     else:
@@ -525,7 +523,7 @@ def rod_chain_edge_director(
       if wp.dot(tc_loc, tc_loc) < 0.25:
         return False, False, z3, z3, z3, z3, 0.0
       bc = flex_vertbodyid[va + verts_e[1]]
-      R_bc = xmat_in[worldid, bc]
+      R_bc = math.quat_to_mat(xquat_in[worldid, bc])
       tc = R_bc @ tc_loc
       uc = R_bc @ flex_rod_tail_loc_in[worldid, f, 1]
     ok_pt, ue, ve = rod_parallel_transport(tc, te, uc)
@@ -578,7 +576,7 @@ def rod_box_elem(
   # Data in:
   qpos_in: wp.array2d[float],
   plastic_in: wp.array2d[float],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
   flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
@@ -610,7 +608,7 @@ def rod_box_elem(
     flex_rod_edgenum,
     flex_rodedge_vert,
     plastic_in,
-    xmat_in,
+    xquat_in,
     flexvert_xpos_in,
     flex_rod_frame0_loc_in,
     flex_rod_frame0_ref_in,
@@ -1805,6 +1803,8 @@ def eval_basis_trilinear(local: wp.vec3, node_idx: int) -> float:
   return _phi(local[0], i) * _phi(local[1], j) * _phi(local[2], k)
 
 
+# Warp zero-initializes kernel locals in every thread: only use these in functions called for
+# interpolated flexes
 MAX_INTERP_BODIES = 64
 vec_interp_body = wp.types.vector(length=MAX_INTERP_BODIES, dtype=int)
 vec_interp_weight = wp.types.vector(length=MAX_INTERP_BODIES, dtype=float)
@@ -2159,16 +2159,15 @@ def compute_interp_face_quat(
       t1 += node_pos * grad0
       t2 += node_pos * grad1
 
-  if wp.static(FLEX_INTERP_PHYS_JAC):
-    axis0 = (normal_axis + 1) % 3
-    axis1 = (normal_axis + 2) % 3
-    dref = flex_node0[nstart + gidx1] - flex_node0[nstart + gidx0]
-    d0 = dref[axis0]
-    d1 = dref[axis1]
-    if d0 > MJ_MINVAL:
-      t1 = t1 / d0
-    if d1 > MJ_MINVAL:
-      t2 = t2 / d1
+  axis0 = (normal_axis + 1) % 3
+  axis1 = (normal_axis + 2) % 3
+  dref = flex_node0[nstart + gidx1] - flex_node0[nstart + gidx0]
+  d0 = dref[axis0]
+  d1 = dref[axis1]
+  if d0 > MJ_MINVAL:
+    t1 = t1 / d0
+  if d1 > MJ_MINVAL:
+    t2 = t2 / d1
 
   normal = wp.cross(t1, t2)
 
