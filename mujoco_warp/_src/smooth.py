@@ -1608,7 +1608,7 @@ def _qLDiag_div(enable_sleep: bool = False):
 
 @cache_kernel
 def _factor_LD_sparse_fused(enable_sleep: bool = False):
-  """Gather descendant contributions in reverse depth order, one block per tree."""
+  """Gather descendant contributions; requires contiguous subtrees and full ancestor-chain rows."""
 
   @wp.func_native(snippet="WP_TILE_SYNC();")
   def _syncthreads():
