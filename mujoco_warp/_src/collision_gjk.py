@@ -983,20 +983,25 @@ def _epa_witness(
   # outside it is inaccurate and unbounded for sliver faces, so use the face the ray along n exits
   if wp.min(coordinates) < -EPA_WITNESS_TOL:
     for i in range(pt.nface):
-      if _is_face_deleted(pt.face[i]):
+      if i == face_idx:
         continue
-      face_i = _get_face_verts(pt.face[i])
+      fi = pt.face[i]
+      if _is_face_deleted(fi):
+        continue
+      face_i = _get_face_verts(fi)
       u1 = pt.vert[2 * face_i[0]] - pt.vert[2 * face_i[0] + 1]
       u2 = pt.vert[2 * face_i[1]] - pt.vert[2 * face_i[1] + 1]
       u3 = pt.vert[2 * face_i[2]] - pt.vert[2 * face_i[2] + 1]
-      c = wp.vec3(wp.dot(wp.cross(u2, u3), n), wp.dot(wp.cross(u3, u1), n), wp.dot(wp.cross(u1, u2), n))
+      u2_x_u3 = wp.cross(u2, u3)
+      c = wp.vec3(wp.dot(u2_x_u3, n), wp.dot(wp.cross(u3, u1), n), wp.dot(wp.cross(u1, u2), n))
       s = c[0] + c[1] + c[2]
       # skip faces parallel to n or hit behind the origin
-      if s == 0.0 or wp.dot(u1, wp.cross(u2, u3)) / s <= 0.0:
+      if not _same_sign(wp.dot(u1, u2_x_u3), s):
         continue
-      if wp.min(c / s) >= -EPA_WITNESS_TOL:
+      coord_i = c / s
+      if wp.min(coord_i) >= -EPA_WITNESS_TOL:
         face = face_i
-        coordinates = c / s
+        coordinates = coord_i
         break
 
   l1 = coordinates[0]
