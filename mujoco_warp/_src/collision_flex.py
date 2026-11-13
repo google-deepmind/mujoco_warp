@@ -466,8 +466,9 @@ def _collide_geom_capsule_detect(
 ):
   if gtype == int(GeomType.SPHERE):
     sphere_radius = size_val[0]
+    sphere_axis = wp.vec3(rot[0, 2], rot[1, 2], rot[2, 2])
     dist, contact_pos, nrm = collision_primitive_core.sphere_capsule(
-      pos, sphere_radius, cap_pos, cap_axis, cap_radius, cap_half_len
+      pos, sphere_axis, sphere_radius, cap_pos, cap_axis, cap_radius, cap_half_len
     )
     if dist < margin:
       _write_candidate(
