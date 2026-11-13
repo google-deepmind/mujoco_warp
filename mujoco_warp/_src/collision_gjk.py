@@ -2289,6 +2289,7 @@ def multicontact(
   epa_face: int,
   x1: wp.vec3,
   x2: wp.vec3,
+  dist: float,
   geom1: Geom,
   geom2: Geom,
   geomtype1: int,
@@ -2296,15 +2297,15 @@ def multicontact(
 ) -> Tuple[int, mat43, mat43, wp.vec4]:
   """Recover clipped contacts from GJK/EPA features.
 
-  Returns the clipped count, witness pairs, and margin-inflated distances. A zero count
-  means no clipping result: slot 0 retains x1/x2 and the caller must use the GJK/EPA
-  distance. A positive count, including one, has valid per-point clipped distances.
+  Returns clipped witnesses and their margin-inflated distances, or the original
+  GJK/EPA witness and distance as one fallback contact.
   """
   witness1 = mat43()
   witness2 = mat43()
   dists = wp.vec4()
   witness1[0] = x1
   witness2[0] = x2
+  dists[0] = dist
 
   if geomtype1 == GeomType.MESH:
     vert = geom1.vert
@@ -2416,7 +2417,7 @@ def multicontact(
         nnorms1, v1 = _capsule_edge_normals(geom1.rot, geom1.pos, geom1.size, x1, n1, endvert)
       nres, res = _aligned_face_edge(n1, nnorms1, n2, nnorms2, dir)
       if not nres:
-        return 0, witness1, witness2, dists
+        return 1, witness1, witness2, dists
       is_edge_contact_geom1 = 1
 
     # check if face-edge collision
@@ -2453,11 +2454,11 @@ def multicontact(
         nnorms2, v2 = _capsule_edge_normals(geom2.rot, geom2.pos, geom2.size, x2, n2, endvert)
       nres, res = _aligned_face_edge(n2, nnorms2, n1, nnorms1, dir_neg)
       if not nres:
-        return 0, witness1, witness2, dists
+        return 1, witness1, witness2, dists
       is_edge_contact_geom2 = 1
     else:
       # no multi-contact
-      return 0, witness1, witness2, dists
+      return 1, witness1, witness2, dists
 
   i = res[0]
   j = res[1]
@@ -2538,7 +2539,7 @@ def multicontact(
     )
 
   if nclipped < 1:
-    return 0, witness1, witness2, dists
+    return 1, witness1, witness2, dists
 
   if margin1 != 0.0 or margin2 != 0.0:
     for k in range(nclipped):

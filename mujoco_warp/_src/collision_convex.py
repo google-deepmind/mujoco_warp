@@ -896,14 +896,14 @@ def ccd_kernel_builder(
     # geometry.  Correct back to the true surface-to-surface distance so that
     # the constraint pipeline (pos = dist - includemargin) works consistently
     # with the primitive narrowphase, which reports un-inflated distances.
-    dist += margin
-
     witness1 = mat43()
     witness2 = mat43()
     dists = wp.vec4()
-    has_clipped = bool(False)
     witness1[0] = w1
     witness2[0] = w2
+    dists[0] = dist
+
+    dist += margin
 
     has_face1 = wp.static(geomtype1 == GeomType.BOX or geomtype1 == GeomType.MESH or geomtype1 == GeomType.CYLINDER)
     has_face2 = wp.static(geomtype2 == GeomType.BOX or geomtype2 == GeomType.MESH or geomtype2 == GeomType.CYLINDER)
@@ -936,7 +936,6 @@ def ccd_kernel_builder(
         if geom2.mesh_polyadr < 0:
           multiccd_idx = -1
 
-      dists = wp.vec4()
       if multiccd_idx > -1:
         ncollision, witness1, witness2, dists = multicontact(
           multiccd_polygon_in[ccdid],
@@ -955,18 +954,12 @@ def ccd_kernel_builder(
           epa_face_in[ccdid, multiccd_idx],
           w1,
           w2,
+          dists[0],
           geom1,
           geom2,
           geomtype1,
           geomtype2,
         )
-
-        has_clipped = ncollision > 0
-        # Without clipped contacts, retain the single GJK/EPA witness and distance.
-        if ncollision < 1:
-          ncollision = 1
-          witness1[0] = w1
-          witness2[0] = w2
 
     condim, friction, solref, solreffriction, solimp, adhesion = contact_material_params(
       geom_condim,
@@ -1001,7 +994,7 @@ def ccd_kernel_builder(
       write_contact(
         naconmax_in,
         i,
-        dists[i] + margin if has_clipped else dist,
+        dists[i] + margin,
         0.5 * (witness1[i] + witness2[i]) + origin,
         frame,
         margin,

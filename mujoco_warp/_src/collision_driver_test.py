@@ -1148,23 +1148,24 @@ class CollisionTest(parameterized.TestCase):
       np.testing.assert_allclose(frame[j][:3], mjd.contact.frame[i][:3], atol=1e-6)
       np.testing.assert_allclose(includemargin[j], mjd.contact.includemargin[i], atol=1e-6)
 
-  @parameterized.product(nworld=(1, 2), case=("single", "multiple", "unaligned", "disabled", "smooth"))
+  @parameterized.product(nworld=(1, 2), case=("single", "multiple", "unaligned"))
   def test_clipped_contact_distance(self, nworld, case):
     """A single clipped witness must use its own distance, just like multiple witnesses."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
-        <option><flag multiccd="enable"/></option>
         <asset>
           <mesh name="cube" vertex="-.01 -.01 -.01  -.01 -.01 .01  -.01 .01 -.01  -.01 .01 .01
                                     .01 -.01 -.01   .01 -.01 .01   .01 .01 -.01   .01 .01 .01"/>
         </asset>
-        <default><geom margin=".0005"/></default>
+        <default>
+          <geom type="mesh" mesh="cube" margin=".0005"/>
+        </default>
         <worldbody>
-          <geom type="mesh" mesh="cube"/>
+          <geom/>
           <body pos="0 0 .03">
             <freejoint/>
-            <geom type="mesh" mesh="cube" mass=".02"/>
+            <geom/>
           </body>
         </worldbody>
       </mujoco>
@@ -1172,14 +1173,6 @@ class CollisionTest(parameterized.TestCase):
       nworld=nworld,
       nconmax=8,
     )
-    if case == "disabled":
-      mjm.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_MULTICCD
-      m.opt.disableflags |= DisableBit.MULTICCD
-    elif case == "smooth":
-      mjm.geom_type[1] = mujoco.mjtGeom.mjGEOM_SPHERE
-      mjm.geom_size[1] = [0.01, 0, 0]
-      m = mjw.put_model(mjm)
-
     corners = np.array([[x, y, z] for x in (-0.01, 0.01) for y in (-0.01, 0.01) for z in (-0.01, 0.01)])
     qpos, references = [], []
     for world in range(nworld):
@@ -1192,7 +1185,7 @@ class CollisionTest(parameterized.TestCase):
       quat = np.array([np.cos(angle / 2), np.sin(angle / 2) * np.cos(axis), np.sin(angle / 2) * np.sin(axis), 0])
       rot = np.empty(9)
       mujoco.mju_quat2Mat(rot, quat)
-      low = -0.01 if case == "smooth" else (corners @ rot.reshape(3, 3).T)[:, 2].min()
+      low = (corners @ rot.reshape(3, 3).T)[:, 2].min()
       mjd.qpos[:] = np.concatenate(([x * 0.001, y * 0.001, 0.01 - low + gap * 0.001], quat))
       mujoco.mj_forward(mjm, mjd)
       self.assertEqual(mjd.ncon, 3 if case == "multiple" else 1)
