@@ -100,6 +100,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
     geom_xquat_in: wp.array2d[wp.quat],
     # In:
     enabled_geom_ids: wp.array[int],
+    mesh_bvh_rot: wp.array[wp.mat33],
     mesh_traversable: wp.array[wp.uint64],
     hfield_traversable: wp.array[wp.uint64],
     primitive_traversable: wp.uint64,
@@ -118,8 +119,11 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
       traversable = hfield_traversable[geom_dataid[worldid % geom_dataid.shape[0], gi]]
       sbt_offset = _TRIANGLE_SBT_OFFSET
     elif gtype == GeomType.MESH or gtype == GeomType.SDF:
-      traversable = mesh_traversable[geom_dataid[worldid % geom_dataid.shape[0], gi]]
+      dataid = geom_dataid[worldid % geom_dataid.shape[0], gi]
+      traversable = mesh_traversable[dataid]
       sbt_offset = _TRIANGLE_SBT_OFFSET
+      # The triangles share the mesh BVH's points, which may be rotated to the authored frame.
+      linear = linear @ mesh_bvh_rot[dataid]
     else:
       size = geom_size[worldid % geom_size.shape[0], gi]
       if gtype == GeomType.SPHERE:
@@ -171,6 +175,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
       wp.array(np.tile(mjd.geom_xpos[None], (nworld, 1, 1)), dtype=wp.vec3),
       wp.array(np.tile(mjd.geom_xquat[None], (nworld, 1, 1)), dtype=wp.quat),
       rc.enabled_geom_ids,
+      rc.mesh_bvh_rot,
       mesh_traversable,
       hfield_traversable,
       wp.uint64(primitive_traversable),
@@ -202,6 +207,7 @@ def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
       d.geom_xpos,
       d.geom_xquat,
       rc.enabled_geom_ids,
+      rc.mesh_bvh_rot,
       scene.mesh_traversable,
       scene.hfield_traversable,
       wp.uint64(scene.primitive_traversable),
@@ -255,6 +261,6 @@ def create_pipeline(scene: OptixScene, megakernel: wp.Kernel, geom_ray_types: Tu
     sbt=wo.SbtLayout(hit_groups={"triangles": wo.HitGroup(), "primitives": wo.HitGroup(intersection=intersect_primitive)}),
     attribute_words=3,
     max_registers=_MAX_REGISTERS,
-    module_options={"fast_math": megakernel.module.options["fast_math"]},
+    module_options={name: megakernel.module.options[name] for name in ("fast_math", "max_unroll")},
     graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
   )
