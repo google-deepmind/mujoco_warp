@@ -791,8 +791,6 @@ class SleepTest(parameterized.TestCase):
   @parameterized.product(nworld=(1, 2), deterministic=(False, True))
   def test_sleep_rerun_collision(self, nworld, deterministic):
     """Verify that newly awakened bodies detect collisions in the same step."""
-    if deterministic and not wp.get_device().is_cuda:
-      self.skipTest("CUDA graph capture requires CUDA")
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -834,12 +832,9 @@ class SleepTest(parameterized.TestCase):
     d.qvel = wp.array(qvel, dtype=float)
 
     # Run a single simulation step
-    if deterministic:
-      with wp.ScopedCapture() as capture:
-        mjwarp.step(m, d)
-      wp.capture_launch(capture.graph)
-    else:
+    with wp.ScopedCapture() as capture:
       mjwarp.step(m, d)
+    wp.capture_launch(capture.graph)
 
     # Box should be awake
     for w in range(nworld):
