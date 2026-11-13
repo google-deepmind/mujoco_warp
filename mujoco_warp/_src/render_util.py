@@ -290,6 +290,27 @@ def get_segmentation(rc: RenderContext, camera_index: int, seg_out: wp.array3d[w
   )
 
 
+_TILE_ROWS = 8
+
+
+@wp.func
+def tile_pixel(
+  # In:
+  rayid_local: int,
+  img_w: int,
+  img_h: int,
+) -> tuple[int, int, int]:
+  """Map a camera-local ray index to a 2D-tiled (px, py, pixelid) coordinate."""
+  strip_pixels = img_w * wp.static(_TILE_ROWS)
+  strip_id = rayid_local // strip_pixels
+  base_y = strip_id * wp.static(_TILE_ROWS)
+  strip_h = wp.min(wp.static(_TILE_ROWS), img_h - base_y)
+  in_strip = rayid_local - strip_id * strip_pixels
+  px = in_strip // strip_h
+  py = base_y + (in_strip % strip_h)
+  return px, py, py * img_w + px
+
+
 @wp.kernel
 def _build_rays(
   # In:
@@ -308,11 +329,12 @@ def _build_rays(
   ray_out: wp.array[wp.vec3],
   ray_offset_out: wp.array[wp.vec3],
 ):
-  xid, yid = wp.tid()
+  rayid_local = wp.tid()
+  px, py, _ = tile_pixel(rayid_local, img_w, img_h)
   ray_dir, ray_offset = compute_ray(
-    projection, fovy, sensorsize, intrinsic, img_w * n, img_h * n, xid * n + sx, yid * n + sy, znear
+    projection, fovy, sensorsize, intrinsic, img_w * n, img_h * n, px * n + sx, py * n + sy, znear
   )
-  idx = offset + xid + yid * img_w
+  idx = offset + rayid_local
   ray_out[idx] = ray_dir
   ray_offset_out[idx] = ray_offset
 
@@ -377,7 +399,7 @@ def create_render_context(
                    Requires the model to contain a texture with type `mjTEXTURE_SKYBOX`.
     shadow_light_fraction: Fraction of a light's direct contribution reaching an
       occluded point. 0 is a true shadow.
-    samples_per_pixel: Sub-pixel samples per axis, averaged. Costs n*n renders.
+    samples_per_pixel: Sub-pixel samples per axis, averaged over n*n rays per pixel.
     enable_vertex_normals: Shade meshes from their authored vertex normals,
       matching mjr_uploadMesh. When False, use the face normal.
     enable_backface_culling: Drop primitive-ray hits whose normal faces away from
@@ -471,15 +493,20 @@ def create_render_context(
   mesh_registry = {}
   mesh_bvh_id = [wp.uint64(0) for _ in range(nmesh)]
   mesh_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nmesh)]
+  mesh_bvh_rot = [wp.mat33(np.eye(3, dtype=np.float32)) for _ in range(nmesh)]
+  has_reframed_meshes = False
 
   for mid in range(nmesh):
-    mesh, half = bvh.build_mesh_bvh(mjm, mid, constructor=constructor)
+    mesh, half, bvh_rot, reframed = bvh.build_mesh_bvh(mjm, mid, constructor=constructor)
     mesh_registry[mesh.id] = mesh
     mesh_bvh_id[mid] = mesh.id
     mesh_bounds_size[mid] = half
+    mesh_bvh_rot[mid] = bvh_rot
+    has_reframed_meshes = has_reframed_meshes or reframed
 
   mesh_bvh_id_arr = wp.array(mesh_bvh_id, dtype=wp.uint64)
   mesh_bounds_size_arr = wp.array(mesh_bounds_size, dtype=wp.vec3)
+  mesh_bvh_rot_arr = wp.array(mesh_bvh_rot, dtype=wp.mat33)
 
   # HField BVHs
   nhfield = mjm.nhfield
@@ -652,48 +679,46 @@ def create_render_context(
 
   if samples_per_pixel < 1:
     raise ValueError("samples_per_pixel must be at least 1.")
-  if samples_per_pixel > 1 and not use_precomputed_rays:
-    raise ValueError("samples_per_pixel > 1 requires use_precomputed_rays=True: dynamic rays carry no sub-pixel jitter.")
   if samples_per_pixel > 1 and ri == 0:
     raise ValueError("samples_per_pixel > 1 requires at least one camera with render_rgb=True.")
   nsamples = samples_per_pixel * samples_per_pixel
-  ray = wp.zeros(int(total) * nsamples, dtype=wp.vec3)
-  ray_offset = wp.zeros(int(total) * nsamples, dtype=wp.vec3)
+  if use_precomputed_rays:
+    ray = wp.zeros(int(total) * nsamples, dtype=wp.vec3)
+    ray_offset = wp.zeros(int(total) * nsamples, dtype=wp.vec3)
 
-  cam_projection = mjm.cam_projection
-
-  for sample in range(nsamples):
-    offset = sample * int(total)
-    for idx, cam_id_val in enumerate(active_cam_indices):
-      cam_id = int(cam_id_val)
-      img_w = int(cam_res_np[idx][0])
-      img_h = int(cam_res_np[idx][1])
-      wp.launch(
-        kernel=_build_rays,
-        dim=(img_w, img_h),
-        inputs=[
-          offset,
-          img_w,
-          img_h,
-          int(mjm.cam_projection[cam_id]),
-          float(mjm.cam_fovy[cam_id]),
-          wp.vec2(float(mjm.cam_sensorsize[cam_id, 0]), float(mjm.cam_sensorsize[cam_id, 1])),
-          wp.vec4(
-            float(mjm.cam_intrinsic[cam_id, 0]),
-            float(mjm.cam_intrinsic[cam_id, 1]),
-            float(mjm.cam_intrinsic[cam_id, 2]),
-            float(mjm.cam_intrinsic[cam_id, 3]),
-          ),
-          znear,
-          samples_per_pixel,
-          sample % samples_per_pixel,
-          sample // samples_per_pixel,
-        ],
-        outputs=[ray, ray_offset],
-      )
-      offset += img_w * img_h
-
-  aa_accum = wp.zeros((nworld, ri if nsamples > 1 else 1), dtype=wp.vec3)
+    for sample in range(nsamples):
+      offset = sample * int(total)
+      for idx, cam_id_val in enumerate(active_cam_indices):
+        cam_id = int(cam_id_val)
+        img_w = int(cam_res_np[idx][0])
+        img_h = int(cam_res_np[idx][1])
+        wp.launch(
+          kernel=_build_rays,
+          dim=img_w * img_h,
+          inputs=[
+            offset,
+            img_w,
+            img_h,
+            int(mjm.cam_projection[cam_id]),
+            float(mjm.cam_fovy[cam_id]),
+            wp.vec2(float(mjm.cam_sensorsize[cam_id, 0]), float(mjm.cam_sensorsize[cam_id, 1])),
+            wp.vec4(
+              float(mjm.cam_intrinsic[cam_id, 0]),
+              float(mjm.cam_intrinsic[cam_id, 1]),
+              float(mjm.cam_intrinsic[cam_id, 2]),
+              float(mjm.cam_intrinsic[cam_id, 3]),
+            ),
+            znear,
+            samples_per_pixel,
+            sample % samples_per_pixel,
+            sample // samples_per_pixel,
+          ],
+          outputs=[ray, ray_offset],
+        )
+        offset += img_w * img_h
+  else:
+    ray = wp.empty(0, dtype=wp.vec3)
+    ray_offset = wp.empty(0, dtype=wp.vec3)
 
   bvh_ngeom = len(geom_enabled_idx)
 
@@ -739,6 +764,8 @@ def create_render_context(
     mesh_registry=mesh_registry,
     mesh_bvh_id=mesh_bvh_id_arr,
     mesh_bounds_size=mesh_bounds_size_arr,
+    mesh_bvh_rot=mesh_bvh_rot_arr,
+    has_reframed_meshes=has_reframed_meshes,
     mesh_texcoord=wp.array(mjm.mesh_texcoord, dtype=wp.vec2),
     mesh_texcoord_offsets=wp.array(mjm.mesh_texcoordadr, dtype=int),
     mesh_facetexcoord=wp.array(mjm.mesh_facetexcoord, dtype=wp.vec3i),
@@ -780,7 +807,6 @@ def create_render_context(
     enable_backface_culling=enable_backface_culling,
     shadow_light_fraction=shadow_light_fraction,
     samples_per_pixel=samples_per_pixel,
-    aa_accum=aa_accum,
     geom_ray_types=geom_ray_types,
     enable_vertex_normals=enable_vertex_normals,
     enable_specular=enable_specular,
@@ -789,6 +815,8 @@ def create_render_context(
     light_attenuation_is_default=light_attenuation_is_default,
     has_spot_lights=has_spot_lights,
     has_orthographic_camera=has_orthographic_camera,
+    any_rgb=any(render_rgb),
+    any_seg=any(render_seg),
     splat_position=splat_position,
     splat_rotation=splat_rotation,
     splat_scale=splat_scale,

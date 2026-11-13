@@ -48,7 +48,7 @@ def _assert_eq(a, b, name, tol=_TOLERANCE * 20):
 
 def _set_inertia_scale(m, d, ctx):
   """Set the inverse trace of M, as init_context does, for tests which skip it."""
-  solver.launch_inertia_scale(m, d.M, ctx.inertia_scale)
+  solver.launch_inertia_scale(m, d.M, ctx.inertia_scale, d)
 
 
 def _noslip_model(mjm, noslip_iterations):
@@ -2076,6 +2076,44 @@ class SolverTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
+  def test_noslip_cost_rounding(self):
+    """Tests that float32 rounding of the cost change does not stall noslip updates."""
+    nworld = 61
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option noslip_iterations="3" noslip_tolerance="0" impratio="3" gravity="3 2 -9.81"/>
+        <worldbody>
+          <geom type="plane" size="5 5 .1" condim="6" friction="1 .05 .01"/>
+          <body pos="0 0 .099">
+            <freejoint/>
+            <geom size=".1" condim="6" friction="1 .05 .01"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": ConeType.ELLIPTIC},
+      nworld=nworld,
+    )
+
+    # a stalled update depends on rounding, so sweep the spin about the contact normal
+    qvel = d.qvel.numpy()
+    mjds = []
+    for worldid in range(nworld):
+      mjd_world = copy.copy(mjd)
+      mjd_world.qvel[5] = 0.67 + 1.0e-3 * worldid
+      mujoco.mj_forward(mjm, mjd_world)
+      qvel[worldid] = mjd_world.qvel
+      mjds.append(mjd_world)
+    d.qvel.assign(qvel)
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    qacc = d.qacc.numpy()
+    for worldid, mjd_world in enumerate(mjds):
+      _assert_eq(qacc[worldid], mjd_world.qacc, f"qacc{worldid}", tol=_NOSLIP_TOLERANCE)
+
   @parameterized.parameters(2, 3, 5)
   def test_qcqp(self, n):
     """Tests the QCQP solvers against a reference implementation of mju_QCQP."""
@@ -2895,17 +2933,17 @@ class CompactSolverTest(parameterized.TestCase):
   """Tests for the compacted smooth and constrained solves (solver.py compact path)."""
 
   def test_smooth_solve_equivalence_all_active(self):
-    """With every tree active and nvmax=nv, compacted qacc_smooth matches baseline."""
+    """With every tree active under SLEEP, qacc_smooth matches baseline."""
     _, _, m, d = _put_compact(_COMPACT_ARM_XML, sparse=True)
     self.assertTrue(m.is_sparse)
     mjw.forward(m, d)
     baseline = d.qacc_smooth.numpy().copy()
 
+    m.opt.enableflags |= types.EnableBit.SLEEP
     d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
-    island.update_active_dofs(m, d)
-    self.assertEqual(d.ncdof.numpy()[0], m.nv)
+    d.qacc_smooth.fill_(wp.inf)
 
-    solver.smooth_solve_compact(m, d)
+    mjw.fwd_acceleration(m, d, factorize=True)
 
     np.testing.assert_allclose(d.qacc_smooth.numpy(), baseline, rtol=1e-4, atol=1e-5)
 
@@ -2916,11 +2954,11 @@ class CompactSolverTest(parameterized.TestCase):
     baseline = d.qacc_smooth.numpy().copy()
 
     # only the actuated arm tree (dofs 0-1) is active
+    m.opt.enableflags |= types.EnableBit.SLEEP
     d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
-    island.update_active_dofs(m, d)
-    self.assertEqual(d.ncdof.numpy()[0], 2)
+    d.qacc_smooth.fill_(wp.inf)
 
-    solver.smooth_solve_compact(m, d)
+    mjw.fwd_acceleration(m, d, factorize=True)
 
     out = d.qacc_smooth.numpy()
     np.testing.assert_allclose(out[0, :2], baseline[0, :2], rtol=1e-4, atol=1e-5)

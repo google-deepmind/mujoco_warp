@@ -465,7 +465,7 @@ class IslandDiscoveryExecutionTest(absltest.TestCase):
 
   def test_island_dsu_module_is_unique(self):
     """Ensure _island_dsu does not trigger shared module recompilation."""
-    self.assertNotEqual(island._island_dsu.module, island._compress_roots.module)
+    self.assertNotEqual(island._island_dsu.module, island._finalize_dsu.module)
 
 
 class IslandMappingTest(absltest.TestCase):

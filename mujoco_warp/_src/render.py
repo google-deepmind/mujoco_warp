@@ -34,6 +34,7 @@ from mujoco_warp._src.ray import ray_plane
 from mujoco_warp._src.ray import ray_sphere
 from mujoco_warp._src.render_util import compute_ray
 from mujoco_warp._src.render_util import pack_rgba_to_uint32
+from mujoco_warp._src.render_util import tile_pixel
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
@@ -48,6 +49,8 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 _MAX_SPLAT_HITS = 32
 # Stop compositing once remaining light cannot affect an 8-bit output pixel.
 _MIN_SPLAT_TRANSMITTANCE = 0.005
+# Record splat surface depth once accumulated opacity exceeds 90%.
+_SPLAT_DEPTH_TRANSMITTANCE = 0.1
 # Cull splats whose alpha contribution rounds to zero in the 8-bit framebuffer.
 _MIN_SPLAT_ALPHA = 1.0 / 255.0
 
@@ -145,7 +148,7 @@ def shade_splats(
       alpha = hit_alphas[i]
       color += wp.vec3(splat_rgba[index][0], splat_rgba[index][1], splat_rgba[index][2]) * alpha * transmittance
       transmittance *= 1.0 - alpha
-      if depth < 0.0 and transmittance < wp.static(_MIN_SPLAT_TRANSMITTANCE):
+      if depth < 0.0 and transmittance < wp.static(_SPLAT_DEPTH_TRANSMITTANCE):
         depth = hit_distances[i]
 
     if num_hits < wp.static(_MAX_SPLAT_HITS):
@@ -584,7 +587,11 @@ def _geom_rgba(
   return g_rgba, mat_id
 
 
-def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Function:
+def _make_cast_ray(
+  geom_ray_types: Tuple[int],
+  first_hit: bool = False,
+  has_reframed_meshes: bool = False,
+) -> wp.Function:
   """Build a ray-cast func specialized to the geom types present in the scene.
 
   geom_ray_types is the set of GeomType int values that actually occur, so the
@@ -622,6 +629,7 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
     flex_bvh_ngeom: int,
     enabled_geom_ids: wp.array[int],
     mesh_bvh_id: wp.array[wp.uint64],
+    mesh_bvh_rot: wp.array[wp.mat33],
     hfield_bvh_id: wp.array[wp.uint64],
     flex_rgba: wp.array[wp.vec4],
     flex_geom_flexid: wp.array[int],
@@ -739,12 +747,16 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
           )
       if wp.static(int(GeomType.MESH) in geom_ray_types or int(GeomType.SDF) in geom_ray_types):
         if gtype == GeomType.MESH or gtype == GeomType.SDF:
+          mesh_id = geom_dataid[worldid % geom_dataid.shape[0], gi]
+          mesh_mat = math.quat_to_mat(geom_xquat_in[worldid, gi])
+          if wp.static(has_reframed_meshes):
+            mesh_mat = mesh_mat @ mesh_bvh_rot[mesh_id]
           if wp.static(first_hit):
             hit = ray_mesh_with_bvh_anyhit(
               mesh_bvh_id,
-              geom_dataid[worldid % geom_dataid.shape[0], gi],
+              mesh_id,
               geom_xpos_in[worldid, gi],
-              math.quat_to_mat(geom_xquat_in[worldid, gi]),
+              mesh_mat,
               ray_origin_world,
               ray_dir_world,
               dist,
@@ -753,9 +765,9 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False) -> wp.Fu
           else:
             d, n, u, v, f, hit_mesh_id = ray_mesh_with_bvh(
               mesh_bvh_id,
-              geom_dataid[worldid % geom_dataid.shape[0], gi],
+              mesh_id,
               geom_xpos_in[worldid, gi],
-              math.quat_to_mat(geom_xquat_in[worldid, gi]),
+              mesh_mat,
               ray_origin_world,
               ray_dir_world,
               query_dist,
@@ -857,6 +869,7 @@ def _make_compute_lighting(cast_ray_first_hit: wp.Function) -> wp.Function:
     enabled_geom_ids: wp.array[int],
     worldid: int,
     mesh_bvh_id: wp.array[wp.uint64],
+    mesh_bvh_rot: wp.array[wp.mat33],
     hfield_bvh_id: wp.array[wp.uint64],
     flex_rgba: wp.array[wp.vec4],
     flex_geom_flexid: wp.array[int],
@@ -947,6 +960,7 @@ def _make_compute_lighting(cast_ray_first_hit: wp.Function) -> wp.Function:
         bvh_nflexgeom,
         enabled_geom_ids,
         mesh_bvh_id,
+        mesh_bvh_rot,
         hfield_bvh_id,
         flex_rgba,
         flex_geom_flexid,
@@ -975,21 +989,6 @@ def _make_compute_lighting(cast_ray_first_hit: wp.Function) -> wp.Function:
   return compute_lighting
 
 
-@wp.kernel
-def _aa_resolve(
-  # In:
-  accum: wp.array2d[wp.vec3],
-  inv_n: float,
-  # Out:
-  rgb_out: wp.array2d[wp.uint32],
-):
-  worldid, i = wp.tid()
-  c = accum[worldid, i] * inv_n
-  rgb_out[worldid, i] = pack_rgba_to_uint32(
-    wp.clamp(c[0], 0.0, 255.0), wp.clamp(c[1], 0.0, 255.0), wp.clamp(c[2], 0.0, 255.0), 255.0
-  )
-
-
 def _build_megakernel(m: Model, rc: RenderContext):
   """Construct the specialised megakernel for this context."""
   has_splats = rc.splat_count > 0
@@ -997,8 +996,8 @@ def _build_megakernel(m: Model, rc: RenderContext):
   # Specialize the ray-cast helpers to the geom types present in the scene so the
   # compiler eliminates intersection branches for absent types.
   geom_ray_types = rc.geom_ray_types
-  cast_ray = _make_cast_ray(geom_ray_types, first_hit=False)
-  cast_ray_first_hit = _make_cast_ray(geom_ray_types, first_hit=True)
+  cast_ray = _make_cast_ray(geom_ray_types, first_hit=False, has_reframed_meshes=rc.has_reframed_meshes)
+  cast_ray_first_hit = _make_cast_ray(geom_ray_types, first_hit=True, has_reframed_meshes=rc.has_reframed_meshes)
   compute_lighting = _make_compute_lighting(cast_ray_first_hit)
   sample_texture = _make_sample_texture(geom_ray_types)
 
@@ -1012,27 +1011,18 @@ def _build_megakernel(m: Model, rc: RenderContext):
     float(bg & 0xFF) / 255.0,
   )
   M_NLIGHT = m.nlight
+  nsamples = rc.samples_per_pixel * rc.samples_per_pixel
+  n_aa = rc.samples_per_pixel
+  has_mesh_bvh = bool({int(GeomType.MESH), int(GeomType.SDF), int(GeomType.HFIELD), int(GeomType.FLEX)} & set(geom_ray_types))
+  cap_registers = nsamples == 1 and not has_mesh_bvh and not has_splats and not rc.use_shadows and m.nlight <= 2
 
-  aa = rc.samples_per_pixel * rc.samples_per_pixel > 1
-
-  @wp.func
-  def store_pixel(
-    # In:
-    worldid: int,
-    adr: int,
-    color: wp.vec3,
-    # Out:
-    rgb_out: wp.array2d[wp.uint32],
-    aa_accum_out: wp.array2d[wp.vec3],
-  ):
-    # Supersampling sums in float here rather than re-reading the packed byte
-    # image, so the passes neither round-trip through memory nor quantise early.
-    if wp.static(aa):
-      aa_accum_out[worldid, adr] += color * 255.0
-    else:
-      rgb_out[worldid, adr] = pack_rgba_to_uint32(color[0] * 255.0, color[1] * 255.0, color[2] * 255.0, 255.0)
-
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"fast_math": rc.use_fast_math})
+  @wp.kernel(
+    module="unique",
+    enable_backward=False,
+    grid_stride=False,
+    module_options={"fast_math": rc.use_fast_math, "max_unroll": 6},
+    launch_bounds=(m.block_dim.render, max(1, 640 // m.block_dim.render)) if cap_registers else None,
+  )
   def _render_megakernel(
     # Model:
     geom_type: wp.array[int],
@@ -1076,6 +1066,8 @@ def _build_megakernel(m: Model, rc: RenderContext):
     flexvert_xpos_in: wp.array2d[wp.vec3],
     # In:
     nrender: int,
+    total_rays: int,
+    nsamples_in: int,
     use_shadows: bool,
     bvh_ngeom: int,
     bvh_nflexgeom: int,
@@ -1083,7 +1075,6 @@ def _build_megakernel(m: Model, rc: RenderContext):
     cam_id_map: wp.array[int],
     ray: wp.array[wp.vec3],
     ray_offset: wp.array[wp.vec3],
-    ray_base: int,
     rgb_adr: wp.array[int],
     depth_adr: wp.array[int],
     seg_adr: wp.array[int],
@@ -1096,6 +1087,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
     flex_group_root: wp.array2d[int],
     enabled_geom_ids: wp.array[int],
     mesh_bvh_id: wp.array[wp.uint64],
+    mesh_bvh_rot: wp.array[wp.mat33],
     mesh_facetexcoord: wp.array[wp.vec3i],
     mesh_facenormal: wp.array[wp.vec3i],
     mesh_texcoord: wp.array[wp.vec2],
@@ -1115,7 +1107,6 @@ def _build_megakernel(m: Model, rc: RenderContext):
     splat_group_root: wp.array[int],
     # Out:
     rgb_out: wp.array2d[wp.uint32],
-    aa_accum_out: wp.array2d[wp.vec3],
     depth_out: wp.array2d[float],
     seg_out: wp.array2d[wp.vec2i],
   ):
@@ -1135,359 +1126,415 @@ def _build_megakernel(m: Model, rc: RenderContext):
     if camid == -1 or rayid_local < 0:
       return
 
-    if not render_rgb[camid] and not render_depth[camid] and not render_seg[camid]:
+    do_rgb = render_rgb[camid] if wp.static(rc_static["any_rgb"]) else False
+    do_depth = render_depth[camid]
+    do_seg = render_seg[camid] if wp.static(rc_static["any_seg"]) else False
+    if not do_rgb and not do_depth and not do_seg:
       return
 
-    # Map active camera index to MuJoCo camera ID
+    # Map active camera index to MuJoCo camera ID and tiled pixel coordinate
     mujoco_cam_id = cam_id_map[camid]
+    img_w = cam_res[camid][0]
+    img_h = cam_res[camid][1]
+    px, py, pixelid = tile_pixel(rayid_local, img_w, img_h)
 
-    if wp.static(rc_static["use_precomputed_rays"]):
-      ray_dir_local_cam = ray[ray_base + rayid]
-      ray_offset_local_cam = ray_offset[ray_base + rayid]
-    else:
-      img_w = cam_res[camid][0]
-      img_h = cam_res[camid][1]
-      px = rayid_local % img_w
-      py = rayid_local // img_w
-      ray_dir_local_cam, ray_offset_local_cam = compute_ray(
-        cam_projection[mujoco_cam_id],
-        cam_fovy[worldid % cam_fovy.shape[0], mujoco_cam_id],
-        cam_sensorsize[mujoco_cam_id],
-        cam_intrinsic[worldid % cam_intrinsic.shape[0], mujoco_cam_id],
-        img_w,
-        img_h,
-        px,
-        py,
-        wp.static(rc_static["znear"]),
-      )
+    rgb_out_idx = rgb_adr[camid] + pixelid if do_rgb else 0
+    depth_out_idx = depth_adr[camid] + pixelid if do_depth else 0
+    seg_out_idx = seg_adr[camid] + pixelid if do_seg else 0
+
+    if wp.static(rc_static["any_rgb"] and rc_static["render_skybox"]):
+      skybox_id = skybox_tex_id[worldid % skybox_tex_id.shape[0]]
+      skybox_tex = textures[skybox_id]
+      skybox_face_width_inv = 1.0 / float(skybox_face_width[worldid % skybox_face_width.shape[0]])
 
     cam_mat_world = cam_xmat_in[worldid, mujoco_cam_id]
-    ray_origin_world = cam_xpos_in[worldid, mujoco_cam_id]
-    if wp.static(rc_static["has_orthographic_camera"]):
-      ray_origin_world += cam_mat_world @ ray_offset_local_cam
-    ray_dir_world = cam_mat_world @ ray_dir_local_cam
+    cam_pos_world = cam_xpos_in[worldid, mujoco_cam_id]
+    world_bvh_root = group_root[worldid]
+    color_accum = wp.vec3(0.0)
 
-    # Start primary rays on the near plane.
-    inv_cos = 1.0 / wp.max(-ray_dir_local_cam[2], 1e-6)
-    ray_origin_world += wp.static(rc_static["znear"]) * inv_cos * ray_dir_world
+    if wp.static(not rc_static["use_precomputed_rays"]):
+      cam_proj = cam_projection[mujoco_cam_id]
+      cam_fovy_val = cam_fovy[worldid % cam_fovy.shape[0], mujoco_cam_id]
+      cam_sensor_val = cam_sensorsize[mujoco_cam_id]
+      cam_intr_val = cam_intrinsic[worldid % cam_intrinsic.shape[0], mujoco_cam_id]
+      sample_w = img_w * wp.static(n_aa) if wp.static(nsamples > 1) else img_w
+      sample_h = img_h * wp.static(n_aa) if wp.static(nsamples > 1) else img_h
 
-    if wp.static(rc_static["zfar"] > 0.0):
-      max_cam_dist = wp.static(rc_static["zfar"] - rc_static["znear"]) * inv_cos
-    else:
-      max_cam_dist = float(MJ_MAXVAL)
-
-    geom_id, dist, normal, u, v, f, mesh_id = cast_ray(
-      geom_type,
-      geom_dataid,
-      geom_matid,
-      geom_size,
-      geom_rgba,
-      flex_vertadr,
-      flex_edge,
-      flex_radius,
-      mat_rgba,
-      geom_xpos_in,
-      geom_xquat_in,
-      flexvert_xpos_in,
-      bvh_id,
-      group_root[worldid],
-      worldid,
-      bvh_ngeom,
-      bvh_nflexgeom,
-      enabled_geom_ids,
-      mesh_bvh_id,
-      hfield_bvh_id,
-      flex_rgba,
-      flex_geom_flexid,
-      flex_geom_edgeid,
-      flex_bvh_id,
-      flex_group_root,
-      ray_origin_world,
-      ray_dir_world,
-      max_cam_dist,
-      wp.static(rc_static["enable_backface_culling"]),
-    )
-    if wp.static(rc_static["zfar"] > 0.0):
-      if geom_id != -1 and (dist * -ray_dir_local_cam[2]) > wp.static(rc_static["zfar"] - rc_static["znear"]):
-        geom_id = -1
-
-    if wp.static(rc_static["enable_vertex_normals"]) and geom_id >= 0 and mesh_id >= 0 and f >= 0:
-      gtype = geom_type[geom_id]
-      if gtype == int(GeomType.MESH.value) or gtype == int(GeomType.SDF.value):
-        mat = math.quat_to_mat(geom_xquat_in[worldid, geom_id])
-        face = wp.transpose(mat) @ normal
-        tri = mesh_facenormal[mesh_faceadr[mesh_id] + f]
-        adr = mesh_normaladr[mesh_id]
-        vec = (
-          vertex_normal(mesh_normal[adr + tri[0]], face) * u
-          + vertex_normal(mesh_normal[adr + tri[1]], face) * v
-          + vertex_normal(mesh_normal[adr + tri[2]], face) * (1.0 - u - v)
+    for sample in range(1 if wp.static(nsamples == 1) else nsamples_in):
+      if wp.static(rc_static["use_precomputed_rays"]):
+        if wp.static(nsamples > 1):
+          ray_idx = sample * total_rays + rayid
+        else:
+          ray_idx = rayid
+        ray_dir_local_cam = ray[ray_idx]
+        ray_offset_local_cam = ray_offset[ray_idx]
+      else:
+        if wp.static(nsamples > 1):
+          sample_px = px * wp.static(n_aa) + (sample % wp.static(n_aa))
+          sample_py = py * wp.static(n_aa) + (sample // wp.static(n_aa))
+        else:
+          sample_px = px
+          sample_py = py
+        ray_dir_local_cam, ray_offset_local_cam = compute_ray(
+          cam_proj,
+          cam_fovy_val,
+          cam_sensor_val,
+          cam_intr_val,
+          sample_w,
+          sample_h,
+          sample_px,
+          sample_py,
+          wp.static(rc_static["znear"]),
         )
-        normal = wp.normalize(mat @ vec)
 
-    if wp.static(not rc_static["enable_backface_culling"]):
-      # Two-sided shading: light a back-facing hit as if it faced the viewer.
-      if geom_id != -1 and wp.dot(normal, ray_dir_world) > 0.0:
-        normal = -normal
+      ray_origin_world = cam_pos_world
+      if wp.static(rc_static["has_orthographic_camera"]):
+        ray_origin_world = ray_origin_world + cam_mat_world @ ray_offset_local_cam
+      ray_dir_world = cam_mat_world @ ray_dir_local_cam
 
-    splat_color = wp.vec3(0.0)
-    splat_transmittance = float(1.0)
-    splat_depth = float(-1.0)
-    if wp.static(has_splats):
-      splat_color, splat_transmittance, splat_depth = shade_splats(
-        splat_position,
-        splat_rotation,
-        splat_scale,
-        splat_rgba,
-        splat_bvh_id,
-        splat_group_root[worldid],
+      # Start primary rays on the near plane.
+      inv_cos = 1.0 / wp.max(-ray_dir_local_cam[2], 1e-6)
+      ray_origin_world = ray_origin_world + wp.static(rc_static["znear"]) * inv_cos * ray_dir_world
+
+      if wp.static(rc_static["zfar"] > 0.0):
+        max_cam_dist = wp.static(rc_static["zfar"] - rc_static["znear"]) * inv_cos
+      else:
+        max_cam_dist = float(MJ_MAXVAL)
+
+      geom_id, dist, normal, u, v, f, mesh_id = cast_ray(
+        geom_type,
+        geom_dataid,
+        geom_matid,
+        geom_size,
+        geom_rgba,
+        flex_vertadr,
+        flex_edge,
+        flex_radius,
+        mat_rgba,
+        geom_xpos_in,
+        geom_xquat_in,
+        flexvert_xpos_in,
+        bvh_id,
+        world_bvh_root,
+        worldid,
+        bvh_ngeom,
+        bvh_nflexgeom,
+        enabled_geom_ids,
+        mesh_bvh_id,
+        mesh_bvh_rot,
+        hfield_bvh_id,
+        flex_rgba,
+        flex_geom_flexid,
+        flex_geom_edgeid,
+        flex_bvh_id,
+        flex_group_root,
         ray_origin_world,
         ray_dir_world,
-        dist,
+        max_cam_dist,
+        wp.static(rc_static["enable_backface_culling"]),
       )
+      if wp.static(rc_static["zfar"] > 0.0):
+        if geom_id != -1 and (dist * -ray_dir_local_cam[2]) > wp.static(rc_static["zfar"] - rc_static["znear"]):
+          geom_id = -1
 
-    # Depth and seg are single-sample outputs: only the first pass writes them.
-    if ray_base == 0 and render_seg[camid] and geom_id != -1:
-      if geom_id == -2:
-        seg_out[worldid, seg_adr[camid] + rayid_local] = wp.vec2i(mesh_id, int(ObjType.FLEX))
-      else:
-        seg_out[worldid, seg_adr[camid] + rayid_local] = wp.vec2i(geom_id, int(ObjType.GEOM))
-
-    # Early Out
-    if geom_id == -1:
-      if ray_base == 0 and render_depth[camid]:
-        depth = 0.0
-        if wp.static(has_splats):
-          if splat_depth > 0.0:
-            depth = splat_depth * -ray_dir_local_cam[2] + wp.static(rc_static["znear"])
-        depth_out[worldid, depth_adr[camid] + rayid_local] = depth
-      if wp.static(rc_static["render_skybox"]) and render_rgb[camid]:
-        skybox_id = skybox_tex_id[worldid % skybox_tex_id.shape[0]]
-        skybox_color = sample_skybox(
-          textures[skybox_id],
-          1.0 / float(skybox_face_width[worldid % skybox_face_width.shape[0]]),
-          ray_dir_world,
-        )
-        if wp.static(has_splats):
-          skybox_color = splat_color + skybox_color * splat_transmittance
-        store_pixel(worldid, rgb_adr[camid] + rayid_local, skybox_color, rgb_out, aa_accum_out)
-      elif render_rgb[camid]:
-        if wp.static(has_splats):
-          pixel_color = splat_color + wp.static(rc_static["background_color_vec3"]) * splat_transmittance
-          store_pixel(worldid, rgb_adr[camid] + rayid_local, pixel_color, rgb_out, aa_accum_out)
-        elif wp.static(aa):
-          store_pixel(
-            worldid,
-            rgb_adr[camid] + rayid_local,
-            wp.static(rc_static["background_color_vec3"]),
-            rgb_out,
-            aa_accum_out,
-          )
-        else:
-          rgb_out[worldid, rgb_adr[camid] + rayid_local] = wp.static(rc_static["background_color"])
-      return
-
-    if ray_base == 0 and render_depth[camid]:
-      # Planar depth: project distance from the near plane onto the optical axis.
-      # In camera-local coordinates, the optical axis is -Z. The Z-component of the
-      # normalized ray direction is negative, so -ray_dir_local_cam[2] gives cos(θ)
-      # between the ray and the optical axis.
-      depth = dist
+      splat_color = wp.vec3(0.0)
+      splat_transmittance = float(1.0)
+      splat_depth = float(-1.0)
       if wp.static(has_splats):
-        if splat_depth > 0.0:
-          depth = splat_depth
-      depth_out[worldid, depth_adr[camid] + rayid_local] = depth * -ray_dir_local_cam[2] + wp.static(rc_static["znear"])
+        splat_color, splat_transmittance, splat_depth = shade_splats(
+          splat_position,
+          splat_rotation,
+          splat_scale,
+          splat_rgba,
+          splat_bvh_id,
+          splat_group_root[worldid],
+          ray_origin_world,
+          ray_dir_world,
+          dist,
+        )
 
-    if not render_rgb[camid]:
-      return
+      # Depth and seg are single-sample outputs: only the first sample writes them.
+      if sample == 0:
+        if wp.static(rc_static["any_seg"]):
+          if do_seg:
+            if geom_id == -1:
+              seg_out[worldid, seg_out_idx] = wp.vec2i(-1, -1)
+            elif geom_id == -2:
+              seg_out[worldid, seg_out_idx] = wp.vec2i(mesh_id, int(ObjType.FLEX))
+            else:
+              seg_out[worldid, seg_out_idx] = wp.vec2i(geom_id, int(ObjType.GEOM))
 
-    # Shade the pixel
-    hit_point = ray_origin_world + ray_dir_world * dist
+        if do_depth:
+          if geom_id == -1:
+            depth = 0.0
+            if wp.static(has_splats):
+              if splat_depth > 0.0:
+                depth = splat_depth * -ray_dir_local_cam[2] + wp.static(rc_static["znear"])
+            depth_out[worldid, depth_out_idx] = depth
+          else:
+            # Planar depth: project distance from the near plane onto the optical axis.
+            # In camera-local coordinates, the optical axis is -Z. The Z-component of the
+            # normalized ray direction is negative, so -ray_dir_local_cam[2] gives cos(θ)
+            # between the ray and the optical axis.
+            depth = dist
+            if wp.static(has_splats):
+              if splat_depth > 0.0:
+                depth = splat_depth
+            depth_out[worldid, depth_out_idx] = depth * -ray_dir_local_cam[2] + wp.static(rc_static["znear"])
 
-    mat_id = -1
-    if geom_id == -2:
-      # We encode flex_id in mesh_id for flex ray hits during cast_ray
-      color = flex_rgba[mesh_id]
-    else:
-      color, mat_id = _geom_rgba(geom_matid, geom_rgba, mat_rgba, worldid, geom_id)
+      if wp.static(not rc_static["any_rgb"]):
+        return
+      if not do_rgb:
+        return
 
-    base_color = wp.vec3(color[0], color[1], color[2])
-
-    if wp.static(rc_static["use_textures"]):
-      if mat_id >= 0:
-        tex_id = mat_texid[worldid % mat_texid.shape[0], mat_id, 1]
-        if tex_id >= 0:
-          tex_color = sample_texture(
-            geom_type,
-            mesh_faceadr,
-            geom_id,
-            geom_size[worldid % geom_size.shape[0], geom_id],
-            mat_texrepeat[worldid % mat_texrepeat.shape[0], mat_id],
-            mat_texuniform[worldid % mat_texuniform.shape[0], mat_id],
-            textures[tex_id],
-            geom_xpos_in[worldid, geom_id],
-            math.quat_to_mat(geom_xquat_in[worldid, geom_id]),
-            mesh_facetexcoord,
-            mesh_texcoord,
-            mesh_texcoord_offsets,
-            hit_point,
-            normal,
-            u,
-            v,
-            f,
-            mesh_id,
+      if geom_id == -1:
+        if wp.static(rc_static["render_skybox"]):
+          skybox_color = sample_skybox(
+            skybox_tex,
+            skybox_face_width_inv,
+            ray_dir_world,
           )
-          base_color = wp.cw_mul(base_color, tex_color)
+          if wp.static(has_splats):
+            skybox_color = splat_color + skybox_color * splat_transmittance
+          if wp.static(nsamples > 1):
+            color_accum += skybox_color * 255.0
+          else:
+            rgb_out[worldid, rgb_out_idx] = pack_rgba_to_uint32(
+              skybox_color[0] * 255.0, skybox_color[1] * 255.0, skybox_color[2] * 255.0, 255.0
+            )
+        elif wp.static(has_splats):
+          pixel_color = splat_color + wp.static(rc_static["background_color_vec3"]) * splat_transmittance
+          if wp.static(nsamples > 1):
+            color_accum += pixel_color * 255.0
+          else:
+            rgb_out[worldid, rgb_out_idx] = pack_rgba_to_uint32(
+              pixel_color[0] * 255.0, pixel_color[1] * 255.0, pixel_color[2] * 255.0, 255.0
+            )
+        elif wp.static(nsamples > 1):
+          color_accum += wp.static(rc_static["background_color_vec3"]) * 255.0
+        else:
+          rgb_out[worldid, rgb_out_idx] = wp.static(rc_static["background_color"])
+        continue
 
-    mat_spec = DEFAULT_MAT_SPECULAR
-    mat_shin_exp = DEFAULT_MAT_SHININESS_EXPONENT
-    mat_emis = DEFAULT_MAT_EMISSION
-    if wp.static(rc_static["enable_specular_or_emission"]):
-      if mat_id >= 0:
-        if wp.static(rc_static["enable_specular"]):
-          mat_spec = mat_specular[worldid % mat_specular.shape[0], mat_id]
-          mat_shin_exp = mat_shininess[worldid % mat_shininess.shape[0], mat_id] * MAX_SHININESS
-        if wp.static(rc_static["enable_emission"]):
-          mat_emis = mat_emission[worldid % mat_emission.shape[0], mat_id]
+      if wp.static(rc_static["enable_vertex_normals"]) and geom_id >= 0 and mesh_id >= 0 and f >= 0:
+        gtype = geom_type[geom_id]
+        if gtype == int(GeomType.MESH.value) or gtype == int(GeomType.SDF.value):
+          mat = math.quat_to_mat(geom_xquat_in[worldid, geom_id])
+          face = wp.transpose(mat) @ normal
+          tri = mesh_facenormal[mesh_faceadr[mesh_id] + f]
+          adr = mesh_normaladr[mesh_id]
+          vec = (
+            vertex_normal(mesh_normal[adr + tri[0]], face) * u
+            + vertex_normal(mesh_normal[adr + tri[1]], face) * v
+            + vertex_normal(mesh_normal[adr + tri[2]], face) * (1.0 - u - v)
+          )
+          normal = wp.normalize(mat @ vec)
 
-    result = wp.vec3(0.0)
-    if wp.static(rc_static["enable_emission"]):
-      result = base_color * mat_emis
+      if wp.static(not rc_static["enable_backface_culling"]):
+        # Two-sided shading: light a back-facing hit as if it faced the viewer.
+        if wp.dot(normal, ray_dir_world) > 0.0:
+          normal = -normal
 
-    if wp.static(rc_static["use_ambient_lighting"]):
+      # Shade the pixel
+      hit_point = ray_origin_world + ray_dir_world * dist
+
+      mat_id = -1
+      if geom_id == -2:
+        # We encode flex_id in mesh_id for flex ray hits during cast_ray
+        color = flex_rgba[mesh_id]
+      else:
+        color, mat_id = _geom_rgba(geom_matid, geom_rgba, mat_rgba, worldid, geom_id)
+
+      base_color = wp.vec3(color[0], color[1], color[2])
+
+      if wp.static(rc_static["use_textures"]):
+        if mat_id >= 0:
+          tex_id = mat_texid[worldid % mat_texid.shape[0], mat_id, 1]
+          if tex_id >= 0:
+            tex_color = sample_texture(
+              geom_type,
+              mesh_faceadr,
+              geom_id,
+              geom_size[worldid % geom_size.shape[0], geom_id],
+              mat_texrepeat[worldid % mat_texrepeat.shape[0], mat_id],
+              mat_texuniform[worldid % mat_texuniform.shape[0], mat_id],
+              textures[tex_id],
+              geom_xpos_in[worldid, geom_id],
+              math.quat_to_mat(geom_xquat_in[worldid, geom_id]),
+              mesh_facetexcoord,
+              mesh_texcoord,
+              mesh_texcoord_offsets,
+              hit_point,
+              normal,
+              u,
+              v,
+              f,
+              mesh_id,
+            )
+            base_color = wp.cw_mul(base_color, tex_color)
+
+      mat_spec = DEFAULT_MAT_SPECULAR
+      mat_shin_exp = DEFAULT_MAT_SHININESS_EXPONENT
+      mat_emis = DEFAULT_MAT_EMISSION
+      if wp.static(rc_static["enable_specular_or_emission"]):
+        if mat_id >= 0:
+          if wp.static(rc_static["enable_specular"]):
+            mat_spec = mat_specular[worldid % mat_specular.shape[0], mat_id]
+            mat_shin_exp = mat_shininess[worldid % mat_shininess.shape[0], mat_id] * MAX_SHININESS
+          if wp.static(rc_static["enable_emission"]):
+            mat_emis = mat_emission[worldid % mat_emission.shape[0], mat_id]
+
+      result = wp.vec3(0.0)
+      if wp.static(rc_static["enable_emission"]):
+        result = base_color * mat_emis
+
+      light_active_worldid = light_active[worldid % light_active.shape[0]]
+      if wp.static(rc_static["use_ambient_lighting"]):
+        if wp.static(rc_static["headlight_active"]):
+          result = result + wp.cw_mul(base_color, wp.static(rc_static["headlight_ambient"]))
+        elif wp.static(M_NLIGHT == 0):
+          result = result + base_color * NO_LIGHT_AMBIENT_FALLBACK
+        if wp.static(rc_static["enable_per_light_ambient"]):
+          for light_index in range(wp.static(M_NLIGHT)):
+            if light_active_worldid[light_index]:
+              result = result + wp.cw_mul(base_color, light_ambient[worldid % light_ambient.shape[0], light_index])
+
+      view_dir = -ray_dir_world
+
+      light_cutoff_worldid = light_cutoff[worldid % light_cutoff.shape[0]]
+      light_type_worldid = light_type[worldid % light_type.shape[0]]
+      light_castshadow_worldid = light_castshadow[worldid % light_castshadow.shape[0]]
+      light_xpos_in_worldid = light_xpos_in[worldid]
+      light_xdir_in_worldid = light_xdir_in[worldid]
+      light_attenuation_worldid = light_attenuation[worldid % light_attenuation.shape[0]]
+      light_exponent_worldid = light_exponent[worldid % light_exponent.shape[0]]
+      light_diffuse_worldid = light_diffuse[worldid % light_diffuse.shape[0]]
+      light_specular_worldid = light_specular[worldid % light_specular.shape[0]]
+      # Apply Lighting for each light
+      for light_index in range(wp.static(M_NLIGHT)):
+        diff_rgb, spec_rgb = compute_lighting(
+          geom_type,
+          geom_dataid,
+          geom_matid,
+          geom_size,
+          geom_rgba,
+          flex_vertadr,
+          flex_edge,
+          flex_radius,
+          mat_rgba,
+          geom_xpos_in,
+          geom_xquat_in,
+          flexvert_xpos_in,
+          use_shadows,
+          bvh_id,
+          world_bvh_root,
+          bvh_ngeom,
+          bvh_nflexgeom,
+          enabled_geom_ids,
+          worldid,
+          mesh_bvh_id,
+          mesh_bvh_rot,
+          hfield_bvh_id,
+          flex_rgba,
+          flex_geom_flexid,
+          flex_geom_edgeid,
+          flex_bvh_id,
+          flex_group_root,
+          light_active_worldid[light_index],
+          light_type_worldid[light_index],
+          light_castshadow_worldid[light_index],
+          light_xpos_in_worldid[light_index],
+          light_xdir_in_worldid[light_index],
+          light_attenuation_worldid[light_index],
+          light_cutoff_worldid[light_index] * wp.static(wp.pi / 180.0),
+          light_exponent_worldid[light_index],
+          light_diffuse_worldid[light_index],
+          light_specular_worldid[light_index],
+          normal,
+          hit_point,
+          view_dir,
+          mat_spec,
+          mat_shin_exp,
+          wp.static(rc_static["enable_backface_culling"]),
+          wp.static(rc_static["shadow_light_fraction"]),
+          wp.static(rc_static["enable_specular"]),
+          wp.static(rc_static["light_attenuation_is_default"]),
+          wp.static(rc_static["has_spot_lights"]),
+        )
+        result = result + wp.cw_mul(base_color, diff_rgb) + spec_rgb
+
+      # Apply Headlight
       if wp.static(rc_static["headlight_active"]):
-        result = result + wp.cw_mul(base_color, wp.static(rc_static["headlight_ambient"]))
-      elif wp.static(M_NLIGHT == 0):
-        result = result + base_color * NO_LIGHT_AMBIENT_FALLBACK
-      if wp.static(rc_static["enable_per_light_ambient"]):
-        for light_index in range(wp.static(M_NLIGHT)):
-          if light_active[worldid % light_active.shape[0], light_index]:
-            result = result + wp.cw_mul(base_color, light_ambient[worldid % light_ambient.shape[0], light_index])
+        cam_pos = ray_origin_world
+        cam_fwd = -cam_mat_world[:, 2]
+        hl_diff, hl_spec = compute_lighting(
+          geom_type,
+          geom_dataid,
+          geom_matid,
+          geom_size,
+          geom_rgba,
+          flex_vertadr,
+          flex_edge,
+          flex_radius,
+          mat_rgba,
+          geom_xpos_in,
+          geom_xquat_in,
+          flexvert_xpos_in,
+          use_shadows,
+          bvh_id,
+          world_bvh_root,
+          bvh_ngeom,
+          bvh_nflexgeom,
+          enabled_geom_ids,
+          worldid,
+          mesh_bvh_id,
+          mesh_bvh_rot,
+          hfield_bvh_id,
+          flex_rgba,
+          flex_geom_flexid,
+          flex_geom_edgeid,
+          flex_bvh_id,
+          flex_group_root,
+          True,
+          1,
+          False,
+          cam_pos,
+          cam_fwd,
+          wp.vec3(1.0, 0.0, 0.0),
+          0.0,
+          0.0,
+          wp.static(rc_static["headlight_diffuse"]),
+          wp.static(rc_static["headlight_specular"]),
+          normal,
+          hit_point,
+          view_dir,
+          mat_spec,
+          mat_shin_exp,
+          wp.static(rc_static["enable_backface_culling"]),
+          wp.static(rc_static["shadow_light_fraction"]),
+          wp.static(rc_static["enable_specular"]),
+          True,
+          False,
+        )
+        result = result + wp.cw_mul(base_color, hl_diff) + hl_spec
 
-    view_dir = -ray_dir_world
+      hit_color = wp.min(result, wp.vec3(1.0, 1.0, 1.0))
+      hit_color = wp.max(hit_color, wp.vec3(0.0, 0.0, 0.0))
+      if wp.static(has_splats):
+        hit_color = splat_color + hit_color * splat_transmittance
 
-    light_cutoff_worldid = light_cutoff[worldid % light_cutoff.shape[0]]
-    light_active_worldid = light_active[worldid % light_active.shape[0]]
-    light_type_worldid = light_type[worldid % light_type.shape[0]]
-    light_castshadow_worldid = light_castshadow[worldid % light_castshadow.shape[0]]
-    light_xpos_in_worldid = light_xpos_in[worldid]
-    light_xdir_in_worldid = light_xdir_in[worldid]
-    light_attenuation_worldid = light_attenuation[worldid % light_attenuation.shape[0]]
-    light_exponent_worldid = light_exponent[worldid % light_exponent.shape[0]]
-    light_diffuse_worldid = light_diffuse[worldid % light_diffuse.shape[0]]
-    light_specular_worldid = light_specular[worldid % light_specular.shape[0]]
-    # Apply Lighting for each light
-    for light_index in range(wp.static(M_NLIGHT)):
-      diff_rgb, spec_rgb = compute_lighting(
-        geom_type,
-        geom_dataid,
-        geom_matid,
-        geom_size,
-        geom_rgba,
-        flex_vertadr,
-        flex_edge,
-        flex_radius,
-        mat_rgba,
-        geom_xpos_in,
-        geom_xquat_in,
-        flexvert_xpos_in,
-        use_shadows,
-        bvh_id,
-        group_root[worldid],
-        bvh_ngeom,
-        bvh_nflexgeom,
-        enabled_geom_ids,
-        worldid,
-        mesh_bvh_id,
-        hfield_bvh_id,
-        flex_rgba,
-        flex_geom_flexid,
-        flex_geom_edgeid,
-        flex_bvh_id,
-        flex_group_root,
-        light_active_worldid[light_index],
-        light_type_worldid[light_index],
-        light_castshadow_worldid[light_index],
-        light_xpos_in_worldid[light_index],
-        light_xdir_in_worldid[light_index],
-        light_attenuation_worldid[light_index],
-        light_cutoff_worldid[light_index] * wp.static(wp.pi / 180.0),
-        light_exponent_worldid[light_index],
-        light_diffuse_worldid[light_index],
-        light_specular_worldid[light_index],
-        normal,
-        hit_point,
-        view_dir,
-        mat_spec,
-        mat_shin_exp,
-        wp.static(rc_static["enable_backface_culling"]),
-        wp.static(rc_static["shadow_light_fraction"]),
-        wp.static(rc_static["enable_specular"]),
-        wp.static(rc_static["light_attenuation_is_default"]),
-        wp.static(rc_static["has_spot_lights"]),
+      if wp.static(nsamples > 1):
+        color_accum += hit_color * 255.0
+      else:
+        rgb_out[worldid, rgb_out_idx] = pack_rgba_to_uint32(
+          hit_color[0] * 255.0, hit_color[1] * 255.0, hit_color[2] * 255.0, 255.0
+        )
+
+    if wp.static(rc_static["any_rgb"] and nsamples > 1):
+      c = color_accum * wp.static(1.0 / float(nsamples))
+      rgb_out[worldid, rgb_out_idx] = pack_rgba_to_uint32(
+        wp.clamp(c[0], 0.0, 255.0), wp.clamp(c[1], 0.0, 255.0), wp.clamp(c[2], 0.0, 255.0), 255.0
       )
-      result = result + wp.cw_mul(base_color, diff_rgb) + spec_rgb
-
-    # Apply Headlight
-    if wp.static(rc_static["headlight_active"]):
-      cam_pos = ray_origin_world
-      cam_fwd = -cam_mat_world[:, 2]
-      hl_diff, hl_spec = compute_lighting(
-        geom_type,
-        geom_dataid,
-        geom_matid,
-        geom_size,
-        geom_rgba,
-        flex_vertadr,
-        flex_edge,
-        flex_radius,
-        mat_rgba,
-        geom_xpos_in,
-        geom_xquat_in,
-        flexvert_xpos_in,
-        use_shadows,
-        bvh_id,
-        group_root[worldid],
-        bvh_ngeom,
-        bvh_nflexgeom,
-        enabled_geom_ids,
-        worldid,
-        mesh_bvh_id,
-        hfield_bvh_id,
-        flex_rgba,
-        flex_geom_flexid,
-        flex_geom_edgeid,
-        flex_bvh_id,
-        flex_group_root,
-        True,
-        1,
-        False,
-        cam_pos,
-        cam_fwd,
-        wp.vec3(1.0, 0.0, 0.0),
-        0.0,
-        0.0,
-        wp.static(rc_static["headlight_diffuse"]),
-        wp.static(rc_static["headlight_specular"]),
-        normal,
-        hit_point,
-        view_dir,
-        mat_spec,
-        mat_shin_exp,
-        wp.static(rc_static["enable_backface_culling"]),
-        wp.static(rc_static["shadow_light_fraction"]),
-        wp.static(rc_static["enable_specular"]),
-        True,
-        False,
-      )
-      result = result + wp.cw_mul(base_color, hl_diff) + hl_spec
-
-    hit_color = wp.min(result, wp.vec3(1.0, 1.0, 1.0))
-    hit_color = wp.max(hit_color, wp.vec3(0.0, 0.0, 0.0))
-    if wp.static(has_splats):
-      hit_color = splat_color + hit_color * splat_transmittance
-
-    store_pixel(worldid, rgb_adr[camid] + rayid_local, hit_color, rgb_out, aa_accum_out)
 
   return _render_megakernel
 
@@ -1503,107 +1550,99 @@ def render(m: Model, d: Data, rc: RenderContext):
     d: The data on device.
     rc: The render context on device.
   """
-  rc.seg_data.fill_(wp.vec2i(-1, -1))
   # Specialising the megakernel costs more than launching it, so keep it on the
   # context: the static configuration it closes over is fixed at creation.
   if rc._megakernel is None:
     rc._megakernel = _build_megakernel(m, rc)
   _render_megakernel = rc._megakernel
 
-  nsamples = rc.samples_per_pixel * rc.samples_per_pixel
-  if nsamples > 1:
-    rc.aa_accum.zero_()
-
-  for sample in range(nsamples):
-    wp.launch(
-      kernel=_render_megakernel,
-      dim=(d.nworld, rc.total_rays),
-      inputs=[
-        m.geom_type,
-        m.geom_dataid,
-        m.geom_matid,
-        m.geom_size,
-        m.geom_rgba,
-        m.cam_projection,
-        m.cam_fovy,
-        m.cam_sensorsize,
-        m.cam_intrinsic,
-        m.light_type,
-        m.light_castshadow,
-        m.light_active,
-        m.light_attenuation,
-        m.light_cutoff,
-        m.light_exponent,
-        m.light_ambient,
-        m.light_diffuse,
-        m.light_specular,
-        m.flex_vertadr,
-        m.flex_edge,
-        m.flex_radius,
-        m.mesh_faceadr,
-        m.mesh_normaladr,
-        m.mesh_normal,
-        m.mat_texid,
-        m.mat_texuniform,
-        m.mat_texrepeat,
-        m.mat_emission,
-        m.mat_specular,
-        m.mat_shininess,
-        m.mat_rgba,
-        d.geom_xpos,
-        d.geom_xquat,
-        d.cam_xpos,
-        d.cam_xmat,
-        d.light_xpos,
-        d.light_xdir,
-        d.flexvert_xpos,
-        rc.nrender,
-        rc.use_shadows,
-        rc.bvh_ngeom,
-        rc.bvh_nflexgeom,
-        rc.cam_res,
-        rc.cam_id_map,
-        rc.ray,
-        rc.ray_offset,
-        sample * rc.total_rays,
-        rc.rgb_adr,
-        rc.depth_adr,
-        rc.seg_adr,
-        rc.render_rgb,
-        rc.render_depth,
-        rc.render_seg,
-        rc.bvh_id,
-        rc.group_root,
-        rc.flex_bvh_id,
-        rc.flex_group_root,
-        rc.enabled_geom_ids,
-        rc.mesh_bvh_id,
-        rc.mesh_facetexcoord,
-        rc.mesh_facenormal,
-        rc.mesh_texcoord,
-        rc.mesh_texcoord_offsets,
-        rc.hfield_bvh_id,
-        rc.flex_rgba,
-        rc.flex_geom_flexid,
-        rc.flex_geom_edgeid,
-        rc.skybox_tex_id,
-        rc.skybox_face_width,
-        rc.textures,
-        rc.splat_position,
-        rc.splat_rotation,
-        rc.splat_scale,
-        rc.splat_rgba,
-        rc.splat_bvh_id,
-        rc.splat_group_root,
-      ],
-      outputs=[
-        rc.rgb_data,
-        rc.aa_accum,
-        rc.depth_data,
-        rc.seg_data,
-      ],
-      block_dim=m.block_dim.render,
-    )
-
-  if nsamples > 1:
-    wp.launch(_aa_resolve, dim=rc.rgb_data.shape, inputs=[rc.aa_accum, 1.0 / float(nsamples)], outputs=[rc.rgb_data])
+  wp.launch(
+    kernel=_render_megakernel,
+    dim=(d.nworld, rc.total_rays),
+    inputs=[
+      m.geom_type,
+      m.geom_dataid,
+      m.geom_matid,
+      m.geom_size,
+      m.geom_rgba,
+      m.cam_projection,
+      m.cam_fovy,
+      m.cam_sensorsize,
+      m.cam_intrinsic,
+      m.light_type,
+      m.light_castshadow,
+      m.light_active,
+      m.light_attenuation,
+      m.light_cutoff,
+      m.light_exponent,
+      m.light_ambient,
+      m.light_diffuse,
+      m.light_specular,
+      m.flex_vertadr,
+      m.flex_edge,
+      m.flex_radius,
+      m.mesh_faceadr,
+      m.mesh_normaladr,
+      m.mesh_normal,
+      m.mat_texid,
+      m.mat_texuniform,
+      m.mat_texrepeat,
+      m.mat_emission,
+      m.mat_specular,
+      m.mat_shininess,
+      m.mat_rgba,
+      d.geom_xpos,
+      d.geom_xquat,
+      d.cam_xpos,
+      d.cam_xmat,
+      d.light_xpos,
+      d.light_xdir,
+      d.flexvert_xpos,
+      rc.nrender,
+      rc.total_rays,
+      rc.samples_per_pixel * rc.samples_per_pixel,
+      rc.use_shadows,
+      rc.bvh_ngeom,
+      rc.bvh_nflexgeom,
+      rc.cam_res,
+      rc.cam_id_map,
+      rc.ray,
+      rc.ray_offset,
+      rc.rgb_adr,
+      rc.depth_adr,
+      rc.seg_adr,
+      rc.render_rgb,
+      rc.render_depth,
+      rc.render_seg,
+      rc.bvh_id,
+      rc.group_root,
+      rc.flex_bvh_id,
+      rc.flex_group_root,
+      rc.enabled_geom_ids,
+      rc.mesh_bvh_id,
+      rc.mesh_bvh_rot,
+      rc.mesh_facetexcoord,
+      rc.mesh_facenormal,
+      rc.mesh_texcoord,
+      rc.mesh_texcoord_offsets,
+      rc.hfield_bvh_id,
+      rc.flex_rgba,
+      rc.flex_geom_flexid,
+      rc.flex_geom_edgeid,
+      rc.skybox_tex_id,
+      rc.skybox_face_width,
+      rc.textures,
+      rc.splat_position,
+      rc.splat_rotation,
+      rc.splat_scale,
+      rc.splat_rgba,
+      rc.splat_bvh_id,
+      rc.splat_group_root,
+    ],
+    outputs=[
+      rc.rgb_data,
+      rc.depth_data,
+      rc.seg_data,
+    ],
+    block_dim=m.block_dim.render,
+  )

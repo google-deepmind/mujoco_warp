@@ -38,6 +38,7 @@ from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import render_util
 from mujoco_warp._src import set_const
+from mujoco_warp._src import sleep
 from mujoco_warp._src import sort
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import override_model
@@ -912,7 +913,7 @@ class DeterminismTest(parameterized.TestCase):
 
   @parameterized.parameters(range(8))
   def test_hooks(self, mask):
-    """Sort hooks run iff their bit is set, as the last writer of their stage."""
+    """Sort hooks follow contact filtering and precede constraint construction."""
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -925,7 +926,7 @@ class DeterminismTest(parameterized.TestCase):
             <freejoint/>
             <geom type="box" size=".05 .05 .05"/>
           </body>
-          <body pos=".5 0 .3">
+          <body pos="0 0 .12">
             <freejoint/>
             <geom size=".05"/>
           </body>
@@ -934,6 +935,11 @@ class DeterminismTest(parameterized.TestCase):
       """,
       qvel_noise=0.1,
     )
+    qvel = d.qvel.numpy()
+    qvel[:, :6] = 0.0
+    d.qvel.assign(qvel)
+    d.tree_asleep.assign(np.array([[0, sleep.K_AWAKE_VAL]], dtype=np.int32))
+    sleep.update_sleep(m, d)
     m.opt.deterministic = mask
     events = []
 
@@ -955,27 +961,23 @@ class DeterminismTest(parameterized.TestCase):
 
     tags = [tag for tag, _, _ in events]
     self.assertTrue(all(same for _, same, _ in events))
-    self.assertEqual([tags.count(stage) for stage in ("collision", "contactfilter", "make_constraint")], [2, 2, 1])
-    for hook, stage, bit in (
-      ("contacts", "collision", DeterminismType.CONTACTS),
-      ("constraint", "make_constraint", DeterminismType.CONSTRAINT),
-    ):
-      self.assertEqual(tags.count(hook), tags.count(stage) if mask & bit else 0, hook)
-      for i, tag in enumerate(tags):
-        if tag == hook:
-          # contacts are sorted after the user contact filter
-          if hook == "contacts":
-            self.assertEqual(tags[i - 1], "contactfilter")
-          # nothing writes Data between the hook and the end of its stage
-          self.assertEqual(tags[i + 1], stage)
-          self.assertEqual(_bitwise_diff(events[i][2], events[i + 1][2]), [], hook)
+    # contacts are sorted once, after the user contact filter of both collision passes
+    sort_contacts = ["contacts"] if mask & DeterminismType.CONTACTS else []
+    sort_constraint = ["constraint"] if mask & DeterminismType.CONSTRAINT else []
+    self.assertEqual(tags, ["contactfilter", "collision"] * 2 + sort_contacts + sort_constraint + ["make_constraint"])
+    if sort_constraint:
+      # nothing writes Data between the hook and the end of its stage
+      i = tags.index("constraint")
+      self.assertEqual(_bitwise_diff(events[i][2], events[i + 1][2]), [])
 
     atomics = bool(mask & DeterminismType.ATOMICS)
     for name, mode, _ in launches:
       self.assertEqual(mode == _RUN_TO_RUN, atomics and name in _DET_FACTORIES, name)
 
   @parameterized.named_parameters(
-    ("default", {}, (2, 1)),
+    ("default", {}, (1, 1)),
+    # the unconditional second collision pass also defers sorting
+    ("graph_conditional_disabled", {"opt.graph_conditional": False}, (1, 1)),
     ("contact_disabled", {"opt.disableflags": "CONTACT"}, (0, 1)),
     ("constraint_disabled", {"opt.disableflags": "CONSTRAINT"}, (0, 1)),
     # contacts provided by the user are not sorted
@@ -995,7 +997,7 @@ class DeterminismTest(parameterized.TestCase):
             <freejoint/>
             <geom type="box" size=".05 .05 .05"/>
           </body>
-          <body pos=".5 0 .3">
+          <body pos="0 0 .12">
             <freejoint/>
             <geom size=".05"/>
           </body>
@@ -1005,6 +1007,11 @@ class DeterminismTest(parameterized.TestCase):
       overrides=overrides,
       qvel_noise=0.1,
     )
+    qvel = d.qvel.numpy()
+    qvel[:, :6] = 0.0
+    d.qvel.assign(qvel)
+    d.tree_asleep.assign(np.array([[0, sleep.K_AWAKE_VAL]], dtype=np.int32))
+    sleep.update_sleep(m, d)
     m.opt.deterministic = DeterminismType.ALL
     with (
       mock.patch.object(sort, "contacts") as contacts,
@@ -1158,6 +1165,7 @@ class DeterminismTest(parameterized.TestCase):
     )
     m.opt.deterministic = DeterminismType.ALL
     d.body_awake_ind.fill_(-1)
+    mjw.reset_data(m, d)
     mjw.step(m, d)
     np.testing.assert_array_equal(d.body_awake_ind.numpy(), [[0, 1]])
 
