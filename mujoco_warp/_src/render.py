@@ -48,6 +48,8 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 _MAX_SPLAT_HITS = 32
 # Stop compositing once remaining light cannot affect an 8-bit output pixel.
 _MIN_SPLAT_TRANSMITTANCE = 0.005
+# Record splat surface depth once accumulated opacity exceeds 90%.
+_SPLAT_DEPTH_TRANSMITTANCE = 0.1
 # Cull splats whose alpha contribution rounds to zero in the 8-bit framebuffer.
 _MIN_SPLAT_ALPHA = 1.0 / 255.0
 
@@ -145,7 +147,7 @@ def shade_splats(
       alpha = hit_alphas[i]
       color += wp.vec3(splat_rgba[index][0], splat_rgba[index][1], splat_rgba[index][2]) * alpha * transmittance
       transmittance *= 1.0 - alpha
-      if depth < 0.0 and transmittance < wp.static(_MIN_SPLAT_TRANSMITTANCE):
+      if depth < 0.0 and transmittance < wp.static(_SPLAT_DEPTH_TRANSMITTANCE):
         depth = hit_distances[i]
 
     if num_hits < wp.static(_MAX_SPLAT_HITS):
