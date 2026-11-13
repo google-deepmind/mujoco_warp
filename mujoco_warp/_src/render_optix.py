@@ -46,7 +46,7 @@ wp.set_module_options({"enable_backward": False})
 _TRIANGLE_SBT_OFFSET = 0
 _PRIMITIVE_SBT_OFFSET = 1
 # Capping raygen registers raises occupancy, which outweighs the extra spills.
-_MAX_REGISTERS = 64
+_MAX_REGISTERS = 72
 
 
 @wp.func
