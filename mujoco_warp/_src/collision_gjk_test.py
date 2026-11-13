@@ -1127,14 +1127,21 @@ class GJKTest(parameterized.TestCase):
       </mujoco>
       """
     )
-    _, ncon, x1, x2 = _geom_dist(m, d, 0, 1, multiccd=True)
+    _, ncon, witness1, witness2, dists = _geom_dist(m, d, 0, 1, multiccd=True, return_all=True)
     cos5 = np.cos(np.deg2rad(5.0))
     sin5 = np.sin(np.deg2rad(5.0))
-    y_upper = 0.1 * cos5 + 0.1 * sin5
-    z_upper = 0.08 + 0.1 * sin5 - 0.1 * cos5
     self.assertEqual(ncon, 4)
-    np.testing.assert_allclose(x1, np.array([-0.1, y_upper, z_upper]), atol=1e-5)
-    np.testing.assert_allclose(x2, np.array([-0.1, y_upper, 0.0]), atol=1e-5)
+    # Reference-face selection may change the clipping order. Check each corner
+    # and its paired projection rather than relying on the first contact.
+    for x in (-0.1, 0.1):
+      for y_local in (-0.1, 0.1):
+        y = y_local * cos5 + 0.1 * sin5
+        z = 0.08 + y_local * sin5 - 0.1 * cos5
+        matches = np.all(np.isclose(witness1, np.array([x, y, z]), atol=1e-5), axis=1)
+        self.assertEqual(np.count_nonzero(matches), 1)
+        index = np.flatnonzero(matches)[0]
+        np.testing.assert_allclose(witness2[index], np.array([x, y, 0.0]), atol=1e-5)
+        np.testing.assert_allclose(dists[index], z, atol=1e-5)
 
   @parameterized.parameters(0.0, 0.1)
   def test_hfield_support(self, margin: float):

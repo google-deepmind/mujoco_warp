@@ -1095,6 +1095,82 @@ class CollisionTest(parameterized.TestCase):
     wp.launch(plane_convex_test, inputs=[convex], outputs=[dist], dim=1)
     self.assertTrue((dist.numpy() > 0.05).all())
 
+  @parameterized.product(nworld=[1, 2], reverse_geoms=[False, True], clearance=[-0.0004, 0.0002])
+  def test_box_box_tilted_reference_face(self, nworld, reverse_geoms, clearance):
+    """Tilted box contacts preserve reference normals without disabling native CCD."""
+    support = '<body name="support" mocap="true"><geom type="box" size=".3 .3 .01"/></body>'
+    box = '<body name="box"><freejoint/><geom type="box" size=".025 .015 .01" mass=".05"/></body>'
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option timestep="0.001" cone="elliptic" impratio="10"/>
+        <default><geom friction=".4 .005 .0001" condim="6" margin=".0005"/></default>
+        <worldbody>
+          {box if reverse_geoms else support}
+          {support if reverse_geoms else box}
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=16,
+      njmax=128,
+    )
+    box_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "box")
+    box_geom = int(mjm.body_geomadr[box_id])
+    corners = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)]) * mjm.geom_size[box_geom]
+    references = []
+    for world in range(nworld):
+      ref = mujoco.MjData(mjm)
+      angle = np.deg2rad(2.0 + 0.5 * world)
+      axis = np.array([np.cos(0.3 + world), np.sin(0.3 + world), 0.0])
+      quat = np.concatenate([[np.cos(angle / 2)], np.sin(angle / 2) * axis])
+      rotation = np.zeros(9)
+      mujoco.mju_quat2Mat(rotation, quat)
+      low = (corners @ rotation.reshape(3, 3).T)[:, 2].min()
+      ref.qpos[:] = np.concatenate([[0.0, 0.0, 0.01 - low + clearance], quat])
+      if world:
+        support_quat = np.array([np.cos(0.2), 0.0, np.sin(0.2), 0.0])
+        mujoco.mju_quat2Mat(rotation, support_quat)
+        ref.qpos[:3] = rotation.reshape(3, 3) @ ref.qpos[:3]
+        mujoco.mju_mulQuat(ref.qpos[3:], support_quat, quat)
+        ref.mocap_quat[0] = support_quat
+      ref.xfrc_applied[box_id, :3] = [8.0 + world, -3.0, -50.0]
+      mujoco.mj_forward(mjm, ref)
+      references.append(ref)
+
+    d.qpos.assign(np.stack([ref.qpos for ref in references]))
+    d.mocap_quat.assign(np.stack([ref.mocap_quat for ref in references]))
+    d.xfrc_applied.assign(np.stack([ref.xfrc_applied for ref in references]))
+    d.qacc.fill_(wp.inf)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    ncon = int(d.nacon.numpy()[0])
+    worldids = d.contact.worldid.numpy()[:ncon]
+    normals = d.contact.frame.numpy()[:ncon, 0]
+    positions = d.contact.pos.numpy()[:ncon]
+    distances = d.contact.dist.numpy()[:ncon]
+    for world, ref in enumerate(references):
+      selected = worldids == world
+      self.assertGreater(ref.ncon, 1)
+      self.assertEqual(np.count_nonzero(selected), ref.ncon)
+      matched_contacts = set()
+      for normal, position, distance in zip(normals[selected], positions[selected], distances[selected]):
+        matches = np.all(np.isclose(ref.contact.pos[: ref.ncon], position, atol=1e-5), axis=1)
+        self.assertEqual(np.count_nonzero(matches), 1)
+        index = np.flatnonzero(matches)[0]
+        self.assertNotIn(index, matched_contacts)
+        matched_contacts.add(index)
+        np.testing.assert_allclose(normal, ref.contact.frame[index, :3], atol=1e-5)
+        np.testing.assert_allclose(distance, ref.contact.dist[index], atol=1e-5)
+      acceleration_scale = max(np.linalg.norm(ref.qacc), 1.0)
+      np.testing.assert_allclose(d.qacc.numpy()[world] / acceleration_scale, ref.qacc / acceleration_scale, atol=1e-5)
+    self.assertFalse(d.overflow.numpy().any())
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
   @parameterized.product(
     margin_type=["geom", "pair"],
     multiccd=["enable", "disable"],

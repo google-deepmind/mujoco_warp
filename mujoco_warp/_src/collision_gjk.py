@@ -2507,29 +2507,19 @@ def multicontact(
   margin2 = wp.where(geomtype2 != GeomType.CAPSULE, 0.5 * geom2.margin, 0.0)
   margin = margin1 + margin2
 
-  # face1 is an edge; clip face1 against face2
-  if is_edge_contact_geom1:
-    wit_dir = -n2[j]
-    normal = wit_dir
-    nclipped, clipped1, clipped2, d = _polygon_clip(
-      plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], wit_dir, margin, polygon, clipped
-    )
-    # the faces were flipped in calling _polygon_clip so we need to flip them back
-    clipped_w1 = clipped2
-    clipped_w2 = clipped1
-  # face2 is an edge; clip face2 against face1
-  elif is_edge_contact_geom2:
-    wit_dir = -n1[j]
-    normal = n1[j]
-    nclipped, clipped_w1, clipped_w2, d = _polygon_clip(
-      plane_normal, plane_dist, face1, nface1, face2, nface2, n1[j], wit_dir, margin, polygon, clipped
-    )
-  # face-face collision
-  else:
-    wit_dir = n2[j]
+  # Box-box face contacts use the face most aligned with the separating
+  # direction as the reference. Edge contacts keep their original routing.
+  is_box_box = geomtype1 == GeomType.BOX and geomtype2 == GeomType.BOX
+  if is_edge_contact_geom1 or (not is_edge_contact_geom2 and is_box_box and wp.dot(n1[i], dir_neg) < wp.dot(n2[j], dir)):
     normal = -n2[j]
+    nclipped, clipped_w2, clipped_w1, d = _polygon_clip(
+      plane_normal, plane_dist, face2, nface2, face1, nface1, n2[j], normal, margin, polygon, clipped
+    )
+  else:
+    ref_n = n1[j] if is_edge_contact_geom2 else n1[i]
+    normal = ref_n if (is_edge_contact_geom2 or is_box_box) else -n2[j]
     nclipped, clipped_w1, clipped_w2, d = _polygon_clip(
-      plane_normal, plane_dist, face1, nface1, face2, nface2, n1[i], wit_dir, margin, polygon, clipped
+      plane_normal, plane_dist, face1, nface1, face2, nface2, ref_n, -normal, margin, polygon, clipped
     )
 
   if nclipped < 1:
