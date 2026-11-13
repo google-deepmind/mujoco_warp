@@ -6218,6 +6218,7 @@ def noslip(m: types.Model, d: types.Data):
       inertia_scale,
     ],
     outputs=[d.solver_niter, d.qacc, d.efc.force],
+    block_dim=m.block_dim.noslip_solve,
   )
   wp.launch(
     _noslip_qacc_qfrc(m.is_sparse, sleep),
