@@ -723,7 +723,6 @@ class SetConstTest(parameterized.TestCase):
       _assert_eq(getattr(m, f).numpy()[0].reshape(mjm_val.shape), mjm_val, f)
     _assert_eq(m.tendon_lengthspring.numpy()[0], mjm.tendon_lengthspring, "tendon_lengthspring")
 
-  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
   @parameterized.parameters(
     (mjwarp.SetConstGroup.ALL,),
     (mjwarp.SetConstGroup.FIXED,),
