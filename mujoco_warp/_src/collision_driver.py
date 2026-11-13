@@ -1254,6 +1254,10 @@ def collision(
     d.ncollision.zero_()
     d.nacon.zero_()
     d_col = d
+    if m.nflex > 0:
+      d.contact.flex.fill_(wp.vec2i(-1, -1))
+      d.contact.elem.fill_(wp.vec2i(-1, -1))
+      d.contact.vert.fill_(wp.vec2i(-1, -1))
 
   if m.opt.broadphase == BroadphaseType.NXN:
     nxn_broadphase(m, d_col, ctx, awake_prev, woke=woke)

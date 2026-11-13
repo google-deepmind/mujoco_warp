@@ -247,6 +247,20 @@ def _eff_flex_stiff_possible(mjm: mujoco.MjModel, f: int) -> bool:
   return bool(np.any(mjm.flex_bending[badr:end] != 0))
 
 
+def _flex_interp_assemblable(mjm: mujoco.MjModel) -> bool:
+  """Whether interpolated flex stiffness can be assembled into efm_K (mjd_flexInterpAssemblable)."""
+  for fi in range(mjm.nflex):
+    if mjm.flex_interp[fi] != 0:
+      if not mjm.flex_rigid[fi] and mjm.flex_edgeequality[fi] != 3 and _flex_has_stiffness(mjm, fi):
+        nodeadr = int(mjm.flex_nodeadr[fi])
+        for n in range(int(mjm.flex_nodenum[fi])):
+          bid = int(mjm.body_weldid[mjm.flex_nodebodyid[nodeadr + n]])
+          dofnum = int(mjm.body_dofnum[bid])
+          if dofnum != 0 and (int(mjm.body_simple[bid]) != 2 or dofnum != 3):
+            return False
+  return True
+
+
 def _is_open_rod_chain(mjm: mujoco.MjModel, fi: int) -> tuple[bool, int]:
   """Returns (is_open_chain, nhinge) for single-hinge open 1D rod flex `fi`."""
   bendingadr = int(mjm.flex_bendingadr[fi])
@@ -336,12 +350,23 @@ def _get_efm_data(mjm: mujoco.MjModel) -> mujoco.MjData | None:
   mjm_tmp = copy.copy(mjm)
   mjm_tmp.opt.integrator = mujoco.mjtIntegrator.mjINT_DISCRETE
   mjm_tmp.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
+  mjm_tmp.opt.noslip_iterations = 0
+  mjm_tmp.opt.enableflags &= ~(int(mujoco.mjtEnableBit.mjENBL_SLEEP) | int(mujoco.mjtEnableBit.mjENBL_IPC))
+  mjm_tmp.opt.disableflags &= ~(
+    int(mujoco.mjtDisableBit.mjDSBL_ISLAND) | int(mujoco.mjtDisableBit.mjDSBL_SPRING) | int(mujoco.mjtDisableBit.mjDSBL_DAMPER)
+  )
+  mjm_tmp.flex_edgestiffness[:] = 0.0
+  mjm_tmp.flex_edgedamping[:] = 0.0
   if mjm_tmp.nflexvert > 0:
     mjm_tmp.flex_vertbodyid[:] = np.where(
       mjm_tmp.flex_vertbodyid >= 0, mjm_tmp.body_weldid[mjm_tmp.flex_vertbodyid], mjm_tmp.flex_vertbodyid
     )
+  interp_assemblable = _flex_interp_assemblable(mjm_tmp)
   for f in range(mjm_tmp.nflex):
-    if not _flex_simple(mjm_tmp, f):
+    if mjm_tmp.flex_interp[f] != 0:
+      if not interp_assemblable:
+        mjm_tmp.flex_rigid[f] = True
+    elif not _flex_simple(mjm_tmp, f):
       mjm_tmp.flex_rigid[f] = True
   d = mujoco.MjData(mjm_tmp)
   mujoco.mj_fwdPosition(mjm_tmp, d)
@@ -608,7 +633,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       raise NotImplementedError("Flex-SDF collision is not implemented.")
     if (mjm.geom_type == mujoco.mjtGeom.mjGEOM_HFIELD).any():
       raise NotImplementedError("Flex-HField collision is not implemented.")
-    if (mjm.flex_rigid != 0).any():
+    is_discrete = mjm.opt.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE
+    if np.any((mjm.flex_rigid != 0) & ~(is_discrete & (mjm.flex_dim == 2))):
       raise NotImplementedError("Rigid flexes are not implemented.")
     # TODO(team): skip element pairs driven by a common grid node, as in mjc_ElemSharedNode
     if np.any((mjm.flex_interp != 0) & (mjm.flex_selfcollide != 0) & ((mjm.flex_contype & mjm.flex_conaffinity) != 0)):
@@ -619,6 +645,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.nmaxpyramid = np.maximum(1, 2 * (m.nmaxcondim - 1))
   m.has_sdf_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   m.has_ellipsoid_geom = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_ELLIPSOID).any()
+  m.has_cylinder_geom = bool((mjm.geom_type == mujoco.mjtGeom.mjGEOM_CYLINDER).any())
   m.has_plane_geom = bool(mjm.ngeom > 0 and (mjm.geom_type == mujoco.mjtGeom.mjGEOM_PLANE).any())
   m.has_flex_selfcollide = bool(
     mjm.nflex > 0 and np.any((mjm.flex_selfcollide != 0) & ((mjm.flex_contype & mjm.flex_conaffinity) != 0))
@@ -638,27 +665,16 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     raise ValueError("stable Neo-Hookean elasticity requires integrator='discrete'")
   flex_simple = np.array([_flex_simple(mjm, f) for f in range(mjm.nflex)], dtype=bool)
   m.flex_simple = flex_simple
+  flex_stiff_possible = np.array([_eff_flex_stiff_possible(mjm, f) for f in range(mjm.nflex)], dtype=bool)
+  m.flex_stiff_possible = flex_stiff_possible
+  m.has_flex_stiff = bool(flex_stiff_possible.any())
   m.has_non_simple_flex = bool(
-    mjm.nflex > 0
-    and any(
-      mjm.flex_interp[f] == 0
-      and not mjm.flex_rigid[f]
-      and not flex_simple[f]
-      and (
-        (mjm.flex_dim[f] == 1 and mjm.flex_bendingadr[f] >= 0)
-        or (
-          mjm.flex_dim[f] >= 2
-          and (
-            mjm.flex_bendingadr[f] >= 0 or (mjm.flex_stiffnessadr[f] >= 0 and mjm.flex_stiffness[mjm.flex_stiffnessadr[f]] != 0)
-          )
-        )
-      )
-      for f in range(mjm.nflex)
-    )
+    mjm.nflex > 0 and any(mjm.flex_interp[f] == 0 and flex_stiff_possible[f] and not flex_simple[f] for f in range(mjm.nflex))
   )
   m.has_flex_edge_stiff_damp = bool(
     any(not mjm.flex_rigid[f] and (mjm.flex_edgestiffness[f] > 0 or mjm.flex_edgedamping[f] > 0) for f in range(mjm.nflex))
   )
+  m.has_reducible_flex = bool(mjm.nflex > 0 and (np.any(mjm.flex_rigid != 0) or np.any(mjm.flex_interp != 0)))
   if (
     mjm.opt.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE
     and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
@@ -773,18 +789,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     efm_d.efm_dofid if (efm_d and not m.efm0_active and efm_d.efm_dofid is not None) else np.zeros(0, dtype=np.int32)
   )
 
-  flex_interp_assemblable = True
-  for fi in range(mjm.nflex):
-    if mjm.flex_interp[fi] != 0:
-      if not mjm.flex_rigid[fi] and mjm.flex_edgeequality[fi] != 3 and _flex_has_stiffness(mjm, fi):
-        nodeadr = int(mjm.flex_nodeadr[fi])
-        for n in range(int(mjm.flex_nodenum[fi])):
-          bid = int(mjm.flex_nodebodyid[nodeadr + n])
-          dofnum = int(mjm.body_dofnum[bid])
-          if dofnum != 0 and (int(mjm.body_simple[bid]) != 2 or dofnum != 3):
-            flex_interp_assemblable = False
-            break
-  m.flex_interp_assemblable = flex_interp_assemblable
+  m.flex_interp_assemblable = _flex_interp_assemblable(mjm)
   m.has_unsupported_flex_interp = bool(any(int(x) < -1 or int(x) >= 2 for x in mjm.flex_interp))
 
   # Precompute flex_cell_map
@@ -1780,7 +1785,7 @@ def _calculate_efm_con_max_dof(mjm: mujoco.MjModel) -> int:
   non_interp_flex_nnz = []
   passive_flex_nnz = []
   for fi in range(mjm.nflex):
-    if mjm.flex_interp[fi] != 0 or mjm.flex_rigid[fi]:
+    if mjm.flex_interp[fi] != 0:
       continue
     vert_start = int(mjm.flex_vertadr[fi])
     dim = int(mjm.flex_dim[fi])
@@ -1815,7 +1820,7 @@ def _calculate_efm_con_max_dof(mjm: mujoco.MjModel) -> int:
       for v in range(int(mjm.flex_vertnum[fi])):
         f_nnz = max(f_nnz, _body_set_nnz(mjm, {mjm.flex_vertbodyid[vert_start + v]}))
     non_interp_flex_nnz.append(f_nnz)
-    if mjm.flex_passive[fi] != 0 and dim >= 2:
+    if not mjm.flex_rigid[fi] and mjm.flex_passive[fi] != 0 and dim >= 2:
       passive_flex_nnz.append(f_nnz)
   if not passive_flex_nnz:
     max_other = max([0] + non_interp_flex_nnz + geom_nnz)
