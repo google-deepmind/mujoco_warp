@@ -24,7 +24,9 @@ from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import Contact
 from mujoco_warp._src.types import ContactType
+from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import mat63
 from mujoco_warp._src.types import vec5
@@ -500,6 +502,7 @@ class CollisionContext:
     multiccd_endvert: edge vertices candidates      (naccdmax, nmeshdegmax)
     multiccd_face1: contact face                    (naccdmax, npolygonmax)
     multiccd_face2: contact face                    (naccdmax, npolygonmax)
+    contact: arrays that the narrowphase writes contacts to instead of `Data.contact`, or None
   """
 
   collision_pair: wp.array
@@ -526,6 +529,7 @@ class CollisionContext:
   multiccd_endvert: wp.array = None
   multiccd_face1: wp.array = None
   multiccd_face2: wp.array = None
+  contact: Contact | None = None
 
 
 @wp.func
@@ -560,6 +564,29 @@ def sap_range(
   limit = wp.min(n - 1, limit)
 
   range_out[worldid, sortedid] = limit - sortedid
+
+
+def contact_outputs(d: Data, ctx: CollisionContext) -> list[wp.array]:
+  """The contact arrays and the contact count that the narrowphase writes with `write_contact`."""
+  contact = d.contact if ctx.contact is None else ctx.contact
+  return [
+    contact.dist,
+    contact.pos,
+    contact.frame,
+    contact.includemargin,
+    contact.friction,
+    contact.solref,
+    contact.solreffriction,
+    contact.solimp,
+    contact.dim,
+    contact.geom,
+    contact.efc_address,
+    contact.worldid,
+    contact.type,
+    contact.geomcollisionid,
+    contact.adhesion,
+    d.nacon,
+  ]
 
 
 def create_collision_context(naconmax: int) -> CollisionContext:

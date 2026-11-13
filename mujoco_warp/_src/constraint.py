@@ -5276,6 +5276,7 @@ def make_constraint(m: types.Model, d: types.Data):
   newton = m.opt.solver == types.SolverType.NEWTON
   is_discrete = m.opt.integrator == types.IntegratorType.DISCRETE
   efc_nnz = wp.empty((d.nworld,), dtype=int)
+  contact_order = None
 
   wp.launch(
     _zero_constraint_counts,
@@ -5949,6 +5950,9 @@ def make_constraint(m: types.Model, d: types.Data):
             efc_nnz,
           ],
         )
+        if m.opt.deterministic & types.DeterminismType.CONSTRAINT:
+          # The rows are still empty: give them their canonical address before they are filled.
+          contact_order = sort.contact_rows(m, d, efc_nnz)
 
       det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
       if m.is_sparse:
@@ -6270,7 +6274,7 @@ def make_constraint(m: types.Model, d: types.Data):
     )
 
   if m.opt.deterministic & types.DeterminismType.CONSTRAINT:
-    sort.constraints(m, d, efc_nnz)
+    sort.constraints(m, d, efc_nnz, contact_order)
 
 
 @cache_kernel

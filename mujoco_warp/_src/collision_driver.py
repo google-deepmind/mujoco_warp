@@ -1250,6 +1250,12 @@ def collision(
     ctx = prepare_collision_context(m, d)
 
   incremental = awake_prev is not None
+
+  # The deterministic contact sort moves each contact once when the narrowphase writes to its
+  # buffer. A caller that defers the sort finds the contacts in `d.contact`.
+  ctx.contact = sort.contact_buffer(m, d, incremental) if sort_contacts else None
+  contact = d.contact if ctx.contact is None else ctx.contact
+
   if incremental:
     # Append newly-awakened contacts to d.contact while counting incremental broadphase pairs
     # separately so pass-1 broadphase overflow is preserved.
@@ -1284,18 +1290,18 @@ def collision(
         m.geom_surfacevel,
         d.geom_xpos,
         d.geom_xquat,
-        d.contact.pos,
-        d.contact.frame,
-        d.contact.geom,
-        d.contact.worldid,
+        contact.pos,
+        contact.frame,
+        contact.geom,
+        contact.worldid,
         d.naconmax,
         d.nacon,
       ],
-      outputs=[d.contact.surfacevel],
+      outputs=[contact.surfacevel],
     )
 
   if m.callback.contactfilter:
     m.callback.contactfilter(m, d)
 
   if sort_contacts and (m.opt.deterministic & DeterminismType.CONTACTS):
-    sort.contacts(d)
+    sort.contacts(d, ctx.contact, m.flg_surfacevel)
