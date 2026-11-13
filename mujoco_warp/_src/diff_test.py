@@ -1035,7 +1035,6 @@ class DiffApiTest(parameterized.TestCase):
         x0[i] = xi
         np.testing.assert_allclose(grad[i], (loss_plus - loss_minus) / (2.0 * eps), rtol=1e-3, atol=1e-4)
 
-  @absltest.skipIf(not wp.get_device().is_cuda, "CUDA graph capture requires a CUDA device.")
   def test_graph_capture(self):
     # Native and custom rules can be captured in a CUDA graph with their backward, skipping
     # supported while capturing, whether the gradients were allocated by a warm-up or by the first
@@ -1116,6 +1115,7 @@ class DiffApiTest(parameterized.TestCase):
       checkpointed_replay()
 
     for _ in range(2):
+      seed.fill_(wp.inf)  # the eager run above already left 32 in seed
       wp.capture_launch(capture.graph)
       np.testing.assert_allclose(seed.numpy(), 32.0)
 
