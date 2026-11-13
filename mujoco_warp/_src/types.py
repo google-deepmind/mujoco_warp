@@ -1731,7 +1731,7 @@ class Model:
     weld_tactile_id: weld body to tactile weld index         (nbody,)
     taxel_vertadr: tactile sensor vertex address             (nsensortaxel,)
     taxel_sensorid: address for tactile sensors
-    dof_subtreenum: descendant dof count per dof             (nv,)
+    dof_subtreenum: subtree size including the dof itself   (nv,)
     qLD_fused_level_adr: offsets of each sparse tree's level pointers
     qLD_fused_pair_adr: offsets of factor entries grouped by tree and depth
     qLD_fused_pairs: factor entries as (dof, row offset)

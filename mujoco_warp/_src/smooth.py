@@ -1643,6 +1643,7 @@ def _factor_LD_sparse_fused(enable_sleep: bool = False):
     factor = L_out[worldid]
     diagonal = D_out[worldid]
 
+    # Keep R = D*L until normalization: R[i,j] = M[i,j] - sum_k R[k,i]*Dinv[k]*R[k,j].
     for adr in range(level_end - 1, level_beg - 1, -1):
       level = adr - level_beg
       pair_beg = qLD_fused_pair_adr[adr]
@@ -1653,7 +1654,7 @@ def _factor_LD_sparse_fused(enable_sleep: bool = False):
           pair = qLD_fused_pairs[pair_beg + p]
           row, entry = pair[0], pair[1]
           rowadr = M_rowadr[row]
-          end = row + 1 + dof_subtreenum[row]
+          end = row + dof_subtreenum[row]
           partial = float(0.0)
           for k in range(row + 1 + tid, end, BLOCK_DIM):
             kadr = M_rowadr[k]
@@ -1670,21 +1671,21 @@ def _factor_LD_sparse_fused(enable_sleep: bool = False):
           row, entry = pair[0], pair[1]
           rowadr = M_rowadr[row]
           value = matrix[rowadr + entry]
-          end = row + 1 + dof_subtreenum[row]
+          end = row + dof_subtreenum[row]
           if row + 1 < end:
             kadr = M_rowadr[row + 1]
-            a = factor[kadr + level]
-            b = diagonal[row + 1]
-            c = factor[kadr + entry]
+            ki = factor[kadr + level]
+            inv_diag = diagonal[row + 1]
+            kj = factor[kadr + entry]
             # Issue the next loads before extending the dependent sum.
             for k in range(row + 2, end):
               kadr = M_rowadr[k]
-              next_a = factor[kadr + level]
-              next_b = diagonal[k]
-              next_c = factor[kadr + entry]
-              value -= a * b * c
-              a, b, c = next_a, next_b, next_c
-            value -= a * b * c
+              next_ki = factor[kadr + level]
+              next_inv_diag = diagonal[k]
+              next_kj = factor[kadr + entry]
+              value -= ki * inv_diag * kj
+              ki, inv_diag, kj = next_ki, next_inv_diag, next_kj
+            value -= ki * inv_diag * kj
           factor[rowadr + entry] = value
           if entry == M_rownnz[row] - 1:
             diagonal[row] = 1.0 / value

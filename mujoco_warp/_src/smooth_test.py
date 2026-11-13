@@ -1784,19 +1784,20 @@ class SmoothTest(parameterized.TestCase):
     mjw.solve_m(m, d, res, d.qfrc_smooth)
     _assert_eq(res.numpy()[0], ref[0], "M \\ qfrc_smooth (mixed blocks)")
 
-  @parameterized.product(nworld=(1, 2), mode=("separate", "combined", "deterministic", "all_sparse"))
+  @parameterized.product(nworld=(1, 2), mode=("separate", "combined", "deterministic", "all_sparse", "wide"))
   def test_sparse_factor_sleep(self, nworld, mode):
     def chain(n):
       return '<body pos="0 0 .05"><joint axis="0 1 0"/><geom size=".02"/>' * n + "</body>" * n
 
     small = "" if mode == "all_sparse" else chain(4) + chain(7) + '<body><freejoint/><geom size=".1"/></body>'
+    branches = chain(15) * 40 if mode == "wide" else chain(8) * 8
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
         <option><flag contact="disable"/></option>
         <default><joint armature="1"/></default>
         <worldbody>
-          <body><freejoint/><geom size=".1"/>{chain(8) * 8}</body>
+          <body><freejoint/><geom size=".1"/>{branches}</body>
           <body><freejoint/><geom size=".1"/>{chain(15) * 5}</body>
           {small}
         </worldbody>
@@ -1829,7 +1830,7 @@ class SmoothTest(parameterized.TestCase):
     x = wp.full_like(b, wp.inf)
     scratch = wp.empty_like(x) if mode == "deterministic" else None
     with wp.ScopedCapture() as capture:
-      if mode in ("combined", "all_sparse"):
+      if mode in ("combined", "all_sparse", "wide"):
         mjw._src.smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, x, b)
       else:
         mjw.factor_m(m, d)
