@@ -278,11 +278,9 @@ def plane_capsule(
   # align contact frames with capsule axis
   b, b_norm = normalize_with_norm(axis - n * wp.dot(n, axis))
 
-  if b_norm < 0.5:
-    if -0.5 < n[1] and n[1] < 0.5:
-      b = wp.vec3(0.0, 1.0, 0.0)
-    else:
-      b = wp.vec3(0.0, 0.0, 1.0)
+  # as C MuJoCo (mju_makeFrame, mju_normalize3): keep the projected axis unless it vanishes
+  if b_norm < MJ_MINVAL:
+    b = wp.vec3(1.0, 0.0, 0.0)
 
   c = wp.cross(n, b)
   frame = wp.mat33(n[0], n[1], n[2], b[0], b[1], b[2], c[0], c[1], c[2])
