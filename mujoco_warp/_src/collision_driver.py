@@ -1238,8 +1238,9 @@ def collision(
   incremental sleeping pass: contacts are appended to the existing buffer and only pairs
   involving a newly-awakened body are emitted.
 
-  Set `sort_contacts=False` to defer deterministic contact sorting to the caller, outside
-  a graph conditional body where the sorting workspace cannot be allocated.
+  Set `sort_contacts=False` to defer deterministic contact sorting to the caller, e.g. to sort
+  once after both sleeping passes, outside the graph conditional body where the sorting
+  workspace cannot be allocated.
   """
   if d.naconmax == 0 or m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT):
     d.nacon.zero_()

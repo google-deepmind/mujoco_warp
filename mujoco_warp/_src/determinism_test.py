@@ -961,32 +961,23 @@ class DeterminismTest(parameterized.TestCase):
 
     tags = [tag for tag, _, _ in events]
     self.assertTrue(all(same for _, same, _ in events))
-    self.assertEqual([tags.count(stage) for stage in ("collision", "contactfilter", "make_constraint")], [2, 2, 1])
-    for hook, stage, bit in (
-      ("contacts", "collision", DeterminismType.CONTACTS),
-      ("constraint", "make_constraint", DeterminismType.CONSTRAINT),
-    ):
-      self.assertEqual(tags.count(hook), tags.count(stage) if mask & bit else 0, hook)
-      for i, tag in enumerate(tags):
-        if tag == hook:
-          if hook == "contacts" and tags[i - 1] == "collision":
-            # The conditional second pass defers sorting until collision returns.
-            self.assertEqual(tags[i - 2], "contactfilter")
-            self.assertEqual(tags[i + 1], "constraint" if mask & DeterminismType.CONSTRAINT else "make_constraint")
-            continue
-          # contacts are sorted after the user contact filter
-          if hook == "contacts":
-            self.assertEqual(tags[i - 1], "contactfilter")
-          # nothing writes Data between the hook and the end of its stage
-          self.assertEqual(tags[i + 1], stage)
-          self.assertEqual(_bitwise_diff(events[i][2], events[i + 1][2]), [], hook)
+    # contacts are sorted once, after the user contact filter of both collision passes
+    sort_contacts = ["contacts"] if mask & DeterminismType.CONTACTS else []
+    sort_constraint = ["constraint"] if mask & DeterminismType.CONSTRAINT else []
+    self.assertEqual(tags, ["contactfilter", "collision"] * 2 + sort_contacts + sort_constraint + ["make_constraint"])
+    if sort_constraint:
+      # nothing writes Data between the hook and the end of its stage
+      i = tags.index("constraint")
+      self.assertEqual(_bitwise_diff(events[i][2], events[i + 1][2]), [])
 
     atomics = bool(mask & DeterminismType.ATOMICS)
     for name, mode, _ in launches:
       self.assertEqual(mode == _RUN_TO_RUN, atomics and name in _DET_FACTORIES, name)
 
   @parameterized.named_parameters(
-    ("default", {}, (2, 1)),
+    ("default", {}, (1, 1)),
+    # the unconditional second collision pass also defers sorting
+    ("graph_conditional_disabled", {"opt.graph_conditional": False}, (1, 1)),
     ("contact_disabled", {"opt.disableflags": "CONTACT"}, (0, 1)),
     ("constraint_disabled", {"opt.disableflags": "CONSTRAINT"}, (0, 1)),
     # contacts provided by the user are not sorted
