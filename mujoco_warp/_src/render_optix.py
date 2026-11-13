@@ -44,6 +44,8 @@ wp.set_module_options({"enable_backward": False})
 
 _TRIANGLE_SBT_OFFSET = 0
 _PRIMITIVE_SBT_OFFSET = 1
+# Capping raygen registers raises occupancy, which outweighs the extra spills.
+_MAX_REGISTERS = 64
 
 
 @wp.func
@@ -246,6 +248,7 @@ def create_pipeline(scene: OptixScene, megakernel: wp.Kernel, geom_ray_types: Tu
     megakernel,
     sbt=wo.SbtLayout(hit_groups={"triangles": wo.HitGroup(), "primitives": wo.HitGroup(intersection=intersect_primitive)}),
     attribute_words=3,
+    max_registers=_MAX_REGISTERS,
     module_options={"fast_math": megakernel.module.options["fast_math"]},
     graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
   )
