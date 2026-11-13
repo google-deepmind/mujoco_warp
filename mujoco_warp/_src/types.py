@@ -2909,12 +2909,12 @@ class RenderContext:
     mesh_registry: mesh BVH id to warp mesh mapping
     mesh_bvh_id: mesh BVH ids
     mesh_bounds_size: mesh bounds size
+    mesh_bvh_rot: rotation from each mesh's BVH frame to its inertia frame
     mesh_texcoord: mesh texture coordinates
     mesh_texcoord_offsets: mesh texture coordinate offsets
     mesh_facetexcoord: mesh face texture coordinates
     mesh_facenormal: per-face indices into Model.mesh_normal
     samples_per_pixel: sub-pixel samples per axis; 1 disables supersampling
-    aa_accum: colour accumulator, unused when samples_per_pixel is 1
     textures: textures
     textures_registry: texture registry
     hfield_registry: hfield BVH id to warp mesh mapping
@@ -3004,6 +3004,9 @@ class RenderContext:
     splat_bvh_id: Splat BVH id
     splat_group_root: Per-world selected splat BVH root
     splat_count: Number of splats
+    has_reframed_meshes: True iff any mesh BVH uses its authored frame
+    any_rgb: True iff any active camera renders RGB
+    any_seg: True iff any active camera renders segmentation
   """
 
   nrender: int
@@ -3027,12 +3030,12 @@ class RenderContext:
   mesh_registry: dict
   mesh_bvh_id: array("nmesh", wp.uint64)
   mesh_bounds_size: array("nmesh", wp.vec3)
+  mesh_bvh_rot: array("nmesh", wp.mat33)
   mesh_texcoord: array("*", wp.vec2)
   mesh_texcoord_offsets: array("nmesh", int)
   mesh_facetexcoord: array("nmeshface", wp.vec3i)
   mesh_facenormal: array("nmeshface", wp.vec3i)
   samples_per_pixel: int
-  aa_accum: array("*", wp.vec3)
   textures: array("*", wp.Texture2D)
   textures_registry: list[wp.Texture2D]
   hfield_registry: dict
@@ -3086,5 +3089,8 @@ class RenderContext:
   splat_bvh_id: wp.uint64
   splat_group_root: array("nworld", int)
   splat_count: int
+  has_reframed_meshes: bool = False
+  any_rgb: bool = False
+  any_seg: bool = False
   geom_ray_types: tuple = ()
   _megakernel: Optional[wp.Kernel] = None
