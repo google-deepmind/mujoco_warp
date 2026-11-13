@@ -15,7 +15,6 @@
 """Tests for render functions."""
 
 import os
-import warnings
 from unittest import mock
 
 import mujoco
@@ -27,13 +26,10 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import bvh
-from mujoco_warp._src import render_util
+from mujoco_warp._src import render_optix
 from mujoco_warp._src.types import vec6
 
-try:
-  import warp_optix
-except ImportError:
-  warp_optix = None
+warp_optix = render_optix.get_wo()
 
 _BACKENDS = ("warp", "optix") if wp.get_device().is_cuda and warp_optix is not None else ("warp",)
 
@@ -227,13 +223,11 @@ class RenderTest(parameterized.TestCase):
   @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires CUDA.")
   def test_render_graph_capture(self):
     mjm, mjd, m, d = test_data.fixture("humanoid/humanoid.xml")
-    # OptiX launches cannot be recorded into CUDA graphs.
     rc = mjw.create_render_context(
       mjm,
       cam_res=(32, 32),
       render_rgb=True,
       render_depth=True,
-      backend="warp",
     )
 
     mjw.render(m, d, rc)
@@ -915,7 +909,7 @@ class RenderTest(parameterized.TestCase):
     </mujoco>
     """
     )
-    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_seg=True, backend="warp")
+    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_seg=True)
     mjw.render(m, d, rc)
     seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
 
@@ -1095,8 +1089,7 @@ class RenderTest(parameterized.TestCase):
     </mujoco>
     """
     )
-    # The OptiX backend compiles the megakernel with the render context.
-    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True, backend="warp")
+    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True)
     self.assertIsNone(rc._megakernel)
     mjw.render(m, d, rc)
     kernel = rc._megakernel
@@ -1219,15 +1212,10 @@ class RenderTest(parameterized.TestCase):
     """
     )
     # Fake a missing warp-optix install.
-    with mock.patch.object(render_util, "wo", None):
+    with mock.patch.object(render_optix, "get_wo", return_value=None):
       with self.assertWarnsRegex(UserWarning, "warp-optix is not installed"):
         rc = mjw.create_render_context(mjm, backend="optix")
-      self.assertEqual(rc.backend, "warp")
-      # The default backend picks warp silently.
-      with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        rc = mjw.create_render_context(mjm)
-      self.assertEqual(rc.backend, "warp")
+    self.assertEqual(rc.backend, "warp")
 
   @absltest.skipIf(warp_optix is None, "warp-optix is not installed")
   def test_optix_backend_falls_back_on_unsupported_device(self):

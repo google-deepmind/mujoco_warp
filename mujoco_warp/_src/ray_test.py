@@ -51,7 +51,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(normal_np, 0, "normal")
 
     # test that bvh accelerated produces the same results
-    rc = mjw.create_render_context(mjm, backend="warp")
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     bvh_geomid_np = geomid.numpy()[0, 0]
     bvh_dist_np = dist.numpy()[0, 0]
@@ -80,7 +80,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(normal_np, mj_normal, "normal")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, backend="warp")
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     bvh_geomid_np = geomid.numpy()[0, 0]
     bvh_dist_np = dist.numpy()[0, 0]
@@ -124,7 +124,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(normal_np, mj_normal, "normal")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, backend="warp")
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     bvh_geomid_np = geomid.numpy()[0, 0]
     bvh_dist_np = dist.numpy()[0, 0]
@@ -153,7 +153,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(normal_np, mj_normal, "normal")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, backend="warp")
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     bvh_geomid_np = geomid.numpy()[0, 0]
     bvh_dist_np = dist.numpy()[0, 0]
@@ -230,7 +230,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(normal_np, mj_normal, "normal")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, backend="warp")
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     bvh_geomid_np = geomid.numpy()[0, 0]
     bvh_dist_np = dist.numpy()[0, 0]
@@ -259,7 +259,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(normal_np, mj_normal, "normal")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, backend="warp")
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     bvh_geomid_np = geomid.numpy()[0, 0]
     bvh_dist_np = dist.numpy()[0, 0]
@@ -313,7 +313,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(normal_np, mj_normal, "normal-tetrahedron")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, backend="warp")
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     bvh_geomid_np = geomid.numpy()[0, 0]
     bvh_dist_np = dist.numpy()[0, 0]
@@ -375,7 +375,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(geomid_np, mj_geomid[0], "geomid")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, backend="warp")
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     bvh_geomid_np = geomid.numpy()[0, 0]
     bvh_dist_np = dist.numpy()[0, 0]
@@ -415,7 +415,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(dist_np, mj_dist, "dist")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, backend="warp")
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, geomgroup=geomgroup, rc=rc)
     bvh_geomid_np = geomid.numpy()[0, 0]
     bvh_dist_np = dist.numpy()[0, 0]
@@ -453,7 +453,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(dist_np, -1, "dist")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, backend="warp")
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, flg_static=False, rc=rc)
     bvh_geomid_np = geomid.numpy()[0, 0]
     bvh_dist_np = dist.numpy()[0, 0]
@@ -476,7 +476,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(normal_np, 0, "normal")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, backend="warp")
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, bodyexclude=0, rc=rc)
     bvh_geomid_np = geomid.numpy()[0, 0]
     bvh_dist_np = dist.numpy()[0, 0]
@@ -504,7 +504,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(normal_np, 0, "normal")
 
     # test that bvh raycast produces the same results
-    rc = mjw.create_render_context(mjm, backend="warp")
+    rc = mjw.create_render_context(mjm)
     dist, geomid, normal = mjw.ray(m, d, pnt, vec, rc=rc)
     bvh_geomid_np = geomid.numpy()[0, 0]
     bvh_dist_np = dist.numpy()[0, 0]
@@ -555,7 +555,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(dist.numpy()[~hits], -1.0, "dist miss")
 
     # BVH-accelerated path
-    rc = mjw.create_render_context(mjm, nworld=nworld, backend="warp")
+    rc = mjw.create_render_context(mjm, nworld=nworld)
     dist_bvh, geomid_bvh, normal_bvh = mjw.ray(m, d, pnt, vec, rc=rc)
 
     self.assertEqual(dist_bvh.shape, (nworld, 1))
@@ -585,7 +585,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(geomid.numpy()[0, 0], unused[0], "geom_id_miss_y_pos_vs_mj")
     _assert_eq(dist.numpy()[0, 0], mj_dist, "dist_miss_y_pos_vs_mj")
 
-    rc = mjw.create_render_context(mjm, backend="warp")
+    rc = mjw.create_render_context(mjm)
     dist_bvh, geomid_bvh, _ = mjw.ray(m, d, pnt_miss_y_pos, vec_up, rc=rc)
     _assert_eq(geomid_bvh.numpy()[0, 0], -1, "geom_id_bvh_miss_y_pos")
     _assert_eq(dist_bvh.numpy()[0, 0], -1.0, "dist_bvh_miss_y_pos")
@@ -709,7 +709,7 @@ class RayTest(parameterized.TestCase):
     _assert_eq(dist.numpy()[:, 2], -1.0, "dist miss")
 
     # BVH path
-    rc = mjw.create_render_context(mjm, nworld=nworld, backend="warp")
+    rc = mjw.create_render_context(mjm, nworld=nworld)
     dist_bvh = wp.empty((nworld, nray), dtype=float)
     geomid_bvh = wp.empty((nworld, nray), dtype=int)
     normal_bvh = wp.empty((nworld, nray), dtype=wp.vec3)
@@ -722,7 +722,7 @@ class RayTest(parameterized.TestCase):
 
   def test_rays_rejects_optix_render_context(self):
     mjm, _, m, d = test_data.fixture("ray.xml")
-    rc = mjw.create_render_context(mjm)
+    rc = mjw.create_render_context(mjm, backend="optix")
     if rc.backend != "optix":
       self.skipTest("OptiX is unavailable")
     pnt = wp.array([wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3).reshape((1, 1))

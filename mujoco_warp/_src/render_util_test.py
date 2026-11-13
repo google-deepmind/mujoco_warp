@@ -165,7 +165,7 @@ class RenderUtilTest(parameterized.TestCase):
   def test_bvh_creation(self, nworld):
     """Test that the BVH is created correctly for single world and multiple worlds."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=nworld)
-    rc = mjw.create_render_context(mjm, nworld=nworld, cam_res=(64, 64), use_textures=False, backend="warp")
+    rc = mjw.create_render_context(mjm, nworld=nworld, cam_res=(64, 64), use_textures=False)
 
     self.assertIsNotNone(rc)
     self.assertEqual(rc.nrender, mjm.ncam)

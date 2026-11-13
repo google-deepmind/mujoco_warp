@@ -73,9 +73,7 @@ RENDER_BACKFACE_CULLING = flags.DEFINE_bool(
   "enable renderer backface culling (RenderContext.enable_backface_culling)",
 )
 RENDER_SKYBOX = flags.DEFINE_bool("render_skybox", True, "render skybox texture if available")
-RENDER_BACKEND = flags.DEFINE_enum(
-  "render_backend", None, ["warp", "optix"], "ray-casting backend for rendering (default: optix if available, else warp)"
-)
+RENDER_BACKEND = flags.DEFINE_enum("render_backend", "warp", ["warp", "optix"], "ray-casting backend for rendering")
 
 
 def load_model(path: epath.Path) -> mujoco.MjModel:
