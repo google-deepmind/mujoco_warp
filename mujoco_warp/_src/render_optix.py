@@ -21,6 +21,7 @@ bounded geometry must remain within each cell's extent. Planes are intersected s
 Flexes and splats are unsupported.
 """
 
+import functools
 from typing import Tuple
 
 import mujoco
@@ -36,12 +37,19 @@ from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OptixScene
 from mujoco_warp._src.types import RenderContext
 
-try:
-  import warp_optix as wo
-except ImportError:
-  wo = None
-
 wp.set_module_options({"enable_backward": False})
+
+
+@functools.cache
+def get_wo():
+  """Import warp_optix on first use, since importing it initializes CUDA and OptiX."""
+  try:
+    import warp_optix as wo  # noqa: PLC0415
+
+    return wo
+  except ImportError:
+    return None
+
 
 _TRIANGLE_SBT_OFFSET = 0
 _PRIMITIVE_SBT_OFFSET = 1
@@ -59,6 +67,7 @@ def world_offset(worldid: int, grid: int, spacing: float) -> wp.vec3:
 
 def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, nworld: int):
   """Build OptiX acceleration structures for all geometries in all worlds."""
+  wo = get_wo()
   extent = max(4.0 * mjm.stat.extent, 1.0)
   grid = max(1, int(np.ceil(nworld ** (1.0 / 3.0))))
 
@@ -220,6 +229,7 @@ def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
 
 def create_pipeline(scene: OptixScene, megakernel: wp.Kernel, geom_ray_types: Tuple[int, ...], cull_backfaces: bool):
   """Compile the render megakernel into an OptiX pipeline over `scene`."""
+  wo = get_wo()
   ray_primitive = make_ray_primitive(geom_ray_types)
   grid, spacing = scene.grid, 3.0 * scene.extent
 

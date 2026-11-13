@@ -19,6 +19,7 @@ from typing import Tuple
 import warp as wp
 
 from mujoco_warp._src import math
+from mujoco_warp._src import render_optix
 from mujoco_warp._src.bvh import SPLAT_MIN_RESPONSE
 from mujoco_warp._src.ray import RAY_TOL_ABS
 from mujoco_warp._src.ray import RAY_TOL_REL
@@ -43,11 +44,6 @@ from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import OptixScene
 from mujoco_warp._src.types import RenderContext
 from mujoco_warp._src.warp_util import event_scope
-
-try:
-  import warp_optix as wo
-except ImportError:
-  wo = None
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
@@ -584,6 +580,7 @@ def _make_cast_ray(
 ) -> wp.Function:
   """Build closest-hit or shadow-ray traversal specialized to the scene and backend."""
   ray_primitive = make_ray_primitive(geom_ray_types)
+  wo = render_optix.get_wo() if optix is not None else None
 
   @wp.func
   def cast_ray(
@@ -1660,5 +1657,5 @@ def render(m: Model, d: Data, rc: RenderContext):
   dim = (d.nworld, rc.total_rays)
   if rc.backend == "warp":
     wp.launch(_render_megakernel, dim=dim, inputs=inputs, outputs=outputs, block_dim=m.block_dim.render)
-  elif dim[0] and dim[1]:  # wo.launch rejects empty launches
-    wo.launch(rc.optix.pipeline, dim, inputs=inputs, outputs=outputs)
+  elif dim[0] and dim[1]:  # OptiX rejects empty launches
+    render_optix.get_wo().launch(rc.optix.pipeline, dim, inputs=inputs, outputs=outputs)
