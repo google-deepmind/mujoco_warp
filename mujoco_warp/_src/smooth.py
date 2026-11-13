@@ -1582,31 +1582,6 @@ def copy_M_awake(m: Model, d: Data, M_out: wp.array2d[float], M_in: Optional[wp.
 
 
 @cache_kernel
-def _qLDiag_div(enable_sleep: bool = False):
-  @wp.kernel(module="unique", enable_backward=False)
-  def kernel(
-    # Model:
-    dof_treeid: wp.array[int],
-    M_rownnz: wp.array[int],
-    M_rowadr: wp.array[int],
-    # Data in:
-    tree_awake_in: wp.array2d[int],
-    # In:
-    L_in: wp.array2d[float],
-    # Out:
-    D_out: wp.array2d[float],
-  ):
-    worldid, dofid = wp.tid()
-    if wp.static(enable_sleep):
-      if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
-        return
-    diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1  # Address of diagonal element of i
-    D_out[worldid, dofid] = 1.0 / L_in[worldid, diag_i]
-
-  return kernel
-
-
-@cache_kernel
 def _factor_LD_sparse_fused(enable_sleep: bool = False):
   """Gather descendant contributions; requires contiguous subtrees and full ancestor-chain rows."""
 
@@ -1663,7 +1638,7 @@ def _factor_LD_sparse_fused(enable_sleep: bool = False):
           if tid == 0:
             value = matrix[rowadr + entry] + total
             factor[rowadr + entry] = value
-            if entry == M_rownnz[row] - 1:
+            if entry == level:
               diagonal[row] = 1.0 / value
       else:
         for p in range(tid, npair, BLOCK_DIM):
@@ -1687,7 +1662,7 @@ def _factor_LD_sparse_fused(enable_sleep: bool = False):
               ki, inv_diag, kj = next_ki, next_inv_diag, next_kj
             value -= ki * inv_diag * kj
           factor[rowadr + entry] = value
-          if entry == M_rownnz[row] - 1:
+          if entry == level:
             diagonal[row] = 1.0 / value
       _syncthreads()
 
@@ -1705,18 +1680,6 @@ def _factor_LD_sparse_fused(enable_sleep: bool = False):
 def _factor_i_sparse(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[float], D: wp.array2d[float]):
   """Sparse L'*D*L factorization of inertia-like matrix M, assumed spd."""
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
-  if m.M_tiles:
-    if enable_sleep:
-      copy_M_awake(m, d, L, M_in=M)
-    else:
-      wp.copy(L, M)
-    wp.launch(
-      _qLDiag_div(enable_sleep),
-      dim=(d.nworld, m.nv),
-      inputs=[m.dof_treeid, m.M_rownnz, m.M_rowadr, d.tree_awake, L],
-      outputs=[D],
-    )
-
   block_dim = m.block_dim.factor_LD_sparse_fused if L.device.is_cuda else 1
   wp.launch(
     _factor_LD_sparse_fused(enable_sleep),
