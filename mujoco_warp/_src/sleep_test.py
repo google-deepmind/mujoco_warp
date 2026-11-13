@@ -788,9 +788,11 @@ class SleepTest(parameterized.TestCase):
     for w in range(nworld):
       self.assertEqual(d.tree_awake.numpy()[w, 0], 1, f"Tree 0 in world {w} should have woken up because of non-zero velocity")
 
-  @parameterized.parameters(1, 2)
-  def test_sleep_rerun_collision(self, nworld):
+  @parameterized.product(nworld=(1, 2), deterministic=(False, True))
+  def test_sleep_rerun_collision(self, nworld, deterministic):
     """Verify that newly awakened bodies detect collisions in the same step."""
+    if deterministic and not wp.get_device().is_cuda:
+      self.skipTest("CUDA graph capture requires CUDA")
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -811,6 +813,7 @@ class SleepTest(parameterized.TestCase):
       </mujoco>
       """,
       nworld=nworld,
+      overrides={"opt.deterministic": types.DeterminismType.ALL if deterministic else types.DeterminismType.NONE},
     )
 
     # Put box (tree 0) to sleep manually
@@ -831,7 +834,12 @@ class SleepTest(parameterized.TestCase):
     d.qvel = wp.array(qvel, dtype=float)
 
     # Run a single simulation step
-    mjwarp.step(m, d)
+    if deterministic:
+      with wp.ScopedCapture() as capture:
+        mjwarp.step(m, d)
+      wp.capture_launch(capture.graph)
+    else:
+      mjwarp.step(m, d)
 
     # Box should be awake
     for w in range(nworld):
@@ -841,6 +849,10 @@ class SleepTest(parameterized.TestCase):
     # + 1 sphere-box contact)
     nacon = d.nacon.numpy()[0]
     self.assertEqual(nacon, 5 * nworld, f"Expected {5 * nworld} active contacts across all worlds, but got {nacon}")
+
+    if deterministic:
+      expected = np.tile([[0, 1]] * 4 + [[2, 1]], (nworld, 1))
+      np.testing.assert_array_equal(d.contact.geom.numpy()[:nacon], expected)
 
   @parameterized.parameters(1, 2)
   def test_sleep_policy_auto_never(self, nworld):

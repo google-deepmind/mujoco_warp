@@ -913,7 +913,7 @@ class DeterminismTest(parameterized.TestCase):
 
   @parameterized.parameters(range(8))
   def test_hooks(self, mask):
-    """Sort hooks run iff their bit is set, as the last writer of their stage."""
+    """Sort hooks follow contact filtering and precede constraint construction."""
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -969,6 +969,11 @@ class DeterminismTest(parameterized.TestCase):
       self.assertEqual(tags.count(hook), tags.count(stage) if mask & bit else 0, hook)
       for i, tag in enumerate(tags):
         if tag == hook:
+          if hook == "contacts" and tags[i - 1] == "collision":
+            # The conditional second pass defers sorting until collision returns.
+            self.assertEqual(tags[i - 2], "contactfilter")
+            self.assertEqual(tags[i + 1], "constraint" if mask & DeterminismType.CONSTRAINT else "make_constraint")
+            continue
           # contacts are sorted after the user contact filter
           if hook == "contacts":
             self.assertEqual(tags[i - 1], "contactfilter")
