@@ -1021,6 +1021,7 @@ def _build_megakernel(nlight: int, rc: RenderContext, block_dim: int = 0):
   )
   M_NLIGHT = nlight
   nsamples = rc.samples_per_pixel * rc.samples_per_pixel
+  hoist_skybox = rc.any_rgb and rc.render_skybox and rc.backend == "warp"
   n_aa = rc.samples_per_pixel
   has_mesh_bvh = bool({int(GeomType.MESH), int(GeomType.SDF), int(GeomType.HFIELD), int(GeomType.FLEX)} & set(geom_ray_types))
   # OptiX caps registers in its pipeline instead.
@@ -1152,7 +1153,9 @@ def _build_megakernel(nlight: int, rc: RenderContext, block_dim: int = 0):
     depth_out_idx = depth_adr[camid] + pixelid if do_depth else 0
     seg_out_idx = seg_adr[camid] + pixelid if do_seg else 0
 
-    if wp.static(rc_static["any_rgb"] and rc_static["render_skybox"]):
+    # Loading the skybox before the trace speeds up the Warp BVH but slows OptiX, which keeps it
+    # live across traversal.
+    if wp.static(hoist_skybox):
       skybox_id = skybox_tex_id[worldid % skybox_tex_id.shape[0]]
       skybox_tex = textures[skybox_id]
       skybox_face_width_inv = 1.0 / float(skybox_face_width[worldid % skybox_face_width.shape[0]])
@@ -1299,6 +1302,9 @@ def _build_megakernel(nlight: int, rc: RenderContext, block_dim: int = 0):
 
       if geom_id == -1:
         if wp.static(rc_static["render_skybox"]):
+          if wp.static(not hoist_skybox):
+            skybox_tex = textures[skybox_tex_id[worldid % skybox_tex_id.shape[0]]]
+            skybox_face_width_inv = 1.0 / float(skybox_face_width[worldid % skybox_face_width.shape[0]])
           skybox_color = sample_skybox(
             skybox_tex,
             skybox_face_width_inv,
