@@ -325,23 +325,6 @@ def _build_rays(
   ray_offset_out[idx] = ray_offset
 
 
-def _optix_unsupported_reason(mjm: mujoco.MjModel, rc: RenderContext, nworld: int) -> str:
-  """Returns why the OptiX backend cannot render `rc` on the current device, or "" if it can."""
-  if wo is None:
-    return "warp-optix is not installed (pip install mujoco-warp[optix])"
-  device = wp.get_device()
-  try:
-    # OptiX raises device-specific errors when it cannot create a context.
-    wo.get_context(device)
-  except Exception as e:
-    return f"OptiX is not supported on device {device.alias} ({e})"
-  if rc.bvh_nflexgeom or rc.splat_count:
-    return "the OptiX backend does not support flexes or splats yet"
-  if nworld * mjm.ngeom >= 1 << 24:
-    return "OptiX instance ids hold 24 bits, so nworld * ngeom must be below 2**24"
-  return ""
-
-
 def create_render_context(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -835,7 +818,20 @@ def create_render_context(
   if backend not in (None, "warp", "optix"):
     raise ValueError(f"backend must be None, 'warp' or 'optix', got {backend!r}")
   if backend != "warp":
-    reason = _optix_unsupported_reason(mjm, rc, nworld)
+    reason = ""
+    if wo is None:
+      reason = "warp-optix is not installed (pip install mujoco-warp[optix])"
+    elif rc.bvh_nflexgeom or rc.splat_count:
+      reason = "the OptiX backend does not support flexes or splats yet"
+    elif nworld * mjm.ngeom >= 1 << 24:
+      reason = "OptiX instance ids hold 24 bits, so nworld * ngeom must be below 2**24"
+    else:
+      device = wp.get_device()
+      try:
+        # OptiX raises device-specific errors when it cannot create a context.
+        wo.get_context(device)
+      except Exception as e:
+        reason = f"OptiX is not supported on device {device.alias} ({e})"
     if reason and backend == "optix":
       warnings.warn(f"backend='optix' is unavailable, using backend='warp': {reason}")
     backend = "warp" if reason else "optix"
