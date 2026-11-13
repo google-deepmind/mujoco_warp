@@ -31,6 +31,7 @@ from mujoco_warp._src.ray import ray_mesh_with_bvh
 from mujoco_warp._src.ray import ray_mesh_with_bvh_anyhit
 from mujoco_warp._src.ray import ray_plane
 from mujoco_warp._src.render_optix import world_offset
+from mujoco_warp._src.render_util import TILE_ROWS
 from mujoco_warp._src.render_util import compute_ray
 from mujoco_warp._src.render_util import pack_rgba_to_uint32
 from mujoco_warp._src.render_util import tile_pixel
@@ -1145,7 +1146,7 @@ def _build_megakernel(nlight: int, rc: RenderContext, block_dim: int = 0):
     mujoco_cam_id = cam_id_map[camid]
     img_w = cam_res[camid][0]
     img_h = cam_res[camid][1]
-    px, py, pixelid = tile_pixel(rayid_local, img_w, img_h)
+    px, py, pixelid = tile_pixel(rayid_local, img_w, img_h, wp.static(TILE_ROWS[rc.backend]))
 
     rgb_out_idx = rgb_adr[camid] + pixelid if do_rgb else 0
     depth_out_idx = depth_adr[camid] + pixelid if do_depth else 0
