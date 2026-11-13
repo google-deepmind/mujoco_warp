@@ -731,13 +731,33 @@ class SetConstTest(parameterized.TestCase):
     (mjwarp.SetConstGroup.KIN0 | mjwarp.SetConstGroup.INERT0,),
   )
   def test_set_const_graph_capture(self, groups):
-    """Test that set_const functions are compatible with CUDA graph capture."""
+    """Test that a captured set_const replays the eager result for inputs changed after capture."""
     _, _, m, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0)
+    group_names = [name for name, flag in _GROUPS if groups & flag]
+    outputs = _setconst_output_fields(*group_names)
 
     with wp.ScopedCapture() as capture:
       mjwarp.set_const(m, d, groups=groups)
 
+    # change the inputs after capture, so a replay of capture-time values gives stale outputs
+    before = {f: getattr(m, f).numpy().copy() for f in outputs}
+    m.body_mass.assign(m.body_mass.numpy() * 1.5)
+    qpos0 = m.qpos0.numpy()
+    qpos0[:, 7:] += 0.1  # hinge joints only, the free joint quaternion stays normalized
+    m.qpos0.assign(qpos0)
+
+    mjwarp.set_const(m, d, groups=groups)
+    expected = {f: getattr(m, f).numpy().copy() for f in outputs}
+    self.assertFalse(all(np.allclose(before[f], expected[f]) for f in outputs))
+
+    for f in _setconst_output_fields(*group_names, pure_only=True):
+      arr = getattr(m, f)
+      arr.assign(np.full(arr.numpy().shape, np.inf, dtype=np.float32))
+
     wp.capture_launch(capture.graph)
+
+    for f in sorted(outputs):
+      _assert_eq(getattr(m, f).numpy(), expected[f], f)
 
   def test_set_const_actuator_acc0_per_world(self):
     """Test actuator_acc0 has 2D shape [nworld, nu] and values match MuJoCo."""

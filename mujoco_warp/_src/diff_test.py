@@ -1115,6 +1115,7 @@ class DiffApiTest(parameterized.TestCase):
       checkpointed_replay()
 
     for _ in range(2):
+      seed.fill_(wp.inf)  # the eager run above already left 32 in seed
       wp.capture_launch(capture.graph)
       np.testing.assert_allclose(seed.numpy(), 32.0)
 
