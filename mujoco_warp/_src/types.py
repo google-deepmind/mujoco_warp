@@ -2606,12 +2606,9 @@ class Data:
     ncdof: number of active (compacted) DOFs per world          (nworld,)
     dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
     cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
-    cdof_tri_row: row index of compacted Hessian dof-pairs      (nvmax_pad_sq,)
-    cdof_tri_col: col index of compacted Hessian dof-pairs      (nvmax_pad_sq,)
+    cdof_tri_row: row index of compacted Hessian dof-pairs      (ncdof_tri,)
+    cdof_tri_col: col index of compacted Hessian dof-pairs      (ncdof_tri,)
     cM: compacted dense inertia                                 (nworld, nvmax_pad, nvmax_pad)
-    cqLD: compacted upper Cholesky factor                       (nworld, nvmax_pad, nvmax_pad)
-    crhs: compacted smooth-solve right-hand side                (nworld, nvmax_pad, 1)
-    cx: compacted smooth-solve solution                         (nworld, nvmax_pad, 1)
     cJ: compacted dense constraint Jacobian                     (nworld, njmax_pad, nvmax_pad)
     cMa: compacted M @ qacc workspace                           (nworld, nvmax_pad)
     cqfrc_smooth: compacted net unconstrained force             (nworld, nvmax_pad)
@@ -2783,12 +2780,9 @@ class Data:
   ncdof: array("nworld", int)
   dof_cdof: array("nworld", "nv", int)
   cdof_dof: array("nworld", "nvmax_pad", int)
-  cdof_tri_row: array("nvmax_pad_sq", int)
-  cdof_tri_col: array("nvmax_pad_sq", int)
+  cdof_tri_row: array("ncdof_tri", int)
+  cdof_tri_col: array("ncdof_tri", int)
   cM: array("nworld", "nvmax_pad", "nvmax_pad", float)
-  cqLD: array("nworld", "nvmax_pad", "nvmax_pad", float)
-  crhs: array("nworld", "nvmax_pad", 1, float)
-  cx: array("nworld", "nvmax_pad", 1, float)
   cJ: array("nworld", "njmax_pad", "nvmax_pad", float)
   cMa: array("nworld", "nvmax_pad", float)
   cqfrc_smooth: array("nworld", "nvmax_pad", float)
@@ -2915,12 +2909,12 @@ class RenderContext:
     mesh_registry: mesh BVH id to warp mesh mapping
     mesh_bvh_id: mesh BVH ids
     mesh_bounds_size: mesh bounds size
+    mesh_bvh_rot: rotation from each mesh's BVH frame to its inertia frame
     mesh_texcoord: mesh texture coordinates
     mesh_texcoord_offsets: mesh texture coordinate offsets
     mesh_facetexcoord: mesh face texture coordinates
     mesh_facenormal: per-face indices into Model.mesh_normal
     samples_per_pixel: sub-pixel samples per axis; 1 disables supersampling
-    aa_accum: colour accumulator, unused when samples_per_pixel is 1
     textures: textures
     textures_registry: texture registry
     hfield_registry: hfield BVH id to warp mesh mapping
@@ -3010,6 +3004,9 @@ class RenderContext:
     splat_bvh_id: Splat BVH id
     splat_group_root: Per-world selected splat BVH root
     splat_count: Number of splats
+    has_reframed_meshes: True iff any mesh BVH uses its authored frame
+    any_rgb: True iff any active camera renders RGB
+    any_seg: True iff any active camera renders segmentation
   """
 
   nrender: int
@@ -3033,12 +3030,12 @@ class RenderContext:
   mesh_registry: dict
   mesh_bvh_id: array("nmesh", wp.uint64)
   mesh_bounds_size: array("nmesh", wp.vec3)
+  mesh_bvh_rot: array("nmesh", wp.mat33)
   mesh_texcoord: array("*", wp.vec2)
   mesh_texcoord_offsets: array("nmesh", int)
   mesh_facetexcoord: array("nmeshface", wp.vec3i)
   mesh_facenormal: array("nmeshface", wp.vec3i)
   samples_per_pixel: int
-  aa_accum: array("*", wp.vec3)
   textures: array("*", wp.Texture2D)
   textures_registry: list[wp.Texture2D]
   hfield_registry: dict
@@ -3092,5 +3089,8 @@ class RenderContext:
   splat_bvh_id: wp.uint64
   splat_group_root: array("nworld", int)
   splat_count: int
+  has_reframed_meshes: bool = False
+  any_rgb: bool = False
+  any_seg: bool = False
   geom_ray_types: tuple = ()
   _megakernel: Optional[wp.Kernel] = None
