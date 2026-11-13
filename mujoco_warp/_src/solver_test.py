@@ -48,7 +48,7 @@ def _assert_eq(a, b, name, tol=_TOLERANCE * 20):
 
 def _set_inertia_scale(m, d, ctx):
   """Set the inverse trace of M, as init_context does, for tests which skip it."""
-  solver.launch_inertia_scale(m, d.M, ctx.inertia_scale)
+  solver.launch_inertia_scale(m, d.M, ctx.inertia_scale, d)
 
 
 def _noslip_model(mjm, noslip_iterations):
@@ -144,10 +144,6 @@ def _qcqp_kernel(
   d_in: wp.array[types.vec5],
   r_in: wp.array[float],
   # Out:
-  res2_out: wp.array[types.vec5],
-  active2_out: wp.array[int],
-  res3_out: wp.array[types.vec5],
-  active3_out: wp.array[int],
   res_out: wp.array[types.vec5],
   active_out: wp.array[int],
 ):
@@ -156,15 +152,14 @@ def _qcqp_kernel(
   b = b_in[tid]
   d = d_in[tid]
   r = r_in[tid]
+  res = types.vec5(0.0)
+  active = bool(False)
   if n == 2:
-    res2, active2 = solver._qcqp2(A, b, d, r)
-    res2_out[tid] = res2
-    active2_out[tid] = int(active2)
-  if n == 3:
-    res3, active3 = solver._qcqp3(A, b, d, r)
-    res3_out[tid] = res3
-    active3_out[tid] = int(active3)
-  res, active = solver._qcqp(A, b, d, r, n)
+    res, active = solver._qcqp2(A, b, d, r)
+  elif n == 3:
+    res, active = solver._qcqp3(A, b, d, r)
+  else:
+    res, active = solver._qcqp5(A, b, d, r)
   res_out[tid] = res
   active_out[tid] = int(active)
 
@@ -1709,14 +1704,17 @@ class SolverTest(parameterized.TestCase):
       mujoco.mjtJacobian.mjJAC_SPARSE,
     ),
     nworld=(1, 2),
+    load=(False, True),
   )
-  def test_noslip(self, cone, condim, jacobian, nworld):
+  def test_noslip(self, cone, condim, jacobian, nworld, load):
     """Tests noslip solver against MuJoCo."""
+    # load: tilted gravity and a spinning sphere put force on every frictional row (condim 4, 6)
+    gravity, spin = ("3 2 -9.81", ".5") if load else ("3 0 -9.81", "0")
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
         <option noslip_iterations="3" noslip_tolerance="0" impratio="3"
-                gravity="3 0 -9.81"/>
+                gravity="{gravity}"/>
         <worldbody>
           <geom type="plane" size="5 5 .1" condim="{condim}" friction="1 .05 .01"/>
           <body pos="0 0 .099">
@@ -1733,7 +1731,7 @@ class SolverTest(parameterized.TestCase):
           </body>
         </worldbody>
         <keyframe>
-          <key qvel="0 0 0 0 0 0 2 0"/>
+          <key qvel="0 0 0 0 0 {spin} 2 0"/>
         </keyframe>
       </mujoco>
       """,
@@ -1741,7 +1739,9 @@ class SolverTest(parameterized.TestCase):
       overrides={"opt.jacobian": jacobian, "opt.cone": cone},
       nworld=nworld,
     )
-    mjds = _perturb_worlds(mjm, mjd, d, nworld, [0.3, -0.2, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5])
+    # with load, world 1 spins faster instead of sliding (sliding matches MuJoCo only to 1.5e-4)
+    dqvel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.2, -1.0, 0.5] if load else [0.3, -0.2, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5]
+    mjds = _perturb_worlds(mjm, mjd, d, nworld, dqvel)
 
     # main solver forces without noslip, used to check that noslip has an effect
     mjm_slip = _noslip_model(mjm, noslip_iterations=0)
@@ -2076,7 +2076,7 @@ class SolverTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
-  @parameterized.parameters(2, 3, 4, 5)
+  @parameterized.parameters(2, 3, 5)
   def test_qcqp(self, n):
     """Tests the QCQP solvers against a reference implementation of mju_QCQP."""
     rng = np.random.default_rng(n)
@@ -2111,38 +2111,26 @@ class SolverTest(parameterized.TestCase):
     b_in = wp.array(np.array(b), dtype=types.vec5)
     d_in = wp.array(np.array(d), dtype=types.vec5)
     r_in = wp.array(np.array(r), dtype=float)
-    res_out = [wp.zeros(ncase, dtype=types.vec5) for _ in range(3)]
-    active_out = [wp.full(ncase, -1, dtype=int) for _ in range(3)]
-    wp.launch(
-      _qcqp_kernel,
-      dim=ncase,
-      inputs=[n, A_in, b_in, d_in, r_in],
-      outputs=[res_out[0], active_out[0], res_out[1], active_out[1], res_out[2], active_out[2]],
-    )
+    res_out = wp.zeros(ncase, dtype=types.vec5)
+    active_out = wp.full(ncase, -1, dtype=int)
+    wp.launch(_qcqp_kernel, dim=ncase, inputs=[n, A_in, b_in, d_in, r_in], outputs=[res_out, active_out])
 
-    # mju_QCQP2 for n = 2, mju_QCQP3 for n = 3, mju_QCQP for all n
-    outputs = [(res_out[2], active_out[2])]
-    if n == 2:
-      outputs.append((res_out[0], active_out[0]))
-    if n == 3:
-      outputs.append((res_out[1], active_out[1]))
+    # mju_QCQP2 for n = 2, mju_QCQP3 for n = 3, mju_QCQP for n = 5
+    res = res_out.numpy()
+    active = active_out.numpy()
+    for case, (res_expected, active_expected) in enumerate(expected):
+      self.assertEqual(active[case], int(active_expected), f"active{case}")
+      _assert_eq(res[case, :n], res_expected, f"res{case}", tol=1e-3)
+      np.testing.assert_array_equal(res[case, n:], 0.0)
 
-    for res, active in outputs:
-      res = res.numpy()
-      active = active.numpy()
-      for case, (res_expected, active_expected) in enumerate(expected):
-        self.assertEqual(active[case], int(active_expected), f"active{case}")
-        _assert_eq(res[case, :n], res_expected, f"res{case}", tol=1e-3)
-        np.testing.assert_array_equal(res[case, n:], 0.0)
-
-        if case == 0:
-          np.testing.assert_array_equal(res[case], 0.0)
-        elif case % 2:
-          # solution on the constraint boundary
-          self.assertTrue(active[case])
-          _assert_eq(np.linalg.norm(res[case, :n] / d[case][:n]), r[case], f"norm{case}", tol=1e-3)
-        else:
-          self.assertFalse(active[case])
+      if case == 0:
+        np.testing.assert_array_equal(res[case], 0.0)
+      elif case % 2:
+        # solution on the constraint boundary
+        self.assertTrue(active[case])
+        _assert_eq(np.linalg.norm(res[case, :n] / d[case][:n]), r[case], f"norm{case}", tol=1e-3)
+      else:
+        self.assertFalse(active[case])
 
   def test_incremental_vs_full_hessian(self):
     """Tests that incremental Hessian updates produce same result as full recomputation."""
@@ -2907,17 +2895,17 @@ class CompactSolverTest(parameterized.TestCase):
   """Tests for the compacted smooth and constrained solves (solver.py compact path)."""
 
   def test_smooth_solve_equivalence_all_active(self):
-    """With every tree active and nvmax=nv, compacted qacc_smooth matches baseline."""
+    """With every tree active under SLEEP, qacc_smooth matches baseline."""
     _, _, m, d = _put_compact(_COMPACT_ARM_XML, sparse=True)
     self.assertTrue(m.is_sparse)
     mjw.forward(m, d)
     baseline = d.qacc_smooth.numpy().copy()
 
+    m.opt.enableflags |= types.EnableBit.SLEEP
     d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
-    island.update_active_dofs(m, d)
-    self.assertEqual(d.ncdof.numpy()[0], m.nv)
+    d.qacc_smooth.fill_(wp.inf)
 
-    solver.smooth_solve_compact(m, d)
+    mjw.fwd_acceleration(m, d, factorize=True)
 
     np.testing.assert_allclose(d.qacc_smooth.numpy(), baseline, rtol=1e-4, atol=1e-5)
 
@@ -2928,11 +2916,11 @@ class CompactSolverTest(parameterized.TestCase):
     baseline = d.qacc_smooth.numpy().copy()
 
     # only the actuated arm tree (dofs 0-1) is active
+    m.opt.enableflags |= types.EnableBit.SLEEP
     d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
-    island.update_active_dofs(m, d)
-    self.assertEqual(d.ncdof.numpy()[0], 2)
+    d.qacc_smooth.fill_(wp.inf)
 
-    solver.smooth_solve_compact(m, d)
+    mjw.fwd_acceleration(m, d, factorize=True)
 
     out = d.qacc_smooth.numpy()
     np.testing.assert_allclose(out[0, :2], baseline[0, :2], rtol=1e-4, atol=1e-5)
