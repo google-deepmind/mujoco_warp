@@ -430,31 +430,54 @@ def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
 _REFRAME_MIN_GAIN = 1.25
 
 
-def _select_mesh_bvh_frame(
-  points: np.ndarray,
-  faces: np.ndarray,
-  quat: np.ndarray,
-) -> tuple[np.ndarray, wp.mat33, bool]:
-  """Select inertia or authored frame for mesh BVH construction based on triangle AABB area."""
-  if faces.shape[0] == 0 or np.allclose(quat, (1.0, 0.0, 0.0, 0.0)):
-    return points, wp.mat33(np.eye(3, dtype=np.float32)), False
+@wp.kernel(module="unique")
+def _mesh_bvh_frame_area(
+  # In:
+  nface: int,
+  verts: wp.array[wp.vec3],
+  indices: wp.array[int],
+  rot: wp.mat33,
+  # Out:
+  areas_out: wp.array[wp.vec2],
+):
+  _, tid = wp.tid()
+  num_threads = wp.block_dim()
 
-  rot = np.empty(9, dtype=np.float64)
-  mujoco.mju_quat2Mat(rot, quat)
-  rot = rot.reshape(3, 3)
-  framed = np.ascontiguousarray(points @ rot.T, dtype=np.float32)
+  inertia_sum = float(0.0)
+  authored_sum = float(0.0)
 
-  def _tri_half_area(pts: np.ndarray) -> float:
-    tris = pts[faces]
-    ext = tris.max(axis=1) - tris.min(axis=1)
-    return float(np.sum(ext[:, 0] * ext[:, 1] + ext[:, 1] * ext[:, 2] + ext[:, 2] * ext[:, 0]))
+  for fid in range(tid, nface, num_threads):
+    v0 = verts[indices[3 * fid + 0]]
+    v1 = verts[indices[3 * fid + 1]]
+    v2 = verts[indices[3 * fid + 2]]
 
-  inertia_area = _tri_half_area(points)
-  authored_area = _tri_half_area(framed)
-  if inertia_area / max(authored_area, 1e-12) >= _REFRAME_MIN_GAIN:
-    return framed, wp.mat33(np.ascontiguousarray(rot.T, dtype=np.float32)), True
+    lo = wp.min(wp.min(v0, v1), v2)
+    hi = wp.max(wp.max(v0, v1), v2)
+    ext = hi - lo
+    inertia_sum += ext[0] * ext[1] + ext[1] * ext[2] + ext[2] * ext[0]
 
-  return points, wp.mat33(np.eye(3, dtype=np.float32)), False
+    u0 = rot * v0
+    u1 = rot * v1
+    u2 = rot * v2
+    ulo = wp.min(wp.min(u0, u1), u2)
+    uhi = wp.max(wp.max(u0, u1), u2)
+    uext = uhi - ulo
+    authored_sum += uext[0] * uext[1] + uext[1] * uext[2] + uext[2] * uext[0]
+
+  total = wp.tile_sum(wp.tile(wp.vec2(inertia_sum, authored_sum), preserve_type=True))
+  if tid == 0:
+    areas_out[0] = total[0]
+
+
+@wp.kernel
+def _rotate_mesh_verts(
+  # In:
+  rot: wp.mat33,
+  # Out:
+  verts_out: wp.array[wp.vec3],
+):
+  vid = wp.tid()
+  verts_out[vid] = rot * verts_out[vid]
 
 
 def build_mesh_bvh(
@@ -466,19 +489,40 @@ def build_mesh_bvh(
   """Create a Warp mesh BVH from mesh data."""
   v_start = mjm.mesh_vertadr[meshid]
   v_end = v_start + mjm.mesh_vertnum[meshid]
-  points = mjm.mesh_vert[v_start:v_end]
+  points_np = mjm.mesh_vert[v_start:v_end]
 
   f_start = mjm.mesh_faceadr[meshid]
   f_end = mjm.mesh_face.shape[0] if (meshid + 1) >= mjm.mesh_faceadr.shape[0] else mjm.mesh_faceadr[meshid + 1]
   faces = mjm.mesh_face[f_start:f_end]
-  indices = faces.flatten()
-  pmin = np.min(points, axis=0)
-  pmax = np.max(points, axis=0)
+  pmin = np.min(points_np, axis=0)
+  pmax = np.max(points_np, axis=0)
   half = np.maximum(np.abs(pmin), np.abs(pmax))
 
-  bvh_points, bvh_rot, reframed = _select_mesh_bvh_frame(points, faces, mjm.mesh_quat[meshid])
-  points = wp.array(bvh_points, dtype=wp.vec3)
-  indices = wp.array(indices, dtype=wp.int32)
+  points = wp.array(points_np, dtype=wp.vec3)
+  indices = wp.array(faces.flatten(), dtype=wp.int32)
+  bvh_rot = wp.mat33(np.eye(3, dtype=np.float32))
+  reframed = False
+
+  quat = mjm.mesh_quat[meshid]
+  if faces.shape[0] > 0 and np.isfinite(_REFRAME_MIN_GAIN) and not np.allclose(quat, (1.0, 0.0, 0.0, 0.0)):
+    rot = np.empty(9, dtype=np.float64)
+    mujoco.mju_quat2Mat(rot, quat)
+    rot_m = rot.reshape(3, 3)
+    rot_wp = wp.mat33(np.ascontiguousarray(rot_m, dtype=np.float32))
+    areas = wp.empty(1, dtype=wp.vec2)
+    wp.launch_tiled(
+      _mesh_bvh_frame_area,
+      dim=1,
+      inputs=[faces.shape[0], points, indices, rot_wp],
+      outputs=[areas],
+      block_dim=256,
+    )
+    areas_np = areas.numpy()[0]
+    if float(areas_np[0]) / max(float(areas_np[1]), 1e-12) >= _REFRAME_MIN_GAIN:
+      wp.launch(_rotate_mesh_verts, dim=points.shape[0], inputs=[rot_wp], outputs=[points])
+      bvh_rot = wp.mat33(np.ascontiguousarray(rot_m.T, dtype=np.float32))
+      reframed = True
+
   mesh = wp.Mesh(points=points, indices=indices, bvh_constructor=constructor, bvh_leaf_size=leaf_size)
 
   return mesh, half, bvh_rot, reframed

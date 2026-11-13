@@ -186,7 +186,7 @@ class BvhTest(absltest.TestCase):
     self.assertEqual(len(set(group_root)), 16, "group_root")
 
   def test_build_mesh_bvh(self):
-    """Tests that build_mesh_bvh creates a valid BVH."""
+    """Tests that build_mesh_bvh creates a valid BVH and reframes tilted-inertia meshes."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")
 
     mesh, half, bvh_rot, reframed = bvh.build_mesh_bvh(mjm, 0)
@@ -195,6 +195,29 @@ class BvhTest(absltest.TestCase):
     self.assertFalse(np.array_equal(np.array(half), np.array([0.0, 0.0, 0.0])), "mesh half size")
     self.assertFalse(reframed)
     np.testing.assert_allclose(np.array(bvh_rot).reshape(3, 3), np.eye(3))
+
+    mjm_l, _, _, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="l_shape"
+                vertex="0 0 0  0.6 0 0  0.6 0.15 0  0.15 0.15 0  0.15 0.5 0  0 0.5 0
+                        0 0 0.12  0.6 0 0.12  0.6 0.15 0.12  0.15 0.15 0.12  0.15 0.5 0.12  0 0.5 0.12"
+                face="0 2 1  0 3 2  0 4 3  0 5 4
+                      6 7 8  6 8 9  6 9 10  6 10 11
+                      0 1 7  0 7 6  1 2 8  1 8 7  2 3 9  2 9 8
+                      3 4 10  3 10 9  4 5 11  4 11 10  5 0 6  5 6 11"/>
+        </asset>
+        <worldbody>
+          <geom type="mesh" mesh="l_shape"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    mesh_l, _, bvh_rot_l, reframed_l = bvh.build_mesh_bvh(mjm_l, 0)
+    self.assertNotEqual(mesh_l.id, wp.uint64(0))
+    self.assertTrue(reframed_l)
+    self.assertFalse(np.allclose(np.array(bvh_rot_l).reshape(3, 3), np.eye(3)))
 
   def test_build_hfield_bvh(self):
     """Tests that build_hfield_bvh creates a valid BVH."""

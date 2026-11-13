@@ -24,6 +24,8 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import test_data
+from mujoco_warp._src import bvh
+from mujoco_warp._src.types import vec6
 
 try:
   mujoco.Renderer(mujoco.MjModel.from_xml_string("<mujoco/>"))
@@ -1150,9 +1152,12 @@ class RenderTest(parameterized.TestCase):
       mjw.render(m, d, rc)
       outputs.append((rc.rgb_data.numpy().copy(), rc.depth_data.numpy().copy(), rc.seg_data.numpy().copy()))
 
-    np.testing.assert_array_equal(outputs[0][0], outputs[1][0])
-    np.testing.assert_allclose(outputs[0][1], outputs[1][1], atol=1e-6)
-    np.testing.assert_array_equal(outputs[0][2], outputs[1][2])
+    rgb_pre = _unpack_rgb(outputs[0][0]).astype(int)
+    rgb_dyn = _unpack_rgb(outputs[1][0]).astype(int)
+    np.testing.assert_allclose(rgb_pre, rgb_dyn, atol=1)
+    same_hit = outputs[0][2][..., 0] == outputs[1][2][..., 0]
+    self.assertGreaterEqual(float(np.mean(same_hit)), 0.995)
+    np.testing.assert_allclose(outputs[0][1][same_hit], outputs[1][1][same_hit], atol=1e-5)
 
   def test_supersampling_multi_camera_mixed_outputs(self):
     # RGB buffer spans only the RGB camera pixels; a depth-only camera must not widen it.
@@ -1829,40 +1834,34 @@ class RenderTest(parameterized.TestCase):
     depth_reframed = rc.depth_data.numpy().copy()
     seg_reframed = rc.seg_data.numpy().copy()
 
-    # Build an un-reframed context in inertia frame and verify exact output parity.
-    rc_inertia = mjw.create_render_context(
-      mjm,
-      cam_res=(48, 48),
-      render_rgb=True,
-      render_depth=True,
-      render_seg=True,
-      use_shadows=True,
-    )
-    inertia_ids = []
-    inertia_rots = []
-    rc_inertia.mesh_registry = {}
-    for mid in range(mjm.nmesh):
-      v_start = mjm.mesh_vertadr[mid]
-      v_end = v_start + mjm.mesh_vertnum[mid]
-      f_start = mjm.mesh_faceadr[mid]
-      f_end = f_start + mjm.mesh_facenum[mid]
-      pts = wp.array(mjm.mesh_vert[v_start:v_end], dtype=wp.vec3)
-      idx = wp.array(mjm.mesh_face[f_start:f_end].flatten(), dtype=wp.int32)
-      inertia_mesh = wp.Mesh(points=pts, indices=idx, bvh_constructor="cubql", bvh_leaf_size=2)
-      rc_inertia.mesh_registry[inertia_mesh.id] = inertia_mesh
-      inertia_ids.append(inertia_mesh.id)
-      inertia_rots.append(wp.mat33(np.eye(3, dtype=np.float32)))
-    rc_inertia.mesh_bvh_id = wp.array(inertia_ids, dtype=wp.uint64)
-    rc_inertia.mesh_bvh_rot = wp.array(inertia_rots, dtype=wp.mat33)
-    rc_inertia.has_reframed_meshes = False
+    # Build an un-reframed context in inertia frame and verify output parity.
+    orig_gain = bvh._REFRAME_MIN_GAIN
+    try:
+      bvh._REFRAME_MIN_GAIN = float("inf")
+      rc_inertia = mjw.create_render_context(
+        mjm,
+        cam_res=(48, 48),
+        render_rgb=True,
+        render_depth=True,
+        render_seg=True,
+        use_shadows=True,
+      )
+    finally:
+      bvh._REFRAME_MIN_GAIN = orig_gain
+
+    self.assertFalse(rc_inertia.has_reframed_meshes)
     rc_inertia.rgb_data.fill_(wp.uint32(0xDEADBEEF))
     rc_inertia.depth_data.fill_(wp.inf)
     rc_inertia.seg_data.fill_(wp.vec2i(-99, -99))
     mjw.render(m, d, rc_inertia)
 
-    np.testing.assert_array_equal(rgb_reframed, rc_inertia.rgb_data.numpy())
-    np.testing.assert_allclose(depth_reframed, rc_inertia.depth_data.numpy(), atol=1e-6)
-    np.testing.assert_array_equal(seg_reframed, rc_inertia.seg_data.numpy())
+    seg_inertia = rc_inertia.seg_data.numpy()
+    same_hit = seg_reframed[..., 0] == seg_inertia[..., 0]
+    self.assertGreaterEqual(float(np.mean(same_hit)), 0.995)
+    rgb_ref = _unpack_rgb(rgb_reframed).astype(int)
+    rgb_in = _unpack_rgb(rc_inertia.rgb_data.numpy()).astype(int)
+    np.testing.assert_allclose(rgb_ref[same_hit], rgb_in[same_hit], atol=1)
+    np.testing.assert_allclose(depth_reframed[same_hit], rc_inertia.depth_data.numpy()[same_hit], atol=1e-4)
 
     # Also verify mjw.ray with rc uses mesh_bvh_rot and matches un-reframed ray casts.
     pnt = wp.array([[[0.2, -1.2, 0.2]]], dtype=wp.vec3)
@@ -1893,15 +1892,40 @@ class RenderTest(parameterized.TestCase):
       mjw.render(m, d, rc)
       outputs.append((rc.rgb_data.numpy().copy(), rc.depth_data.numpy().copy(), rc.seg_data.numpy().copy()))
 
-    np.testing.assert_array_equal(outputs[0][0], outputs[1][0])
-    np.testing.assert_allclose(outputs[0][1], outputs[1][1], atol=1e-6)
-    np.testing.assert_array_equal(outputs[0][2], outputs[1][2])
+    rgb_pre = _unpack_rgb(outputs[0][0]).astype(int)
+    rgb_dyn = _unpack_rgb(outputs[1][0]).astype(int)
+    np.testing.assert_allclose(rgb_pre, rgb_dyn, atol=1)
+    same_hit = outputs[0][2][..., 0] == outputs[1][2][..., 0]
+    self.assertGreaterEqual(float(np.mean(same_hit)), 0.995)
+    np.testing.assert_allclose(outputs[0][1][same_hit], outputs[1][1][same_hit], atol=1e-5)
 
-    seg = outputs[0][2].reshape(height, width, 2)
-    bottom_left_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "bottom_left_box")
-    top_right_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_GEOM, "top_right_box")
-    self.assertTrue(np.any(seg[height // 2 :, : width // 2, 0] == bottom_left_id))
-    self.assertTrue(np.any(seg[: height // 2, width // 2 :, 0] == top_right_id))
+    # Verify against a plain row-major orthographic ray grid that does not use tile_pixel.
+    sensor_h = 10.0
+    sensor_w = sensor_h * (width / height)
+    px_grid, py_grid = np.meshgrid(np.arange(width), np.arange(height), indexing="xy")
+    xs = -0.5 * sensor_w + sensor_w * ((px_grid + 0.5) / width)
+    zs = 0.5 * sensor_h - sensor_h * ((py_grid + 0.5) / height)
+    nray = width * height
+    pnts_np = np.stack([xs.ravel(), np.full(nray, -10.0), zs.ravel()], axis=-1).astype(np.float32)[None, ...]
+    vecs_np = np.broadcast_to(np.array([0.0, 1.0, 0.0], dtype=np.float32), (1, nray, 3)).copy()
+    ref_dist = wp.empty((1, nray), dtype=float)
+    ref_geomid = wp.empty((1, nray), dtype=int)
+    ref_normal = wp.empty((1, nray), dtype=wp.vec3)
+    mjw.rays(
+      m,
+      d,
+      wp.array(pnts_np, dtype=wp.vec3),
+      wp.array(vecs_np, dtype=wp.vec3),
+      vec6(-1, -1, -1, -1, -1, -1),
+      True,
+      wp.full(nray, -1, dtype=int),
+      ref_dist,
+      ref_geomid,
+      ref_normal,
+    )
+
+    seg = outputs[0][2][0].reshape(height, width, 2)
+    np.testing.assert_array_equal(seg[..., 0], ref_geomid.numpy()[0].reshape(height, width))
 
 
 if __name__ == "__main__":

@@ -1003,7 +1003,6 @@ def _build_megakernel(m: Model, rc: RenderContext):
 
   # Static parameters extracted for JAX FFI closure.
   rc_static = {f.name: getattr(rc, f.name) for f in dataclasses.fields(rc) if f.type in (int, wp.uint32, bool, float, wp.vec3)}
-  rc_static.pop("total_rays", None)
   rc_static["enable_specular_or_emission"] = rc.enable_specular or rc.enable_emission
   bg = int(rc.background_color)
   rc_static["background_color_vec3"] = wp.vec3(
@@ -1015,13 +1014,14 @@ def _build_megakernel(m: Model, rc: RenderContext):
   nsamples = rc.samples_per_pixel * rc.samples_per_pixel
   n_aa = rc.samples_per_pixel
   has_mesh_bvh = bool({int(GeomType.MESH), int(GeomType.SDF), int(GeomType.HFIELD), int(GeomType.FLEX)} & set(geom_ray_types))
+  cap_registers = nsamples == 1 and not has_mesh_bvh and not has_splats and not rc.use_shadows and m.nlight <= 2
 
   @wp.kernel(
     module="unique",
     enable_backward=False,
     grid_stride=False,
     module_options={"fast_math": rc.use_fast_math, "max_unroll": 6},
-    cuda_max_registers=96 if (nsamples == 1 and not has_mesh_bvh) else None,
+    launch_bounds=(m.block_dim.render, max(1, 640 // m.block_dim.render)) if cap_registers else None,
   )
   def _render_megakernel(
     # Model:
@@ -1067,6 +1067,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
     # In:
     nrender: int,
     total_rays: int,
+    nsamples_in: int,
     use_shadows: bool,
     bvh_ngeom: int,
     bvh_nflexgeom: int,
@@ -1137,6 +1138,15 @@ def _build_megakernel(m: Model, rc: RenderContext):
     img_h = cam_res[camid][1]
     px, py, pixelid = tile_pixel(rayid_local, img_w, img_h)
 
+    rgb_out_idx = rgb_adr[camid] + pixelid if do_rgb else 0
+    depth_out_idx = depth_adr[camid] + pixelid if do_depth else 0
+    seg_out_idx = seg_adr[camid] + pixelid if do_seg else 0
+
+    if wp.static(rc_static["any_rgb"] and rc_static["render_skybox"]):
+      skybox_id = skybox_tex_id[worldid % skybox_tex_id.shape[0]]
+      skybox_tex = textures[skybox_id]
+      skybox_face_width_inv = 1.0 / float(skybox_face_width[worldid % skybox_face_width.shape[0]])
+
     cam_mat_world = cam_xmat_in[worldid, mujoco_cam_id]
     cam_pos_world = cam_xpos_in[worldid, mujoco_cam_id]
     world_bvh_root = group_root[worldid]
@@ -1150,7 +1160,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
       sample_w = img_w * wp.static(n_aa) if wp.static(nsamples > 1) else img_w
       sample_h = img_h * wp.static(n_aa) if wp.static(nsamples > 1) else img_h
 
-    for sample in range(wp.static(nsamples)):
+    for sample in range(1 if wp.static(nsamples == 1) else nsamples_in):
       if wp.static(rc_static["use_precomputed_rays"]):
         if wp.static(nsamples > 1):
           ray_idx = sample * total_rays + rayid
@@ -1248,11 +1258,11 @@ def _build_megakernel(m: Model, rc: RenderContext):
         if wp.static(rc_static["any_seg"]):
           if do_seg:
             if geom_id == -1:
-              seg_out[worldid, seg_adr[camid] + pixelid] = wp.vec2i(-1, -1)
+              seg_out[worldid, seg_out_idx] = wp.vec2i(-1, -1)
             elif geom_id == -2:
-              seg_out[worldid, seg_adr[camid] + pixelid] = wp.vec2i(mesh_id, int(ObjType.FLEX))
+              seg_out[worldid, seg_out_idx] = wp.vec2i(mesh_id, int(ObjType.FLEX))
             else:
-              seg_out[worldid, seg_adr[camid] + pixelid] = wp.vec2i(geom_id, int(ObjType.GEOM))
+              seg_out[worldid, seg_out_idx] = wp.vec2i(geom_id, int(ObjType.GEOM))
 
         if do_depth:
           if geom_id == -1:
@@ -1260,7 +1270,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
             if wp.static(has_splats):
               if splat_depth > 0.0:
                 depth = splat_depth * -ray_dir_local_cam[2] + wp.static(rc_static["znear"])
-            depth_out[worldid, depth_adr[camid] + pixelid] = depth
+            depth_out[worldid, depth_out_idx] = depth
           else:
             # Planar depth: project distance from the near plane onto the optical axis.
             # In camera-local coordinates, the optical axis is -Z. The Z-component of the
@@ -1270,7 +1280,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
             if wp.static(has_splats):
               if splat_depth > 0.0:
                 depth = splat_depth
-            depth_out[worldid, depth_adr[camid] + pixelid] = depth * -ray_dir_local_cam[2] + wp.static(rc_static["znear"])
+            depth_out[worldid, depth_out_idx] = depth * -ray_dir_local_cam[2] + wp.static(rc_static["znear"])
 
       if wp.static(not rc_static["any_rgb"]):
         return
@@ -1279,10 +1289,9 @@ def _build_megakernel(m: Model, rc: RenderContext):
 
       if geom_id == -1:
         if wp.static(rc_static["render_skybox"]):
-          skybox_id = skybox_tex_id[worldid % skybox_tex_id.shape[0]]
           skybox_color = sample_skybox(
-            textures[skybox_id],
-            1.0 / float(skybox_face_width[worldid % skybox_face_width.shape[0]]),
+            skybox_tex,
+            skybox_face_width_inv,
             ray_dir_world,
           )
           if wp.static(has_splats):
@@ -1290,7 +1299,7 @@ def _build_megakernel(m: Model, rc: RenderContext):
           if wp.static(nsamples > 1):
             color_accum += skybox_color * 255.0
           else:
-            rgb_out[worldid, rgb_adr[camid] + pixelid] = pack_rgba_to_uint32(
+            rgb_out[worldid, rgb_out_idx] = pack_rgba_to_uint32(
               skybox_color[0] * 255.0, skybox_color[1] * 255.0, skybox_color[2] * 255.0, 255.0
             )
         elif wp.static(has_splats):
@@ -1298,13 +1307,13 @@ def _build_megakernel(m: Model, rc: RenderContext):
           if wp.static(nsamples > 1):
             color_accum += pixel_color * 255.0
           else:
-            rgb_out[worldid, rgb_adr[camid] + pixelid] = pack_rgba_to_uint32(
+            rgb_out[worldid, rgb_out_idx] = pack_rgba_to_uint32(
               pixel_color[0] * 255.0, pixel_color[1] * 255.0, pixel_color[2] * 255.0, 255.0
             )
         elif wp.static(nsamples > 1):
           color_accum += wp.static(rc_static["background_color_vec3"]) * 255.0
         else:
-          rgb_out[worldid, rgb_adr[camid] + pixelid] = wp.static(rc_static["background_color"])
+          rgb_out[worldid, rgb_out_idx] = wp.static(rc_static["background_color"])
         continue
 
       if wp.static(rc_static["enable_vertex_normals"]) and geom_id >= 0 and mesh_id >= 0 and f >= 0:
@@ -1517,13 +1526,13 @@ def _build_megakernel(m: Model, rc: RenderContext):
       if wp.static(nsamples > 1):
         color_accum += hit_color * 255.0
       else:
-        rgb_out[worldid, rgb_adr[camid] + pixelid] = pack_rgba_to_uint32(
+        rgb_out[worldid, rgb_out_idx] = pack_rgba_to_uint32(
           hit_color[0] * 255.0, hit_color[1] * 255.0, hit_color[2] * 255.0, 255.0
         )
 
     if wp.static(rc_static["any_rgb"] and nsamples > 1):
       c = color_accum * wp.static(1.0 / float(nsamples))
-      rgb_out[worldid, rgb_adr[camid] + pixelid] = pack_rgba_to_uint32(
+      rgb_out[worldid, rgb_out_idx] = pack_rgba_to_uint32(
         wp.clamp(c[0], 0.0, 255.0), wp.clamp(c[1], 0.0, 255.0), wp.clamp(c[2], 0.0, 255.0), 255.0
       )
 
@@ -1591,6 +1600,7 @@ def render(m: Model, d: Data, rc: RenderContext):
       d.flexvert_xpos,
       rc.nrender,
       rc.total_rays,
+      rc.samples_per_pixel * rc.samples_per_pixel,
       rc.use_shadows,
       rc.bvh_ngeom,
       rc.bvh_nflexgeom,
