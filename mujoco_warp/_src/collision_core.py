@@ -20,6 +20,7 @@ from typing import Any, Tuple
 
 import warp as wp
 
+from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
@@ -83,7 +84,7 @@ def geom_collision_pair_from_types(
   mesh_polymap: wp.array[int],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   # In:
   geom_type1: int,
   geom_type2: int,
@@ -97,13 +98,13 @@ def geom_collision_pair_from_types(
   g2 = geoms[1]
 
   geom1.pos = geom_xpos_in[worldid, g1]
-  geom1.rot = geom_xmat_in[worldid, g1]
+  geom1.rot = quat_to_mat(geom_xquat_in[worldid, g1])
   geom1.size = geom_size[worldid % geom_size.shape[0], g1]
   # z-axis of the rotation matrix, used as the surface normal for plane collisions
   geom1.normal = wp.vec3(geom1.rot[0, 2], geom1.rot[1, 2], geom1.rot[2, 2])
 
   geom2.pos = geom_xpos_in[worldid, g2]
-  geom2.rot = geom_xmat_in[worldid, g2]
+  geom2.rot = quat_to_mat(geom_xquat_in[worldid, g2])
   geom2.size = geom_size[worldid % geom_size.shape[0], g2]
   # z-axis of the rotation matrix, used as the surface normal for plane collisions
   geom2.normal = wp.vec3(geom2.rot[0, 2], geom2.rot[1, 2], geom2.rot[2, 2])
@@ -177,7 +178,7 @@ def geom_collision_pair(
   mesh_polymap: wp.array[int],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   # In:
   geoms: wp.vec2i,
   worldid: int,
@@ -202,7 +203,7 @@ def geom_collision_pair(
     mesh_polymapnum,
     mesh_polymap,
     geom_xpos_in,
-    geom_xmat_in,
+    geom_xquat_in,
     geom_type1,
     geom_type2,
     geoms,
@@ -475,14 +476,56 @@ class CollisionContext:
   """Collision driver intermediate arrays.
 
   Attributes:
-    collision_pair: collision pairs from broadphase             (naconmax, 2)
-    collision_pairid: ids from broadphase                       (naconmax, 2)
-    collision_worldid: collision world ids from broadphase      (naconmax,)
+    collision_pair: collision pairs from broadphase (naconmax, 2)
+    collision_pairid: ids from broadphase           (naconmax, 2)
+    collision_worldid: collision world ids          (naconmax,)
+    ncollision_inc: incremental pass pair count     (1,)
+    woke: wake flag for incremental collision pass  (1,)
+    awake_prev: body awake snapshot before wake     (nworld, nbody)
+    nccd: CCD collider count per geom pair type     (ngeom_types * (ngeom_types + 1) // 2,)
+    epa_vert: vertices in EPA polytope              (naccdmax, 10 + 2 * epa_iterations)
+    epa_vert_index: vertex indices in EPA polytope  (naccdmax, 10 + 2 * epa_iterations)
+    epa_face: polytope faces (three indices)        (naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations)
+    epa_pr: projection of origin on polytope faces  (naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations)
+    epa_norm2: epa_pr * epa_pr                      (naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations)
+    epa_horizon: index pair (i, j) of horizon edges (naccdmax, MJ_MAX_EPAHORIZON)
+    multiccd_polygon: clipped contact surface       (naccdmax, 2 * npolygonmax)
+    multiccd_clipped: clipped contact surface (tmp) (naccdmax, 2 * npolygonmax)
+    multiccd_pnormal: clipping polygon plane normal (naccdmax, npolygonmax)
+    multiccd_pdist: clipping polygon plane distance (naccdmax, npolygonmax)
+    multiccd_idx1: normal index candidates (Geom 1) (naccdmax, nmeshdegmax)
+    multiccd_idx2: normal index candidates (Geom 2) (naccdmax, nmeshdegmax)
+    multiccd_n1: normal candidates (Geom 1)         (naccdmax, nmeshdegmax)
+    multiccd_n2: normal candidates (Geom 2)         (naccdmax, nmeshdegmax)
+    multiccd_endvert: edge vertices candidates      (naccdmax, nmeshdegmax)
+    multiccd_face1: contact face                    (naccdmax, npolygonmax)
+    multiccd_face2: contact face                    (naccdmax, npolygonmax)
   """
 
   collision_pair: wp.array
   collision_pairid: wp.array
   collision_worldid: wp.array
+  ncollision_inc: wp.array = None
+  woke: wp.array = None
+  awake_prev: wp.array = None
+  nccd: wp.array = None
+  epa_vert: wp.array = None
+  epa_vert_index: wp.array = None
+  epa_face: wp.array = None
+  epa_pr: wp.array = None
+  epa_norm2: wp.array = None
+  epa_horizon: wp.array = None
+  multiccd_polygon: wp.array = None
+  multiccd_clipped: wp.array = None
+  multiccd_pnormal: wp.array = None
+  multiccd_pdist: wp.array = None
+  multiccd_idx1: wp.array = None
+  multiccd_idx2: wp.array = None
+  multiccd_n1: wp.array = None
+  multiccd_n2: wp.array = None
+  multiccd_endvert: wp.array = None
+  multiccd_face1: wp.array = None
+  multiccd_face2: wp.array = None
 
 
 @wp.func
@@ -525,4 +568,5 @@ def create_collision_context(naconmax: int) -> CollisionContext:
     collision_pair=wp.empty(naconmax, dtype=wp.vec2i),
     collision_pairid=wp.empty(naconmax, dtype=wp.vec2i),
     collision_worldid=wp.empty(naconmax, dtype=int),
+    ncollision_inc=wp.empty(1, dtype=int),
   )

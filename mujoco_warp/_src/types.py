@@ -21,8 +21,6 @@ import mujoco
 import numpy as np
 import warp as wp
 
-from mujoco_warp._src import util_pkg
-
 MJ_MINVAL = mujoco.mjMINVAL
 MJ_MAXVAL = mujoco.mjMAXVAL
 MJ_MINIMP = mujoco.mjMINIMP  # minimum constraint impedance
@@ -30,48 +28,8 @@ MJ_MAXIMP = mujoco.mjMAXIMP  # maximum constraint impedance
 MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
-FLEX_STIFFNESS_3D = 24 if util_pkg.check_version("mujoco>=3.14.1.dev989511280") else 21
-
-
-# TODO(team): Remove dynamic version probe once minimum MuJoCo version
-# supports curved rod references and set ROD_HINGE_SIZE = 10 directly.
-def _rod_hinge_size() -> int:
-  """Size of a 1D rod bending record in flex_bending of the installed MuJoCo.
-
-  Records have 10 values since MuJoCo supports curved rod references: a single hinge
-  [v0, v1, v2, -1, k, 0, kb0, 0, 0, 0] or a hinge pair [v0, v1, v2, v3, w0, w1, om0 (4)], see
-  passive.rod_stencil; before, they were [v0, v1, v2, k]. The size is read from a compiled rod,
-  because the first MuJoCo build with the larger record is not known when this code is written.
-
-  Returns:
-    The record size, 4 or 10.
-
-  Raises:
-    NotImplementedError: If the installed MuJoCo uses another record size.
-  """
-  xml = """
-  <mujoco>
-    <worldbody>
-      <flexcomp name="rod" type="grid" count="3 1 1" spacing="1 1 1" radius="0.1" dim="1">
-        <elasticity young="1"/>
-      </flexcomp>
-    </worldbody>
-  </mujoco>
-  """
-  try:
-    nflexbending = mujoco.MjModel.from_xml_string(xml).nflexbending
-  except ValueError:  # MuJoCo without 1D flex elasticity
-    return 4
-  if not isinstance(nflexbending, int):
-    return 4
-  # one hinge: nflexbending = 1 + record size, or 0 if 1D young is ignored
-  size = nflexbending - 1 if nflexbending else 4
-  if size not in (4, 10):
-    raise NotImplementedError(f"unsupported 1D rod record size {size} in flex_bending")
-  return size
-
-
-ROD_HINGE_SIZE = _rod_hinge_size()
+FLEX_STIFFNESS_3D = 24  # flex_stiffness values per 3D element
+ROD_HINGE_SIZE = 10  # flex_bending values per 1D rod hinge record
 
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
@@ -80,6 +38,9 @@ MJ_MAX_EPAFACES = 5
 
 TILE_SIZE_JTDAJ_SPARSE = 16
 TILE_SIZE_JTDAJ_DENSE = 16
+# max Newton Hessian size factored as one tile; past it the blocked path's factor reuse wins on
+# Blackwell (Ada keeps one tile ahead to 64)
+H_ONE_TILE_MAX = 48
 
 # max M block size where dense tile-Cholesky beats sparse LDL (wins to ~64, degrades past ~80)
 M_BLOCK_DENSE_MAX = 64
@@ -94,9 +55,6 @@ Q_LD_BLOCK_SPARSE = -1
 # maximum number of plugin attributes
 _NPLUGINATTR = 128
 
-# max DOFs per passive flex contact (2 sides * 4 max vertices per 3D tet * 3 DOFs per vertex)
-EFM_CON_MAX_DOF = 24
-
 # max nodes per interpolated flex cell ((2 + 1)^3 for quadratic)
 FLEX_INTERP_MAX_NODES = 27
 
@@ -104,7 +62,7 @@ FLEX_INTERP_MAX_NODES = 27
 # TODO(team): add check that all wp.launch_tiled 'block_dim' settings are configurable
 @dataclasses.dataclass
 class BlockDim:
-  """Block dimension 'block_dim' settings for wp.launch_tiled.
+  """Block dimension settings for kernel launches.
 
   TODO(team): experimental and may be removed
 
@@ -112,6 +70,7 @@ class BlockDim:
     segmented_sort: segmented sort block dimension (collision_driver)
     nxn_broadphase: NXN broadphase block dimension (collision_driver)
     convex_ccd: convex CCD kernel block dimension (collision_convex)
+    flex_fps: flex contact FPS block dimension (collision_flex)
     island_dsu: island discovery DSU block dimension (island)
     ray: ray block dimension (ray)
     contact_sort: contact sort block dimension (sensor)
@@ -131,6 +90,7 @@ class BlockDim:
     solve_search_update_cg: solve search update CG block dimension (solver)
     solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
+    contact_jac_sparse: sparse contact Jacobian block dimension (constraint)
     eff_pcg: effective-metric PCG block dimension (derivative)
     render: render block dimension (render)
   """
@@ -140,6 +100,8 @@ class BlockDim:
   nxn_broadphase: int = 128
   # collision_convex
   convex_ccd: int = 64
+  # collision_flex
+  flex_fps: int = 256
   # island
   island_dsu: int = 32
   # ray
@@ -154,7 +116,7 @@ class BlockDim:
   small_cholesky: int = 64
   solve_LD_sparse_fused: int = 128
   # solver
-  update_gradient_cholesky: int = 64
+  update_gradient_cholesky: int = 32
   update_gradient_cholesky_blocked: int = 32
   update_gradient_JTDAJ_sparse: int = 128
   update_gradient_JTDAJ_dense: int = 128
@@ -164,6 +126,8 @@ class BlockDim:
   solve_search_update_cg: int = 256
   solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
+  # constraint
+  contact_jac_sparse: int = 128
   # derivative
   eff_pcg: int = 128
   # render
@@ -873,9 +837,8 @@ class TendonType(enum.IntEnum):
     SPATIAL: path through sites, around geoms
   """
 
-  # TODO(team): use mujoco.mjtTendon when mujoco>=3.17.1 is required
-  FIXED = 0
-  SPATIAL = 1
+  FIXED = mujoco.mjtTendon.mjTENDON_FIXED
+  SPATIAL = mujoco.mjtTendon.mjTENDON_SPATIAL
 
 
 class WrapType(enum.IntEnum):
@@ -936,7 +899,7 @@ class State(enum.IntEnum):
   MOCAP_QUAT = mujoco.mjtState.mjSTATE_MOCAP_QUAT
   USERDATA = mujoco.mjtState.mjSTATE_USERDATA
   # unsupported: PLUGIN
-  PLASTIC = getattr(mujoco.mjtState, "mjSTATE_PLASTIC", 1 << 14)
+  PLASTIC = mujoco.mjtState.mjSTATE_PLASTIC
   NSTATE = mujoco.mjtState.mjNSTATE
   PHYSICS = mujoco.mjtState.mjSTATE_PHYSICS  # includes HISTORY and PLASTIC
   FULLPHYSICS = mujoco.mjtState.mjSTATE_FULLPHYSICS
@@ -1436,7 +1399,7 @@ class Model:
     flex_solimp: constraint solver impedance: contact        (nflex, mjNIMP)
     flex_friction: friction for (slide, spin, roll)          (nflex, 3)
     flex_margin: detect contact if dist<margin               (nflex,)
-    flex_gap: include in solver if dist<margin-gap           (nflex,)
+    flex_gap: additional contact detection buffer            (nflex,)
     flex_selfcollide: self-collision mode                    (nflex,)
     flex_activelayers: active element layers                 (nflex,)
     flex_passive: passive contact mode                       (nflex,)
@@ -1456,6 +1419,7 @@ class Model:
     flex_elemedgeadr: first element edge id address          (nflex,)
     flex_bendingadr: first bending data address              (nflex,)
     flex_plasticadr: start addr in plastic state (-1: none)  (nflex,)
+    flex_plasticmode: plastic state bits (1: bend, 2: stretch) (nflex,)
     flex_shellnum: number of shells                          (nflex,)
     flex_shelldataadr: first shell data address              (nflex,)
     flex_nodebodyid: node body ids                           (nflexnode,)
@@ -1483,7 +1447,7 @@ class Model:
     efm0_L_colind: column indices in zero-mass flex factor   (nefm0L,)
     efm0_L: zero-mass flex Cholesky factor                   (nefm0L,)
     flex_damping: Rayleigh's damping coefficient             (nflex,)
-    flex_yield: plastic yield strain threshold (0: elastic)  (nflex,)
+    flex_yield: plastic yield strain (stretch, bend; 0: elastic) (nflex, 2)
     flex_edgestiffness: edge stiffness                       (nflex,)
     flex_edgedamping: edge damping                           (nflex,)
     flex_edgeequality: edge equality type (0:none,1:edge,3:strain) (nflex,)
@@ -1643,13 +1607,11 @@ class Model:
 
   warp only fields:
     nefmK: number of non-zeros in effective flex stiffness matrix
-    nefmdof: number of flex preconditioner 3x3 DOF blocks
-    nefmL: number of entries in flex preconditioner 3x3 blocks
+    nefmdof: number of covered flex vertex triples
     efm_K_rownnz: row non-zeros in effective flex stiffness CSR (nv,)
     efm_K_rowadr: row addresses in effective flex stiffness CSR (nv,)
     efm_K_colind: column indices in effective flex stiffness CSR (nefmK,)
-    efm_dofid: starting DOF index for each 3x3 flex block (nefmdof,)
-    efm_dofblk: maps each DOF to its 3x3 flex block index; -1 if none (nv,)
+    efm_dofid: starting DOF index for each covered flex triple (nefmdof,)
     callback: custom physics callbacks
     nbranch: number of branches (leaf-to-root paths)
     nv_pad: number of degrees of freedom + padding
@@ -1666,6 +1628,9 @@ class Model:
       factorization is a per-block decision -- see M_tiles and m_block_layout
     qLD_block_total: packed length of the dense region per world (also the offset of the LDL region)
     qLD_block_adr: packed factor offset; Q_LD_BLOCK_* sentinel otherwise (nv,)
+    Minv_block_total: packed length of the inverse inertia blocks, one per tree, per world
+    Minv_block_adr: offset of the dof's tree block in the packed inverse inertia (nv,)
+    Minv_block_dofmax: number of dofs of the largest tree
     flg_adhesion: flag indicating if model has passive adhesion
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     flg_surfacevel: whether model has non-zero surfacevel
@@ -1678,6 +1643,8 @@ class Model:
     has_tendon_stiffness: whether any tendon has positive stiffness
     has_tendon_damping: whether any tendon has positive damping
     has_efm_actuator: whether any actuator contributes effective metric coupling
+    has_actuator_wrap: whether any wrap-eligible rotational actuator is present
+    has_actuator_dcmotor: whether any DC motor actuator is present
     efm0_active: whether zero-mass flex Cholesky preconditioner is active
     flex_interp_assemblable: whether interpolated flex stiffness can be assembled into efm_K
     has_unsupported_flex_interp: whether model has unsupported flex interpolation orders
@@ -1802,6 +1769,22 @@ class Model:
     flex_face: global node indices of each face                             (nflexface, 9)
     nflexrodhinge: number of 1D rod bending hinges (single hinges or hinge pairs)
     flex_rodhinge_map: flex id and flex_bending address of each rod hinge   (nflexrodhinge, 2)
+    nflexrodedge: number of 1D DER rod chain edges across all flexes
+    efm_con_max_dof: maximum DOFs affected by a passive flex contact
+    flex_rod_is_chain: whether flex is an open 1D single-hinge DER chain    (nflex,)
+    flex_rod_has_twist: whether flex is a 1D DER rod with twist or box      (nflex,)
+    flex_rod_is_box: whether flex is a 1D DER rod with box cross-section    (nflex,)
+    flex_rod_root_clamped: whether first two vertices share a body          (nflex,)
+    flex_rod_tail_clamped: whether last two vertices share a body           (nflex,)
+    flex_eff_possible: whether flex contributes to effective metric         (nflex,)
+    flex_rod_box_size: box cross-section half-sizes (a, b)                  (nflex, 2)
+    flex_rod_hingeadr: start index in flex_rodhinge_* for each flex         (nflex,)
+    flex_rod_edgeadr: start index in flex_rodedge_* for each flex           (nflex,)
+    flex_rod_edgenum: number of DER chain edges for each flex               (nflex,)
+    flex_rodedge_vert: local endpoint vertices of each DER chain edge       (nflexrodedge, 2)
+    flex_rodedge_jnt: twist hinge joint id of each DER chain edge; -1 none  (nflexrodedge,)
+    flex_elem_rodedge: (chain edge index, orientation sign) per flex elem   (nflexelem, 2)
+    flex_vert_rodelem: incident local element index per flex vertex         (nflexvert,)
   """
 
   nq: int
@@ -1828,6 +1811,7 @@ class Model:
   nflexelemdata: int
   nflexstiffness: int
   nflexbending: int
+
   nefm0dof: int
   nefm0L: int
   nflexelemedge: int
@@ -2014,6 +1998,7 @@ class Model:
   flex_elemedgeadr: array("nflex", int)
   flex_bendingadr: array("nflex", int)
   flex_plasticadr: array("nflex", int)
+  flex_plasticmode: array("nflex", int)
   flex_shellnum: array("nflex", int)
   flex_shelldataadr: array("nflex", int)
   flex_nodebodyid: array("nflexnode", int)
@@ -2041,7 +2026,7 @@ class Model:
   efm0_L_colind: array("nefm0L", int)
   efm0_L: array("nefm0L", float)
   flex_damping: array("nflex", float)
-  flex_yield: array("nflex", float)
+  flex_yield: array("nflex", wp.vec2)
   flex_edgestiffness: array("nflex", float)
   flex_edgedamping: array("nflex", float)
   flex_edgeequality: array("nflex", int)
@@ -2201,12 +2186,10 @@ class Model:
   # warp only fields:
   nefmK: int
   nefmdof: int
-  nefmL: int
   efm_K_rownnz: array("nv", int)
   efm_K_rowadr: array("nv", int)
   efm_K_colind: array("nefmK", int)
   efm_dofid: array("nefmdof", int)
-  efm_dofblk: array("nv", int)
   callback: Callback
   nbranch: int
   nv_pad: int
@@ -2221,6 +2204,9 @@ class Model:
   is_sparse: bool
   qLD_block_total: int
   qLD_block_adr: array("nv", int)
+  Minv_block_total: int
+  Minv_block_adr: array("nv", int)
+  Minv_block_dofmax: int
   flg_adhesion: bool
   has_fluid: bool
   flg_surfacevel: bool
@@ -2233,6 +2219,8 @@ class Model:
   has_tendon_stiffness: bool
   has_tendon_damping: bool
   has_efm_actuator: bool
+  has_actuator_wrap: bool
+  has_actuator_dcmotor: bool
   efm0_active: bool
   flex_interp_assemblable: bool
   has_unsupported_flex_interp: bool
@@ -2349,6 +2337,22 @@ class Model:
   flex_face: array("nflexface", 9, int)
   nflexrodhinge: int
   flex_rodhinge_map: array("nflexrodhinge", wp.vec2i)
+  nflexrodedge: int
+  efm_con_max_dof: int
+  flex_rod_is_chain: array("nflex", bool)
+  flex_rod_has_twist: array("nflex", bool)
+  flex_rod_is_box: array("nflex", bool)
+  flex_rod_root_clamped: array("nflex", bool)
+  flex_rod_tail_clamped: array("nflex", bool)
+  flex_eff_possible: array("nflex", bool)
+  flex_rod_box_size: array("nflex", wp.vec2)
+  flex_rod_hingeadr: array("nflex", int)
+  flex_rod_edgeadr: array("nflex", int)
+  flex_rod_edgenum: array("nflex", int)
+  flex_rodedge_vert: array("nflexrodedge", wp.vec2i)
+  flex_rodedge_jnt: array("nflexrodedge", int)
+  flex_elem_rodedge: array("nflexelem", wp.vec2i)
+  flex_vert_rodelem: array("nflexvert", int)
 
 
 class ContactType(enum.IntFlag):
@@ -2504,15 +2508,14 @@ class Data:
     tree_asleep: tree asleep counter; >=0: asleep cycle         (nworld, ntree)
     xpos: Cartesian position of body frame                      (nworld, nbody, 3)
     xquat: Cartesian orientation of body frame                  (nworld, nbody, 4)
-    xmat: Cartesian orientation of body frame                   (nworld, nbody, 3, 3)
     xipos: Cartesian position of body com                       (nworld, nbody, 3)
-    ximat: Cartesian orientation of body inertia                (nworld, nbody, 3, 3)
+    xiquat: Cartesian orientation of body inertia               (nworld, nbody, 4)
     xanchor: Cartesian position of joint anchor                 (nworld, njnt, 3)
     xaxis: Cartesian joint axis                                 (nworld, njnt, 3)
     geom_xpos: Cartesian geom position                          (nworld, ngeom, 3)
-    geom_xmat: Cartesian geom orientation                       (nworld, ngeom, 3, 3)
+    geom_xquat: Cartesian geom orientation                      (nworld, ngeom, 4)
     site_xpos: Cartesian site position                          (nworld, nsite, 3)
-    site_xmat: Cartesian site orientation                       (nworld, nsite, 3, 3)
+    site_xquat: Cartesian site orientation                      (nworld, nsite, 4)
     cam_xpos: Cartesian camera position                         (nworld, ncam, 3)
     cam_xmat: Cartesian camera orientation                      (nworld, ncam, 3, 3)
     light_xpos: Cartesian light position                        (nworld, nlight, 3)
@@ -2580,7 +2583,6 @@ class Data:
     efm_fluid: fluid drag blocks in M's sparsity pattern        (nworld, nC)
     efm_ca: actuation-stage smooth-force shift                  (nworld, nv)
     efm_K_val: effective flex stiffness CSR values              (nworld, nefmK)
-    efm_L: factored 3x3 diagonal blocks of M+K                  (nworld, nefmL)
     qHLD: factor of modified mass matrix qH                     (nworld, qld_total)
     efm_ts: tendon metric scale h^2*k + h*b                     (nworld, ntendon)
     efm_as: actuator metric scale h^2*gp + h*gv                 (nworld, nactuator)
@@ -2605,12 +2607,9 @@ class Data:
     ncdof: number of active (compacted) DOFs per world          (nworld,)
     dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
     cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
-    cdof_tri_row: row index of compacted Hessian dof-pairs      (nvmax_pad_sq,)
-    cdof_tri_col: col index of compacted Hessian dof-pairs      (nvmax_pad_sq,)
+    cdof_tri_row: row index of compacted Hessian dof-pairs      (ncdof_tri,)
+    cdof_tri_col: col index of compacted Hessian dof-pairs      (ncdof_tri,)
     cM: compacted dense inertia                                 (nworld, nvmax_pad, nvmax_pad)
-    cqLD: compacted upper Cholesky factor                       (nworld, nvmax_pad, nvmax_pad)
-    crhs: compacted smooth-solve right-hand side                (nworld, nvmax_pad, 1)
-    cx: compacted smooth-solve solution                         (nworld, nvmax_pad, 1)
     cJ: compacted dense constraint Jacobian                     (nworld, njmax_pad, nvmax_pad)
     cMa: compacted M @ qacc workspace                           (nworld, nvmax_pad)
     cqfrc_smooth: compacted net unconstrained force             (nworld, nvmax_pad)
@@ -2636,6 +2635,24 @@ class Data:
     overflow: overflow bitmask (OverflowType)                   (nworld,)
     face_xpos: cartesian flex face positions                    (nworld, nflexface, 9, 3)
     face_quat: cartesian flex face orientations                 (nworld, nflexface, 4)
+    flex_rod_chain_ok: whether 1D rod DER chain succeeded       (nworld, nflex)
+    flex_rodhinge_g: 1D rod hinge kb-space gradient             (nworld, nflexrodhinge, 3)
+    flex_rodhinge_Wk: 1D rod hinge kb-space stiffness weight    (nworld, nflexrodhinge, 3, 3)
+    flex_rodhinge_Wd: 1D rod hinge kb-space damping weight      (nworld, nflexrodhinge, 3, 3)
+    flex_rodedge_ktheta: 1D rod edge twist bending stiffness    (nworld, nflexrodedge)
+    flex_rodedge_grad: 1D rod edge dE/dtheta                    (nworld, nflexrodedge)
+    flex_rodedge_frc: 1D rod edge twist/director force          (nworld, nflexrodedge, 3)
+    flex_rodedge_tridiag: 1D rod twist tridiagonal scratch      (nworld, nflexrodedge, 2)
+    flex_rod_end_torque: 1D rod clamped-end reaction torques    (nworld, nflex, 6)
+    flex_rod_chain_valid: whether 1D rod chain cache is current (nworld, nflex)
+    flex_rod_ref_ok: whether 1D rod qpos0 reference is valid    (nworld, nflex)
+    flex_rod_frame0_loc: 1D rod qpos0 first-edge frame (t, u)   (nworld, nflex, 2, 3)
+                         in the frame of its first body
+    flex_rod_frame0_ref: 1D rod qpos0 first-edge frame (t, u)   (nworld, nflex, 2, 3)
+                         in world coordinates
+    flex_rod_tail_loc: 1D rod qpos0 last-edge frame (t, u)      (nworld, nflex, 2, 3)
+                       in the frame of its last body
+    flex_rodhinge_om0: 1D rod hinge reference curvatures        (nworld, nflexrodhinge, 2)
   """
 
   solver_niter: array("nworld", int)
@@ -2669,15 +2686,14 @@ class Data:
   tree_asleep: array("nworld", "ntree", int)
   xpos: array("nworld", "nbody", wp.vec3)
   xquat: array("nworld", "nbody", wp.quat)
-  xmat: array("nworld", "nbody", wp.mat33)
   xipos: array("nworld", "nbody", wp.vec3)
-  ximat: array("nworld", "nbody", wp.mat33)
+  xiquat: array("nworld", "nbody", wp.quat)
   xanchor: array("nworld", "njnt", wp.vec3)
   xaxis: array("nworld", "njnt", wp.vec3)
   geom_xpos: array("nworld", "ngeom", wp.vec3)
-  geom_xmat: array("nworld", "ngeom", wp.mat33)
+  geom_xquat: array("nworld", "ngeom", wp.quat)
   site_xpos: array("nworld", "nsite", wp.vec3)
-  site_xmat: array("nworld", "nsite", wp.mat33)
+  site_xquat: array("nworld", "nsite", wp.quat)
   cam_xpos: array("nworld", "ncam", wp.vec3)
   cam_xmat: array("nworld", "ncam", wp.mat33)
   light_xpos: array("nworld", "nlight", wp.vec3)
@@ -2741,7 +2757,6 @@ class Data:
   efm_fluid: array("nworld", "nC", float)
   efm_ca: array("nworld", "nv", float)
   efm_K_val: array("nworld", "nefmK", float)
-  efm_L: array("nworld", "nefmL", float)
   qHLD: array("nworld", "qld_total", float)
   efm_ts: array("nworld", "ntendon", float)
   efm_as: array("nworld", "nactuator", float)
@@ -2766,12 +2781,9 @@ class Data:
   ncdof: array("nworld", int)
   dof_cdof: array("nworld", "nv", int)
   cdof_dof: array("nworld", "nvmax_pad", int)
-  cdof_tri_row: array("nvmax_pad_sq", int)
-  cdof_tri_col: array("nvmax_pad_sq", int)
+  cdof_tri_row: array("ncdof_tri", int)
+  cdof_tri_col: array("ncdof_tri", int)
   cM: array("nworld", "nvmax_pad", "nvmax_pad", float)
-  cqLD: array("nworld", "nvmax_pad", "nvmax_pad", float)
-  crhs: array("nworld", "nvmax_pad", 1, float)
-  cx: array("nworld", "nvmax_pad", 1, float)
   cJ: array("nworld", "njmax_pad", "nvmax_pad", float)
   cMa: array("nworld", "nvmax_pad", float)
   cqfrc_smooth: array("nworld", "nvmax_pad", float)
@@ -2797,6 +2809,21 @@ class Data:
   overflow: array("nworld", int)
   face_xpos: array("nworld", "nflexface", 9, wp.vec3)
   face_quat: array("nworld", "nflexface", wp.quat)
+  flex_rod_chain_ok: array("nworld", "nflex", bool)
+  flex_rodhinge_g: array("nworld", "nflexrodhinge", wp.vec3)
+  flex_rodhinge_Wk: array("nworld", "nflexrodhinge", wp.mat33)
+  flex_rodhinge_Wd: array("nworld", "nflexrodhinge", wp.mat33)
+  flex_rodedge_ktheta: array("nworld", "nflexrodedge", float)
+  flex_rodedge_grad: array("nworld", "nflexrodedge", float)
+  flex_rodedge_frc: array("nworld", "nflexrodedge", wp.vec3)
+  flex_rodedge_tridiag: array("nworld", "nflexrodedge", wp.vec2)
+  flex_rod_end_torque: array("nworld", "nflex", wp.spatial_vector)
+  flex_rod_chain_valid: array("nworld", "nflex", bool)
+  flex_rod_ref_ok: array("nworld", "nflex", bool)
+  flex_rod_frame0_loc: array("nworld", "nflex", 2, wp.vec3)
+  flex_rod_frame0_ref: array("nworld", "nflex", 2, wp.vec3)
+  flex_rod_tail_loc: array("nworld", "nflex", 2, wp.vec3)
+  flex_rodhinge_om0: array("nworld", "nflexrodhinge", wp.vec2)
 
 
 @dataclasses.dataclass
@@ -2816,6 +2843,7 @@ class InverseContext:
   # discrete integrator effective-metric scratch (see SolverContext)
   efm_con: Optional[tuple] = None
   flex_scratch: Optional[tuple] = None
+  tw_diag: Optional[wp.array] = None
 
 
 @dataclasses.dataclass
@@ -2855,6 +2883,12 @@ class SolverContext:
   efm_con: Optional[tuple] = None
   flex_scratch: Optional[tuple] = None
   solve_ld_scratch: Optional[wp.array] = None
+  tw_diag: Optional[wp.array] = None
+  h_tile_nz: Optional[wp.array3d[int]] = None
+  h_row_mask: Optional[wp.array3d[wp.uint64]] = None
+  h_col_mask: Optional[wp.array3d[wp.uint64]] = None
+  h_tile_is_diag: Optional[wp.array2d[int]] = None
+  h_rhs_work: Optional[wp.array3d[float]] = None
 
 
 @dataclasses.dataclass

@@ -165,18 +165,37 @@ class InverseTest(parameterized.TestCase):
       f"qfrc_constraint should be zeroed, but got max abs: {np.max(np.abs(qfrc_constraint_post))}",
     )
 
-  def test_discrete_acc_eulerdamp(self):
+  @parameterized.parameters(DisableBit.EULERDAMP, DisableBit.DAMPER)
+  def test_discrete_acc_eulerdamp(self, disableflags):
     _, _, m, d = test_data.fixture(
       xml=_XML,
       qvel_noise=0.01,
       ctrl_noise=0.1,
       qfrc_noise=0.1,
       xfrc_noise=0.1,
-      overrides={"opt.integrator": IntegratorType.EULER, "opt.disableflags": DisableBit.EULERDAMP},
+      overrides={"opt.integrator": IntegratorType.EULER, "opt.disableflags": disableflags},
     )
     qacc = wp.zeros((1, m.nv), dtype=float)
     inverse.discrete_acc(m, d, qacc)
     _assert_eq(qacc.numpy()[0], d.qacc.numpy()[0], "qacc")
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_acc_implicit_preserves_qlu(self, nworld):
+    """discrete_acc does not overwrite the forward factorization in d.qLU."""
+    _, _, m, d = test_data.fixture(
+      xml=_XML,
+      nworld=nworld,
+      qvel_noise=0.01,
+      ctrl_noise=0.1,
+      overrides={"opt.integrator": IntegratorType.IMPLICIT},
+    )
+    mjw.step(m, d)
+    mjw.forward(m, d)
+    qLU = d.qLU.numpy().copy()
+    qacc = wp.zeros((nworld, m.nv), dtype=float)
+    inverse.discrete_acc(m, d, qacc)
+    np.testing.assert_array_equal(d.qLU.numpy(), qLU)
+    self.assertTrue(np.all(np.isfinite(qacc.numpy())))
 
   def test_discrete_acc_rk4(self):
     _, _, m, d = test_data.fixture(xml=_XML, overrides={"opt.integrator": IntegratorType.RK4})

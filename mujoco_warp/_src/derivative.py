@@ -23,15 +23,17 @@ from mujoco_warp._src import passive
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.passive import _rod_hinge
+from mujoco_warp._src.passive import _rod_pad44
 from mujoco_warp._src.passive import build_efm_contact
 from mujoco_warp._src.passive import ellipsoid_max_moment
 from mujoco_warp._src.passive import geom_semiaxes
 from mujoco_warp._src.passive import rod_stencil
 from mujoco_warp._src.passive import rod_stencil_jacobian
 from mujoco_warp._src.support import next_act
-from mujoco_warp._src.types import EFM_CON_MAX_DOF
 from mujoco_warp._src.types import FLEX_INTERP_MAX_NODES
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import ROD_HINGE_SIZE
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DeterminismType
@@ -42,6 +44,8 @@ from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import TrnType
+from mujoco_warp._src.types import mat43
 from mujoco_warp._src.types import vec6
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import cache_kernel
@@ -50,16 +54,95 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
-@wp.kernel
-def _qderiv_actuator_passive_vel(
+@wp.func
+def _jnt_actfrc_clamped(
+  # Model:
+  jnt_dofadr: wp.array[int],
+  jnt_actfrclimited: wp.array[bool],
+  jnt_actfrcrange: wp.array2d[wp.vec2],
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  # Data in:
+  qfrc_actuator_in: wp.array2d[float],
+  # In:
+  worldid: int,
+  actid: int,
+) -> bool:
+  trntype = actuator_trntype[actid]
+  if trntype == TrnType.JOINT or trntype == TrnType.JOINTINPARENT:
+    jntid = actuator_trnid[actid][0]
+    if jnt_actfrclimited[jntid]:
+      jnt_force = qfrc_actuator_in[worldid, jnt_dofadr[jntid]]
+      actfrcrange = jnt_actfrcrange[worldid % jnt_actfrcrange.shape[0], jntid]
+      if jnt_force <= actfrcrange[0] or jnt_force >= actfrcrange[1]:
+        return True
+  return False
+
+
+@wp.func
+def _tendon_actfrc_clamped(
+  # Model:
+  tendon_actfrclimited: wp.array[bool],
+  tendon_actfrcrange: wp.array2d[wp.vec2],
+  actuator_trntype: wp.array[int],
+  actuator_biastype: wp.array[int],
+  actuator_actadr: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  actuator_dynprm: wp.array2d[vec10],
+  actuator_gainprm: wp.array2d[vec10],
+  actuator_biasprm: wp.array2d[vec10],
+  # Data in:
+  act_in: wp.array2d[float],
+  act_dot_in: wp.array2d[float],
+  actuator_length_in: wp.array2d[float],
+  actuator_force_in: wp.array2d[float],
+  # In:
+  worldid: int,
+  actid: int,
+) -> bool:
+  if actuator_trntype[actid] == TrnType.TENDON:
+    tenid = actuator_trnid[actid][0]
+    if tendon_actfrclimited[tenid]:
+      ten_force = float(0.0)
+      for j in range(actuator_force_in.shape[1]):
+        if actuator_trntype[j] == TrnType.TENDON and actuator_trnid[j][0] == tenid:
+          f = actuator_force_in[worldid, j]
+          if actuator_biastype[j] == BiasType.DCMOTOR:
+            f -= util_misc.dcmotor_mech_force(
+              act_in,
+              act_dot_in,
+              worldid,
+              actuator_actadr[j],
+              actuator_length_in[worldid, j],
+              actuator_dynprm[worldid % actuator_dynprm.shape[0], j],
+              actuator_gainprm[worldid % actuator_gainprm.shape[0], j],
+              actuator_biasprm[worldid % actuator_biasprm.shape[0], j],
+            )
+          ten_force += f
+      actfrcrange = tendon_actfrcrange[worldid % tendon_actfrcrange.shape[0], tenid]
+      tol = 1.0e-5
+      if ten_force <= actfrcrange[0] + tol * wp.abs(actfrcrange[0]) or ten_force >= actfrcrange[1] - tol * wp.abs(
+        actfrcrange[1]
+      ):
+        return True
+  return False
+
+
+@wp.func
+def _dcmotor_saturation(
   # Model:
   opt_timestep: wp.array[float],
-  actuator_dyntype: wp.array[int],
-  actuator_gaintype: wp.array[int],
+  opt_disableflags: int,
+  tendon_actfrclimited: wp.array[bool],
+  tendon_actfrcrange: wp.array2d[wp.vec2],
+  actuator_trntype: wp.array[int],
   actuator_biastype: wp.array[int],
+  actuator_ctrladr: wp.array[int],
+  actuator_ctrlnum: wp.array[int],
   actuator_ctrlspec: wp.array[int],
   actuator_actadr: wp.array[int],
   actuator_actnum: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
   actuator_dynprm: wp.array2d[vec10],
   actuator_gainprm: wp.array2d[vec10],
   actuator_biasprm: wp.array2d[vec10],
@@ -68,6 +151,140 @@ def _qderiv_actuator_passive_vel(
   actuator_actearly: wp.array[bool],
   actuator_forcelimited: wp.array[bool],
   actuator_forcerange: wp.array2d[wp.vec2],
+  actuator_ctrllimited: wp.array[bool],
+  actuator_ctrlrange: wp.array2d[wp.vec2],
+  # Data in:
+  act_in: wp.array2d[float],
+  ctrl_in: wp.array2d[float],
+  act_dot_in: wp.array2d[float],
+  actuator_length_in: wp.array2d[float],
+  actuator_velocity_in: wp.array2d[float],
+  actuator_force_in: wp.array2d[float],
+  # In:
+  worldid: int,
+  actid: int,
+  R: float,
+) -> int:
+  """DC motor saturation flags: 1 electrical force clamped, 2 Vmax saturated, 4 dimax clamped."""
+  h = opt_timestep[worldid % opt_timestep.shape[0]]
+  dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], actid]
+  gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], actid]
+  K = gainprm[1]
+  te = dynprm[0]
+  actadr = actuator_actadr[actid]
+  velocity = actuator_velocity_in[worldid, actid]
+  slots = util_misc.dcmotor_slots(dynprm, gainprm)
+  flags = int(0)
+
+  # effective first control: clamped, then slew-limited (matching forward)
+  uadr = actuator_ctrladr[actid]
+  ctrlnum = actuator_ctrlnum[actid]
+  spec = actuator_ctrlspec[actid]
+  u_first = float(0.0)
+  if ctrlnum > 0:
+    u_first = ctrl_in[worldid, uadr]
+    if actuator_ctrllimited[uadr] and not (opt_disableflags & DisableBit.CLAMPCTRL):
+      ctrlrange = actuator_ctrlrange[worldid % actuator_ctrlrange.shape[0], uadr]
+      u_first = wp.clamp(u_first, ctrlrange[0], ctrlrange[1])
+    if actadr >= 0 and slots[0] >= 0:
+      u_prev = act_in[worldid, actadr + slots[0]]
+      slew = dynprm[7] * h
+      u_first = wp.clamp(u_first, u_prev - slew, u_prev + slew)
+
+  # terminal voltage, with controller Vmax saturation
+  V = float(0.0)
+  if ctrlnum > 0:
+    if (spec & 7) != 0:
+      x_I = float(0.0)
+      if actadr >= 0 and slots[1] >= 0:
+        x_I = act_in[worldid, actadr + slots[1]]
+      u4 = util_misc.unpack_servo_inputs(ctrl_in, worldid, uadr, spec, u_first)
+      length = actuator_length_in[worldid, actid]
+      torque = gainprm[4] * (u4[0] - length) + gainprm[6] * (u4[1] - velocity) + gainprm[5] * x_I + u4[2]
+      V = gainprm[0] / K * torque + K * velocity
+      Vmax = gainprm[7]
+      if Vmax > 0.0 and wp.abs(V) >= Vmax:
+        flags = flags | 2
+        V = wp.clamp(V, -Vmax, Vmax)
+      V += u4[3]
+    else:
+      V = u_first
+
+  # pre-mechanical electrical force, current-rate saturation
+  f_elec = float(0.0)
+  if te > 0.0:
+    act_last = actadr + actuator_actnum[actid] - 1
+    current = act_in[worldid, act_last]
+    current_dot = act_dot_in[worldid, act_last]
+    if actuator_actearly[actid]:
+      current += current_dot * te * (1.0 - wp.exp(-h / te))
+      if actuator_actlimited[actid]:
+        actrange = actuator_actrange[worldid % actuator_actrange.shape[0], actid]
+        current = wp.clamp(current, actrange[0], actrange[1])
+    f_elec = K * current
+    dimax = dynprm[1]
+    if dimax > 0.0 and wp.abs(current_dot) >= dimax:
+      flags = flags | 4
+  else:
+    f_elec = K / R * (V - K * velocity)
+
+  if actuator_forcelimited[actid]:
+    forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], actid]
+    if f_elec <= forcerange[0] or f_elec >= forcerange[1]:
+      flags = flags | 1
+
+  if (flags & 1) == 0 and _tendon_actfrc_clamped(
+    tendon_actfrclimited,
+    tendon_actfrcrange,
+    actuator_trntype,
+    actuator_biastype,
+    actuator_actadr,
+    actuator_trnid,
+    actuator_dynprm,
+    actuator_gainprm,
+    actuator_biasprm,
+    act_in,
+    act_dot_in,
+    actuator_length_in,
+    actuator_force_in,
+    worldid,
+    actid,
+  ):
+    flags = flags | 1
+
+  return flags
+
+
+@wp.kernel
+def _qderiv_actuator_passive_vel(
+  # Model:
+  opt_timestep: wp.array[float],
+  opt_disableflags: int,
+  jnt_dofadr: wp.array[int],
+  jnt_actfrclimited: wp.array[bool],
+  jnt_actfrcrange: wp.array2d[wp.vec2],
+  tendon_actfrclimited: wp.array[bool],
+  tendon_actfrcrange: wp.array2d[wp.vec2],
+  actuator_trntype: wp.array[int],
+  actuator_dyntype: wp.array[int],
+  actuator_gaintype: wp.array[int],
+  actuator_biastype: wp.array[int],
+  actuator_ctrladr: wp.array[int],
+  actuator_ctrlnum: wp.array[int],
+  actuator_ctrlspec: wp.array[int],
+  actuator_actadr: wp.array[int],
+  actuator_actnum: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  actuator_dynprm: wp.array2d[vec10],
+  actuator_gainprm: wp.array2d[vec10],
+  actuator_biasprm: wp.array2d[vec10],
+  actuator_actlimited: wp.array[bool],
+  actuator_actrange: wp.array2d[wp.vec2],
+  actuator_actearly: wp.array[bool],
+  actuator_forcelimited: wp.array[bool],
+  actuator_forcerange: wp.array2d[wp.vec2],
+  actuator_ctrllimited: wp.array[bool],
+  actuator_ctrlrange: wp.array2d[wp.vec2],
   actuator_acc0: wp.array2d[float],
   actuator_lengthrange: wp.array2d[wp.vec2],
   # Data in:
@@ -77,6 +294,7 @@ def _qderiv_actuator_passive_vel(
   actuator_length_in: wp.array2d[float],
   actuator_velocity_in: wp.array2d[float],
   actuator_force_in: wp.array2d[float],
+  qfrc_actuator_in: wp.array2d[float],
   # Out:
   vel_out: wp.array2d[float],
 ):
@@ -88,13 +306,51 @@ def _qderiv_actuator_passive_vel(
   opt_timestep_id = worldid % opt_timestep.shape[0]
 
   bias = float(0.0)
+  gaintype = actuator_gaintype[actid]
+  biastype = actuator_biastype[actid]
   R_dcmotor = float(0.0)
-  K_dcmotor = float(0.0)
-  te_dcmotor = float(0.0)
+  sat_dcmotor = int(0)
+  if gaintype == GainType.DCMOTOR or biastype == BiasType.DCMOTOR:
+    dynprm_dc = actuator_dynprm[actuator_dynprm_id, actid]
+    gainprm_dc = actuator_gainprm[actuator_gainprm_id, actid]
+    R_dcmotor = util_misc.dcmotor_resistance(act_in, worldid, actuator_actadr[actid], dynprm_dc, gainprm_dc)
+    sat_dcmotor = _dcmotor_saturation(
+      opt_timestep,
+      opt_disableflags,
+      tendon_actfrclimited,
+      tendon_actfrcrange,
+      actuator_trntype,
+      actuator_biastype,
+      actuator_ctrladr,
+      actuator_ctrlnum,
+      actuator_ctrlspec,
+      actuator_actadr,
+      actuator_actnum,
+      actuator_trnid,
+      actuator_dynprm,
+      actuator_gainprm,
+      actuator_biasprm,
+      actuator_actlimited,
+      actuator_actrange,
+      actuator_actearly,
+      actuator_forcelimited,
+      actuator_forcerange,
+      actuator_ctrllimited,
+      actuator_ctrlrange,
+      act_in,
+      ctrl_in,
+      act_dot_in,
+      actuator_length_in,
+      actuator_velocity_in,
+      actuator_force_in,
+      worldid,
+      actid,
+      R_dcmotor,
+    )
 
-  if actuator_gaintype[actid] == GainType.AFFINE:
+  if gaintype == GainType.AFFINE:
     gain = actuator_gainprm[actuator_gainprm_id, actid][2]
-  elif actuator_gaintype[actid] == GainType.MUSCLE:
+  elif gaintype == GainType.MUSCLE:
     gain = util_misc.muscle_gain_vel_deriv(
       actuator_length_in[worldid, actid],
       actuator_velocity_in[worldid, actid],
@@ -102,69 +358,97 @@ def _qderiv_actuator_passive_vel(
       actuator_acc0[worldid % actuator_acc0.shape[0], actid],
       actuator_gainprm[actuator_gainprm_id, actid],
     )
-  elif actuator_gaintype[actid] == GainType.DCMOTOR:
+  elif gaintype == GainType.DCMOTOR:
     gain = 0.0
     dynprm = actuator_dynprm[actuator_dynprm_id, actid]
     gainprm = actuator_gainprm[actuator_gainprm_id, actid]
     te = dynprm[0]
     K = gainprm[1]
 
-    # controller velocity derivative dV/dω using nameplate resistance
-    dVdw = 0.0
-    if (actuator_ctrlspec[actid] & 7) != 0:
-      R0 = wp.max(MJ_MINVAL, gainprm[0])
-      dVdw = -gainprm[6] * R0 / K + K
+    # electrical terms vanish when electrical force is clamped by forcerange or tendon actfrcrange
+    if (sat_dcmotor & 1) == 0:
+      # controller velocity derivative dV/dω using nameplate resistance, zero under Vmax
+      dVdw = 0.0
+      if (actuator_ctrlspec[actid] & 7) != 0 and (sat_dcmotor & 2) == 0:
+        R0 = wp.max(MJ_MINVAL, gainprm[0])
+        dVdw = -gainprm[6] * R0 / K + K
 
-    # winding resistance at current temperature
-    R = util_misc.dcmotor_resistance(act_in, worldid, actuator_actadr[actid], dynprm, gainprm)
-
-    if te > 0.0:
-      # stateful current with actearly: d(K*next_act)/dω
-      # includes both back-EMF (-K) and controller (dVdw) through act_dot
-      s = 1.0 - wp.exp(-opt_timestep[opt_timestep_id] / te)
-      bias += K * (dVdw - K) * s / R
-    elif dVdw != 0.0:
-      # stateless: controller terms only (back-EMF handled in bias block)
-      bias += K * dVdw / R
+      if te > 0.0:
+        # stateful current with actearly: d(K*next_act)/dω, zero under dimax
+        # includes both back-EMF (-K) and controller (dVdw) through act_dot
+        if actuator_actearly[actid] and (sat_dcmotor & 4) == 0:
+          s = 1.0 - wp.exp(-opt_timestep[opt_timestep_id] / te)
+          bias += K * (dVdw - K) * s / R_dcmotor
+      elif dVdw != 0.0:
+        # stateless: controller terms only (back-EMF handled in bias block)
+        bias += K * dVdw / R_dcmotor
 
     # LuGre: force includes -sigma1*z_dot, z_dot = a*z + v
     # d(sigma1*z_dot)/dv = sigma1*(da/dv*z + 1), ignoring higher-order da/dv*z
     sigma1 = dynprm[6]
     if sigma1 > 0.0:
       bias -= sigma1
-
-    R_dcmotor = R
-    K_dcmotor = K
-    te_dcmotor = te
   else:
     gain = 0.0
 
-  if actuator_biastype[actid] == BiasType.AFFINE:
+  if biastype == BiasType.AFFINE:
     bias += actuator_biasprm[actuator_biasprm_id, actid][2]
-  elif actuator_biastype[actid] == BiasType.DCMOTOR:
-    if R_dcmotor > 0.0:
-      if te_dcmotor <= 0.0:
-        bias += -K_dcmotor * K_dcmotor / R_dcmotor
-    else:
-      dynprm = actuator_dynprm[actuator_dynprm_id, actid]
-      te = dynprm[0]
-      if te <= 0.0:
-        gainprm = actuator_gainprm[actuator_gainprm_id, actid]
-        K = gainprm[1]
-        R = util_misc.dcmotor_resistance(act_in, worldid, actuator_actadr[actid], dynprm, gainprm)
-        bias += -K * K / R
+  elif biastype == BiasType.DCMOTOR:
+    if actuator_dynprm[actuator_dynprm_id, actid][0] <= 0.0 and (sat_dcmotor & 1) == 0:
+      K = actuator_gainprm[actuator_gainprm_id, actid][1]
+      bias -= K * K / R_dcmotor
 
   if bias == 0.0 and gain == 0.0:
     vel_out[worldid, actid] = 0.0
     return
 
-  # skip if force is clamped by forcerange
-  if actuator_forcelimited[actid]:
+  # skip if force is clamped by forcerange (DC motor: electrical force, handled above)
+  if actuator_forcelimited[actid] and gaintype != GainType.DCMOTOR and biastype != BiasType.DCMOTOR:
     force = actuator_force_in[worldid, actid]
     forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], actid]
     if force <= forcerange[0] or force >= forcerange[1]:
       vel_out[worldid, actid] = 0.0
       return
+
+  # skip if tendon total actuator force is clamped by actfrcrange
+  if (
+    gaintype != GainType.DCMOTOR
+    and biastype != BiasType.DCMOTOR
+    and _tendon_actfrc_clamped(
+      tendon_actfrclimited,
+      tendon_actfrcrange,
+      actuator_trntype,
+      actuator_biastype,
+      actuator_actadr,
+      actuator_trnid,
+      actuator_dynprm,
+      actuator_gainprm,
+      actuator_biasprm,
+      act_in,
+      act_dot_in,
+      actuator_length_in,
+      actuator_force_in,
+      worldid,
+      actid,
+    )
+  ):
+    vel_out[worldid, actid] = 0.0
+    return
+
+  # skip if joint total actuator force is clamped by actfrcrange
+  # (keeping tendon/site actuator contributions on this dof is an approximation)
+  if _jnt_actfrc_clamped(
+    jnt_dofadr,
+    jnt_actfrclimited,
+    jnt_actfrcrange,
+    actuator_trntype,
+    actuator_trnid,
+    qfrc_actuator_in,
+    worldid,
+    actid,
+  ):
+    vel_out[worldid, actid] = 0.0
+    return
 
   vel = float(bias)
   if actuator_dyntype[actid] != DynType.NONE:
@@ -254,283 +538,325 @@ def _qderiv_actuator_passive_actuation_sparse(nM: int, deterministic: bool = Fal
   return kernel
 
 
-@wp.kernel
-def _qderiv_actuator_passive(
-  # Model:
-  opt_timestep: wp.array[float],
-  opt_disableflags: int,
-  jnt_actuatorid: wp.array[int],
-  dof_jntid: wp.array[int],
-  dof_damping: wp.array2d[float],
-  dof_dampingpoly: wp.array2d[wp.vec2],
-  actuator_trntype: wp.array[int],
-  actuator_trnid: wp.array[wp.vec2i],
-  actuator_damping: wp.array2d[float],
-  actuator_dampingpoly: wp.array2d[wp.vec2],
-  actuator_gear: wp.array2d[wp.spatial_vector],
-  M_elemid: wp.array2d[int],
-  # Data in:
-  qvel_in: wp.array2d[float],
-  M_in: wp.array2d[float],
-  # In:
-  Mi: wp.array[int],
-  Mj: wp.array[int],
-  qDeriv_in: wp.array2d[float],
-  # Out:
-  qDeriv_out: wp.array2d[float],
-):
-  worldid, elemid = wp.tid()
+@cache_kernel
+def _qderiv_actuator_passive(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    opt_disableflags: int,
+    jnt_actuatorid: wp.array[int],
+    dof_jntid: wp.array[int],
+    dof_treeid: wp.array[int],
+    dof_damping: wp.array2d[float],
+    dof_dampingpoly: wp.array2d[wp.vec2],
+    actuator_trntype: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_damping: wp.array2d[float],
+    actuator_dampingpoly: wp.array2d[wp.vec2],
+    actuator_gear: wp.array2d[wp.spatial_vector],
+    M_elemid: wp.array2d[int],
+    # Data in:
+    qvel_in: wp.array2d[float],
+    M_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
+    # In:
+    Mi: wp.array[int],
+    Mj: wp.array[int],
+    qDeriv_in: wp.array2d[float],
+    # Out:
+    qDeriv_out: wp.array2d[float],
+  ):
+    worldid, elemid = wp.tid()
 
-  dofiid = Mi[elemid]
-  dofjid = Mj[elemid]
+    dofiid = Mi[elemid]
+    if wp.static(enable_sleep):
+      treeid = dof_treeid[dofiid]
+      if treeid >= 0 and tree_awake_in[worldid, treeid] == 0:
+        return
+    dofjid = Mj[elemid]
 
-  # Off-pattern (dofiid, dofjid) pairs have no CSR entry (madr < 0).
-  madr = M_elemid[dofiid, dofjid]
-  if madr < 0:
-    return
+    # Off-pattern (dofiid, dofjid) pairs have no CSR entry (madr < 0).
+    madr = M_elemid[dofiid, dofjid]
+    if madr < 0:
+      return
 
-  qderiv = qDeriv_in[worldid, madr]
+    qderiv = qDeriv_in[worldid, madr]
 
-  if not (opt_disableflags & DisableBit.DAMPER) and dofiid == dofjid:
-    damping, dpoly = util_misc.dof_damping_total(
-      jnt_actuatorid,
-      dof_jntid,
-      dof_damping,
-      dof_dampingpoly,
-      actuator_trntype,
-      actuator_trnid,
-      actuator_damping,
-      actuator_dampingpoly,
-      actuator_gear,
-      worldid,
-      dofiid,
-    )
-    v = qvel_in[worldid, dofiid]
-    qderiv -= util_misc._poly_force_deriv(damping, dpoly, v, 1)
+    if not (opt_disableflags & DisableBit.DAMPER) and dofiid == dofjid:
+      damping, dpoly = util_misc.dof_damping_total(
+        jnt_actuatorid,
+        dof_jntid,
+        dof_damping,
+        dof_dampingpoly,
+        actuator_trntype,
+        actuator_trnid,
+        actuator_damping,
+        actuator_dampingpoly,
+        actuator_gear,
+        worldid,
+        dofiid,
+      )
+      v = qvel_in[worldid, dofiid]
+      qderiv -= util_misc._poly_force_deriv(damping, dpoly, v, 1)
 
-  qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
+    qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
 
-  qDeriv_out[worldid, madr] = M_in[worldid, madr] - qderiv
+    qDeriv_out[worldid, madr] = M_in[worldid, madr] - qderiv
+
+  return kernel
 
 
 # TODO(team): improve performance with tile operations?
-@wp.kernel
-def _qderiv_tendon_damping(
-  # Model:
-  ntendon: int,
-  opt_timestep: wp.array[float],
-  tendon_actuatorid: wp.array[int],
-  ten_J_rownnz: wp.array[int],
-  ten_J_rowadr: wp.array[int],
-  ten_J_colind: wp.array[int],
-  tendon_damping: wp.array2d[float],
-  tendon_dampingpoly: wp.array2d[wp.vec2],
-  actuator_trntype: wp.array[int],
-  actuator_trnid: wp.array[wp.vec2i],
-  actuator_damping: wp.array2d[float],
-  actuator_dampingpoly: wp.array2d[wp.vec2],
-  actuator_gear: wp.array2d[wp.spatial_vector],
-  M_elemid: wp.array2d[int],
-  # Data in:
-  ten_J_in: wp.array2d[float],
-  ten_velocity_in: wp.array2d[float],
-  # In:
-  Mi: wp.array[int],
-  Mj: wp.array[int],
-  # Out:
-  qDeriv_out: wp.array2d[float],
-):
-  worldid, elemid = wp.tid()
-  dofiid = Mi[elemid]
-  dofjid = Mj[elemid]
+@cache_kernel
+def _qderiv_tendon_damping(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    ntendon: int,
+    opt_timestep: wp.array[float],
+    dof_treeid: wp.array[int],
+    tendon_actuatorid: wp.array[int],
+    ten_J_rownnz: wp.array[int],
+    ten_J_rowadr: wp.array[int],
+    ten_J_colind: wp.array[int],
+    tendon_damping: wp.array2d[float],
+    tendon_dampingpoly: wp.array2d[wp.vec2],
+    actuator_trntype: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_damping: wp.array2d[float],
+    actuator_dampingpoly: wp.array2d[wp.vec2],
+    actuator_gear: wp.array2d[wp.spatial_vector],
+    M_elemid: wp.array2d[int],
+    # Data in:
+    ten_J_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
+    ten_velocity_in: wp.array2d[float],
+    # In:
+    Mi: wp.array[int],
+    Mj: wp.array[int],
+    # Out:
+    qDeriv_out: wp.array2d[float],
+  ):
+    worldid, elemid = wp.tid()
+    dofiid = Mi[elemid]
+    if wp.static(enable_sleep):
+      treeid = dof_treeid[dofiid]
+      if treeid >= 0 and tree_awake_in[worldid, treeid] == 0:
+        return
+    dofjid = Mj[elemid]
 
-  # Off-pattern (dofiid, dofjid) pairs have no CSR entry (madr < 0).
-  madr = M_elemid[dofiid, dofjid]
-  if madr < 0:
-    return
+    # Off-pattern (dofiid, dofjid) pairs have no CSR entry (madr < 0).
+    madr = M_elemid[dofiid, dofjid]
+    if madr < 0:
+      return
 
-  qderiv = float(0.0)
-  for tenid in range(ntendon):
-    damping, dpoly = util_misc.tendon_damping_total(
-      tendon_actuatorid,
-      tendon_damping,
-      tendon_dampingpoly,
-      actuator_trntype,
-      actuator_trnid,
-      actuator_damping,
-      actuator_dampingpoly,
-      actuator_gear,
-      worldid,
-      tenid,
-    )
-    if damping == 0.0 and dpoly[0] == 0.0 and dpoly[1] == 0.0:
-      continue
+    qderiv = float(0.0)
+    for tenid in range(ntendon):
+      damping, dpoly = util_misc.tendon_damping_total(
+        tendon_actuatorid,
+        tendon_damping,
+        tendon_dampingpoly,
+        actuator_trntype,
+        actuator_trnid,
+        actuator_damping,
+        actuator_dampingpoly,
+        actuator_gear,
+        worldid,
+        tenid,
+      )
+      if damping == 0.0 and dpoly[0] == 0.0 and dpoly[1] == 0.0:
+        continue
 
-    rownnz = ten_J_rownnz[tenid]
-    rowadr = ten_J_rowadr[tenid]
-    Ji = float(0.0)
-    Jj = float(0.0)
-    for k in range(rownnz):
-      if Ji != 0.0 and Jj != 0.0:
-        break
-      sparseid = rowadr + k
-      colind = ten_J_colind[sparseid]
-      if colind == dofiid:
-        Ji = ten_J_in[worldid, sparseid]
-      if colind == dofjid:
-        Jj = ten_J_in[worldid, sparseid]
+      rownnz = ten_J_rownnz[tenid]
+      rowadr = ten_J_rowadr[tenid]
+      Ji = float(0.0)
+      Jj = float(0.0)
+      for k in range(rownnz):
+        if Ji != 0.0 and Jj != 0.0:
+          break
+        sparseid = rowadr + k
+        colind = ten_J_colind[sparseid]
+        if colind == dofiid:
+          Ji = ten_J_in[worldid, sparseid]
+        if colind == dofjid:
+          Jj = ten_J_in[worldid, sparseid]
 
-    v = ten_velocity_in[worldid, tenid]
-    qderiv -= Ji * Jj * util_misc._poly_force_deriv(damping, dpoly, v, 1)
+      v = ten_velocity_in[worldid, tenid]
+      qderiv -= Ji * Jj * util_misc._poly_force_deriv(damping, dpoly, v, 1)
 
-  qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
+    qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
 
-  qDeriv_out[worldid, madr] -= qderiv
+    qDeriv_out[worldid, madr] -= qderiv
 
-
-@wp.kernel
-def deriv_rne_cvel_cdof_dot(
-  # Model:
-  body_parentid: wp.array[int],
-  body_jntnum: wp.array[int],
-  body_jntadr: wp.array[int],
-  body_dofadr: wp.array[int],
-  jnt_type: wp.array[int],
-  # Data in:
-  cdof_in: wp.array2d[wp.spatial_vector],
-  # In:
-  body_tree_: wp.array[int],
-  # Out:
-  Dcvel_out: wp.array3d[wp.spatial_vector],
-  Dcdof_dot_out: wp.array3d[wp.spatial_vector],
-):
-  """Forward pass: compute d(cvel)/d(qvel_k) and d(cdof_dot)/d(qvel_k).
-
-  Mirrors the accumulation order of comvel for each joint type.
-
-  Dcdof_dot for rotation DOFs of free joints (dofid+0..2) is zero because the
-  forward pass sets cdof_dot[dofid+0..2] = 0.  The Dcdof_dot array is
-  zero-initialized so no explicit write is needed.
-  """
-  worldid, nodeid, dofid = wp.tid()
-  bodyid = body_tree_[nodeid]
-  dofadr = body_dofadr[bodyid]
-  jntid = body_jntadr[bodyid]
-  jntnum = body_jntnum[bodyid]
-  pid = body_parentid[bodyid]
-
-  cdof = cdof_in[worldid]
-
-  # Initialize from parent
-  cvel_k = Dcvel_out[worldid, pid, dofid]
-
-  if jntnum == 0:
-    Dcvel_out[worldid, bodyid, dofid] = cvel_k
-    return
-
-  dof_i = dofadr
-
-  for j in range(jntid, jntid + jntnum):
-    jnttype = jnt_type[j]
-
-    if jnttype == 0:  # FREE
-      # rotation DOFs (dof_i+0..2) contribute to cvel
-      if dofid >= dof_i and dofid < dof_i + 3:
-        cvel_k += cdof[dofid]
-
-      # cdof_dot for rotation DOFs is zero (set in forward kinematics),
-      # so Dcdof_dot for rotation DOFs is zero (from wp.zeros init)
-
-      # derivative of cdof_dot for translation DOFs 3,4,5
-      Dcdof_dot_out[worldid, dof_i + 3, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 3])
-      Dcdof_dot_out[worldid, dof_i + 4, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 4])
-      Dcdof_dot_out[worldid, dof_i + 5, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 5])
-
-      # translation DOFs (dof_i+3..5) contribute to cvel
-      if dofid >= dof_i + 3 and dofid < dof_i + 6:
-        cvel_k += cdof[dofid]
-
-      dof_i += 6
-
-    elif jnttype == 1:  # BALL
-      Dcdof_dot_out[worldid, dof_i + 0, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 0])
-      Dcdof_dot_out[worldid, dof_i + 1, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 1])
-      Dcdof_dot_out[worldid, dof_i + 2, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 2])
-
-      if dofid >= dof_i and dofid < dof_i + 3:
-        cvel_k += cdof[dofid]
-
-      dof_i += 3
-    else:  # HINGE or SLIDE
-      Dcdof_dot_out[worldid, dof_i, dofid] = math.motion_cross(cvel_k, cdof[dof_i])
-
-      if dofid == dof_i:
-        cvel_k += cdof[dof_i]
-
-      dof_i += 1
-
-  Dcvel_out[worldid, bodyid, dofid] = cvel_k
-
-
-@wp.kernel
-def deriv_rne_cacc_cfrcbody_forward(
-  # Model:
-  body_parentid: wp.array[int],
-  body_dofnum: wp.array[int],
-  body_dofadr: wp.array[int],
-  # Data in:
-  qvel_in: wp.array2d[float],
-  cinert_in: wp.array2d[vec10],
-  cvel_in: wp.array2d[wp.spatial_vector],
-  cdof_dot_in: wp.array2d[wp.spatial_vector],
-  # In:
-  body_tree_: wp.array[int],
-  Dcvel_in: wp.array3d[wp.spatial_vector],
-  Dcdof_dot_in: wp.array3d[wp.spatial_vector],
-  # Out:
-  Dcacc_out: wp.array3d[wp.spatial_vector],
-  Dcfrcbody_out: wp.array3d[wp.spatial_vector],
-):
-  """Forward pass: compute d(cacc)/d(qvel_k) and d(cfrc_body)/d(qvel_k)."""
-  worldid, nodeid, dofid = wp.tid()
-  bodyid = body_tree_[nodeid]
-  dofadr = body_dofadr[bodyid]
-  dofnum = body_dofnum[bodyid]
-  pid = body_parentid[bodyid]
-
-  qvel = qvel_in[worldid]
-
-  dcacc = Dcacc_out[worldid, pid, dofid]
-
-  for j in range(dofadr, dofadr + dofnum):
-    # Term 1: d(cdof_dot * qvel)/d(qvel_k) when j == dofid
-    if j == dofid:
-      dcacc += cdof_dot_in[worldid, j]
-
-    # Term 2: cdof_dot depends on cvel which depends on qvel_k
-    dcdofdot = Dcdof_dot_in[worldid, j, dofid]
-    dcacc += dcdofdot * qvel[j]
-
-  Dcacc_out[worldid, bodyid, dofid] = dcacc
-
-  # d(cfrc_body)/d(qvel_k)
-  cinert = cinert_in[worldid, bodyid]
-  cvel = cvel_in[worldid, bodyid]
-  dcvel = Dcvel_in[worldid, bodyid, dofid]
-
-  # term1 = cinert * d(cacc)/d(qvel_k)
-  term1 = math.inert_vec(cinert, dcacc)
-
-  # term2 = d(cvel x* (cinert * cvel))/d(qvel_k)
-  cinert_cvel = math.inert_vec(cinert, cvel)
-  cinert_dcvel = math.inert_vec(cinert, dcvel)
-  term2 = math.motion_cross_force(dcvel, cinert_cvel) + math.motion_cross_force(cvel, cinert_dcvel)
-
-  Dcfrcbody_out[worldid, bodyid, dofid] = term1 + term2
+  return kernel
 
 
 @cache_kernel
-def deriv_rne_cfrcbody_backward(deterministic: bool = False):
+def deriv_rne_cvel_cdof_dot(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    body_parentid: wp.array[int],
+    body_jntnum: wp.array[int],
+    body_jntadr: wp.array[int],
+    body_dofadr: wp.array[int],
+    body_treeid: wp.array[int],
+    jnt_type: wp.array[int],
+    dof_treeid: wp.array[int],
+    # Data in:
+    cdof_in: wp.array2d[wp.spatial_vector],
+    tree_awake_in: wp.array2d[int],
+    # In:
+    body_tree_: wp.array[int],
+    # Out:
+    Dcvel_out: wp.array3d[wp.spatial_vector],
+    Dcdof_dot_out: wp.array3d[wp.spatial_vector],
+  ):
+    """Forward pass: compute d(cvel)/d(qvel_k) and d(cdof_dot)/d(qvel_k).
+
+    Mirrors the accumulation order of comvel for each joint type.
+
+    Dcdof_dot for rotation DOFs of free joints (dofid+0..2) is zero because the
+    forward pass sets cdof_dot[dofid+0..2] = 0.  The Dcdof_dot array is
+    zero-initialized so no explicit write is needed.
+    """
+    worldid, nodeid, dofid = wp.tid()
+    bodyid = body_tree_[nodeid]
+    if wp.static(enable_sleep):
+      treeid = body_treeid[bodyid]
+      if treeid < 0 or tree_awake_in[worldid, treeid] == 0 or treeid != dof_treeid[dofid]:
+        return
+    dofadr = body_dofadr[bodyid]
+    jntid = body_jntadr[bodyid]
+    jntnum = body_jntnum[bodyid]
+    pid = body_parentid[bodyid]
+
+    cdof = cdof_in[worldid]
+
+    # Initialize from parent
+    cvel_k = Dcvel_out[worldid, pid, dofid]
+
+    if jntnum == 0:
+      Dcvel_out[worldid, bodyid, dofid] = cvel_k
+      return
+
+    dof_i = dofadr
+
+    for j in range(jntid, jntid + jntnum):
+      jnttype = jnt_type[j]
+
+      if jnttype == 0:  # FREE
+        # rotation DOFs (dof_i+0..2) contribute to cvel
+        if dofid >= dof_i and dofid < dof_i + 3:
+          cvel_k += cdof[dofid]
+
+        # cdof_dot for rotation DOFs is zero (set in forward kinematics),
+        # so Dcdof_dot for rotation DOFs is zero (from wp.zeros init)
+
+        # derivative of cdof_dot for translation DOFs 3,4,5
+        Dcdof_dot_out[worldid, dof_i + 3, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 3])
+        Dcdof_dot_out[worldid, dof_i + 4, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 4])
+        Dcdof_dot_out[worldid, dof_i + 5, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 5])
+
+        # translation DOFs (dof_i+3..5) contribute to cvel
+        if dofid >= dof_i + 3 and dofid < dof_i + 6:
+          cvel_k += cdof[dofid]
+
+        dof_i += 6
+
+      elif jnttype == 1:  # BALL
+        Dcdof_dot_out[worldid, dof_i + 0, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 0])
+        Dcdof_dot_out[worldid, dof_i + 1, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 1])
+        Dcdof_dot_out[worldid, dof_i + 2, dofid] = math.motion_cross(cvel_k, cdof[dof_i + 2])
+
+        if dofid >= dof_i and dofid < dof_i + 3:
+          cvel_k += cdof[dofid]
+
+        dof_i += 3
+      else:  # HINGE or SLIDE
+        Dcdof_dot_out[worldid, dof_i, dofid] = math.motion_cross(cvel_k, cdof[dof_i])
+
+        if dofid == dof_i:
+          cvel_k += cdof[dof_i]
+
+        dof_i += 1
+
+    Dcvel_out[worldid, bodyid, dofid] = cvel_k
+
+  return kernel
+
+
+@cache_kernel
+def deriv_rne_cacc_cfrcbody_forward(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    body_parentid: wp.array[int],
+    body_dofnum: wp.array[int],
+    body_dofadr: wp.array[int],
+    body_treeid: wp.array[int],
+    dof_treeid: wp.array[int],
+    # Data in:
+    qvel_in: wp.array2d[float],
+    cinert_in: wp.array2d[vec10],
+    tree_awake_in: wp.array2d[int],
+    cvel_in: wp.array2d[wp.spatial_vector],
+    cdof_dot_in: wp.array2d[wp.spatial_vector],
+    # In:
+    body_tree_: wp.array[int],
+    Dcvel_in: wp.array3d[wp.spatial_vector],
+    Dcdof_dot_in: wp.array3d[wp.spatial_vector],
+    # Out:
+    Dcacc_out: wp.array3d[wp.spatial_vector],
+    Dcfrcbody_out: wp.array3d[wp.spatial_vector],
+  ):
+    """Forward pass: compute d(cacc)/d(qvel_k) and d(cfrc_body)/d(qvel_k)."""
+    worldid, nodeid, dofid = wp.tid()
+    bodyid = body_tree_[nodeid]
+    if wp.static(enable_sleep):
+      treeid = body_treeid[bodyid]
+      if treeid < 0 or tree_awake_in[worldid, treeid] == 0 or treeid != dof_treeid[dofid]:
+        return
+    dofadr = body_dofadr[bodyid]
+    dofnum = body_dofnum[bodyid]
+    pid = body_parentid[bodyid]
+
+    qvel = qvel_in[worldid]
+
+    dcacc = Dcacc_out[worldid, pid, dofid]
+
+    for j in range(dofadr, dofadr + dofnum):
+      # Term 1: d(cdof_dot * qvel)/d(qvel_k) when j == dofid
+      if j == dofid:
+        dcacc += cdof_dot_in[worldid, j]
+
+      # Term 2: cdof_dot depends on cvel which depends on qvel_k
+      dcdofdot = Dcdof_dot_in[worldid, j, dofid]
+      dcacc += dcdofdot * qvel[j]
+
+    Dcacc_out[worldid, bodyid, dofid] = dcacc
+
+    # d(cfrc_body)/d(qvel_k)
+    cinert = cinert_in[worldid, bodyid]
+    cvel = cvel_in[worldid, bodyid]
+    dcvel = Dcvel_in[worldid, bodyid, dofid]
+
+    # term1 = cinert * d(cacc)/d(qvel_k)
+    term1 = math.inert_vec(cinert, dcacc)
+
+    # term2 = d(cvel x* (cinert * cvel))/d(qvel_k)
+    cinert_cvel = math.inert_vec(cinert, cvel)
+    cinert_dcvel = math.inert_vec(cinert, dcvel)
+    term2 = math.motion_cross_force(dcvel, cinert_cvel) + math.motion_cross_force(cvel, cinert_dcvel)
+
+    Dcfrcbody_out[worldid, bodyid, dofid] = term1 + term2
+
+  return kernel
+
+
+@cache_kernel
+def deriv_rne_cfrcbody_backward(enable_sleep: bool = False, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -539,6 +865,10 @@ def deriv_rne_cfrcbody_backward(deterministic: bool = False):
   def kernel(
     # Model:
     body_parentid: wp.array[int],
+    body_treeid: wp.array[int],
+    dof_treeid: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     body_tree_: wp.array[int],
     Dcfrcbody_in: wp.array3d[wp.spatial_vector],
@@ -548,6 +878,10 @@ def deriv_rne_cfrcbody_backward(deterministic: bool = False):
     """Backward pass: accumulate d(cfrc_body) from children to parents."""
     worldid, nodeid, dofid = wp.tid()
     bodyid = body_tree_[nodeid]
+    if wp.static(enable_sleep):
+      treeid = body_treeid[bodyid]
+      if treeid < 0 or tree_awake_in[worldid, treeid] == 0 or treeid != dof_treeid[dofid]:
+        return
     pid = body_parentid[bodyid]
 
     # body_tree never contains bodyid=0 (worldbody), so pid >= 0 is always valid.
@@ -559,7 +893,7 @@ def deriv_rne_cfrcbody_backward(deterministic: bool = False):
 
 
 @cache_kernel
-def deriv_rne_body2jnt_sparse(deterministic: bool = False):
+def deriv_rne_body2jnt_sparse(enable_sleep: bool = False, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -568,8 +902,10 @@ def deriv_rne_body2jnt_sparse(deterministic: bool = False):
   def kernel(
     # Model:
     dof_bodyid: wp.array[int],
+    dof_treeid: wp.array[int],
     # Data in:
     cdof_in: wp.array2d[wp.spatial_vector],
+    tree_awake_in: wp.array2d[int],
     # In:
     timestep: wp.array[float],
     Di: wp.array[int],
@@ -580,9 +916,12 @@ def deriv_rne_body2jnt_sparse(deterministic: bool = False):
   ):
     """Project body-space RNE derivatives into joint-space qDeriv (sparse)."""
     worldid, elemid = wp.tid()
-    dt = timestep[worldid % timestep.shape[0]]
-
     i = Di[elemid]
+    if wp.static(enable_sleep):
+      treeid = dof_treeid[i]
+      if treeid >= 0 and tree_awake_in[worldid, treeid] == 0:
+        return
+    dt = timestep[worldid % timestep.shape[0]]
     j = Dj[elemid]
 
     body_i = dof_bodyid[i]
@@ -605,6 +944,7 @@ def deriv_rne_vel(m: Model, d: Data, out: wp.array2d[float]):
     d: The data (device).
     out: D-structure output array (nworld, nD) to accumulate RNE terms into.
   """
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   # TODO(team): consider caching these allocations
   Dcvel = wp.zeros((d.nworld, m.nbody, m.nv), dtype=wp.spatial_vector)
   Dcdof_dot = wp.zeros((d.nworld, m.nv, m.nv), dtype=wp.spatial_vector)
@@ -614,15 +954,18 @@ def deriv_rne_vel(m: Model, d: Data, out: wp.array2d[float]):
   # Forward pass 1: compute Dcvel and Dcdof_dot
   for body_tree in m.body_tree:
     wp.launch(
-      deriv_rne_cvel_cdof_dot,
+      deriv_rne_cvel_cdof_dot(enable_sleep),
       dim=(d.nworld, body_tree.size, m.nv),
       inputs=[
         m.body_parentid,
         m.body_jntnum,
         m.body_jntadr,
         m.body_dofadr,
+        m.body_treeid,
         m.jnt_type,
+        m.dof_treeid,
         d.cdof,
+        d.tree_awake,
         body_tree,
       ],
       outputs=[Dcvel, Dcdof_dot],
@@ -631,14 +974,17 @@ def deriv_rne_vel(m: Model, d: Data, out: wp.array2d[float]):
   # Forward pass 2: compute Dcacc and Dcfrcbody
   for body_tree in m.body_tree:
     wp.launch(
-      deriv_rne_cacc_cfrcbody_forward,
+      deriv_rne_cacc_cfrcbody_forward(enable_sleep),
       dim=(d.nworld, body_tree.size, m.nv),
       inputs=[
         m.body_parentid,
         m.body_dofnum,
         m.body_dofadr,
+        m.body_treeid,
+        m.dof_treeid,
         d.qvel,
         d.cinert,
+        d.tree_awake,
         d.cvel,
         d.cdof_dot,
         body_tree,
@@ -655,17 +1001,17 @@ def deriv_rne_vel(m: Model, d: Data, out: wp.array2d[float]):
     if det_atomics:
       wp.copy(Dcfrcbody_in, Dcfrcbody)
     wp.launch(
-      deriv_rne_cfrcbody_backward(det_atomics),
+      deriv_rne_cfrcbody_backward(enable_sleep, det_atomics),
       dim=(d.nworld, body_tree.size, m.nv),
-      inputs=[m.body_parentid, body_tree, Dcfrcbody_in],
+      inputs=[m.body_parentid, m.body_treeid, m.dof_treeid, d.tree_awake, body_tree, Dcfrcbody_in],
       outputs=[Dcfrcbody],
     )
 
   # Project body-space derivatives into joint-space qDeriv (always sparse D-structure)
   wp.launch(
-    deriv_rne_body2jnt_sparse(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+    deriv_rne_body2jnt_sparse(enable_sleep, det_atomics),
     dim=(d.nworld, m.qD_fullm_i.size),
-    inputs=[m.dof_bodyid, d.cdof, m.opt.timestep, m.qD_fullm_i, m.qD_fullm_j, Dcfrcbody],
+    inputs=[m.dof_bodyid, m.dof_treeid, d.cdof, d.tree_awake, m.opt.timestep, m.qD_fullm_i, m.qD_fullm_j, Dcfrcbody],
     outputs=[out],
   )
 
@@ -849,7 +1195,7 @@ def _deriv_ellipsoid_fluid(
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cvel_in: wp.array2d[wp.spatial_vector],
   # In:
@@ -894,7 +1240,7 @@ def _deriv_ellipsoid_fluid(
 
     size = geom_size[worldid % geom_size.shape[0], geomid]
     semiaxes = geom_semiaxes(size, geom_type[geomid])
-    geom_rot = geom_xmat_in[worldid, geomid]
+    geom_rot = math.quat_to_mat(geom_xquat_in[worldid, geomid])
     geom_rotT = wp.transpose(geom_rot)
     geom_pos = geom_xpos_in[worldid, geomid]
 
@@ -991,7 +1337,7 @@ def _qderiv_ellipsoid_fluid(deterministic: bool = False):
     # Data in:
     xipos_in: wp.array2d[wp.vec3],
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     cvel_in: wp.array2d[wp.spatial_vector],
@@ -1046,7 +1392,7 @@ def _qderiv_ellipsoid_fluid(deterministic: bool = False):
       geom_fluid,
       xipos_in,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       subtree_com_in,
       cvel_in,
       worldid,
@@ -1186,7 +1532,7 @@ def _qderiv_box_fluid(deterministic: bool = False):
     M_elemid: wp.array2d[int],
     # Data in:
     xipos_in: wp.array2d[wp.vec3],
-    ximat_in: wp.array2d[wp.mat33],
+    xiquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     cvel_in: wp.array2d[wp.spatial_vector],
@@ -1225,7 +1571,7 @@ def _qderiv_box_fluid(deterministic: bool = False):
 
     # Body velocity and kinematics
     b_ipos = xipos_in[worldid, bodyid]
-    b_imat = ximat_in[worldid, bodyid]
+    b_imat = math.quat_to_mat(xiquat_in[worldid, bodyid])
     subtree_root = subtree_com_in[worldid, body_rootid[bodyid]]
 
     vel_subtree = cvel_in[worldid, bodyid]
@@ -1278,23 +1624,39 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
   """
   Mi = m.M_fullm_i
   Mj = m.M_fullm_j
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
 
   if not (m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.DAMPER)):
     # TODO(team): only clear elements not set by _qderiv_actuator_passive
     out.zero_()
     if m.nactuator > 0 and not (m.opt.disableflags & DisableBit.ACTUATION):
+      if m.nhistory > 0:
+        ctrl = wp.empty((d.nworld, m.nu), dtype=float)
+        history.read_ctrl_delayed(m, d, ctrl)
+      else:
+        ctrl = d.ctrl
       vel = wp.empty((d.nworld, m.nactuator), dtype=float)
       wp.launch(
         _qderiv_actuator_passive_vel,
         dim=(d.nworld, m.nactuator),
         inputs=[
           m.opt.timestep,
+          m.opt.disableflags,
+          m.jnt_dofadr,
+          m.jnt_actfrclimited,
+          m.jnt_actfrcrange,
+          m.tendon_actfrclimited,
+          m.tendon_actfrcrange,
+          m.actuator_trntype,
           m.actuator_dyntype,
           m.actuator_gaintype,
           m.actuator_biastype,
+          m.actuator_ctrladr,
+          m.actuator_ctrlnum,
           m.actuator_ctrlspec,
           m.actuator_actadr,
           m.actuator_actnum,
+          m.actuator_trnid,
           m.actuator_dynprm,
           m.actuator_gainprm,
           m.actuator_biasprm,
@@ -1303,14 +1665,17 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
           m.actuator_actearly,
           m.actuator_forcelimited,
           m.actuator_forcerange,
+          m.actuator_ctrllimited,
+          m.actuator_ctrlrange,
           m.actuator_acc0,
           m.actuator_lengthrange,
           d.act,
-          d.ctrl,
+          ctrl,
           d.act_dot,
           d.actuator_length,
           d.actuator_velocity,
           d.actuator_force,
+          d.qfrc_actuator,
         ],
         outputs=[vel],
       )
@@ -1330,13 +1695,14 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         outputs=[out],
       )
     wp.launch(
-      _qderiv_actuator_passive,
+      _qderiv_actuator_passive(enable_sleep),
       dim=(d.nworld, Mi.size),
       inputs=[
         m.opt.timestep,
         m.opt.disableflags,
         m.jnt_actuatorid,
         m.dof_jntid,
+        m.dof_treeid,
         m.dof_damping,
         m.dof_dampingpoly,
         m.actuator_trntype,
@@ -1347,6 +1713,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         m.M_elemid,
         d.qvel,
         d.M,
+        d.tree_awake,
         Mi,
         Mj,
         out,
@@ -1355,15 +1722,20 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
     )
   else:
     # TODO(team): directly utilize M for these settings
-    wp.copy(out, d.M)
+    if enable_sleep:
+      smooth.copy_M_awake(m, d, out)
+    else:
+      wp.copy(out, d.M)
 
-  if not (m.opt.disableflags & DisableBit.DAMPER):
+  if m.ntendon and not (m.opt.disableflags & DisableBit.DAMPER):
+    # flex_edgedamping is omitted: tree-only M sparsity drops inter-tree flexcomp blocks
     wp.launch(
-      _qderiv_tendon_damping,
+      _qderiv_tendon_damping(enable_sleep),
       dim=(d.nworld, Mi.size),
       inputs=[
         m.ntendon,
         m.opt.timestep,
+        m.dof_treeid,
         m.tendon_actuatorid,
         m.ten_J_rownnz,
         m.ten_J_rowadr,
@@ -1377,6 +1749,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         m.actuator_gear,
         m.M_elemid,
         d.ten_J,
+        d.tree_awake,
         d.ten_velocity,
         Mi,
         Mj,
@@ -1406,7 +1779,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         m.M_elemid,
         d.xipos,
         d.geom_xpos,
-        d.geom_xmat,
+        d.geom_xquat,
         d.subtree_com,
         d.cdof,
         d.cvel,
@@ -1433,7 +1806,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         m.body_isdofancestor,
         m.M_elemid,
         d.xipos,
-        d.ximat,
+        d.xiquat,
         d.subtree_com,
         d.cdof,
         d.cvel,
@@ -1558,6 +1931,291 @@ def _eff_diag_stiff(
     x = qpos_in[worldid, qposid] - ref_scalar
     k = wp.max(0.0, util_misc._poly_force_deriv(stiffness, spoly, x, 0))
     efm_diag_out[worldid, dofid] = h * k
+
+
+@wp.kernel
+def _eff_rod_ktheta_stiff(
+  # Model:
+  opt_timestep: wp.array[float],
+  jnt_dofadr: wp.array[int],
+  flex_rigid: wp.array[bool],
+  flex_rod_has_twist: wp.array[bool],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_jnt: wp.array[int],
+  # Data in:
+  flex_rod_chain_ok_in: wp.array2d[bool],
+  flex_rodedge_ktheta_in: wp.array2d[float],
+  # Data out:
+  efm_diag_out: wp.array2d[float],
+):
+  """Adds 1D DER rod twist-angle bending stiffness h*ktheta to efm_diag."""
+  worldid, flexid = wp.tid()
+  if flex_rigid[flexid] or not flex_rod_has_twist[flexid] or not flex_rod_chain_ok_in[worldid, flexid]:
+    return
+  h_dt = opt_timestep[worldid % opt_timestep.shape[0]]
+  eadr = flex_rod_edgeadr[flexid]
+  nedge = flex_rod_edgenum[flexid]
+  for e in range(nedge):
+    jnt = flex_rodedge_jnt[eadr + e]
+    if jnt >= 0:
+      efm_diag_out[worldid, jnt_dofadr[jnt]] += h_dt * flex_rodedge_ktheta_in[worldid, eadr + e]
+
+
+@wp.kernel
+def _eff_rod_twist_shift(
+  # Model:
+  opt_timestep: wp.array[float],
+  opt_disableflags: int,
+  jnt_dofadr: wp.array[int],
+  flex_bendingadr: wp.array[int],
+  flex_bending: wp.array[float],
+  flex_rigid: wp.array[bool],
+  flex_rod_has_twist: wp.array[bool],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_jnt: wp.array[int],
+  # Data in:
+  qvel_in: wp.array2d[float],
+  # Data out:
+  efm_c_out: wp.array2d[float],
+):
+  """Applies 1D DER rod torsional coupling velocity shift -h*2*kt*(qvel[dof1] - qvel[dof0])."""
+  worldid, flexid = wp.tid()
+  if (opt_disableflags & DisableBit.SPRING) != 0:
+    return
+  if flex_rigid[flexid] or not support.rod_has_twist(flex_rod_has_twist, flexid):
+    return
+  h_dt = opt_timestep[worldid % opt_timestep.shape[0]]
+  b_adr = flex_bendingadr[flexid]
+  nhinge = int(flex_bending[b_adr])
+  eadr = flex_rod_edgeadr[flexid]
+  for hi in range(nhinge):
+    kt = flex_bending[b_adr + 1 + ROD_HINGE_SIZE * hi + 8]
+    if kt <= 0.0:
+      continue
+    jnt0 = flex_rodedge_jnt[eadr + hi]
+    jnt1 = flex_rodedge_jnt[eadr + hi + 1]
+    dof0 = jnt_dofadr[jnt0] if jnt0 >= 0 else -1
+    dof1 = jnt_dofadr[jnt1] if jnt1 >= 0 else -1
+    if dof0 < 0 and dof1 < 0:
+      continue
+    w0 = qvel_in[worldid, dof0] if dof0 >= 0 else 0.0
+    w1 = qvel_in[worldid, dof1] if dof1 >= 0 else 0.0
+    ckv = h_dt * 2.0 * kt * (w1 - w0)
+    if dof1 >= 0:
+      efm_c_out[worldid, dof1] -= ckv
+    if dof0 >= 0:
+      efm_c_out[worldid, dof0] += ckv
+
+
+@wp.kernel
+def _eff_add_rod_twist_qH_diag(
+  # Model:
+  opt_timestep: wp.array[float],
+  opt_disableflags: int,
+  jnt_dofadr: wp.array[int],
+  flex_bendingadr: wp.array[int],
+  flex_bending: wp.array[float],
+  flex_damping: wp.array[float],
+  flex_rigid: wp.array[bool],
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  flex_rod_has_twist: wp.array[bool],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_jnt: wp.array[int],
+  # Data out:
+  qH_out: wp.array2d[float],
+):
+  """Adds 1D DER rod torsional coupling diagonals to qH."""
+  worldid, flexid = wp.tid()
+  if flex_rigid[flexid] or not support.rod_has_twist(flex_rod_has_twist, flexid):
+    return
+  h_dt = opt_timestep[worldid % opt_timestep.shape[0]]
+  s1 = 0.0 if (opt_disableflags & DisableBit.SPRING) else h_dt * h_dt
+  s2 = 0.0 if (opt_disableflags & DisableBit.DAMPER) else h_dt
+  scale_f = s1 + s2 * flex_damping[flexid]
+  b_adr = flex_bendingadr[flexid]
+  nhinge = int(flex_bending[b_adr])
+  if scale_f <= 0.0 or nhinge <= 0:
+    return
+  eadr = flex_rod_edgeadr[flexid]
+  for hi in range(nhinge):
+    kt = flex_bending[b_adr + 1 + ROD_HINGE_SIZE * hi + 8]
+    if kt <= 0.0:
+      continue
+    jnt0 = flex_rodedge_jnt[eadr + hi]
+    jnt1 = flex_rodedge_jnt[eadr + hi + 1]
+    dof0 = jnt_dofadr[jnt0] if jnt0 >= 0 else -1
+    dof1 = jnt_dofadr[jnt1] if jnt1 >= 0 else -1
+    if dof0 < 0 and dof1 < 0:
+      continue
+    scale = scale_f * 2.0 * kt
+    if dof0 >= 0:
+      qH_out[worldid, M_rowadr[dof0] + M_rownnz[dof0] - 1] += scale
+    if dof1 >= 0:
+      qH_out[worldid, M_rowadr[dof1] + M_rownnz[dof1] - 1] += scale
+
+
+@cache_kernel
+def _eff_mul_add_rod_twist(check_skip: bool):
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    opt_disableflags: int,
+    jnt_dofadr: wp.array[int],
+    flex_bendingadr: wp.array[int],
+    flex_bending: wp.array[float],
+    flex_damping: wp.array[float],
+    flex_rigid: wp.array[bool],
+    flex_rod_has_twist: wp.array[bool],
+    flex_rod_edgeadr: wp.array[int],
+    flex_rod_edgenum: wp.array[int],
+    flex_rodedge_jnt: wp.array[int],
+    # In:
+    vec_in: wp.array2d[float],
+    skip_in: wp.array[bool],
+    # Out:
+    res_out: wp.array2d[float],
+  ):
+    worldid, flexid = wp.tid()
+    if wp.static(check_skip):
+      if skip_in[worldid]:
+        return
+    if flex_rigid[flexid] or not support.rod_has_twist(flex_rod_has_twist, flexid):
+      return
+    h_dt = opt_timestep[worldid % opt_timestep.shape[0]]
+    s1 = 0.0 if (opt_disableflags & DisableBit.SPRING) else h_dt * h_dt
+    s2 = 0.0 if (opt_disableflags & DisableBit.DAMPER) else h_dt
+    scale_f = s1 + s2 * flex_damping[flexid]
+    b_adr = flex_bendingadr[flexid]
+    nhinge = int(flex_bending[b_adr])
+    if scale_f <= 0.0 or nhinge <= 0:
+      return
+    eadr = flex_rod_edgeadr[flexid]
+    for hi in range(nhinge):
+      kt = flex_bending[b_adr + 1 + ROD_HINGE_SIZE * hi + 8]
+      if kt <= 0.0:
+        continue
+      jnt0 = flex_rodedge_jnt[eadr + hi]
+      jnt1 = flex_rodedge_jnt[eadr + hi + 1]
+      dof0 = jnt_dofadr[jnt0] if jnt0 >= 0 else -1
+      dof1 = jnt_dofadr[jnt1] if jnt1 >= 0 else -1
+      if dof0 < 0 and dof1 < 0:
+        continue
+      v0 = vec_in[worldid, dof0] if dof0 >= 0 else 0.0
+      v1 = vec_in[worldid, dof1] if dof1 >= 0 else 0.0
+      dv = scale_f * 2.0 * kt * (v1 - v0)
+      if dof1 >= 0:
+        res_out[worldid, dof1] += dv
+      if dof0 >= 0:
+        res_out[worldid, dof0] -= dv
+
+  return kernel
+
+
+@cache_kernel
+def _eff_twist_solve(has_tw_diag: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    opt_disableflags: int,
+    jnt_dofadr: wp.array[int],
+    dof_treeid: wp.array[int],
+    tree_dofnum: wp.array[int],
+    flex_bendingadr: wp.array[int],
+    flex_bending: wp.array[float],
+    flex_damping: wp.array[float],
+    flex_rigid: wp.array[bool],
+    M_rownnz: wp.array[int],
+    M_rowadr: wp.array[int],
+    flex_rod_has_twist: wp.array[bool],
+    flex_rod_edgeadr: wp.array[int],
+    flex_rod_edgenum: wp.array[int],
+    flex_rodedge_jnt: wp.array[int],
+    # Data in:
+    qH_in: wp.array2d[float],
+    # In:
+    rhs_in: wp.array2d[float],
+    tw_diag_in: wp.array2d[float],
+    # Data out:
+    flex_rodedge_tridiag_out: wp.array2d[wp.vec2],
+    # Out:
+    res_out: wp.array2d[float],
+  ):
+    """Exact O(nedge) symmetric tridiagonal LDL^T solve on 1D DER rod twist chains."""
+    worldid, flexid = wp.tid()
+    if flex_rigid[flexid] or not support.rod_has_twist(flex_rod_has_twist, flexid):
+      return
+    h_dt = opt_timestep[worldid % opt_timestep.shape[0]]
+    s1 = 0.0 if (opt_disableflags & DisableBit.SPRING) else h_dt * h_dt
+    s2 = 0.0 if (opt_disableflags & DisableBit.DAMPER) else h_dt
+    scale_f = s1 + s2 * flex_damping[flexid]
+    b_adr = flex_bendingadr[flexid]
+    nhinge = int(flex_bending[b_adr])
+    if scale_f <= 0.0 or nhinge <= 0:
+      return
+
+    eadr = flex_rod_edgeadr[flexid]
+    nedge = flex_rod_edgenum[flexid]
+    e0 = int(-1)
+    e1 = int(-2)
+    for e in range(nedge):
+      jnt = flex_rodedge_jnt[eadr + e]
+      dof = jnt_dofadr[jnt] if jnt >= 0 else -1
+      if dof < 0:
+        if e0 >= 0 and e1 < e0:
+          e1 = e - 1
+        continue
+      if e1 >= e0 and e0 >= 0:
+        return
+      if e0 < 0:
+        e0 = e
+      if M_rownnz[dof] != 1 or tree_dofnum[dof_treeid[dof]] != 1:
+        return
+    if e0 < 0:
+      return
+    if e1 < e0:
+      e1 = nedge - 1
+
+    for e in range(e0, e1 + 1):
+      dof = jnt_dofadr[flex_rodedge_jnt[eadr + e]]
+      res_out[worldid, dof] = rhs_in[worldid, dof]
+      d_extra = tw_diag_in[worldid, dof] if wp.static(has_tw_diag) else 0.0
+      diag_e = wp.max(MJ_MINVAL, qH_in[worldid, M_rowadr[dof]] + d_extra)
+      off_e = float(0.0)
+      if e < e1:
+        kt = flex_bending[b_adr + 1 + ROD_HINGE_SIZE * e + 8]
+        if kt > 0.0:
+          off_e = -scale_f * 2.0 * kt
+      flex_rodedge_tridiag_out[worldid, eadr + e] = wp.vec2(diag_e, off_e)
+
+    for e in range(e0, e1):
+      td = flex_rodedge_tridiag_out[worldid, eadr + e]
+      diag_k = td[0]
+      lk = td[1] / diag_k
+      flex_rodedge_tridiag_out[worldid, eadr + e] = wp.vec2(diag_k, lk)
+      td_next = flex_rodedge_tridiag_out[worldid, eadr + e + 1]
+      diag_next = wp.max(MJ_MINVAL, td_next[0] - lk * lk * diag_k)
+      flex_rodedge_tridiag_out[worldid, eadr + e + 1] = wp.vec2(diag_next, td_next[1])
+      dof_k = jnt_dofadr[flex_rodedge_jnt[eadr + e]]
+      dof_next = jnt_dofadr[flex_rodedge_jnt[eadr + e + 1]]
+      res_out[worldid, dof_next] = res_out[worldid, dof_next] - lk * res_out[worldid, dof_k]
+
+    dof_last = jnt_dofadr[flex_rodedge_jnt[eadr + e1]]
+    res_out[worldid, dof_last] = res_out[worldid, dof_last] / flex_rodedge_tridiag_out[worldid, eadr + e1][0]
+    e_back = int(e1 - 1)
+    while e_back >= e0:
+      td = flex_rodedge_tridiag_out[worldid, eadr + e_back]
+      dof_b = jnt_dofadr[flex_rodedge_jnt[eadr + e_back]]
+      dof_b1 = jnt_dofadr[flex_rodedge_jnt[eadr + e_back + 1]]
+      res_out[worldid, dof_b] = res_out[worldid, dof_b] / td[0] - td[1] * res_out[worldid, dof_b1]
+      e_back -= 1
+
+  return kernel
 
 
 @wp.kernel
@@ -1712,13 +2370,21 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
     # Model:
     opt_timestep: wp.array[float],
     opt_disableflags: int,
+    jnt_dofadr: wp.array[int],
+    jnt_actfrclimited: wp.array[bool],
+    jnt_actfrcrange: wp.array2d[wp.vec2],
+    tendon_actfrclimited: wp.array[bool],
+    tendon_actfrcrange: wp.array2d[wp.vec2],
+    actuator_trntype: wp.array[int],
     actuator_dyntype: wp.array[int],
     actuator_gaintype: wp.array[int],
     actuator_biastype: wp.array[int],
     actuator_ctrladr: wp.array[int],
+    actuator_ctrlnum: wp.array[int],
     actuator_ctrlspec: wp.array[int],
     actuator_actadr: wp.array[int],
     actuator_actnum: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
     actuator_dynprm: wp.array2d[vec10],
     actuator_gainprm: wp.array2d[vec10],
     actuator_biasprm: wp.array2d[vec10],
@@ -1742,6 +2408,7 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
     actuator_moment_in: wp.array2d[float],
     actuator_velocity_in: wp.array2d[float],
     actuator_force_in: wp.array2d[float],
+    qfrc_actuator_in: wp.array2d[float],
     # Data out:
     efm_ca_out: wp.array2d[float],
     efm_as_out: wp.array2d[float],
@@ -1752,13 +2419,6 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
     if opt_disableflags & DisableBit.ACTUATION:
       return
 
-    if actuator_forcelimited[actid]:
-      force = actuator_force_in[worldid, actid]
-      forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], actid]
-      if force <= forcerange[0] or force >= forcerange[1]:
-        efm_as_out[worldid, actid] = 0.0
-        return
-
     gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], actid]
     biasprm = actuator_biasprm[worldid % actuator_biasprm.shape[0], actid]
     dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], actid]
@@ -1768,7 +2428,47 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
     bias_vel = float(0.0)
     gain_vel = float(0.0)
 
+    # DC motor: hot resistance and saturation flags (1 force, 2 Vmax, 4 dimax)
+    gaintype = actuator_gaintype[actid]
     biastype = actuator_biastype[actid]
+    R_dc = float(0.0)
+    sat_dc = int(0)
+    if gaintype == GainType.DCMOTOR or biastype == BiasType.DCMOTOR:
+      R_dc = util_misc.dcmotor_resistance(act_in, worldid, actuator_actadr[actid], dynprm, gainprm)
+      sat_dc = _dcmotor_saturation(
+        opt_timestep,
+        opt_disableflags,
+        tendon_actfrclimited,
+        tendon_actfrcrange,
+        actuator_trntype,
+        actuator_biastype,
+        actuator_ctrladr,
+        actuator_ctrlnum,
+        actuator_ctrlspec,
+        actuator_actadr,
+        actuator_actnum,
+        actuator_trnid,
+        actuator_dynprm,
+        actuator_gainprm,
+        actuator_biasprm,
+        actuator_actlimited,
+        actuator_actrange,
+        actuator_actearly,
+        actuator_forcelimited,
+        actuator_forcerange,
+        actuator_ctrllimited,
+        actuator_ctrlrange,
+        act_in,
+        ctrl_in,
+        act_dot_in,
+        actuator_length_in,
+        actuator_velocity_in,
+        actuator_force_in,
+        worldid,
+        actid,
+        R_dc,
+      )
+
     if biastype == BiasType.AFFINE:
       bias_len += biasprm[1]
       bias_vel += biasprm[2]
@@ -1780,17 +2480,15 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
         biasprm,
       )
     elif biastype == BiasType.DCMOTOR:
-      if dynprm[0] <= 0.0:
-        R = gainprm[0]
+      # cogging torque (mechanical, added after force clamping)
+      A = biasprm[0]
+      if A != 0.0:
+        Np = biasprm[1]
+        bias_len += A * Np * wp.cos(Np * actuator_length_in[worldid, actid] + biasprm[2])
+      if dynprm[0] <= 0.0 and (sat_dc & 1) == 0:
         K = gainprm[1]
-        slots = util_misc.dcmotor_slots(dynprm, gainprm)
-        slot_Ta = slots[2]
-        if slot_Ta >= 0:
-          T = act_in[worldid, actuator_actadr[actid] + slot_Ta]
-          R *= 1.0 + gainprm[2] * (T + dynprm[4] - gainprm[3])
-        bias_vel -= math.safe_div(K * K, R)
+        bias_vel -= math.safe_div(K * K, R_dc)
 
-    gaintype = actuator_gaintype[actid]
     if gaintype == GainType.AFFINE:
       gain_len = gainprm[1]
       gain_vel = gainprm[2]
@@ -1815,28 +2513,27 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
       te = dynprm[0]
       R0 = gainprm[0]
       K = gainprm[1]
-      R = gainprm[0]
-      slots = util_misc.dcmotor_slots(dynprm, gainprm)
-      slot_Ta = slots[2]
-      if slot_Ta >= 0:
-        T = act_in[worldid, actuator_actadr[actid] + slot_Ta]
-        R *= 1.0 + gainprm[2] * (T + dynprm[4] - gainprm[3])
 
-      dVdl = float(0.0)
-      dVdw = float(0.0)
-      if (actuator_ctrlspec[actid] & 7) != 0:
-        dVdl = math.safe_div(-gainprm[4] * R0, K)
-        dVdw = math.safe_div(-gainprm[6] * R0, K) + K
+      # electrical terms vanish when electrical force is clamped by forcerange or tendon actfrcrange
+      if (sat_dc & 1) == 0:
+        # controller derivatives through the tau->V map, zero under Vmax
+        dVdl = float(0.0)
+        dVdw = float(0.0)
+        if (actuator_ctrlspec[actid] & 7) != 0 and (sat_dc & 2) == 0:
+          dVdl = math.safe_div(-gainprm[4] * R0, K)
+          dVdw = math.safe_div(-gainprm[6] * R0, K) + K
 
-      if te > 0.0:
-        s = 1.0 - wp.exp(-h / te)
-        bias_len += math.safe_div(K * dVdl * s, R0)
-        bias_vel += math.safe_div(K * (dVdw - K) * s, R)
-      else:
-        if dVdl != 0.0:
-          bias_len += math.safe_div(K * dVdl, R0)
-        if dVdw != 0.0:
-          bias_vel += math.safe_div(K * dVdw, R)
+        if te > 0.0:
+          # stateful current with actearly, zero under dimax
+          if actuator_actearly[actid] and (sat_dc & 4) == 0:
+            s = 1.0 - wp.exp(-h / te)
+            bias_len += math.safe_div(K * dVdl * s, R_dc)
+            bias_vel += math.safe_div(K * (dVdw - K) * s, R_dc)
+        else:
+          if dVdl != 0.0:
+            bias_len += math.safe_div(K * dVdl, R_dc)
+          if dVdw != 0.0:
+            bias_vel += math.safe_div(K * dVdw, R_dc)
 
       sigma1 = dynprm[6]
       if sigma1 > 0.0:
@@ -1871,6 +2568,56 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
 
     gp = wp.max(0.0, -bias_len)
     gv = wp.max(0.0, -bias_vel)
+    if gp == 0.0 and gv == 0.0:
+      efm_as_out[worldid, actid] = 0.0
+      return
+
+    # DC motor: electrical force clamping handled above, mechanical terms are unclamped
+    if actuator_forcelimited[actid] and gaintype != GainType.DCMOTOR and biastype != BiasType.DCMOTOR:
+      force = actuator_force_in[worldid, actid]
+      forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], actid]
+      if force <= forcerange[0] or force >= forcerange[1]:
+        efm_as_out[worldid, actid] = 0.0
+        return
+
+    if (
+      gaintype != GainType.DCMOTOR
+      and biastype != BiasType.DCMOTOR
+      and _tendon_actfrc_clamped(
+        tendon_actfrclimited,
+        tendon_actfrcrange,
+        actuator_trntype,
+        actuator_biastype,
+        actuator_actadr,
+        actuator_trnid,
+        actuator_dynprm,
+        actuator_gainprm,
+        actuator_biasprm,
+        act_in,
+        act_dot_in,
+        actuator_length_in,
+        actuator_force_in,
+        worldid,
+        actid,
+      )
+    ):
+      efm_as_out[worldid, actid] = 0.0
+      return
+
+    # skip if joint total actuator force is clamped by actfrcrange
+    # (keeping tendon/site actuator contributions on this dof is an approximation)
+    if _jnt_actfrc_clamped(
+      jnt_dofadr,
+      jnt_actfrclimited,
+      jnt_actfrcrange,
+      actuator_trntype,
+      actuator_trnid,
+      qfrc_actuator_in,
+      worldid,
+      actid,
+    ):
+      efm_as_out[worldid, actid] = 0.0
+      return
 
     as_val = h * h * gp + h * gv
     ak_val = h * gp
@@ -2232,7 +2979,7 @@ def _eff_flex_stretch_stiff_vert(deterministic: bool = False):
     flex_vertflexid: wp.array[int],
     flex_simple: wp.array[bool],
     # Data in:
-    xmat_in: wp.array2d[wp.mat33],
+    xquat_in: wp.array2d[wp.quat],
     flexvert_hessian_in: wp.array2d[vec6],
     # Data out:
     efm_K_val_out: wp.array2d[float],
@@ -2263,7 +3010,7 @@ def _eff_flex_stretch_stiff_vert(deterministic: bool = False):
 
     h = flexvert_hessian_in[worldid, vertid]
     block = wp.mat33(h[0], h[1], h[2], h[1], h[3], h[4], h[2], h[4], h[5])
-    R_bi = xmat_in[worldid, bi]
+    R_bi = math.quat_to_mat(xquat_in[worldid, bi])
     blkd = scale * (wp.transpose(R_bi) * block * R_bi)
 
     for r in range(3):
@@ -2305,7 +3052,7 @@ def _eff_flex_stretch_stiff_edge(deterministic: bool = False):
     flex_edgeflexid: wp.array[int],
     flex_simple: wp.array[bool],
     # Data in:
-    xmat_in: wp.array2d[wp.mat33],
+    xquat_in: wp.array2d[wp.quat],
     flexedge_hessian_in: wp.array2d[wp.mat33],
     # Data out:
     efm_K_val_out: wp.array2d[float],
@@ -2344,7 +3091,7 @@ def _eff_flex_stretch_stiff_edge(deterministic: bool = False):
 
     h = flexedge_hessian_in[worldid, edgeid]
     block = wp.transpose(h) if side == 1 else h
-    blkd = scale * (wp.transpose(xmat_in[worldid, bi]) * block * xmat_in[worldid, bj])
+    blkd = scale * (wp.transpose(math.quat_to_mat(xquat_in[worldid, bi])) * block * math.quat_to_mat(xquat_in[worldid, bj]))
 
     for r in range(3):
       row = dof_i + r
@@ -2390,7 +3137,6 @@ def _eff_flex_bend_stiff(deterministic: bool = False):
     flex_simple: wp.array[bool],
     # Data in:
     xquat_in: wp.array2d[wp.quat],
-    xmat_in: wp.array2d[wp.mat33],
     # Data out:
     efm_K_val_out: wp.array2d[float],
   ):
@@ -2439,22 +3185,23 @@ def _eff_flex_bend_stiff(deterministic: bool = False):
       dof_i = dofs[i]
       if dof_i >= 0 and efm_K_rownnz[dof_i] > 0:
         bi = bodies[i]
-        R_bi_T = wp.transpose(xmat_in[worldid, bi])
         qi = xquat_in[worldid, bi]
+        R_bi_T = wp.transpose(math.quat_to_mat(qi))
         for j in range(4):
           dof_j = dofs[j]
           if dof_j >= 0:
             q = scale * flex_bending[bend_offset + 4 * i + j]
             if q != 0.0:
               bj = bodies[j]
-              if bi == bj or qi == xquat_in[worldid, bj]:
+              qj = xquat_in[worldid, bj]
+              if bi == bj or qi == qj:
                 for r in range(3):
                   row = dof_i + r
                   idx = _find_csr_col(efm_K_rowadr[row], efm_K_rownnz[row], dof_j, efm_K_colind)
                   if idx >= 0:
                     wp.atomic_add(efm_K_val_out, worldid, idx + r, q)
               else:
-                blkd = q * (R_bi_T * xmat_in[worldid, bj])
+                blkd = q * (R_bi_T * math.quat_to_mat(qj))
                 for r in range(3):
                   row = dof_i + r
                   idx = _find_csr_col(efm_K_rowadr[row], efm_K_rownnz[row], dof_j, efm_K_colind)
@@ -2480,6 +3227,7 @@ def _eff_flex_rod_stiff(deterministic: bool = False):
     body_dofnum: wp.array[int],
     body_dofadr: wp.array[int],
     flex_vertadr: wp.array[int],
+    flex_bendingadr: wp.array[int],
     flex_vertbodyid: wp.array[int],
     flex_bending: wp.array[float],
     flex_damping: wp.array[float],
@@ -2488,9 +3236,14 @@ def _eff_flex_rod_stiff(deterministic: bool = False):
     efm_K_colind: wp.array[int],
     flex_simple: wp.array[bool],
     flex_rodhinge_map: wp.array[wp.vec2i],
+    flex_rod_is_chain: wp.array[bool],
+    flex_rod_hingeadr: wp.array[int],
     # Data in:
-    xmat_in: wp.array2d[wp.mat33],
+    xquat_in: wp.array2d[wp.quat],
     flexvert_xpos_in: wp.array2d[wp.vec3],
+    flex_rod_chain_ok_in: wp.array2d[bool],
+    flex_rodhinge_Wk_in: wp.array2d[wp.mat33],
+    flex_rodhinge_Wd_in: wp.array2d[wp.mat33],
     # Data out:
     efm_K_val_out: wp.array2d[float],
   ):
@@ -2512,8 +3265,33 @@ def _eff_flex_rod_stiff(deterministic: bool = False):
     ok, verts, J0, J1, J2, J3, _, Wk, Wd = rod_stencil(flex_bending, flexvert_xpos_in, worldid, flex_vertadr[f], adr)
     if not ok:
       return
+    ok_chain = bool(False)
+    if verts[3] < 0 and flex_rod_is_chain[f] and flex_rod_chain_ok_in[worldid, f]:
+      ok_chain = bool(True)
+      hidx = flex_rod_hingeadr[f] + (adr - flex_bendingadr[f] - 1) // ROD_HINGE_SIZE
+      Wk = _rod_pad44(flex_rodhinge_Wk_in[worldid, hidx])
+      Wd = _rod_pad44(flex_rodhinge_Wd_in[worldid, hidx])
     W = s1 * Wk + sd * Wd
     nvert = 3 if verts[3] < 0 else 4
+
+    j_psi = mat43()
+    wt = float(0.0)
+    if verts[3] < 0 and ok_chain:
+      wt_cand = (s1 + sd) * 2.0 * flex_bending[adr + 8]
+      if wt_cand > 0.0:
+        x0 = flexvert_xpos_in[worldid, verts[0]]
+        x1 = flexvert_xpos_in[worldid, verts[1]]
+        x2 = flexvert_xpos_in[worldid, verts[2]]
+        ok_kb, kb_t, _A0_t, _A1_t = _rod_hinge(x0, x1, x2)
+        l0 = wp.length(x1 - x0)
+        l1 = wp.length(x2 - x1)
+        if ok_kb and l0 >= MJ_MINVAL and l1 >= MJ_MINVAL:
+          inv0 = 0.5 / l0
+          inv1 = 0.5 / l1
+          j_psi[0] = -inv0 * kb_t
+          j_psi[1] = (inv0 - inv1) * kb_t
+          j_psi[2] = inv1 * kb_t
+          wt = wt_cand
 
     dofs = wp.vec4i(-1)
     bodies = wp.vec4i(-1)
@@ -2529,11 +3307,14 @@ def _eff_flex_rod_stiff(deterministic: bool = False):
       dof_i = dofs[i]
       if dof_i >= 0 and efm_K_rownnz[dof_i] > 0:
         JiT_W = wp.transpose(rod_stencil_jacobian(J0, J1, J2, J3, i)) * W
-        R_bi_T = wp.transpose(xmat_in[worldid, bodies[i]])
+        R_bi_T = wp.transpose(math.quat_to_mat(xquat_in[worldid, bodies[i]]))
         for j in range(4):
           dof_j = dofs[j]
           if dof_j >= 0:
-            blkd = R_bi_T * (JiT_W * rod_stencil_jacobian(J0, J1, J2, J3, j)) * xmat_in[worldid, bodies[j]]
+            world_blk = JiT_W * rod_stencil_jacobian(J0, J1, J2, J3, j)
+            if wt > 0.0:
+              world_blk += wt * wp.outer(j_psi[i], j_psi[j])
+            blkd = R_bi_T * world_blk * math.quat_to_mat(xquat_in[worldid, bodies[j]])
             for r in range(3):
               row = dof_i + r
               idx = _find_csr_col(efm_K_rowadr[row], efm_K_rownnz[row], dof_j, efm_K_colind)
@@ -2574,7 +3355,7 @@ def _eff_flex_interp_stiff(deterministic: bool = False):
     flex_cell_map: wp.array[wp.vec4i],
     flex_face: wp.array2d[int],
     # Data in:
-    xmat_in: wp.array2d[wp.mat33],
+    xquat_in: wp.array2d[wp.quat],
     flexnode_xpos_in: wp.array2d[wp.vec3],
     face_quat_in: wp.array2d[wp.quat],
     # Data out:
@@ -2642,7 +3423,7 @@ def _eff_flex_interp_stiff(deterministic: bool = False):
       if body_dofnum[bi] != 3:
         continue
       dof_i = body_dofadr[bi]
-      T_i_T = wp.transpose(xmat_in[worldid, bi]) * R
+      T_i_T = wp.transpose(math.quat_to_mat(xquat_in[worldid, bi])) * R
 
       for idx_j in range(npc):
         if shell_mode:
@@ -2657,7 +3438,7 @@ def _eff_flex_interp_stiff(deterministic: bool = False):
         if body_dofnum[bj] != 3:
           continue
         dof_j = body_dofadr[bj]
-        T_j = RT * xmat_in[worldid, bj]
+        T_j = RT * math.quat_to_mat(xquat_in[worldid, bj])
 
         K_ij = wp.mat33(0.0)
         for r in range(3):
@@ -2678,147 +3459,72 @@ def _eff_flex_interp_stiff(deterministic: bool = False):
   return kernel
 
 
-@wp.func
-def _extract_3x3_diag_block(
+@wp.kernel
+def _eff_add_efmK_qH_diag(
   # Model:
+  body_parentid: wp.array[int],
+  body_weldid: wp.array[int],
+  body_jntnum: wp.array[int],
+  body_jntadr: wp.array[int],
+  body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
+  body_simple: wp.array[int],
+  jnt_type: wp.array[int],
+  jnt_axis: wp.array2d[wp.vec3],
+  dof_bodyid: wp.array[int],
+  dof_treeid: wp.array[int],
+  tree_dofnum: wp.array[int],
   M_rownnz: wp.array[int],
   M_rowadr: wp.array[int],
-  M_colind: wp.array[int],
   efm_K_rownnz: wp.array[int],
   efm_K_rowadr: wp.array[int],
   efm_K_colind: wp.array[int],
   # Data in:
-  M_in: wp.array2d[float],
   efm_K_val_in: wp.array2d[float],
   # In:
-  i: int,
-  worldid: int,
-) -> wp.mat33:
-  B = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-  for r in range(3):
-    row = i + r
-    m_adr = M_rowadr[row]
-    m_nnz = M_rownnz[row]
-    for a in range(m_nnz):
-      c = M_colind[m_adr + a]
-      if c >= i and c < i + 3:
-        B[r, c - i] += M_in[worldid, m_adr + a]
-
-    k_adr = efm_K_rowadr[row]
-    k_nnz = efm_K_rownnz[row]
-    for a in range(k_nnz):
-      c = efm_K_colind[k_adr + a]
-      if c >= i and c < i + 3:
-        B[r, c - i] += efm_K_val_in[worldid, k_adr + a]
-  return B
-
-
-@wp.func
-def _write_cholesky33(
-  # In:
-  worldid: int,
-  base: int,
-  B00: float,
-  B10: float,
-  B11: float,
-  B20: float,
-  B21: float,
-  B22: float,
+  qH_eff_in: wp.array2d[float],
   # Out:
-  out: wp.array2d[float],
+  qH_eff_out: wp.array2d[float],
 ):
-  L00 = wp.sqrt(wp.max(MJ_MINVAL, B00))
-  L10 = B10 / L00
-  L20 = B20 / L00
-  L11 = wp.sqrt(wp.max(MJ_MINVAL, B11 - L10 * L10))
-  L21 = (B21 - L20 * L10) / L11
-  L22 = wp.sqrt(wp.max(MJ_MINVAL, B22 - (L20 * L20 + L21 * L21)))
-
-  out[worldid, base + 0] = L00
-  out[worldid, base + 1] = 0.0
-  out[worldid, base + 2] = 0.0
-  out[worldid, base + 3] = L10
-  out[worldid, base + 4] = L11
-  out[worldid, base + 5] = 0.0
-  out[worldid, base + 6] = L20
-  out[worldid, base + 7] = L21
-  out[worldid, base + 8] = L22
+  worldid, dofid = wp.tid()
+  rownnz = efm_K_rownnz[dofid]
+  if rownnz <= 0 or tree_dofnum[dof_treeid[dofid]] != 3:
+    return
+  b = body_weldid[dof_bodyid[dofid]]
+  b_dofadr = body_dofadr[b]
+  if body_dofnum[b] != 3 or dofid < b_dofadr or dofid >= b_dofadr + 3:
+    return
+  is_simple = body_simple[b] == 2
+  if not is_simple:
+    if body_jntnum[b] == 3 and body_dofnum[body_weldid[body_parentid[b]]] == 0:
+      jadr = body_jntadr[b]
+      ax_w = worldid % jnt_axis.shape[0]
+      is_simple = True
+      for j in range(3):
+        if jnt_type[jadr + j] != int(JointType.SLIDE):
+          is_simple = False
+        ax = jnt_axis[ax_w, jadr + j]
+        for k in range(3):
+          target = 1.0 if j == k else 0.0
+          if wp.abs(ax[k] - target) > MJ_MINVAL:
+            is_simple = False
+  if not is_simple:
+    return
+  idx = _find_csr_col(efm_K_rowadr[dofid], rownnz, dofid, efm_K_colind)
+  if idx >= 0:
+    diag = M_rowadr[dofid] + M_rownnz[dofid] - 1
+    qH_eff_out[worldid, diag] = qH_eff_in[worldid, diag] + efm_K_val_in[worldid, idx]
 
 
 @wp.kernel
-def _eff_factor_blocks(
+def _eff_zero_efm0_dofs(
   # Model:
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  M_colind: wp.array[int],
-  efm_K_rownnz: wp.array[int],
-  efm_K_rowadr: wp.array[int],
-  efm_K_colind: wp.array[int],
-  efm_dofid: wp.array[int],
-  # Data in:
-  M_in: wp.array2d[float],
-  efm_K_val_in: wp.array2d[float],
-  # Data out:
-  efm_L_out: wp.array2d[float],
-):
-  worldid, k = wp.tid()
-  i = efm_dofid[k]
-  B = _extract_3x3_diag_block(
-    M_rownnz, M_rowadr, M_colind, efm_K_rownnz, efm_K_rowadr, efm_K_colind, M_in, efm_K_val_in, i, worldid
-  )
-  _write_cholesky33(worldid, 9 * k, B[0, 0], B[1, 0], B[1, 1], B[2, 0], B[2, 1], B[2, 2], efm_L_out)
-
-
-@wp.kernel
-def _eff_block_solve(
-  # Model:
-  efm_dofid: wp.array[int],
-  # Data in:
-  efm_L_in: wp.array2d[float],
-  # In:
-  rhs_in: wp.array2d[float],
-  # Out:
-  res_out: wp.array2d[float],
-):
-  worldid, k = wp.tid()
-  i = efm_dofid[k]
-  base = 9 * k
-  L00 = efm_L_in[worldid, base + 0]
-  L10 = efm_L_in[worldid, base + 3]
-  L11 = efm_L_in[worldid, base + 4]
-  L20 = efm_L_in[worldid, base + 6]
-  L21 = efm_L_in[worldid, base + 7]
-  L22 = efm_L_in[worldid, base + 8]
-
-  b0 = rhs_in[worldid, i]
-  b1 = rhs_in[worldid, i + 1]
-  b2 = rhs_in[worldid, i + 2]
-
-  r0 = b0 / L00
-  r1 = (b1 - L10 * r0) / L11
-  r2 = (b2 - (L20 * r0 + L21 * r1)) / L22
-  x2 = r2 / L22
-  x1 = (r1 - L21 * x2) / L11
-  x0 = (r0 - L10 * x1 - L20 * x2) / L00
-
-  res_out[worldid, i] = x0
-  res_out[worldid, i + 1] = x1
-  res_out[worldid, i + 2] = x2
-
-
-@wp.kernel
-def _eff_copy_backbone_rhs(
-  # Model:
-  nv: int,
-  efm_dofblk: wp.array[int],
-  # In:
-  vec_in: wp.array2d[float],
+  efm0_dofid: wp.array[int],
   # Out:
   vec_out: wp.array2d[float],
 ):
-  worldid, dofid = wp.tid()
-  if dofid < nv:
-    vec_out[worldid, dofid] = 0.0 if efm_dofblk[dofid] >= 0 else vec_in[worldid, dofid]
+  worldid, k = wp.tid()
+  vec_out[worldid, efm0_dofid[k]] = 0.0
 
 
 @wp.kernel
@@ -2910,7 +3616,7 @@ def _eff_flex_interp_mul(check_skip: bool, is_shift: bool, nv: int, deterministi
     flex_cell_map: wp.array[wp.vec4i],
     flex_face: wp.array2d[int],
     # Data in:
-    xmat_in: wp.array2d[wp.mat33],
+    xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     flexnode_xpos_in: wp.array2d[wp.vec3],
@@ -3010,7 +3716,7 @@ def _eff_flex_interp_mul(check_skip: bool, is_shift: bool, nv: int, deterministi
         if body_simple[bj] == 2 and body_dofnum[bj] == 3:
           dof_j = body_dofadr[bj]
           v_loc_j = wp.vec3(vec_in[worldid, dof_j], vec_in[worldid, dof_j + 1], vec_in[worldid, dof_j + 2])
-          v_world_j = xmat_in[worldid, bj] * v_loc_j
+          v_world_j = math.quat_to_mat(xquat_in[worldid, bj]) * v_loc_j
         else:
           pt_j = flexnode_xpos_in[worldid, node_j]
           offset_j = pt_j - subtree_com_in[worldid, body_rootid[bj]]
@@ -3037,7 +3743,7 @@ def _eff_flex_interp_mul(check_skip: bool, is_shift: bool, nv: int, deterministi
       frc_world = wp.quat_rotate(cell_quat, frc_corot)
       if body_simple[bi] == 2 and body_dofnum[bi] == 3:
         dof_i = body_dofadr[bi]
-        frc_loc = wp.transpose(xmat_in[worldid, bi]) * frc_world
+        frc_loc = wp.transpose(math.quat_to_mat(xquat_in[worldid, bi])) * frc_world
         for r in range(3):
           wp.atomic_add(res_out, worldid, dof_i + r, scale * frc_loc[r])
       else:
@@ -3245,12 +3951,12 @@ def _pcg_beta_and_p_update_tiled(
 
 
 @cache_kernel
-def _eff_contact_shift(deterministic: bool = False):
+def _eff_contact_shift(max_dof: int, deterministic: bool = False):
   """Applies passive contact smooth-force velocity shift c += -h*k*Jn^T*(Jn*v)."""
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = EFM_CON_MAX_DOF
+    module_options["deterministic_max_records"] = max_dof
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
@@ -3290,12 +3996,12 @@ def _eff_contact_shift(deterministic: bool = False):
 
 
 @cache_kernel
-def _eff_mul_add_contact(check_skip: bool, deterministic: bool = False):
+def _eff_mul_add_contact(check_skip: bool, max_dof: int, deterministic: bool = False):
   """Multiplies vector by passive contact rank-1 metric curvature h^2*k*Jn^T*Jn."""
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = EFM_CON_MAX_DOF
+    module_options["deterministic_max_records"] = max_dof
 
   @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
   def kernel(
@@ -3348,10 +4054,11 @@ def eff_build(m: Model, d: Data):
 
   if m.nflex > 0 and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)):
     passive.flex_hessian(m, d)
+    if m.nflexrodedge > 0:
+      passive.eval_rod_chains(m, d)
 
   if m.nefmK > 0:
     d.efm_K_val.zero_()
-    d.efm_L.zero_()
 
     det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
     wp.launch(
@@ -3375,7 +4082,7 @@ def eff_build(m: Model, d: Data):
         m.efm_K_colind,
         m.flex_vertflexid,
         m.flex_simple,
-        d.xmat,
+        d.xquat,
         d.flexvert_hessian,
       ],
       outputs=[d.efm_K_val],
@@ -3404,7 +4111,7 @@ def eff_build(m: Model, d: Data):
         m.efm_K_colind,
         m.flex_edgeflexid,
         m.flex_simple,
-        d.xmat,
+        d.xquat,
         d.flexedge_hessian,
       ],
       outputs=[d.efm_K_val],
@@ -3438,7 +4145,6 @@ def eff_build(m: Model, d: Data):
         m.flex_edgeflexid,
         m.flex_simple,
         d.xquat,
-        d.xmat,
       ],
       outputs=[d.efm_K_val],
     )
@@ -3453,6 +4159,7 @@ def eff_build(m: Model, d: Data):
         m.body_dofnum,
         m.body_dofadr,
         m.flex_vertadr,
+        m.flex_bendingadr,
         m.flex_vertbodyid,
         m.flex_bending,
         m.flex_damping,
@@ -3461,8 +4168,13 @@ def eff_build(m: Model, d: Data):
         m.efm_K_colind,
         m.flex_simple,
         m.flex_rodhinge_map,
-        d.xmat,
+        m.flex_rod_is_chain,
+        m.flex_rod_hingeadr,
+        d.xquat,
         d.flexvert_xpos,
+        d.flex_rod_chain_ok,
+        d.flex_rodhinge_Wk,
+        d.flex_rodhinge_Wd,
       ],
       outputs=[d.efm_K_val],
     )
@@ -3491,29 +4203,12 @@ def eff_build(m: Model, d: Data):
           m.flex_faceadr,
           m.flex_cell_map,
           m.flex_face,
-          d.xmat,
+          d.xquat,
           d.flexnode_xpos,
           d.face_quat,
         ],
         outputs=[d.efm_K_val],
       )
-
-    wp.launch(
-      _eff_factor_blocks,
-      dim=(d.nworld, m.nefmdof),
-      inputs=[
-        m.M_rownnz,
-        m.M_rowadr,
-        m.M_colind,
-        m.efm_K_rownnz,
-        m.efm_K_rowadr,
-        m.efm_K_colind,
-        m.efm_dofid,
-        d.M,
-        d.efm_K_val,
-      ],
-      outputs=[d.efm_L],
-    )
 
 
 @event_scope
@@ -3542,6 +4237,25 @@ def eff_shift(m: Model, d: Data):
     ],
     outputs=[d.efm_diag],
   )
+
+  # ktheta was cached by passive.eval_rod_chains, which passive() runs before this in fwd_velocity
+  if m.nflexrodedge > 0 and not (m.opt.disableflags & DisableBit.SPRING):
+    wp.launch(
+      _eff_rod_ktheta_stiff,
+      dim=(d.nworld, m.nflex),
+      inputs=[
+        m.opt.timestep,
+        m.jnt_dofadr,
+        m.flex_rigid,
+        m.flex_rod_has_twist,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_jnt,
+        d.flex_rod_chain_ok,
+        d.flex_rodedge_ktheta,
+      ],
+      outputs=[d.efm_diag],
+    )
 
   wp.launch(
     _eff_diag_damp_shift,
@@ -3598,6 +4312,25 @@ def eff_shift(m: Model, d: Data):
     passive.flex_bend_mul(m, d, d.efm_c, d.qvel, s1_in=-1.0, s2_in=0.0, use_timestep=True, non_simple_only=False)
     passive.flex_rod_mul(m, d, d.efm_c, d.qvel, s1_in=-1.0, s2_in=0.0, use_timestep=True, non_simple_only=False)
     passive.flex_stretch_mul(m, d, d.efm_c, d.qvel, s1_in=-1.0, s2_in=0.0, use_timestep=True, non_simple_only=False)
+    if m.nflexrodedge > 0:
+      wp.launch(
+        _eff_rod_twist_shift,
+        dim=(d.nworld, m.nflex),
+        inputs=[
+          m.opt.timestep,
+          m.opt.disableflags,
+          m.jnt_dofadr,
+          m.flex_bendingadr,
+          m.flex_bending,
+          m.flex_rigid,
+          m.flex_rod_has_twist,
+          m.flex_rod_edgeadr,
+          m.flex_rod_edgenum,
+          m.flex_rodedge_jnt,
+          d.qvel,
+        ],
+        outputs=[d.efm_c],
+      )
 
     wp.launch(
       _eff_flex_interp_mul(False, True, m.nv if det_atomics else 0, det_atomics),
@@ -3621,7 +4354,7 @@ def eff_shift(m: Model, d: Data):
         m.flex_faceadr,
         m.flex_cell_map,
         m.flex_face,
-        d.xmat,
+        d.xquat,
         d.subtree_com,
         d.cdof,
         d.flexnode_xpos,
@@ -3635,7 +4368,7 @@ def eff_shift(m: Model, d: Data):
   if m.has_flex_passive and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)):
     efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = build_efm_contact(m, d)
     wp.launch(
-      _eff_contact_shift(det_atomics),
+      _eff_contact_shift(m.efm_con_max_dof if det_atomics else 0, det_atomics),
       dim=d.naconmax,
       inputs=[
         m.opt.timestep,
@@ -3675,7 +4408,7 @@ def eff_shift(m: Model, d: Data):
         m.M_elemid,
         d.xipos,
         d.geom_xpos,
-        d.geom_xmat,
+        d.geom_xquat,
         d.subtree_com,
         d.cdof,
         d.cvel,
@@ -3702,7 +4435,7 @@ def eff_shift(m: Model, d: Data):
         m.body_isdofancestor,
         m.M_elemid,
         d.xipos,
-        d.ximat,
+        d.xiquat,
         d.subtree_com,
         d.cdof,
         d.cvel,
@@ -3733,13 +4466,21 @@ def eff_actuation(m: Model, d: Data):
     inputs=[
       m.opt.timestep,
       m.opt.disableflags,
+      m.jnt_dofadr,
+      m.jnt_actfrclimited,
+      m.jnt_actfrcrange,
+      m.tendon_actfrclimited,
+      m.tendon_actfrcrange,
+      m.actuator_trntype,
       m.actuator_dyntype,
       m.actuator_gaintype,
       m.actuator_biastype,
       m.actuator_ctrladr,
+      m.actuator_ctrlnum,
       m.actuator_ctrlspec,
       m.actuator_actadr,
       m.actuator_actnum,
+      m.actuator_trnid,
       m.actuator_dynprm,
       m.actuator_gainprm,
       m.actuator_biasprm,
@@ -3762,6 +4503,7 @@ def eff_actuation(m: Model, d: Data):
       d.actuator_moment,
       d.actuator_velocity,
       d.actuator_force,
+      d.qfrc_actuator,
     ],
     outputs=[d.efm_ca, d.efm_as],
   )
@@ -3814,14 +4556,68 @@ def eff_actuation(m: Model, d: Data):
       outputs=[d.qH],
     )
 
+  if m.nflexrodedge > 0 and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)):
+    wp.launch(
+      _eff_add_rod_twist_qH_diag,
+      dim=(d.nworld, m.nflex),
+      inputs=[
+        m.opt.timestep,
+        m.opt.disableflags,
+        m.jnt_dofadr,
+        m.flex_bendingadr,
+        m.flex_bending,
+        m.flex_damping,
+        m.flex_rigid,
+        m.M_rownnz,
+        m.M_rowadr,
+        m.flex_rod_has_twist,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_jnt,
+      ],
+      outputs=[d.qH],
+    )
+
   if smooth.skip_qacc_smooth(m, d):
     return
 
-  # Factor qH into qHLD and qHDiagInv
+  # Factor qH into qHLD and qHDiagInv (adding efm_K diagonal into the factor only,
+  # keeping d.qH = M + efm_sdiag so regularize_constraint and Newton Hessian assembly
+  # do not double-count efm_K).
+  if m.nefmK > 0:
+    qH_eff = wp.clone(d.qH)
+    wp.launch(
+      _eff_add_efmK_qH_diag,
+      dim=(d.nworld, m.nv),
+      inputs=[
+        m.body_parentid,
+        m.body_weldid,
+        m.body_jntnum,
+        m.body_jntadr,
+        m.body_dofnum,
+        m.body_dofadr,
+        m.body_simple,
+        m.jnt_type,
+        m.jnt_axis,
+        m.dof_bodyid,
+        m.dof_treeid,
+        m.tree_dofnum,
+        m.M_rownnz,
+        m.M_rowadr,
+        m.efm_K_rownnz,
+        m.efm_K_rowadr,
+        m.efm_K_colind,
+        d.efm_K_val,
+        qH_eff,
+      ],
+      outputs=[qH_eff],
+    )
+  else:
+    qH_eff = d.qH
   if m.M_tiles:
-    smooth._factor_blocks(m, d, d.qH, d.qHLD, d.qHDiagInv)
+    smooth._factor_blocks(m, d, qH_eff, d.qHLD, d.qHDiagInv)
   if d.qHLD.shape[1] > m.qLD_block_total:
-    smooth._factor_i_sparse(m, d, d.qH, d.qHLD[:, m.qLD_block_total :], d.qHDiagInv)
+    smooth._factor_i_sparse(m, d, qH_eff, d.qHLD[:, m.qLD_block_total :], d.qHDiagInv)
 
 
 def eff_mul_m_scratch(m: Model, d: Data) -> tuple[Optional[tuple], Optional[tuple]]:
@@ -3905,13 +4701,34 @@ def eff_mul_m(
       ],
       outputs=[res],
     )
+    if m.nflexrodedge > 0 and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)):
+      wp.launch(
+        _eff_mul_add_rod_twist(check_skip),
+        dim=(d.nworld, m.nflex),
+        inputs=[
+          m.opt.timestep,
+          m.opt.disableflags,
+          m.jnt_dofadr,
+          m.flex_bendingadr,
+          m.flex_bending,
+          m.flex_damping,
+          m.flex_rigid,
+          m.flex_rod_has_twist,
+          m.flex_rod_edgeadr,
+          m.flex_rod_edgenum,
+          m.flex_rodedge_jnt,
+          vec,
+          skip_arr,
+        ],
+        outputs=[res],
+      )
     if m.has_flex_passive:
       if efm_con is None:
         efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = build_efm_contact(m, d)
       else:
         efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = efm_con
       wp.launch(
-        _eff_mul_add_contact(check_skip, det_atomics),
+        _eff_mul_add_contact(check_skip, m.efm_con_max_dof if det_atomics else 0, det_atomics),
         dim=d.naconmax,
         inputs=[
           d.contact.worldid,
@@ -3980,7 +4797,7 @@ def eff_mul_m(
           m.flex_faceadr,
           m.flex_cell_map,
           m.flex_face,
-          d.xmat,
+          d.xquat,
           d.subtree_com,
           d.cdof,
           d.flexnode_xpos,
@@ -3999,155 +4816,15 @@ def eff_mul_m(
       )
 
 
-@wp.kernel
-def _eff_build_blocks_raw(
-  # Model:
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  M_colind: wp.array[int],
-  efm_K_rownnz: wp.array[int],
-  efm_K_rowadr: wp.array[int],
-  efm_K_colind: wp.array[int],
-  efm_dofid: wp.array[int],
-  is_sparse: bool,
-  # Data in:
-  nefc_in: wp.array[int],
-  M_in: wp.array2d[float],
-  efm_K_val_in: wp.array2d[float],
-  efc_J_in: wp.array3d[float],
-  efc_D_in: wp.array2d[float],
-  # Out:
-  epB_out: wp.array2d[float],
-):
-  worldid, k = wp.tid()
-  i = efm_dofid[k]
-  B = _extract_3x3_diag_block(
-    M_rownnz, M_rowadr, M_colind, efm_K_rownnz, efm_K_rowadr, efm_K_colind, M_in, efm_K_val_in, i, worldid
-  )
-
-  if not is_sparse:
-    nefc = nefc_in[worldid]
-    for r in range(nefc):
-      D = efc_D_in[worldid, r]
-      if D != 0.0:
-        j0 = efc_J_in[worldid, r, i]
-        j1 = efc_J_in[worldid, r, i + 1]
-        j2 = efc_J_in[worldid, r, i + 2]
-        if j0 != 0.0 or j1 != 0.0 or j2 != 0.0:
-          B[0, 0] += D * j0 * j0
-          B[0, 1] += D * j0 * j1
-          B[0, 2] += D * j0 * j2
-          B[1, 0] += D * j1 * j0
-          B[1, 1] += D * j1 * j1
-          B[1, 2] += D * j1 * j2
-          B[2, 0] += D * j2 * j0
-          B[2, 1] += D * j2 * j1
-          B[2, 2] += D * j2 * j2
-
-  base = 9 * k
-  for r in range(3):
-    for c in range(3):
-      epB_out[worldid, base + 3 * r + c] = B[r, c]
-
-
-@cache_kernel
-def _eff_fold_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = 3 * max_ten_J_rownnz
-
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    ten_J_rownnz: wp.array[int],
-    ten_J_rowadr: wp.array[int],
-    ten_J_colind: wp.array[int],
-    efm_dofid: wp.array[int],
-    efm_dofblk: wp.array[int],
-    # Data in:
-    ten_J_in: wp.array2d[float],
-    efm_ts_in: wp.array2d[float],
-    # Out:
-    epB_out: wp.array2d[float],
-  ):
-    worldid, t = wp.tid()
-    s = efm_ts_in[worldid, t]
-    if s == 0.0:
-      return
-    rowadr = ten_J_rowadr[t]
-    rownnz = ten_J_rownnz[t]
-    for a in range(rownnz):
-      ia = ten_J_colind[rowadr + a]
-      k = efm_dofblk[ia]
-      if k < 0:
-        continue
-      base = efm_dofid[k]
-      s_va = s * ten_J_in[worldid, rowadr + a]
-      for b in range(rownnz):
-        ib = ten_J_colind[rowadr + b]
-        if efm_dofblk[ib] == k:
-          vb = ten_J_in[worldid, rowadr + b]
-          wp.atomic_add(epB_out, worldid, 9 * k + 3 * (ia - base) + (ib - base), s_va * vb)
-
-  return kernel
-
-
-@cache_kernel
-def _eff_fold_actuator(nv: int, deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = 3 * nv
-
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    efm_dofid: wp.array[int],
-    efm_dofblk: wp.array[int],
-    # Data in:
-    moment_rownnz_in: wp.array2d[int],
-    moment_rowadr_in: wp.array2d[int],
-    moment_colind_in: wp.array2d[int],
-    actuator_moment_in: wp.array2d[float],
-    efm_as_in: wp.array2d[float],
-    # Out:
-    epB_out: wp.array2d[float],
-  ):
-    worldid, u = wp.tid()
-    s = efm_as_in[worldid, u]
-    if s == 0.0:
-      return
-    rowadr = moment_rowadr_in[worldid, u]
-    rownnz = moment_rownnz_in[worldid, u]
-    for a in range(rownnz):
-      ia = moment_colind_in[worldid, rowadr + a]
-      k = efm_dofblk[ia]
-      if k < 0:
-        continue
-      base = efm_dofid[k]
-      s_va = s * actuator_moment_in[worldid, rowadr + a]
-      for b in range(rownnz):
-        ib = moment_colind_in[worldid, rowadr + b]
-        if efm_dofblk[ib] == k:
-          vb = actuator_moment_in[worldid, rowadr + b]
-          wp.atomic_add(epB_out, worldid, 9 * k + 3 * (ia - base) + (ib - base), s_va * vb)
-
-  return kernel
-
-
 @cache_kernel
 def _eff_fold_efc_sparse(nv: int, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = 3 * nv
+    module_options["deterministic_max_records"] = nv
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
-    # Model:
-    efm_dofid: wp.array[int],
-    efm_dofblk: wp.array[int],
     # Data in:
     nefc_in: wp.array[int],
     efc_J_rownnz_in: wp.array2d[int],
@@ -4156,7 +4833,7 @@ def _eff_fold_efc_sparse(nv: int, deterministic: bool = False):
     efc_J_in: wp.array3d[float],
     efc_D_in: wp.array2d[float],
     # Out:
-    epB_out: wp.array2d[float],
+    tw_diag_out: wp.array2d[float],
   ):
     worldid, r = wp.tid()
     if r >= nefc_in[worldid]:
@@ -4168,32 +4845,42 @@ def _eff_fold_efc_sparse(nv: int, deterministic: bool = False):
     nnz = efc_J_rownnz_in[worldid, r]
     for a in range(nnz):
       ia = efc_J_colind_in[worldid, 0, adr + a]
-      k = efm_dofblk[ia]
-      if k < 0:
-        continue
-      base = efm_dofid[k]
-      D_ja = D * efc_J_in[worldid, 0, adr + a]
-      for b in range(nnz):
-        ib = efc_J_colind_in[worldid, 0, adr + b]
-        if efm_dofblk[ib] == k:
-          jb = efc_J_in[worldid, 0, adr + b]
-          wp.atomic_add(epB_out, worldid, 9 * k + 3 * (ia - base) + (ib - base), D_ja * jb)
+      ja = efc_J_in[worldid, 0, adr + a]
+      wp.atomic_add(tw_diag_out, worldid, ia, D * ja * ja)
 
   return kernel
 
 
+@wp.kernel
+def _eff_fold_tw_diag_efc_dense(
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_J_in: wp.array3d[float],
+  efc_D_in: wp.array2d[float],
+  # Out:
+  tw_diag_out: wp.array2d[float],
+):
+  worldid, dofid = wp.tid()
+  nefc = wp.min(nefc_in[worldid], efc_D_in.shape[1])
+  acc = float(0.0)
+  for r in range(nefc):
+    D = efc_D_in[worldid, r]
+    if D != 0.0:
+      j = efc_J_in[worldid, r, dofid]
+      if j != 0.0:
+        acc += D * j * j
+  tw_diag_out[worldid, dofid] += acc
+
+
 @cache_kernel
-def _eff_fold_contact_rank1(deterministic: bool = False):
+def _eff_fold_contact_rank1(max_dof: int, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = 3 * EFM_CON_MAX_DOF
+    module_options["deterministic_max_records"] = max_dof
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
-    # Model:
-    efm_dofid: wp.array[int],
-    efm_dofblk: wp.array[int],
     # Data in:
     contact_worldid_in: wp.array[int],
     nacon_in: wp.array[int],
@@ -4203,7 +4890,7 @@ def _eff_fold_contact_rank1(deterministic: bool = False):
     efm_con_scale_in: wp.array[float],
     efm_con_nnz_in: wp.array[int],
     # Out:
-    epB_out: wp.array2d[float],
+    tw_diag_out: wp.array2d[float],
   ):
     cid = wp.tid()
     if cid >= nacon_in[0]:
@@ -4215,110 +4902,90 @@ def _eff_fold_contact_rank1(deterministic: bool = False):
     nnz = efm_con_nnz_in[cid]
     for a in range(nnz):
       ia = efm_con_dof_in[cid, a]
-      k = efm_dofblk[ia]
-      if k < 0:
-        continue
-      base = efm_dofid[k]
-      scale_va = scale * efm_con_val_in[cid, a]
-      for b in range(nnz):
-        ib = efm_con_dof_in[cid, b]
-        if efm_dofblk[ib] == k:
-          vb = efm_con_val_in[cid, b]
-          wp.atomic_add(epB_out, worldid, 9 * k + 3 * (ia - base) + (ib - base), scale_va * vb)
+      va = efm_con_val_in[cid, a]
+      wp.atomic_add(tw_diag_out, worldid, ia, scale * va * va)
 
   return kernel
 
 
 @wp.kernel
-def _eff_factor_folded_blocks(
-  # In:
-  epB_in: wp.array2d[float],
+def _eff_zero_covered_dofs(
+  # Model:
+  efm_dofid: wp.array[int],
   # Out:
-  epL_out: wp.array2d[float],
+  vec_out: wp.array2d[float],
 ):
   worldid, k = wp.tid()
-  base = 9 * k
-  _write_cholesky33(
-    worldid,
-    base,
-    epB_in[worldid, base + 0],
-    epB_in[worldid, base + 3],
-    epB_in[worldid, base + 4],
-    epB_in[worldid, base + 6],
-    epB_in[worldid, base + 7],
-    epB_in[worldid, base + 8],
-    epL_out,
-  )
+  i = efm_dofid[k]
+  vec_out[worldid, i] = 0.0
+  vec_out[worldid, i + 1] = 0.0
+  vec_out[worldid, i + 2] = 0.0
+
+
+@wp.kernel
+def _eff_invert_covered_fold_diag(
+  # Model:
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  efm_K_rownnz: wp.array[int],
+  efm_K_rowadr: wp.array[int],
+  efm_K_colind: wp.array[int],
+  efm_dofid: wp.array[int],
+  # Data in:
+  qH_in: wp.array2d[float],
+  efm_K_val_in: wp.array2d[float],
+  # In:
+  tw_diag_in: wp.array2d[float],
+  # Out:
+  tw_diag_out: wp.array2d[float],
+):
+  worldid, k = wp.tid()
+  i = efm_dofid[k]
+  for r in range(3):
+    row = i + r
+    diag = qH_in[worldid, M_rowadr[row] + M_rownnz[row] - 1] + tw_diag_in[worldid, row]
+    rownnz = efm_K_rownnz[row]
+    if rownnz > 0:
+      idx = _find_csr_col(efm_K_rowadr[row], rownnz, row, efm_K_colind)
+      if idx >= 0:
+        diag += efm_K_val_in[worldid, idx]
+    tw_diag_out[worldid, row] = 1.0 / wp.max(MJ_MINVAL, diag)
+
+
+@wp.kernel
+def _eff_apply_covered_fold_diag(
+  # Model:
+  efm_dofid: wp.array[int],
+  # In:
+  vec_in: wp.array2d[float],
+  tw_diag_in: wp.array2d[float],
+  # Out:
+  res_out: wp.array2d[float],
+):
+  worldid, k = wp.tid()
+  i = efm_dofid[k]
+  res_out[worldid, i] = vec_in[worldid, i] * tw_diag_in[worldid, i]
+  res_out[worldid, i + 1] = vec_in[worldid, i + 1] * tw_diag_in[worldid, i + 1]
+  res_out[worldid, i + 2] = vec_in[worldid, i + 2] * tw_diag_in[worldid, i + 2]
 
 
 @event_scope
-def eff_prec_fold(m: Model, d: Data, out: Optional[wp.array] = None) -> wp.array:
-  """Folds rank-1 metric terms and active/inactive efc rows into 3x3 preconditioner blocks."""
-  epL = out if out is not None else wp.empty_like(d.efm_L)
-  if m.nefmdof == 0:
-    return epL
-  epB = wp.empty_like(d.efm_L)
-  dofblk = m.efm_dofblk
-
-  wp.launch(
-    _eff_build_blocks_raw,
-    dim=(d.nworld, m.nefmdof),
-    inputs=[
-      m.M_rownnz,
-      m.M_rowadr,
-      m.M_colind,
-      m.efm_K_rownnz,
-      m.efm_K_rowadr,
-      m.efm_K_colind,
-      m.efm_dofid,
-      m.is_sparse,
-      d.nefc,
-      d.M,
-      d.efm_K_val,
-      d.efc.J,
-      d.efc.D,
-    ],
-    outputs=[epB],
-  )
-
+def eff_prec_fold(
+  m: Model,
+  d: Data,
+  tw_diag: Optional[wp.array] = None,
+):
+  """Folds efc and passive-contact diagonals into tw_diag for flex triples and rod twist."""
+  if tw_diag is None:
+    return
+  tw_diag.zero_()
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  wp.launch(
-    _eff_fold_tendon(m.max_ten_J_rownnz if det_atomics else 0, det_atomics),
-    dim=(d.nworld, m.ntendon),
-    inputs=[
-      m.ten_J_rownnz,
-      m.ten_J_rowadr,
-      m.ten_J_colind,
-      m.efm_dofid,
-      dofblk,
-      d.ten_J,
-      d.efm_ts,
-    ],
-    outputs=[epB],
-  )
-
-  wp.launch(
-    _eff_fold_actuator(m.nv if det_atomics else 0, det_atomics),
-    dim=(d.nworld, m.nactuator),
-    inputs=[
-      m.efm_dofid,
-      dofblk,
-      d.moment_rownnz,
-      d.moment_rowadr,
-      d.moment_colind,
-      d.actuator_moment,
-      d.efm_as,
-    ],
-    outputs=[epB],
-  )
 
   if m.is_sparse:
     wp.launch(
       _eff_fold_efc_sparse(m.nv if det_atomics else 0, det_atomics),
       dim=(d.nworld, d.njmax),
       inputs=[
-        m.efm_dofid,
-        dofblk,
         d.nefc,
         d.efc.J_rownnz,
         d.efc.J_rowadr,
@@ -4326,17 +4993,22 @@ def eff_prec_fold(m: Model, d: Data, out: Optional[wp.array] = None) -> wp.array
         d.efc.J,
         d.efc.D,
       ],
-      outputs=[epB],
+      outputs=[tw_diag],
+    )
+  else:
+    wp.launch(
+      _eff_fold_tw_diag_efc_dense,
+      dim=(d.nworld, m.nv),
+      inputs=[d.nefc, d.efc.J, d.efc.D],
+      outputs=[tw_diag],
     )
 
-  if m.has_flex_passive:
+  if m.has_flex_passive and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)):
     efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = build_efm_contact(m, d)
     wp.launch(
-      _eff_fold_contact_rank1(det_atomics),
+      _eff_fold_contact_rank1(m.efm_con_max_dof if det_atomics else 0, det_atomics),
       dim=d.naconmax,
       inputs=[
-        m.efm_dofid,
-        dofblk,
         d.contact.worldid,
         d.nacon,
         efm_con_dof,
@@ -4344,16 +5016,26 @@ def eff_prec_fold(m: Model, d: Data, out: Optional[wp.array] = None) -> wp.array
         efm_con_scale,
         efm_con_nnz,
       ],
-      outputs=[epB],
+      outputs=[tw_diag],
     )
 
-  wp.launch(
-    _eff_factor_folded_blocks,
-    dim=(d.nworld, m.nefmdof),
-    inputs=[epB],
-    outputs=[epL],
-  )
-  return epL
+  if m.nefmdof > 0:
+    wp.launch(
+      _eff_invert_covered_fold_diag,
+      dim=(d.nworld, m.nefmdof),
+      inputs=[
+        m.M_rownnz,
+        m.M_rowadr,
+        m.efm_K_rownnz,
+        m.efm_K_rowadr,
+        m.efm_K_colind,
+        m.efm_dofid,
+        d.qH,
+        d.efm_K_val,
+        tw_diag,
+      ],
+      outputs=[tw_diag],
+    )
 
 
 @event_scope
@@ -4362,19 +5044,51 @@ def eff_prec(
   d: Data,
   res: wp.array2d[float],
   vec: wp.array2d[float],
-  epL: Optional[wp.array] = None,
   x_scratch: Optional[wp.array] = None,
+  tw_diag: Optional[wp.array] = None,
 ):
-  """Preconditions residual vector using 3x3 flex block Cholesky and backbone qHLD."""
+  """Preconditions residual using backbone qHLD, folded diagonal, efm0_L, or 1D rod twist."""
+  has_rod_twist = m.nflexrodedge > 0 and not (
+    (m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)
+  )
+  has_tw_diag = tw_diag is not None
+  tw_in = tw_diag if has_tw_diag else d.qH
   if m.efm0_active:
     if m.nefm0dof < m.nv:
+      wp.copy(res, vec)
       wp.launch(
-        _eff_copy_backbone_rhs,
-        dim=(d.nworld, m.nv),
-        inputs=[m.nv, m.efm_dofblk, vec],
+        _eff_zero_efm0_dofs,
+        dim=(d.nworld, m.nefm0dof),
+        inputs=[m.efm0_dofid],
         outputs=[res],
       )
       smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, res, res, x_scratch=x_scratch)
+      if has_rod_twist:
+        wp.launch(
+          _eff_twist_solve(has_tw_diag),
+          dim=(d.nworld, m.nflex),
+          inputs=[
+            m.opt.timestep,
+            m.opt.disableflags,
+            m.jnt_dofadr,
+            m.dof_treeid,
+            m.tree_dofnum,
+            m.flex_bendingadr,
+            m.flex_bending,
+            m.flex_damping,
+            m.flex_rigid,
+            m.M_rownnz,
+            m.M_rowadr,
+            m.flex_rod_has_twist,
+            m.flex_rod_edgeadr,
+            m.flex_rod_edgenum,
+            m.flex_rodedge_jnt,
+            d.qH,
+            vec,
+            tw_in,
+          ],
+          outputs=[d.flex_rodedge_tridiag, res],
+        )
     wp.launch(
       _eff_prec_efm0_solve,
       dim=d.nworld,
@@ -4398,12 +5112,63 @@ def eff_prec(
       )
     return
 
-  L_arr = epL if epL is not None else d.efm_L
-  if 3 * m.nefmdof == m.nv:
+  if has_tw_diag and m.nefmdof > 0:
+    if 3 * m.nefmdof == m.nv and not has_rod_twist:
+      wp.launch(
+        _eff_apply_covered_fold_diag,
+        dim=(d.nworld, m.nefmdof),
+        inputs=[m.efm_dofid, vec, tw_diag],
+        outputs=[res],
+      )
+      if m.opt.enableflags & EnableBit.SLEEP:
+        wp.launch(
+          _zero_sleeping_dofs,
+          dim=(d.nworld, m.nv),
+          inputs=[m.dof_treeid, d.tree_awake],
+          outputs=[res],
+        )
+      return
+
+    rhs = wp.clone(vec) if res.ptr == vec.ptr else vec
+    if res.ptr != rhs.ptr:
+      wp.copy(res, rhs)
     wp.launch(
-      _eff_block_solve,
+      _eff_zero_covered_dofs,
       dim=(d.nworld, m.nefmdof),
-      inputs=[m.efm_dofid, L_arr, vec],
+      inputs=[m.efm_dofid],
+      outputs=[res],
+    )
+    smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, res, res, x_scratch=x_scratch)
+    if has_rod_twist:
+      wp.launch(
+        _eff_twist_solve(has_tw_diag),
+        dim=(d.nworld, m.nflex),
+        inputs=[
+          m.opt.timestep,
+          m.opt.disableflags,
+          m.jnt_dofadr,
+          m.dof_treeid,
+          m.tree_dofnum,
+          m.flex_bendingadr,
+          m.flex_bending,
+          m.flex_damping,
+          m.flex_rigid,
+          m.M_rownnz,
+          m.M_rowadr,
+          m.flex_rod_has_twist,
+          m.flex_rod_edgeadr,
+          m.flex_rod_edgenum,
+          m.flex_rodedge_jnt,
+          d.qH,
+          rhs,
+          tw_in,
+        ],
+        outputs=[d.flex_rodedge_tridiag, res],
+      )
+    wp.launch(
+      _eff_apply_covered_fold_diag,
+      dim=(d.nworld, m.nefmdof),
+      inputs=[m.efm_dofid, rhs, tw_diag],
       outputs=[res],
     )
     if m.opt.enableflags & EnableBit.SLEEP:
@@ -4414,20 +5179,34 @@ def eff_prec(
         outputs=[res],
       )
     return
-  dofblk = m.efm_dofblk
-  wp.launch(
-    _eff_copy_backbone_rhs,
-    dim=(d.nworld, m.nv),
-    inputs=[m.nv, dofblk, vec],
-    outputs=[res],
-  )
-  smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, res, res, x_scratch=x_scratch)
-  wp.launch(
-    _eff_block_solve,
-    dim=(d.nworld, m.nefmdof),
-    inputs=[m.efm_dofid, L_arr, vec],
-    outputs=[res],
-  )
+
+  smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, res, vec, x_scratch=x_scratch)
+  if has_rod_twist:
+    wp.launch(
+      _eff_twist_solve(has_tw_diag),
+      dim=(d.nworld, m.nflex),
+      inputs=[
+        m.opt.timestep,
+        m.opt.disableflags,
+        m.jnt_dofadr,
+        m.dof_treeid,
+        m.tree_dofnum,
+        m.flex_bendingadr,
+        m.flex_bending,
+        m.flex_damping,
+        m.flex_rigid,
+        m.M_rownnz,
+        m.M_rowadr,
+        m.flex_rod_has_twist,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_jnt,
+        d.qH,
+        vec,
+        tw_in,
+      ],
+      outputs=[d.flex_rodedge_tridiag, res],
+    )
   if m.opt.enableflags & EnableBit.SLEEP:
     wp.launch(
       _zero_sleeping_dofs,
@@ -4474,7 +5253,12 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
   )
   has_efm_actuator = m.has_efm_actuator and not (m.opt.disableflags & DisableBit.ACTUATION)
   has_flex_any = has_spring_or_damper and (
-    m.nefmK > 0 or m.has_non_simple_flex or m.efm0_active or m.has_flex_passive or not m.flex_interp_assemblable
+    m.nefmK > 0
+    or m.nflexrodhinge > 0
+    or m.has_non_simple_flex
+    or m.efm0_active
+    or m.has_flex_passive
+    or not m.flex_interp_assemblable
   )
   if not has_flex_any and not has_efm_tendon and not has_efm_actuator:
     smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, qacc, rhs)

@@ -28,6 +28,12 @@ MJWarp is also available via PyPI:
 pip install mujoco-warp
 ```
 
+MJWarp depends only on the core MuJoCo bindings (`mujoco-core`). The `mjwarp-viewer` and `mjwarp-record` tools need the `viewer` extra:
+
+```bash
+pip install "mujoco-warp[viewer]"
+```
+
 # Examples
 
 MuJoCo Warp simulates many kinds of physical systems, from rigid bodies with contacts to soft bodies, cloth, signed distance fields, and more. Here are a few examples of what it can do:
