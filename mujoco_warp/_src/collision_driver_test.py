@@ -1152,6 +1152,82 @@ class CollisionTest(parameterized.TestCase):
       np.testing.assert_allclose(frame[j][:3], mjd.contact.frame[i][:3], atol=1e-6)
       np.testing.assert_allclose(includemargin[j], mjd.contact.includemargin[i], atol=1e-6)
 
+  @parameterized.product(nworld=(1, 2), case=("single", "multiple", "unaligned"))
+  def test_clipped_contact_distance(self, nworld, case):
+    """A single clipped witness must use its own distance, just like multiple witnesses."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="cube" vertex="-.01 -.01 -.01  -.01 -.01 .01  -.01 .01 -.01  -.01 .01 .01
+                                    .01 -.01 -.01   .01 -.01 .01   .01 .01 -.01   .01 .01 .01"/>
+        </asset>
+        <default>
+          <geom type="mesh" mesh="cube" margin=".0005"/>
+        </default>
+        <worldbody>
+          <geom/>
+          <body pos="0 0 .03">
+            <freejoint/>
+            <geom/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=8,
+    )
+    corners = np.array([[x, y, z] for x in (-0.01, 0.01) for y in (-0.01, 0.01) for z in (-0.01, 0.01)])
+    qpos, references = [], []
+    for world in range(nworld):
+      tilt, axis, gap, x, y = ((4.49, 5.676, 0.885, 2.13, 3.64), (4.43, 4.010, 0.881, 3.53, -0.31))[world]
+      if case == "multiple":
+        tilt, axis, gap, x, y = 2.5, 3 * np.pi / 4 + 0.05, 0.10 + 0.02 * world, 1.0, -2.0
+      elif case == "unaligned":
+        tilt = 20.0
+      angle = np.deg2rad(tilt)
+      quat = np.array([np.cos(angle / 2), np.sin(angle / 2) * np.cos(axis), np.sin(angle / 2) * np.sin(axis), 0])
+      rot = np.empty(9)
+      mujoco.mju_quat2Mat(rot, quat)
+      low = (corners @ rot.reshape(3, 3).T)[:, 2].min()
+      mjd.qpos[:] = np.concatenate(([x * 0.001, y * 0.001, 0.01 - low + gap * 0.001], quat))
+      mujoco.mj_forward(mjm, mjd)
+      self.assertEqual(mjd.ncon, 3 if case == "multiple" else 1)
+      if case == "single":
+        # Ensure this scene distinguishes clipped distance from the GJK distance.
+        gjk_dist = mujoco.mj_geomDistance(mjm, mjd, 0, 1, 0.01, None)
+        self.assertGreater(abs(gjk_dist - mjd.contact.dist[0]), 2e-6)
+      qpos.append(mjd.qpos.copy())
+      references.append((mjd.contact.dist.copy(), mjd.contact.pos.copy(), mjd.contact.includemargin.copy()))
+
+    d.qpos.assign(np.array(qpos))
+    mjw.kinematics(m, d)
+    d.nacon.fill_(-1)
+    d.contact.worldid.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.includemargin.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    ncon = int(d.nacon.numpy()[0])
+    self.assertEqual(ncon, sum(len(ref[0]) for ref in references))
+    worldids = d.contact.worldid.numpy()[:ncon]
+    distances = d.contact.dist.numpy()[:ncon]
+    positions = d.contact.pos.numpy()[:ncon]
+    margins = d.contact.includemargin.numpy()[:ncon]
+    for world, (ref_dist, ref_pos, ref_margin) in enumerate(references):
+      mask = worldids == world
+      order = np.argsort(distances[mask])
+      ref_order = np.argsort(ref_dist)
+      self.assertEqual(mask.sum(), len(ref_dist))
+      # At this 2 cm scale float32 distance errors are a few nanometres; 1e-5
+      # would hide the 2.7 micrometre single-clipped-point regression.
+      np.testing.assert_allclose(distances[mask][order], ref_dist[ref_order], atol=1e-7, rtol=0)
+      np.testing.assert_allclose(positions[mask][order], ref_pos[ref_order], atol=1e-5, rtol=1e-5)
+      np.testing.assert_allclose(margins[mask][order], ref_margin[ref_order], atol=1e-5, rtol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.array_equal(distances[worldids == 0], distances[worldids == 1]))
+
   @parameterized.parameters(
     (2.05, 4),  # shallow (within margin)
     (1.95, 4),  # deep (overlapping)

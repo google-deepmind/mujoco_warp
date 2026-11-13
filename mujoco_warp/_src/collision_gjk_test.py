@@ -236,6 +236,7 @@ def _geom_dist(
         face[idx],
         x1,
         x2,
+        dist,
         geom1,
         geom2,
         geomtype1,
@@ -248,7 +249,7 @@ def _geom_dist(
       for i in range(ncon):
         w1_out[i] = witness1[i]
         w2_out[i] = witness2[i]
-        dists_out[i] = dists[i] if ncon > 1 else dist
+        dists_out[i] = dists[i]
     else:
       dist_out[0] = dist
       ncon_out[0] = ncon
@@ -258,12 +259,12 @@ def _geom_dist(
       w2_out[0] = x2
       dists_out[0] = dist
 
-  dist_out = wp.array(shape=(1,), dtype=float)
-  ncon_out = wp.array(shape=(1,), dtype=int)
-  pos_out = wp.array(shape=(2,), dtype=wp.vec3)
-  w1_out = wp.array(shape=(4,), dtype=wp.vec3)
-  w2_out = wp.array(shape=(4,), dtype=wp.vec3)
-  dists_out = wp.array(shape=(4,), dtype=float)
+  dist_out = wp.full(1, wp.inf, dtype=float)
+  ncon_out = wp.full(1, -1, dtype=int)
+  pos_out = wp.full(2, wp.vec3(wp.inf), dtype=wp.vec3)
+  w1_out = wp.full(4, wp.vec3(wp.inf), dtype=wp.vec3)
+  w2_out = wp.full(4, wp.vec3(wp.inf), dtype=wp.vec3)
+  dists_out = wp.full(4, wp.inf, dtype=float)
   wp.launch(
     _ccd_kernel,
     dim=1,
@@ -325,6 +326,43 @@ def _geom_dist(
 
 class GJKTest(parameterized.TestCase):
   """Tests for GJK/EPA."""
+
+  @parameterized.parameters(4.49, 20.0)
+  def test_single_mesh_witness_distance(self, tilt):
+    """The direct CCD helper preserves clipped and fallback single-witness distances."""
+    axis = 5.676
+    angle = np.deg2rad(tilt)
+    z = 0.010885 + 0.01 * (np.cos(angle) + np.sin(angle) * (abs(np.cos(axis)) + abs(np.sin(axis))))
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <mesh name="cube" vertex="-.01 -.01 -.01  -.01 -.01 .01  -.01 .01 -.01  -.01 .01 .01
+                                    .01 -.01 -.01   .01 -.01 .01   .01 .01 -.01   .01 .01 .01"/>
+        </asset>
+        <default>
+          <geom type="mesh" mesh="cube" margin=".0005"/>
+        </default>
+        <worldbody>
+          <geom/>
+          <body pos=".00213 .00364 {z}" axisangle="{np.cos(axis)} {np.sin(axis)} 0 {tilt}">
+            <freejoint/>
+            <geom/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    dist, ncon, w1, w2, dists = _geom_dist(m, d, 0, 1, multiccd=True, margin=0.001, return_all=True)
+    self.assertEqual(mjd.ncon, 1)
+    self.assertEqual(ncon, 1)
+    # As in the driver regression, 1e-5 would hide the single-clipped-point error.
+    np.testing.assert_allclose(dists + 0.001, mjd.contact.dist, atol=1e-7, rtol=0)
+    np.testing.assert_allclose(0.5 * (w1 + w2), mjd.contact.pos, atol=1e-5, rtol=1e-5)
+    if tilt == 4.49:
+      self.assertGreater(abs(dists[0] - dist), 2e-6)
+    else:
+      self.assertEqual(dists[0], dist)
 
   def test_spheres_distance(self):
     """Test distance between two spheres."""

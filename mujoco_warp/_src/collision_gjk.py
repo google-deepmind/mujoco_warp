@@ -2270,7 +2270,6 @@ def _set_edge(
   return 2
 
 
-# recover multiple contacts from EPA polytope
 @wp.func
 def multicontact(
   # In:
@@ -2290,16 +2289,23 @@ def multicontact(
   epa_face: int,
   x1: wp.vec3,
   x2: wp.vec3,
+  dist: float,
   geom1: Geom,
   geom2: Geom,
   geomtype1: int,
   geomtype2: int,
 ) -> Tuple[int, mat43, mat43, wp.vec4]:
+  """Recover clipped contacts from GJK/EPA features.
+
+  Returns clipped witnesses and their margin-inflated distances, or the original
+  GJK/EPA witness and distance as one fallback contact.
+  """
   witness1 = mat43()
   witness2 = mat43()
   dists = wp.vec4()
   witness1[0] = x1
   witness2[0] = x2
+  dists[0] = dist
 
   if geomtype1 == GeomType.MESH:
     vert = geom1.vert
