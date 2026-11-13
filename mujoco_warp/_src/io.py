@@ -1260,6 +1260,29 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   ]
   m.M_tiles = tuple(scalar_tiles + gather_tiles)
 
+  # Sparse rows are full ancestor chains; their depth is M_rownnz - 1.
+  m.dof_subtreenum = np.ones(mjm.nv, dtype=np.int32)
+  for i in reversed(range(mjm.nv)):
+    if mjm.dof_parentid[i] >= 0:
+      m.dof_subtreenum[mjm.dof_parentid[i]] += m.dof_subtreenum[i]
+  sparse_blocks = [(start, size) for start, size in _m_blocks(mjm) if _lay["dof_adr"][start] == types.Q_LD_BLOCK_SPARSE]
+  level_adr, pair_adr, pairs = [0], [], []
+  for start, size in sparse_blocks:
+    depth = mjm.M_rownnz[start : start + size] - 1
+    for level in range(int(depth.max()) + 1):
+      pair_adr.append(len(pairs))
+      for i in np.flatnonzero(depth == level) + start:
+        pairs.extend((i, j) for j in range(mjm.M_rownnz[i]))
+    pair_adr.append(len(pairs))
+    level_adr.append(len(pair_adr))
+  m.qLD_fused_level_adr = level_adr
+  m.qLD_fused_pair_adr = pair_adr
+  m.qLD_fused_pairs = np.array(pairs, dtype=np.int32).reshape(-1, 2)
+  # Match block width to the average number of factor entries per dependency level.
+  nlevel = max(1, len(pair_adr) - len(sparse_blocks))
+  mean_width = max(1, (len(pairs) + nlevel - 1) // nlevel)
+  m.block_dim.factor_LD_sparse_fused = max(64, min(512, 1 << (mean_width - 1).bit_length()))
+
   # Group sparse LDL updates by tree depth. Block-path DOFs never touch the LDL region.
   sparse_updates, dof_depth = {}, np.zeros(mjm.nv, dtype=int) - 1
 
@@ -1655,6 +1678,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nsensor_contact_vel": len(m.sensor_contact_vel_adr),
       "nsensor_contact_acc": len(m.sensor_contact_acc_adr),
       "nsensor_collision_start_adr": len(m.sensor_collision_start_adr),
+      "nqLD_fused_level_adr": len(m.qLD_fused_level_adr),
+      "nqLD_fused_pair_adr": len(m.qLD_fused_pair_adr),
+      "nqLD_fused_pairs": len(m.qLD_fused_pairs),
       "nqLD_all_updates": len(m.qLD_all_updates),
       "nqLD_level_offsets": len(m.qLD_level_offsets),
       "nM_fullm": len(m.M_fullm_i),

@@ -1784,6 +1784,104 @@ class SmoothTest(parameterized.TestCase):
     mjw.solve_m(m, d, res, d.qfrc_smooth)
     _assert_eq(res.numpy()[0], ref[0], "M \\ qfrc_smooth (mixed blocks)")
 
+  @parameterized.product(nworld=(1, 2), mode=("separate", "combined", "deterministic", "all_sparse", "wide"))
+  def test_sparse_factor_sleep(self, nworld, mode):
+    def chain(n):
+      return '<body pos="0 0 .05"><joint axis="0 1 0"/><geom size=".02"/>' * n + "</body>" * n
+
+    small = "" if mode == "all_sparse" else chain(4) + chain(7) + '<body><freejoint/><geom size=".1"/></body>'
+    branches = chain(15) * 40 if mode == "wide" else chain(8) * 8
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option><flag contact="disable"/></option>
+        <default><joint armature="1"/></default>
+        <worldbody>
+          <body><freejoint/><geom size=".1"/>{branches}</body>
+          <body><freejoint/><geom size=".1"/>{chain(15) * 5}</body>
+          {small}
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      qpos_noise=0.1,
+    )
+    matrices, expected = [], []
+    rhs = np.random.default_rng(42).normal(size=(nworld, m.nv)).astype(np.float32)
+    for world in range(nworld):
+      if world:
+        mujoco.mj_integratePos(mjm, mjd.qpos, np.ones(m.nv), 0.2)
+        mujoco.mj_forward(mjm, mjd)
+      matrices.append(mjd.M.copy())
+      result = np.empty((1, m.nv))
+      mujoco.mj_solveM(mjm, mjd, result, rhs[world : world + 1])
+      expected.append(result[0])
+    matrices = np.asarray(matrices, dtype=np.float32)
+    expected = np.asarray(expected)
+    d.M.assign(matrices)
+    d.qLD.fill_(wp.inf)
+    d.qLDiagInv.fill_(wp.inf)
+    mjw.factor_m(m, d)
+    block_adr = m.qLD_block_adr.numpy()
+    m.opt.enableflags |= types.EnableBit.SLEEP
+    if mode == "deterministic":
+      m.opt.deterministic |= types.DeterminismType.ATOMICS
+    b = wp.array(rhs)
+    x = wp.full_like(b, wp.inf)
+    scratch = wp.empty_like(x) if mode == "deterministic" else None
+    with wp.ScopedCapture() as capture:
+      if mode in ("combined", "all_sparse", "wide"):
+        mjw._src.smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, x, b)
+      else:
+        mjw.factor_m(m, d)
+        mjw.solve_m(m, d, x, b, x_scratch=scratch)
+    for phase in (0, 1):
+      saved_factor, saved_diagonal = d.qLD.numpy(), d.qLDiagInv.numpy()
+      awake = ((np.indices(d.tree_awake.shape).sum(axis=0) + phase) % 2).astype(np.int32)
+      d.tree_awake.assign(awake)
+      scale = 0.5 if phase == 0 else 2.0
+      values = matrices * scale
+      reference = expected / scale
+      asleep_factor = np.zeros(d.qLD.shape, dtype=bool)
+      for world in range(nworld):
+        for i in range(m.nv):
+          if not awake[world, mjm.dof_treeid[i]]:
+            adr, end = mjm.M_rowadr[i], mjm.M_rowadr[i] + mjm.M_rownnz[i]
+            values[world, adr:end] = np.nan
+            asleep_factor[world, m.qLD_block_total + adr : m.qLD_block_total + end] = True
+            reference[world, i] = 0
+        for start, size in zip(mjm.tree_dofadr, mjm.tree_dofnum):
+          if block_adr[start] >= 0 and not awake[world, mjm.dof_treeid[start]]:
+            asleep_factor[world, block_adr[start] : block_adr[start] + size * size] = True
+      d.M.assign(values)
+      x.fill_(wp.inf)
+      wp.capture_launch(capture.graph)
+      np.testing.assert_allclose(x.numpy(), reference, atol=1e-5, rtol=1e-5)
+      np.testing.assert_array_equal(d.qLD.numpy()[asleep_factor], saved_factor[asleep_factor])
+      asleep_dof = awake[:, mjm.dof_treeid] == 0
+      np.testing.assert_array_equal(d.qLDiagInv.numpy()[asleep_dof], saved_diagonal[asleep_dof])
+      if nworld == 2:
+        self.assertFalse(np.allclose(x.numpy()[0], x.numpy()[1]))
+
+  def test_sparse_factor_strided(self):
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco><default><joint armature="1"/></default><worldbody>
+        {'<body pos="0 0 .05"><joint/><geom size=".02"/>' * 70}{"</body>" * 70}
+      </worldbody></mujoco>
+      """,
+    )
+    storage = wp.full((1, 2 * d.qLD.shape[1]), -123.0, dtype=float)
+    d.qLD = storage[:, ::2]
+    mjw.factor_m(m, d)
+    rhs = wp.ones((1, m.nv), dtype=float)
+    out = wp.full_like(rhs, wp.inf)
+    mjw.solve_m(m, d, out, rhs)
+    expected = np.empty((1, m.nv))
+    mujoco.mj_solveM(mjm, mjd, expected, rhs.numpy())
+    np.testing.assert_allclose(out.numpy(), expected, atol=1e-5, rtol=1e-5)
+    np.testing.assert_array_equal(storage.numpy()[:, 1::2], -123.0)
+
   def test_factor_solve_lu(self):
     """Tests factor_solve_lu with a sparse matrix representing a tree."""
     xml = """
