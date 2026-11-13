@@ -1741,8 +1741,8 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
   """Linesearch for constraint solver.
 
   When state changes are tracked, worlds with ctx.search_unchanged reuse last
-  iteration's mv/jv, so a fresh search requires clearing the flag (see the
-  invalidation in _solve and the writer in _update_gradient_zero_grad_dot).
+  iteration's mv/jv, so a fresh search requires clearing the flag (see
+  _update_gradient_zero_grad_dot).
 
   Args:
     m: Model
@@ -4798,11 +4798,6 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
   #  context
   init_context(m, d, ctx, grad=False, compact=compact)
   _update_gradient(m, d, ctx, compact=compact)
-
-  if _use_incremental(m):
-    # A new solve computes a new search direction: invalidate the mv/jv reuse
-    # left over from the previous solve.
-    ctx.search_unchanged.zero_()
 
   nsolving = wp.full(shape=(1,), value=d.nworld, dtype=int)
 
