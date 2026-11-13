@@ -27,6 +27,7 @@ import mujoco
 import numpy as np
 import warp as wp
 
+from mujoco_warp._src import math
 from mujoco_warp._src.ray import geom_color
 from mujoco_warp._src.ray import make_ray_primitive
 from mujoco_warp._src.types import Data
@@ -96,7 +97,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
     mat_rgba: wp.array2d[wp.vec4],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     # In:
     enabled_geom_ids: wp.array[int],
     mesh_traversable: wp.array[wp.uint64],
@@ -108,7 +109,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
     worldid, i = wp.tid()
     gi = enabled_geom_ids[i]
     gtype = geom_type[gi]
-    linear = geom_xmat_in[worldid, gi]
+    linear = math.quat_to_mat(geom_xquat_in[worldid, gi])
     traversable = primitive_traversable
     sbt_offset = _PRIMITIVE_SBT_OFFSET
     if gtype == GeomType.PLANE:
@@ -168,7 +169,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
       wp.array(mjm.geom_rgba[None], dtype=wp.vec4),
       wp.array(mjm.mat_rgba[None], dtype=wp.vec4),
       wp.array(np.tile(mjd.geom_xpos[None], (nworld, 1, 1)), dtype=wp.vec3),
-      wp.array(np.tile(mjd.geom_xmat.reshape(1, -1, 3, 3), (nworld, 1, 1, 1)), dtype=wp.mat33),
+      wp.array(np.tile(mjd.geom_xquat[None], (nworld, 1, 1)), dtype=wp.quat),
       rc.enabled_geom_ids,
       mesh_traversable,
       hfield_traversable,
@@ -199,7 +200,7 @@ def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
       m.geom_rgba,
       m.mat_rgba,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       rc.enabled_geom_ids,
       scene.mesh_traversable,
       scene.hfield_traversable,
@@ -224,7 +225,7 @@ def create_pipeline(scene: OptixScene, megakernel: wp.Kernel, geom_ray_types: Tu
     geom_size: wp.array2d[wp.vec3],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
   ):
     ngeom = geom_type.shape[0]
     inst_id = int(wp.optix_get_instance_id())
@@ -233,7 +234,12 @@ def create_pipeline(scene: OptixScene, megakernel: wp.Kernel, geom_ray_types: Tu
     pnt = wp.optix_get_world_ray_origin() - world_offset(worldid, wp.static(grid), wp.static(spacing))
     vec = wp.optix_get_world_ray_direction()
     d, n = ray_primitive(
-      geom_xpos_in[worldid, gi], geom_xmat_in[worldid, gi], geom_size[worldid % geom_size.shape[0], gi], pnt, vec, geom_type[gi]
+      geom_xpos_in[worldid, gi],
+      math.quat_to_mat(geom_xquat_in[worldid, gi]),
+      geom_size[worldid % geom_size.shape[0], gi],
+      pnt,
+      vec,
+      geom_type[gi],
     )
     if d < wp.optix_get_ray_tmin():
       return
