@@ -291,18 +291,18 @@ class CollisionTest(parameterized.TestCase):
         <mujoco>
           <worldbody>
             <geom size="40 40 40" type="plane"/>
-            <body pos="0 0 0.0" euler="0 20 0">
+            <body euler="15 10 0">
               <freejoint/>
               <geom size="0.05 0.05" type="capsule"/>
             </body>
           </worldbody>
         </mujoco>
         """,
-    "plane_capsule_steep_diagonal": """
+    "plane_capsule_vertical": """
         <mujoco>
           <worldbody>
             <geom size="40 40 40" type="plane"/>
-            <body pos="0 0 0.0" euler="15 10 0">
+            <body pos="0 0 0.02">
               <freejoint/>
               <geom size="0.05 0.05" type="capsule"/>
             </body>
