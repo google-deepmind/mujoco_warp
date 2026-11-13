@@ -1838,9 +1838,11 @@ class RenderTest(parameterized.TestCase):
   )
   def test_zfar_clipping(self, dist: float, zfar: float, is_visible: bool, nworld: int, backend: str):
     """Clip distant geometry and handle cameras outside the scene bounds."""
+    # extent="1" makes zfar absolute instead of relative to the model extent.
     mjm, _, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
+        <statistic extent="1"/>
         <visual>
           <map zfar="{zfar}"/>
         </visual>
@@ -1868,7 +1870,8 @@ class RenderTest(parameterized.TestCase):
     mask = rc.seg_data.numpy()[..., 0] == 0
     if is_visible:
       self.assertTrue(np.any(mask))
-      np.testing.assert_allclose(rc.depth_data.numpy()[mask], dist - 0.1, rtol=1e-5, atol=1e-5)
+      # The front face is the nearest hit; the shifted box in world 1 also shows a side face.
+      np.testing.assert_allclose(rc.depth_data.numpy()[mask].min(), dist - 0.1, rtol=1e-5, atol=1e-5)
       self.assertGreater(np.count_nonzero(rgb[..., 0] > 100), 0)
       if nworld == 2:
         self.assertFalse(np.array_equal(rgb[0], rgb[1]))
