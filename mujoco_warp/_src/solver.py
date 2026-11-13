@@ -1719,8 +1719,8 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
   """Linesearch for constraint solver.
 
   When state changes are tracked, worlds with ctx.search_unchanged reuse last
-  iteration's mv/jv, so a fresh search requires clearing the flag (see the
-  invalidation in _solve and the writer in _update_gradient_zero_grad_dot).
+  iteration's mv/jv, so a fresh search requires clearing the flag (see
+  _update_gradient_zero_grad_dot).
 
   Args:
     m: Model
