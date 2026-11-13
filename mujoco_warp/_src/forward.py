@@ -2807,7 +2807,11 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
       ctx.woke.zero_()
       sleep.wake_collision(m, d, woke=ctx.woke)
 
-      if m.opt.graph_conditional and m.opt.broadphase == BroadphaseType.NXN:
+      if (
+        m.opt.graph_conditional
+        and m.opt.broadphase == BroadphaseType.NXN
+        and not (m.opt.deterministic & DeterminismType.CONTACTS)
+      ):
 
         def finish_wake():
           wp.copy(ctx.awake_prev, d.body_awake)
