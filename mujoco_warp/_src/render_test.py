@@ -14,8 +14,8 @@
 # ==============================================================================
 """Tests for render functions."""
 
-import importlib.util
 import os
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -25,9 +25,10 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjw
 from mujoco_warp import test_data
+from mujoco_warp._src import render_optix
 from mujoco_warp._src import util_pkg
 
-_BACKENDS = ("bvh", "optix") if wp.get_device().is_cuda and importlib.util.find_spec("warp_optix") is not None else ("bvh",)
+_BACKENDS = ("bvh", "optix") if wp.get_device().is_cuda and render_optix.wo is not None else ("bvh",)
 
 try:
   mujoco.Renderer(mujoco.MjModel.from_xml_string("<mujoco/>"))
@@ -1173,6 +1174,22 @@ class RenderTest(parameterized.TestCase):
       self.assertTrue(np.all(rc.depth_data.numpy()[0][~hits] == 0.0))
 
     self.assertLess(abs(coverage[1] - coverage[0]), 10)
+
+  def test_optix_backend_falls_back_without_warp_optix(self):
+    mjm, _, _, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <camera pos="0 -1 0" xyaxes="1 0 0 0 0 1"/>
+        <geom type="sphere" size="0.1"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    # Fake a missing warp-optix install.
+    with mock.patch.object(render_optix, "wo", None), self.assertWarnsRegex(UserWarning, "falling back"):
+      rc = mjw.create_render_context(mjm, backend="optix")
+    self.assertIsNone(rc.optix)
 
   @parameterized.product(backend=_BACKENDS)
   def test_supersampling_validation(self, backend: str):

@@ -18,10 +18,9 @@ Meshes and heightfields share triangle GASes across worlds. Analytic geoms insta
 unit cube and reuse the ray intersections in ray.py. Worlds occupy separate grid cells;
 bounded geometry must remain within each cell's extent. Planes are intersected separately.
 
-Flexes and splats are unsupported. warp_optix is imported only when this backend is used.
+Flexes and splats are unsupported.
 """
 
-import functools
 from typing import Tuple
 
 import mujoco
@@ -35,25 +34,19 @@ from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OptixScene
 
+try:
+  import warp_optix as wo
+except ImportError:
+  wo = None
+
 wp.set_module_options({"enable_backward": False})
 
 _TRIANGLE_SBT_OFFSET = 0
 _PRIMITIVE_SBT_OFFSET = 1
 
 
-@functools.cache
-def _get_wo():
-  try:
-    import warp_optix as wo  # noqa: PLC0415
-  except ImportError as e:
-    raise ImportError(
-      "backend='optix' requires warp_optix from main (pip install git+https://github.com/NVIDIA/warp-optix@main)"
-    ) from e
-  return wo
-
-
 @wp.func
-def _world_offset(worldid: int, grid: int, spacing: float) -> wp.vec3:
+def world_offset(worldid: int, grid: int, spacing: float) -> wp.vec3:
   center = float(grid - 1) * 0.5
   cell = wp.vec3(float(worldid % grid), float((worldid // grid) % grid), float(worldid // (grid * grid)))
   return (cell - wp.vec3(center)) * spacing
@@ -61,7 +54,6 @@ def _world_offset(worldid: int, grid: int, spacing: float) -> wp.vec3:
 
 def create_scene(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc, nworld: int) -> OptixScene:
   """Build OptiX acceleration structures for every world of a render context."""
-  wo = _get_wo()
   if rc.bvh_nflexgeom or rc.splat_count:
     raise NotImplementedError("the OptiX backend does not support flexes or splats yet")
 
@@ -148,7 +140,7 @@ def create_scene(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc, nworld: int) -> Op
 
     instances_out[worldid, i] = wo.make_instance(
       linear,
-      geom_xpos_in[worldid, gi] + _world_offset(worldid, wp.static(grid), wp.static(spacing)),
+      geom_xpos_in[worldid, gi] + world_offset(worldid, wp.static(grid), wp.static(spacing)),
       traversable,
       wp.uint32(worldid * geom_type.shape[0] + gi),
       wp.uint32(sbt_offset),
@@ -223,7 +215,6 @@ def refit(m: Model, d: Data, rc):
 
 def create_pipeline(scene: OptixScene, megakernel: wp.Kernel, geom_ray_types: Tuple[int], cull_backfaces: bool):
   """Compile the render megakernel into an OptiX pipeline over `scene`."""
-  wo = _get_wo()
   ray_primitive = make_ray_primitive(geom_ray_types)
   grid, spacing = scene.grid, 3.0 * scene.extent
 
@@ -241,7 +232,7 @@ def create_pipeline(scene: OptixScene, megakernel: wp.Kernel, geom_ray_types: Tu
     inst_id = int(wp.optix_get_instance_id())
     worldid = inst_id // ngeom
     gi = inst_id - worldid * ngeom
-    pnt = wp.optix_get_world_ray_origin() - _world_offset(worldid, wp.static(grid), wp.static(spacing))
+    pnt = wp.optix_get_world_ray_origin() - world_offset(worldid, wp.static(grid), wp.static(spacing))
     vec = wp.optix_get_world_ray_direction()
     d, n = ray_primitive(
       geom_xpos_in[worldid, gi], geom_xmat_in[worldid, gi], geom_size[worldid % geom_size.shape[0], gi], pnt, vec, geom_type[gi]

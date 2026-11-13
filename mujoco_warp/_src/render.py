@@ -30,6 +30,7 @@ from mujoco_warp._src.ray import ray_flex_with_bvh_anyhit
 from mujoco_warp._src.ray import ray_mesh_with_bvh
 from mujoco_warp._src.ray import ray_mesh_with_bvh_anyhit
 from mujoco_warp._src.ray import ray_plane
+from mujoco_warp._src.render_optix import world_offset
 from mujoco_warp._src.render_util import compute_ray
 from mujoco_warp._src.render_util import pack_rgba_to_uint32
 from mujoco_warp._src.types import MJ_MAXVAL
@@ -40,6 +41,11 @@ from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import OptixScene
 from mujoco_warp._src.types import RenderContext
 from mujoco_warp._src.warp_util import event_scope
+
+try:
+  import warp_optix as wo
+except ImportError:
+  wo = None
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
@@ -568,11 +574,6 @@ def vertex_normal(n: wp.vec3, face: wp.vec3) -> wp.vec3:
 # TODO(team): consider precomputing transparent geom/flex filtering
 def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False, optix: OptixScene | None = None) -> wp.Function:
   """Build closest-hit or shadow-ray traversal specialized to the scene and backend."""
-  wo = world_offset = None
-  if optix is not None:
-    from mujoco_warp._src import render_optix  # noqa: PLC0415
-
-    wo, world_offset = render_optix._get_wo(), render_optix._world_offset
   ray_primitive = make_ray_primitive(geom_ray_types)
 
   @wp.func
@@ -1598,9 +1599,7 @@ def render(m: Model, d: Data, rc: RenderContext):
     if rc.optix is None:
       wp.launch(_render_megakernel, dim=dim, inputs=inputs, outputs=outputs, block_dim=m.block_dim.render)
     elif dim[0] and dim[1]:
-      from mujoco_warp._src import render_optix  # noqa: PLC0415
-
-      render_optix._get_wo().launch(rc.optix.pipeline, dim, inputs=inputs, outputs=outputs)
+      wo.launch(rc.optix.pipeline, dim, inputs=inputs, outputs=outputs)
 
   if nsamples > 1:
     wp.launch(_aa_resolve, dim=rc.rgb_data.shape, inputs=[rc.aa_accum, 1.0 / float(nsamples)], outputs=[rc.rgb_data])

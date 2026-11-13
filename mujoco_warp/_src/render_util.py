@@ -13,11 +13,14 @@
 # limitations under the License.
 # ==============================================================================
 
+import warnings
+
 import mujoco
 import numpy as np
 import warp as wp
 
 from mujoco_warp._src import bvh
+from mujoco_warp._src import render_optix
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.types import ProjectionType
@@ -408,8 +411,8 @@ def create_render_context(
                     use the first splat group.
     deterministic: Whether to use deterministic execution for flex BVH vertex
                    normal accumulation.
-    backend: Ray-casting backend, "bvh" (Warp BVH) or "optix" (requires warp_optix from
-             https://github.com/NVIDIA/warp-optix main).
+    backend: Ray-casting backend, "bvh" (Warp BVH) or "optix" (requires the optix extra;
+             falls back to "bvh" if warp-optix is not installed).
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -804,18 +807,21 @@ def create_render_context(
     splat_count=splat_count,
   )
 
+  if backend not in ("bvh", "optix"):
+    raise ValueError(f"backend must be 'bvh' or 'optix', got {backend!r}")
+  if backend == "optix" and render_optix.wo is None:
+    warnings.warn("warp-optix is not installed (pip install mujoco-warp[optix]), falling back to backend='bvh'")
+    backend = "bvh"
+
   if backend == "optix":
     # render imports this module. Compile OptiX pipelines when the context is created.
     from mujoco_warp._src import render  # noqa: PLC0415
-    from mujoco_warp._src import render_optix  # noqa: PLC0415
 
     rc.optix = render_optix.create_scene(mjm, mjd, rc, nworld)
     rc._megakernel = render._build_megakernel(mjm.nlight, rc)
     rc.optix.pipeline = render_optix.create_pipeline(rc.optix, rc._megakernel, rc.geom_ray_types, rc.enable_backface_culling)
-  elif backend == "bvh":
-    bvh.build_scene_bvh(mjm, mjd, rc, nworld)
   else:
-    raise ValueError(f"backend must be 'bvh' or 'optix', got {backend!r}")
+    bvh.build_scene_bvh(mjm, mjd, rc, nworld)
 
   warp_util.mark_batched(rc)
   return rc

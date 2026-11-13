@@ -70,6 +70,10 @@ cpu = [
 cuda = [
     "jax[cuda12]"
 ]
+# warp-optix only publishes Python 3.12 wheels.
+optix = [
+    "warp-optix>=0.3.0; python_version == '3.12'",
+]
 
 [project.scripts]
 mjwarp-testspeed = "mujoco_warp.testspeed:main"
