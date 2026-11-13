@@ -73,7 +73,9 @@ RENDER_BACKFACE_CULLING = flags.DEFINE_bool(
   "enable renderer backface culling (RenderContext.enable_backface_culling)",
 )
 RENDER_SKYBOX = flags.DEFINE_bool("render_skybox", True, "render skybox texture if available")
-RENDER_BACKEND = flags.DEFINE_enum("render_backend", "bvh", ["bvh", "optix"], "ray-casting backend for rendering")
+RENDER_BACKEND = flags.DEFINE_enum(
+  "render_backend", None, ["warp", "optix"], "ray-casting backend for rendering (default: optix if available, else warp)"
+)
 
 
 def load_model(path: epath.Path) -> mujoco.MjModel:
@@ -266,7 +268,7 @@ def unroll(
       args = (m, d) if rc is None else (m, d, rc)
       # OptiX work cannot be recorded into CUDA graphs, so the OptiX backend runs directly.
       graph = None
-      if rc is None or rc.optix is None:
+      if rc is None or rc.backend != "optix":
         with wp.ScopedCapture() as capture:
           fn(*args)
         graph = capture.graph

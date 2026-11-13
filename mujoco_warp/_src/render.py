@@ -694,7 +694,6 @@ def _make_cast_ray(geom_ray_types: Tuple[int], first_hit: bool = False, optix: O
             closer = (d < dist - tol) or (wp.abs(d - dist) <= tol and (geom_id < 0 or gi > geom_id))
             if d >= 0.0 and closer:
               geom_id, dist, normal, bary_u, bary_v, face_idx, geom_mesh_id = gi, d, n, 0.0, 0.0, -1, -1
-
     else:
       query = wp.bvh_query_ray(bvh_id, ray_origin_world, ray_dir_world, group_root)
       bounds_nr = int(0)
@@ -1596,9 +1595,9 @@ def render(m: Model, d: Data, rc: RenderContext):
       rc.seg_data,
     ]
     dim = (d.nworld, rc.total_rays)
-    if rc.optix is None:
+    if rc.backend == "warp":
       wp.launch(_render_megakernel, dim=dim, inputs=inputs, outputs=outputs, block_dim=m.block_dim.render)
-    elif dim[0] and dim[1]:
+    elif dim[0] and dim[1]:  # wo.launch rejects empty launches
       wo.launch(rc.optix.pipeline, dim, inputs=inputs, outputs=outputs)
 
   if nsamples > 1:

@@ -3072,7 +3072,8 @@ class RenderContext:
     splat_bvh_id: Splat BVH id
     splat_group_root: Per-world selected splat BVH root
     splat_count: Number of splats
-    optix: OptiX scene and pipeline when rendering with backend="optix", else None
+    backend: Ray-casting backend, "warp" or "optix"
+    optix: OptiX scene and pipeline when backend is "optix", else None
   """
 
   nrender: int
@@ -3156,5 +3157,6 @@ class RenderContext:
   splat_group_root: array("nworld", int)
   splat_count: int
   geom_ray_types: tuple = ()
+  backend: str = "warp"
   optix: Optional[OptixScene] = None
   _megakernel: Optional[wp.Kernel] = None

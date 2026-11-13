@@ -33,6 +33,7 @@ from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OptixScene
+from mujoco_warp._src.types import RenderContext
 
 try:
   import warp_optix as wo
@@ -47,23 +48,18 @@ _PRIMITIVE_SBT_OFFSET = 1
 
 @wp.func
 def world_offset(worldid: int, grid: int, spacing: float) -> wp.vec3:
+  """Returns the translation of a world's cell in the cubic grid of worlds."""
   center = float(grid - 1) * 0.5
   cell = wp.vec3(float(worldid % grid), float((worldid // grid) % grid), float(worldid // (grid * grid)))
   return (cell - wp.vec3(center)) * spacing
 
 
-def create_scene(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc, nworld: int) -> OptixScene:
-  """Build OptiX acceleration structures for every world of a render context."""
-  if rc.bvh_nflexgeom or rc.splat_count:
-    raise NotImplementedError("the OptiX backend does not support flexes or splats yet")
-
+def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, nworld: int):
+  """Build OptiX acceleration structures for all geometries in all worlds."""
   extent = max(4.0 * mjm.stat.extent, 1.0)
   grid = max(1, int(np.ceil(nworld ** (1.0 / 3.0))))
-  if nworld * mjm.ngeom >= 1 << 24:
-    raise ValueError("OptiX instance ids hold 24 bits: nworld * ngeom must be below 2**24")
 
   accels = []
-
   traversables = []
   for bvh_ids, registry in ((rc.mesh_bvh_id, rc.mesh_registry), (rc.hfield_bvh_id, rc.hfield_registry)):
     ids = []
@@ -184,10 +180,10 @@ def create_scene(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc, nworld: int) -> Op
       [wo.instances(scene.instances, accels)], flags=wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_TRACE
     )
     rc.bvh_id = scene.ias.id
-  return scene
+  rc.optix = scene
 
 
-def refit(m: Model, d: Data, rc):
+def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
   """Move every instance to its geom's current pose and refit the scene in place."""
   scene = rc.optix
   wp.launch(
@@ -213,7 +209,7 @@ def refit(m: Model, d: Data, rc):
     scene.ias.refit()
 
 
-def create_pipeline(scene: OptixScene, megakernel: wp.Kernel, geom_ray_types: Tuple[int], cull_backfaces: bool):
+def create_pipeline(scene: OptixScene, megakernel: wp.Kernel, geom_ray_types: Tuple[int, ...], cull_backfaces: bool):
   """Compile the render megakernel into an OptiX pipeline over `scene`."""
   ray_primitive = make_ray_primitive(geom_ray_types)
   grid, spacing = scene.grid, 3.0 * scene.extent

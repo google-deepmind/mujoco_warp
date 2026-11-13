@@ -26,6 +26,11 @@ from mujoco_warp._src import warp_util
 from mujoco_warp._src.types import ProjectionType
 from mujoco_warp._src.types import RenderContext
 
+try:
+  import warp_optix as wo
+except ImportError:
+  wo = None
+
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
@@ -320,6 +325,23 @@ def _build_rays(
   ray_offset_out[idx] = ray_offset
 
 
+def _optix_unsupported_reason(mjm: mujoco.MjModel, rc: RenderContext, nworld: int) -> str:
+  """Returns why the OptiX backend cannot render `rc` on the current device, or "" if it can."""
+  if wo is None:
+    return "warp-optix is not installed (pip install mujoco-warp[optix])"
+  device = wp.get_device()
+  try:
+    # OptiX raises device-specific errors when it cannot create a context.
+    wo.get_context(device)
+  except Exception as e:
+    return f"OptiX is not supported on device {device.alias} ({e})"
+  if rc.bvh_nflexgeom or rc.splat_count:
+    return "the OptiX backend does not support flexes or splats yet"
+  if nworld * mjm.ngeom >= 1 << 24:
+    return "OptiX instance ids hold 24 bits, so nworld * ngeom must be below 2**24"
+  return ""
+
+
 def create_render_context(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -351,7 +373,7 @@ def create_render_context(
   splat_adr: np.ndarray | None = None,
   splat_group_id: np.ndarray | None = None,
   deterministic: bool = False,
-  backend: str = "bvh",
+  backend: str | None = None,
 ) -> RenderContext:
   """Creates a render context on device.
 
@@ -411,8 +433,11 @@ def create_render_context(
                     use the first splat group.
     deterministic: Whether to use deterministic execution for flex BVH vertex
                    normal accumulation.
-    backend: Ray-casting backend, "bvh" (Warp BVH) or "optix" (requires the optix extra;
-             falls back to "bvh" if warp-optix is not installed).
+    backend: Ray-casting backend, "warp" (Warp BVH) or "optix" (requires the optix extra
+             and an OptiX-capable GPU). None uses "optix" when it is available for the
+             device and model, else "warp". If "optix" is requested but unavailable, a
+             warning explains why and "warp" is used. OptiX launches cannot be recorded
+             into CUDA graphs.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -807,17 +832,20 @@ def create_render_context(
     splat_count=splat_count,
   )
 
-  if backend not in ("bvh", "optix"):
-    raise ValueError(f"backend must be 'bvh' or 'optix', got {backend!r}")
-  if backend == "optix" and render_optix.wo is None:
-    warnings.warn("warp-optix is not installed (pip install mujoco-warp[optix]), falling back to backend='bvh'")
-    backend = "bvh"
+  if backend not in (None, "warp", "optix"):
+    raise ValueError(f"backend must be None, 'warp' or 'optix', got {backend!r}")
+  if backend != "warp":
+    reason = _optix_unsupported_reason(mjm, rc, nworld)
+    if reason and backend == "optix":
+      warnings.warn(f"backend='optix' is unavailable, using backend='warp': {reason}")
+    backend = "warp" if reason else "optix"
+  rc.backend = backend
 
   if backend == "optix":
-    # render imports this module. Compile OptiX pipelines when the context is created.
+    # render imports this module, so import it here.
     from mujoco_warp._src import render  # noqa: PLC0415
 
-    rc.optix = render_optix.create_scene(mjm, mjd, rc, nworld)
+    render_optix.build_scene_bvh(mjm, mjd, rc, nworld)
     rc._megakernel = render._build_megakernel(mjm.nlight, rc)
     rc.optix.pipeline = render_optix.create_pipeline(rc.optix, rc._megakernel, rc.geom_ray_types, rc.enable_backface_culling)
   else:

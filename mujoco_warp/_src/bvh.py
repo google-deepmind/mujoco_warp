@@ -41,8 +41,8 @@ SPLAT_MIN_RESPONSE = 0.01
 @event_scope
 def refit_bvh(m: Model, d: Data, rc: RenderContext):
   """Refit the dynamic BVH structures in the render context."""
-  if rc.optix is not None:
-    render_optix.refit(m, d, rc)
+  if rc.backend == "optix":
+    render_optix.refit_scene_bvh(m, d, rc)
     return
   refit_scene_bvh(m, d, rc)
   if m.nflex:

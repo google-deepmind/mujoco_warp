@@ -1289,6 +1289,8 @@ def rays(
     rc: Optional Render context containing BVH information for BVH accelerated ray
       intersections.
   """
+  if rc is not None and rc.backend != "warp":
+    raise ValueError(f"rays() requires a render context with backend='warp', got {rc.backend!r}")
   assert pnt.shape[0] in (1, d.nworld), f"pnt.shape[0] must be 1 or d.nworld ({d.nworld}), got {pnt.shape[0]}"
   assert pnt.shape == vec.shape, f"pnt.shape {pnt.shape} != vec.shape {vec.shape}"
   assert bodyexclude.shape[0] == pnt.shape[1], f"bodyexclude length {bodyexclude.shape[0]} != nray {pnt.shape[1]}"
