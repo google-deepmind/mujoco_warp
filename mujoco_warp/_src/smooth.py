@@ -1582,75 +1582,6 @@ def copy_M_awake(m: Model, d: Data, M_out: wp.array2d[float], M_in: Optional[wp.
 
 
 @cache_kernel
-def _qLD_acc(nv: int, enable_sleep: bool = False, deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = nv
-
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    dof_treeid: wp.array[int],
-    M_rownnz: wp.array[int],
-    M_rowadr: wp.array[int],
-    # Data in:
-    tree_awake_in: wp.array2d[int],
-    # In:
-    qLD_updates_: wp.array[wp.vec3i],
-    L_in: wp.array2d[float],
-    # Out:
-    L_out: wp.array2d[float],
-  ):
-    worldid, nodeid = wp.tid()
-    update = qLD_updates_[nodeid]
-    i, k, Madr_ki = update[0], update[1], update[2]
-    if wp.static(enable_sleep):
-      if _tree_asleep(tree_awake_in, worldid, dof_treeid[i]):
-        return
-    Madr_i = M_rowadr[i]  # Address of row being updated
-    diag_k = M_rowadr[k] + M_rownnz[k] - 1  # Address of diagonal element of k
-    # tmp = M(k,i) / M(k,k)
-    tmp = L_in[worldid, Madr_ki] / L_in[worldid, diag_k]
-    for j in range(M_rownnz[i]):
-      # M(i,j) -= M(k,j) * tmp
-      wp.atomic_sub(L_out[worldid], Madr_i + j, L_in[worldid, M_rowadr[k] + j] * tmp)
-    if wp.static(not deterministic):
-      # M(k,i) = tmp
-      L_out[worldid, Madr_ki] = tmp
-
-  return kernel
-
-
-@cache_kernel
-def _qLD_scale(enable_sleep: bool = False):
-  @wp.kernel(module="unique", enable_backward=False)
-  def kernel(
-    # Model:
-    dof_treeid: wp.array[int],
-    M_rownnz: wp.array[int],
-    M_rowadr: wp.array[int],
-    # Data in:
-    tree_awake_in: wp.array2d[int],
-    # In:
-    qLD_updates_: wp.array[wp.vec3i],
-    L_in: wp.array2d[float],
-    # Out:
-    L_out: wp.array2d[float],
-  ):
-    worldid, nodeid = wp.tid()
-    update = qLD_updates_[nodeid]
-    i, k, Madr_ki = update[0], update[1], update[2]
-    if wp.static(enable_sleep):
-      if _tree_asleep(tree_awake_in, worldid, dof_treeid[i]):
-        return
-    diag_k = M_rowadr[k] + M_rownnz[k] - 1
-    L_out[worldid, Madr_ki] = L_in[worldid, Madr_ki] / L_in[worldid, diag_k]
-
-  return kernel
-
-
-@cache_kernel
 def _qLDiag_div(enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -1675,39 +1606,133 @@ def _qLDiag_div(enable_sleep: bool = False):
   return kernel
 
 
+@cache_kernel
+def _factor_LD_sparse_fused(enable_sleep: bool = False):
+  """Gather descendant contributions in reverse depth order, one block per tree."""
+
+  @wp.func_native(snippet="WP_TILE_SYNC();")
+  def _syncthreads():
+    pass
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
+    M_rownnz: wp.array[int],
+    M_rowadr: wp.array[int],
+    dof_subtreenum: wp.array[int],
+    qLD_fused_level_adr: wp.array[int],
+    qLD_fused_pair_adr: wp.array[int],
+    qLD_fused_pairs: wp.array[wp.vec2i],
+    # Data in:
+    M_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
+    # Out:
+    L_out: wp.array2d[float],
+    D_out: wp.array2d[float],
+  ):
+    worldid, blockid, tid = wp.tid()
+    BLOCK_DIM = wp.block_dim()
+    level_beg = qLD_fused_level_adr[blockid]
+    level_end = qLD_fused_level_adr[blockid + 1] - 1
+    if wp.static(enable_sleep):
+      root = qLD_fused_pairs[qLD_fused_pair_adr[level_beg]][0]
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[root]):
+        return
+    matrix = M_in[worldid]
+    factor = L_out[worldid]
+    diagonal = D_out[worldid]
+
+    for adr in range(level_end - 1, level_beg - 1, -1):
+      level = adr - level_beg
+      pair_beg = qLD_fused_pair_adr[adr]
+      npair = qLD_fused_pair_adr[adr + 1] - pair_beg
+      if npair <= 6:
+        # Narrow levels need cooperation across the long descendant gathers.
+        for p in range(npair):
+          pair = qLD_fused_pairs[pair_beg + p]
+          row, entry = pair[0], pair[1]
+          rowadr = M_rowadr[row]
+          end = row + 1 + dof_subtreenum[row]
+          partial = float(0.0)
+          for k in range(row + 1 + tid, end, BLOCK_DIM):
+            kadr = M_rowadr[k]
+            partial -= factor[kadr + level] * diagonal[k] * factor[kadr + entry]
+          total = wp.tile_sum(wp.tile(partial))[0]
+          if tid == 0:
+            value = matrix[rowadr + entry] + total
+            factor[rowadr + entry] = value
+            if entry == M_rownnz[row] - 1:
+              diagonal[row] = 1.0 / value
+      else:
+        for p in range(tid, npair, BLOCK_DIM):
+          pair = qLD_fused_pairs[pair_beg + p]
+          row, entry = pair[0], pair[1]
+          rowadr = M_rowadr[row]
+          value = matrix[rowadr + entry]
+          end = row + 1 + dof_subtreenum[row]
+          if row + 1 < end:
+            kadr = M_rowadr[row + 1]
+            a = factor[kadr + level]
+            b = diagonal[row + 1]
+            c = factor[kadr + entry]
+            # Issue the next loads before extending the dependent sum.
+            for k in range(row + 2, end):
+              kadr = M_rowadr[k]
+              next_a = factor[kadr + level]
+              next_b = diagonal[k]
+              next_c = factor[kadr + entry]
+              value -= a * b * c
+              a, b, c = next_a, next_b, next_c
+            value -= a * b * c
+          factor[rowadr + entry] = value
+          if entry == M_rownnz[row] - 1:
+            diagonal[row] = 1.0 / value
+      _syncthreads()
+
+    # Gathers read D[k] * L[k,j]; normalize only after all levels finish.
+    for p in range(qLD_fused_pair_adr[level_beg] + tid, qLD_fused_pair_adr[level_end], BLOCK_DIM):
+      pair = qLD_fused_pairs[p]
+      row, entry = pair[0], pair[1]
+      if entry < M_rownnz[row] - 1:
+        adr = M_rowadr[row] + entry
+        factor[adr] = factor[adr] * diagonal[row]
+
+  return kernel
+
+
 def _factor_i_sparse(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[float], D: wp.array2d[float]):
   """Sparse L'*D*L factorization of inertia-like matrix M, assumed spd."""
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
-  if enable_sleep:
-    copy_M_awake(m, d, L, M_in=M)
-  else:
-    wp.copy(L, M)
-
-  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  L_in = wp.empty_like(L) if det_atomics else L
-  for i in reversed(range(len(m.qLD_updates))):
-    qLD_updates = m.qLD_updates[i]
-    if det_atomics:
-      wp.copy(L_in, L)
+  if m.M_tiles:
+    if enable_sleep:
+      copy_M_awake(m, d, L, M_in=M)
+    else:
+      wp.copy(L, M)
     wp.launch(
-      _qLD_acc(m.nv if det_atomics else 0, enable_sleep, det_atomics),
-      dim=(d.nworld, qLD_updates.size),
-      inputs=[m.dof_treeid, m.M_rownnz, m.M_rowadr, d.tree_awake, qLD_updates, L_in],
-      outputs=[L],
+      _qLDiag_div(enable_sleep),
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_treeid, m.M_rownnz, m.M_rowadr, d.tree_awake, L],
+      outputs=[D],
     )
-    if det_atomics:
-      wp.launch(
-        _qLD_scale(enable_sleep),
-        dim=(d.nworld, qLD_updates.size),
-        inputs=[m.dof_treeid, m.M_rownnz, m.M_rowadr, d.tree_awake, qLD_updates, L_in],
-        outputs=[L],
-      )
 
+  block_dim = m.block_dim.factor_LD_sparse_fused if L.device.is_cuda else 1
   wp.launch(
-    _qLDiag_div(enable_sleep),
-    dim=(d.nworld, m.nv),
-    inputs=[m.dof_treeid, m.M_rownnz, m.M_rowadr, d.tree_awake, L],
-    outputs=[D],
+    _factor_LD_sparse_fused(enable_sleep),
+    dim=(d.nworld, m.qLD_fused_level_adr.size - 1, block_dim),
+    inputs=[
+      m.dof_treeid,
+      m.M_rownnz,
+      m.M_rowadr,
+      m.dof_subtreenum,
+      m.qLD_fused_level_adr,
+      m.qLD_fused_pair_adr,
+      m.qLD_fused_pairs,
+      M,
+      d.tree_awake,
+    ],
+    outputs=[L, D],
+    block_dim=block_dim,
   )
 
 

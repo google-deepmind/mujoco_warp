@@ -79,6 +79,7 @@ class BlockDim:
     cholesky_factorize_solve: block-dense Cholesky factorize+solve block dimension (smooth)
     cholesky_solve: Cholesky solve block dimension (smooth)
     small_cholesky: scalar small-block Cholesky block dimension (smooth)
+    factor_LD_sparse_fused: sparse LDL factorization block dimension (smooth)
     solve_LD_sparse_fused: solve LD sparse fused block dimension (smooth)
     update_gradient_cholesky: update gradient Cholesky block dimension (solver)
     update_gradient_cholesky_blocked: update gradient Cholesky blocked block dimension (solver)
@@ -114,6 +115,7 @@ class BlockDim:
   cholesky_factorize_solve: int = 32
   cholesky_solve: int = 64
   small_cholesky: int = 64
+  factor_LD_sparse_fused: int = 64
   solve_LD_sparse_fused: int = 128
   # solver
   update_gradient_cholesky: int = 32
@@ -1729,6 +1731,10 @@ class Model:
     weld_tactile_id: weld body to tactile weld index         (nbody,)
     taxel_vertadr: tactile sensor vertex address             (nsensortaxel,)
     taxel_sensorid: address for tactile sensors
+    dof_subtreenum: descendant dof count per dof             (nv,)
+    qLD_fused_level_adr: offsets of each sparse tree's level pointers
+    qLD_fused_pair_adr: offsets of factor entries grouped by tree and depth
+    qLD_fused_pairs: factor entries as (dof, row offset)
     M_tiles: scalar and tiled block-factorization groups
     qLD_updates: sparse factor updates grouped by tree level
     qLD_all_updates: tuple of all levels concatenated
@@ -2297,6 +2303,10 @@ class Model:
   weld_tactile_id: array("nbody", int)
   taxel_vertadr: array("nsensortaxel", int)
   taxel_sensorid: array("nsensortaxel", int)
+  dof_subtreenum: array("nv", int)
+  qLD_fused_level_adr: array("nqLD_fused_level_adr", int)
+  qLD_fused_pair_adr: array("nqLD_fused_pair_adr", int)
+  qLD_fused_pairs: array("nqLD_fused_pairs", wp.vec2i)
   M_tiles: tuple[TileSet, ...]
   qLD_updates: tuple[array("nqLD_all_updates", wp.vec3i), ...]
   qLD_all_updates: array("nqLD_all_updates", wp.vec3i)
