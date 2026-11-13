@@ -22,28 +22,16 @@ from mujoco_warp._src.math import normalize_with_norm
 from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import mat23
+from mujoco_warp._src.types import mat43
 from mujoco_warp._src.types import mat53
+from mujoco_warp._src.types import mat83
 from mujoco_warp._src.types import mat113
 from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec8
 from mujoco_warp._src.types import vec11
 
 wp.set_module_options({"enable_backward": False})
-
-
-class vec8f(wp.types.vector(length=8, dtype=wp.float32)):
-  pass
-
-
-class mat23f(wp.types.matrix(shape=(2, 3), dtype=wp.float32)):
-  pass
-
-
-class mat43f(wp.types.matrix(shape=(4, 3), dtype=wp.float32)):
-  pass
-
-
-class mat83f(wp.types.matrix(shape=(8, 3), dtype=wp.float32)):
-  pass
 
 
 # core
@@ -200,7 +188,7 @@ def capsule_capsule(
   cap2_axis: wp.vec3,
   cap2_radius: float,
   cap2_half_length: float,
-) -> Tuple[wp.vec2, mat23f, mat23f]:
+) -> Tuple[wp.vec2, mat23, mat23]:
   """Core contact geometry calculation for capsule-capsule collision.
 
   Args:
@@ -219,8 +207,8 @@ def capsule_capsule(
     - Matrix of contact normal vectors (one per row).
   """
   contact_dist = wp.vec2(wp.inf, wp.inf)
-  contact_pos = mat23f()
-  contact_normal = mat23f()
+  contact_pos = mat23()
+  contact_normal = mat23()
 
   # segment endpoints
   axis1 = cap1_axis * cap1_half_length
@@ -256,7 +244,7 @@ def plane_capsule(
   capsule_axis: wp.vec3,
   capsule_radius: float,
   capsule_half_length: float,
-) -> Tuple[wp.vec2, mat23f, wp.mat33]:
+) -> Tuple[wp.vec2, mat23, wp.mat33]:
   """Core contact geometry calculation for plane-capsule collision.
 
   Args:
@@ -295,7 +283,7 @@ def plane_capsule(
   dist2, pos2 = plane_sphere(n, plane_pos, capsule_pos - segment, capsule_radius)
 
   dist = wp.vec2(dist1, dist2)
-  pos = mat23f(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2])
+  pos = mat23(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2])
 
   return dist, pos, frame
 
@@ -339,7 +327,7 @@ def plane_box(
   box_pos: wp.vec3,
   box_rot: wp.mat33,
   box_size: wp.vec3,
-) -> Tuple[vec8f, mat83f, wp.vec3]:
+) -> Tuple[vec8, mat83, wp.vec3]:
   """Core contact geometry calculation for plane-box collision.
 
   Args:
@@ -357,8 +345,8 @@ def plane_box(
   """
   center_dist = wp.dot(box_pos - plane_pos, plane_normal)
 
-  dist = vec8f(MJ_MAXVAL)
-  pos = mat83f()
+  dist = vec8(MJ_MAXVAL)
+  pos = mat83()
 
   # test all corners, pick bottom 4
   for i in range(8):
@@ -463,7 +451,7 @@ def plane_cylinder(
   cylinder_axis: wp.vec3,
   cylinder_radius: float,
   cylinder_half_height: float,
-) -> Tuple[wp.vec4, mat43f, wp.vec3]:
+) -> Tuple[wp.vec4, mat43, wp.vec3]:
   """Core contact geometry calculation for plane-cylinder collision.
 
   Args:
@@ -481,7 +469,7 @@ def plane_cylinder(
   """
   # Initialize output matrices
   contact_dist = wp.vec4(MJ_MAXVAL)
-  contact_pos = mat43f()
+  contact_pos = mat43()
   contact_count = 0
 
   n = plane_normal
@@ -595,11 +583,11 @@ _BOXBOX_MAXVERT = 8
 def _box_box_clip(
   # In:
   nin: int,
-  poly: mat83f,
+  poly: mat83,
   coord: int,
   sign: float,
   limit: float,
-) -> Tuple[int, mat83f]:
+) -> Tuple[int, mat83]:
   """Clips a polygon against the half-plane sign * v[coord] <= limit.
 
   Vertices are (x, y, z) with z interpolated as an attribute. When every vertex
@@ -617,7 +605,7 @@ def _box_box_clip(
     - Number of output vertices.
     - Output polygon vertices (one per row).
   """
-  d = vec8f()
+  d = vec8()
   all_inside = bool(True)
   for k in range(nin):
     d[k] = sign * poly[k, coord] - limit
@@ -626,7 +614,7 @@ def _box_box_clip(
   if all_inside:
     return nin, poly
 
-  out = mat83f()
+  out = mat83()
   nout = int(0)
   for k in range(nin):
     k1 = wp.where(k + 1 == nin, 0, k + 1)
@@ -663,7 +651,7 @@ def box_box(
   box2_rot: wp.mat33,
   box2_size: wp.vec3,
   margin: float,
-) -> Tuple[int, vec8f, mat83f, wp.vec3]:
+) -> Tuple[int, vec8, mat83, wp.vec3]:
   """Core contact geometry calculation for box-box collision.
 
   Port of MuJoCo's mjc_BoxBox: separating-axis test with face-axis preference,
@@ -688,8 +676,8 @@ def box_box(
     - Contact normal vector, pointing from box1 to box2 (shared by all
     contacts).
   """
-  contact_dist = vec8f(MJ_MAXVAL)
-  contact_pos = mat83f()
+  contact_dist = vec8(MJ_MAXVAL)
+  contact_pos = mat83()
   contact_normal = wp.vec3(0.0)
 
   # rot: box2 axes in box1 frame (columns); pos21: box2 center in box1 frame;
@@ -960,7 +948,7 @@ def box_box(
   dv[2] = dv[2] * sgn
 
   # corner signs (su, sv): (1, 1), (-1, 1), (-1, -1), (1, -1)
-  poly = mat83f()
+  poly = mat83()
   for k in range(4):
     su = wp.where(k == 0 or k == 3, 1.0, -1.0)
     sv = wp.where(k < 2, 1.0, -1.0)
@@ -1081,7 +1069,7 @@ def capsule_box(
   box_pos: wp.vec3,
   box_rot: wp.mat33,
   box_size: wp.vec3,
-) -> Tuple[wp.vec2, mat23f, mat23f]:
+) -> Tuple[wp.vec2, mat23, mat23]:
   """Core contact geometry calculation for capsule-box collision.
 
   Args:
@@ -1266,7 +1254,7 @@ def capsule_box(
     c1 = wp.where((ee2 > 0) == w_neg, 1, 2)
 
   if cltype == -4:  # invalid type
-    return wp.vec2(MJ_MAXVAL), mat23f(), mat23f()
+    return wp.vec2(MJ_MAXVAL), mat23(), mat23()
 
   if cltype >= 0 and cltype // 3 != 1:  # closest to a corner of the box
     c1 = axisdir ^ clcorner
@@ -1403,8 +1391,8 @@ def capsule_box(
 
   return (
     wp.vec2(dist1, dist2),
-    mat23f(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2]),
-    mat23f(normal1[0], normal1[1], normal1[2], normal2[0], normal2[1], normal2[2]),
+    mat23(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2]),
+    mat23(normal1[0], normal1[1], normal1[2], normal2[0], normal2[1], normal2[2]),
   )
 
 
@@ -1760,7 +1748,7 @@ def cylinder_triangle(
   t2: wp.vec3,
   t3: wp.vec3,
   tri_radius: float,
-) -> Tuple[wp.vec2, mat23f, mat23f]:
+) -> Tuple[wp.vec2, mat23, mat23]:
   """Core contact geometry calculation for cylinder-triangle collision.
 
   Args:
@@ -1775,8 +1763,8 @@ def cylinder_triangle(
 
   Returns:
     - wp.vec2 of distances for up to 2 contacts (MJ_MAXVAL if no collision).
-    - mat23f of contact positions (2 x vec3).
-    - mat23f of contact normals (2 x vec3).
+    - mat23 of contact positions (2 x vec3).
+    - mat23 of contact normals (2 x vec3).
   """
   dist1 = MJ_MAXVAL
   dist2 = MJ_MAXVAL
@@ -1949,8 +1937,8 @@ def cylinder_triangle(
 
   return (
     wp.vec2(dist1, dist2),
-    mat23f(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2]),
-    mat23f(nrm1[0], nrm1[1], nrm1[2], nrm2[0], nrm2[1], nrm2[2]),
+    mat23(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2]),
+    mat23(nrm1[0], nrm1[1], nrm1[2], nrm2[0], nrm2[1], nrm2[2]),
   )
 
 
@@ -2027,7 +2015,7 @@ def _tet_edge(k: int) -> Tuple[int, int]:
 
 
 @wp.func
-def _tet_sep_axis(a: wp.vec3, b: wp.vec3, tet: mat43f, fnrm: mat43f, sa: wp.vec4, sb: wp.vec4) -> Tuple[float, wp.vec3, int]:
+def _tet_sep_axis(a: wp.vec3, b: wp.vec3, tet: mat43, fnrm: mat43, sa: wp.vec4, sb: wp.vec4) -> Tuple[float, wp.vec3, int]:
   """Minimum translation of segment ab out of a tetrahedron over the separating axes.
 
   Port of tetSepAxis from engine_collision_flex.c. The separating axes are the face normals and the
@@ -2139,14 +2127,14 @@ def capsule_tetrahedron(
   # work relative to v0, limiting rounding at large coordinates
   a = pa - v0
   b = pb - v0
-  tet = mat43f()
+  tet = mat43()
   tet[0] = wp.vec3(0.0)
   tet[1] = e1
   tet[2] = e2
   tet[3] = e3
 
   # outward face normals and offsets, face i is opposite vertex i
-  fnrm = mat43f()
+  fnrm = mat43()
   foff = wp.vec4()
   for i in range(4):
     va = tet[(i + 1) % 4]
