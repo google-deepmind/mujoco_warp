@@ -813,45 +813,24 @@ def _test_tetra(p0: wp.vec3, p1: wp.vec3, p2: wp.vec3, p3: wp.vec3) -> bool:
 
 @wp.func
 def _tri_affine_coord(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, p: wp.vec3) -> wp.vec3:
-  # compute minors as in S2D
-  M_14 = v2[1] * v3[2] - v2[2] * v3[1] - v1[1] * v3[2] + v1[2] * v3[1] + v1[1] * v2[2] - v1[2] * v2[1]
-  M_24 = v2[0] * v3[2] - v2[2] * v3[0] - v1[0] * v3[2] + v1[2] * v3[0] + v1[0] * v2[2] - v1[2] * v2[0]
-  M_34 = v2[0] * v3[1] - v2[1] * v3[0] - v1[0] * v3[1] + v1[1] * v3[0] + v1[0] * v2[1] - v1[1] * v2[0]
-
-  # exclude one of the axes with the largest projection
-  # of the simplex using the computed minors
-  M_max = 0.0
-  x = 0
-  y = 0
-
-  mu1 = wp.abs(M_14)
-  mu2 = wp.abs(M_24)
-  mu3 = wp.abs(M_34)
-
-  if mu1 >= mu2 and mu1 >= mu3:
-    M_max = M_14
+  # Work relative to one vertex: absolute-coordinate determinants lose the
+  # small triangle area through cancellation on large height fields.
+  e0 = v2 - v1
+  e1 = v3 - v1
+  q = p - v1
+  normal = wp.cross(e0, e1)
+  x = int(0)
+  y = int(1)
+  if wp.abs(normal[0]) >= wp.abs(normal[1]) and wp.abs(normal[0]) >= wp.abs(normal[2]):
     x = 1
     y = 2
-  elif mu2 >= mu3:
-    M_max = M_24
+  elif wp.abs(normal[1]) >= wp.abs(normal[2]):
     x = 0
     y = 2
-  else:
-    M_max = M_34
-    x = 0
-    y = 1
-
-  # C31 corresponds to the signed area of 2-simplex: (v, s2, s3)
-  C31 = p[x] * v2[y] + p[y] * v3[x] + v2[x] * v3[y] - p[x] * v3[y] - p[y] * v2[x] - v3[x] * v2[y]
-
-  # C32 corresponds to the signed area of 2-simplex: (v, s1, s3)
-  C32 = p[x] * v3[y] + p[y] * v1[x] + v3[x] * v1[y] - p[x] * v1[y] - p[y] * v3[x] - v1[x] * v3[y]
-
-  # C33 corresponds to the signed area of 2-simplex: (v, s1, s2)
-  C33 = p[x] * v1[y] + p[y] * v2[x] + v1[x] * v2[y] - p[x] * v2[y] - p[y] * v1[x] - v2[x] * v1[y]
-
-  # compute affine coordinates
-  return wp.vec3(C31 / M_max, C32 / M_max, C33 / M_max)
+  det = e0[x] * e1[y] - e0[y] * e1[x]
+  b = (q[x] * e1[y] - q[y] * e1[x]) / det
+  c = (e0[x] * q[y] - e0[y] * q[x]) / det
+  return wp.vec3(1.0 - b - c, b, c)
 
 
 @wp.func
