@@ -1216,6 +1216,7 @@ def collision(
   ctx: Optional[CollisionContext] = None,
   awake_prev: Optional[wp.array] = None,
   woke: Optional[wp.array] = None,
+  sort_contacts: bool = True,
 ):
   """Runs the full collision detection pipeline.
 
@@ -1236,6 +1237,10 @@ def collision(
   Passing `awake_prev` (the awake state snapshotted before the post-collision wake) runs the
   incremental sleeping pass: contacts are appended to the existing buffer and only pairs
   involving a newly-awakened body are emitted.
+
+  Set `sort_contacts=False` to defer deterministic contact sorting to the caller, e.g. to sort
+  once after both sleeping passes, outside the graph conditional body where the sorting
+  workspace cannot be allocated.
   """
   if d.naconmax == 0 or m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT):
     d.nacon.zero_()
@@ -1292,5 +1297,5 @@ def collision(
   if m.callback.contactfilter:
     m.callback.contactfilter(m, d)
 
-  if m.opt.deterministic & DeterminismType.CONTACTS:
+  if sort_contacts and (m.opt.deterministic & DeterminismType.CONTACTS):
     sort.contacts(d)
