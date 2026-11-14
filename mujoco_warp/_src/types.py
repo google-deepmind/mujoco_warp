@@ -1649,6 +1649,7 @@ class Model:
     flex_interp_assemblable: whether interpolated flex stiffness can be assembled into efm_K
     has_unsupported_flex_interp: whether model has unsupported flex interpolation orders
     has_ellipsoid_geom: whether the model contains ellipsoid geoms
+    has_cylinder_geom: whether the model contains cylinder geoms
     has_plane_geom: whether the model contains plane geoms
     has_1d_flex: whether the model contains 1D flexes
     has_2d_flex: whether the model contains 2D flexes
@@ -2225,6 +2226,7 @@ class Model:
   flex_interp_assemblable: bool
   has_unsupported_flex_interp: bool
   has_ellipsoid_geom: bool
+  has_cylinder_geom: bool
   has_plane_geom: bool
   has_1d_flex: bool
   has_2d_flex: bool
