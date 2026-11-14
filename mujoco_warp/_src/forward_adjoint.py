@@ -102,12 +102,13 @@ def _advance_state(
 def _smooth_qvel_vjp(
   # Model:
   opt_timestep: wp.array[float],
+  mapM2D: wp.array[int],
   qD_fullm_i: wp.array[int],
   qD_fullm_j: wp.array[int],
   # Data in:
+  M_in: wp.array2d[float],
   qLU_in: wp.array2d[float],
   # In:
-  M_D: wp.array2d[float],
   lam: wp.array2d[float],
   # Out:
   adj_qvel_out: wp.array2d[float],
@@ -116,8 +117,10 @@ def _smooth_qvel_vjp(
   dt = opt_timestep[worldid % opt_timestep.shape[0]]
   i = qD_fullm_i[elemid]
   j = qD_fullm_j[elemid]
+  mid = mapM2D[elemid]
+  mass = M_in[worldid, mid] if mid >= 0 else 0.0
   wp.atomic_add(
-    adj_qvel_out[worldid], j, (M_D[worldid, elemid] - qLU_in[worldid, elemid]) / dt * lam[worldid, i]
+    adj_qvel_out[worldid], j, (mass - qLU_in[worldid, elemid]) / dt * lam[worldid, i]
   )  # kernel_analyzer: ignore[atomic]
 
 
@@ -715,7 +718,7 @@ def _kinematics_vjp(nbody: int):
 
 @event_scope
 def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
-  """Maps integrator cotangents, deferring mass-position dependence to smooth_qpos_backward."""
+  """Propagates state cotangents through the selected integrator."""
   Ma = d_out.efc.Ma
   nworld, nv = d_bwd.nworld, m.nv
   adj_qpos, adj_qvel, adj_qacc = bc.adj_qpos, bc.adj_qvel, bc.adj_qacc
@@ -746,7 +749,6 @@ def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
     )
 
   if implicitfast:
-    derivative.deriv_smooth_vel(m, d_bwd, bc.qDeriv)
     wp.launch(
       forward._implicit_free_body_reset_m,
       dim=(nworld, m.body_freeadr.size),
@@ -861,17 +863,13 @@ def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
 
 @event_scope
 def smooth_qvel_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, adj_qvel: wp.array, bc: BackwardContext):
-  """Accumulates non-bias force VJPs for velocity, controls, and applied forces."""
+  """Accumulates non-bias force VJPs using the prepared force matrix in bc.qLU."""
   nworld = d.nworld
-  derivative.deriv_smooth_vel(m, d_bwd, bc.qDeriv)
-  wp.launch(forward._map_m2d, dim=(nworld, m.nD), inputs=[m.mapM2D, bc.qDeriv], outputs=[bc.qLU])
   # RNE qvel VJP is handled elsewhere via smooth_qpos_backward, avoiding the full Jacobian.
-  # derivative.deriv_rne_vel(m, d_bwd, bc.qLU)
-  wp.launch(forward._map_m2d, dim=(nworld, m.nD), inputs=[m.mapM2D, d_bwd.M], outputs=[bc.M_D])
   wp.launch(
     _smooth_qvel_vjp,
     dim=(nworld, m.nD),
-    inputs=[m.opt.timestep, m.qD_fullm_i, m.qD_fullm_j, bc.qLU, bc.M_D, lam],
+    inputs=[m.opt.timestep, m.mapM2D, m.qD_fullm_i, m.qD_fullm_j, d_bwd.M, bc.qLU, lam],
     outputs=[adj_qvel],
   )
   if not (m.opt.disableflags & DisableBit.ACTUATION):

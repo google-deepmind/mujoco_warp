@@ -3170,7 +3170,6 @@ class BackwardContext:
   contact_ceff: array("nworld", "nbody", wp.vec3)
   res_dof: array("nworld", "nv", float)
   qLU: array("nworld", "nD", float)
-  M_D: array("nworld", "nD", float)
   adj_dof: array("nworld", "nv", float)
   res_dof_frictionloss: wp.array
   res_dof_solref: wp.array

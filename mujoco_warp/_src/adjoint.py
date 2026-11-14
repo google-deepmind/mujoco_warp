@@ -32,7 +32,9 @@ from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import collision_adjoint
 from mujoco_warp._src import collision_convex_adjoint
 from mujoco_warp._src import constraint_adjoint
+from mujoco_warp._src import derivative
 from mujoco_warp._src import diff
+from mujoco_warp._src import forward
 from mujoco_warp._src import forward_adjoint
 from mujoco_warp._src import io
 from mujoco_warp._src import math
@@ -696,7 +698,7 @@ def _clear_kinematics_adjoints(d: Data):
 
 
 def step_backward_scratch(m: Model, d: Data, d_out: Data, bc: BackwardContext) -> Data:
-  """Prepares backward scratch from forward inputs and retained intermediates."""
+  """Prepares backward inputs, replayed kinematics and velocity matrices."""
   kinematics_grad = _has_kinematics_grad(d_out)
   d_kin = bc.scratch if kinematics_grad else d_out
   # Borrow only read-only state and forward caches; all other fields remain backward scratch.
@@ -787,6 +789,9 @@ def step_backward_scratch(m: Model, d: Data, d_out: Data, bc: BackwardContext) -
     # Step backward needs kinematics and COM values computed from d.qpos.
     smooth.kinematics(m, d_bwd)
     smooth.com_pos(m, d_bwd)
+  # Keep the force layout before integration modifies qDeriv's free-body blocks.
+  derivative.deriv_smooth_vel(m, d_bwd, bc.qDeriv)
+  wp.launch(forward._map_m2d, dim=(d_bwd.nworld, m.nD), inputs=[m.mapM2D, bc.qDeriv], outputs=[bc.qLU])
   return d_bwd
 
 
