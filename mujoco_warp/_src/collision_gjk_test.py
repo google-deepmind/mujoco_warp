@@ -23,6 +23,7 @@ from mujoco_warp import GeomType
 from mujoco_warp import Model
 from mujoco_warp import test_data
 from mujoco_warp._src.collision_core import Geom
+from mujoco_warp._src.collision_gjk import _tri_affine_coord
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
@@ -325,6 +326,37 @@ def _geom_dist(
 
 class GJKTest(parameterized.TestCase):
   """Tests for GJK/EPA."""
+
+  def test_tri_affine_coordinates_translation(self):
+    """Small translated triangles retain affine coordinates and partition of unity."""
+    points = []
+    expected = []
+    for offset in (0.0, 36.8, -79.9, 119.9, 1000.0):
+      for axes in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
+        for winding in ((0, 1, 2), (0, 2, 1)):
+          for weights in ((0.2, 0.3, 0.5), (-0.2, 0.6, 0.6), (0.0, 1.0, 0.0)):
+            triangle = np.array([[0, 0, 0.04], [0.1, 0.1, 0], [0.1, 0, 0.005]])
+            triangle = (triangle[list(winding)][:, list(axes)] + offset).astype(np.float32)
+            point = (np.asarray(weights) @ triangle.astype(np.float64)).astype(np.float32)
+            # Solve in float64 for the actual quantized float32 inputs.
+            a, b, c = triangle.astype(np.float64)
+            normal = np.cross(b - a, c - a)
+            projection = [i for i in range(3) if i != np.argmax(np.abs(normal))]
+            uv = np.linalg.solve(np.stack((b - a, c - a), axis=1)[projection], (point - a)[projection])
+            points.append(np.vstack((triangle, point)))
+            expected.append([1 - uv.sum(), *uv])
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def affine_coordinates(points_in: wp.array2d[wp.vec3], coordinates_out: wp.array[wp.vec3]):
+      i = wp.tid()
+      coordinates_out[i] = _tri_affine_coord(points_in[i, 0], points_in[i, 1], points_in[i, 2], points_in[i, 3])
+
+    points_in = wp.array(np.array(points), dtype=wp.vec3)
+    coordinates_out = wp.full(len(points), wp.inf, dtype=wp.vec3)
+    wp.launch(affine_coordinates, len(points), inputs=[points_in], outputs=[coordinates_out])
+    actual = coordinates_out.numpy()
+    np.testing.assert_allclose(actual.sum(axis=1), 1.0, atol=2e-7, rtol=0)
+    np.testing.assert_allclose(actual, expected, atol=2e-6, rtol=2e-6)
 
   def test_spheres_distance(self):
     """Test distance between two spheres."""
