@@ -3129,6 +3129,72 @@ class CompactSolverTest(parameterized.TestCase):
       f"qfrc_constraint should be zeroed, but got max abs: {np.max(np.abs(qfrc_constraint_post))}",
     )
 
+  @parameterized.parameters(1, 2)
+  def test_solve_compact_sparse_qfrc_constraint(self, nworld):
+    """The compact solve of a sparse model zeroes qfrc_constraint in worlds without constraints."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse" solver="Newton" iterations="20">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body>
+            <joint name="j0"/>
+            <geom type="capsule" fromto="0 0 .5 .3 0 .5" size=".05"/>
+          </body>
+          <body pos="1 0 1">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="j0"/>
+        </actuator>
+        <keyframe>
+          <key qvel=".1 .2 -.1 .3 -.2 .1 .4" ctrl="1"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+    self.assertTrue(m.is_sparse)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd1, 0)
+      mjd1.qpos[mjm.jnt_qposadr[1] + 2] = 0.08  # world 1: sphere in contact with floor
+      mujoco.mj_forward(mjm, mjd1)
+      qpos = d.qpos.numpy()
+      qpos[1] = mjd1.qpos
+      d.qpos.assign(qpos)
+      mjds.append(mjd1)
+
+    d.nefc.fill_(-1)
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    d.cqfrc_constraint.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    nefc = d.nefc.numpy()
+    qacc = d.qacc.numpy()
+    qfrc_constraint = d.qfrc_constraint.numpy()
+    self.assertEqual(nefc[0], 0)
+    if nworld == 2:
+      self.assertGreater(nefc[1], 0)
+
+    for w in range(nworld):
+      np.testing.assert_allclose(qacc[w], mjds[w].qacc, rtol=1e-4, atol=1e-4)
+      np.testing.assert_allclose(qfrc_constraint[w], mjds[w].qfrc_constraint, rtol=1e-4, atol=1e-4)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+      self.assertFalse(np.allclose(qfrc_constraint[0], qfrc_constraint[1]))
+
   def test_discrete_cg_init_context_prec_fold(self):
     """Verifies solver.init_context folds constraint/contact metric into ctx.tw_diag for 1D rods."""
     _, _, m, d = test_data.fixture(
