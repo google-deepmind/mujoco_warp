@@ -92,7 +92,7 @@ def _reset_dsu(
 
 
 @wp.func
-def _is_repeated_fixed_support_efc(
+def is_repeated_fixed_support_efc(
   # Data in:
   efc_type_in: wp.array2d[int],
   efc_id_in: wp.array2d[int],
@@ -449,7 +449,7 @@ def _island_dsu(
   for efcid in range(chunk_beg + lane, chunk_end, wp.block_dim()):
     efc_type = efc_type_in[worldid, efcid]
     efc_id = efc_id_in[worldid, efcid]
-    repeated = _is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid)
+    repeated = is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid)
     tree0 = int(-1)
     tree1 = int(-1)
     use_generic = int(0)

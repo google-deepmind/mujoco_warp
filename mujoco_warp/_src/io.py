@@ -2083,10 +2083,12 @@ def _default_njmax_nnz(mjm: mujoco.MjModel, nconmax: int, njmax: int) -> int:
       if jnt_type == mujoco.mjtJoint.mjJNT_BALL:
         total_nnz += 3
       elif jnt_type in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE):
-        total_nnz += 1
+        # both sides are active when the range is narrower than twice the margin
+        total_nnz += 1 + int(mjm.jnt_range[i, 1] - mjm.jnt_range[i, 0] < 2 * mjm.jnt_margin[i])
   for i in range(mjm.ntendon):
     if mjm.tendon_limited[i]:
-      total_nnz += mjm.ten_J_rownnz[i]
+      bilateral = mjm.tendon_range[i, 1] - mjm.tendon_range[i, 0] < 2 * mjm.tendon_margin[i]
+      total_nnz += (1 + int(bilateral)) * mjm.ten_J_rownnz[i]
 
   # contact constraints: njmax rows at max contact non-zeros
   max_contact_nnz = _calculate_max_contact_nnz(mjm)
