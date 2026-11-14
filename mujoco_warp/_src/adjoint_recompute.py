@@ -21,8 +21,6 @@ the forward kernel can be differentiated directly.
 import warp as wp
 
 from mujoco_warp._src import math
-from mujoco_warp._src import smooth
-from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import JointType
@@ -120,65 +118,6 @@ def _spring_qfrc_recompute(
   else:
     fdif = qpos_in[w, qposid] - qpos_spring[spring_worldid, qposid]
     qfrc_spring_out[w, dofid] = -fdif * util_misc._poly_force(stiffness, stiffnesspoly, fdif, 0)
-
-
-# passive._gravity_force
-@wp.kernel(enable_backward=True)
-def _gravity_force_recompute(
-  # Model:
-  opt_gravity: wp.array[wp.vec3],
-  body_parentid: wp.array[int],
-  body_rootid: wp.array[int],
-  body_mass: wp.array2d[float],
-  body_gravcomp: wp.array2d[float],
-  dof_bodyid: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
-  # Data in:
-  xipos_in: wp.array2d[wp.vec3],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
-  # Data out:
-  qfrc_gravcomp_out: wp.array2d[float],
-):
-  worldid, bodyid, dofid = wp.tid()
-  bodyid += 1
-  gravcomp = body_gravcomp[worldid % body_gravcomp.shape[0], bodyid]
-  gravity = opt_gravity[worldid % opt_gravity.shape[0]]
-  if gravcomp:
-    force = -gravity * body_mass[worldid % body_mass.shape[0], bodyid] * gravcomp
-    jac, _ = support.jac_dof(
-      body_parentid,
-      body_rootid,
-      dof_bodyid,
-      body_isdofancestor,
-      subtree_com_in,
-      cdof_in,
-      xipos_in[worldid, bodyid],
-      bodyid,
-      dofid,
-      worldid,
-    )
-    # Avoid a row view so the reverse uses the explicitly supplied adjoint buffer.
-    wp.atomic_add(qfrc_gravcomp_out, worldid, dofid, wp.dot(jac, force))  # kernel_analyzer: ignore[atomic]
-
-
-# smooth._cfrc
-@wp.kernel
-def _rne_cfrc_recompute(
-  # Data in:
-  cinert_in: wp.array2d[vec10],
-  cvel_in: wp.array2d[wp.spatial_vector],
-  cacc_in: wp.array2d[wp.spatial_vector],
-  # Out:
-  cfrc_local_out: wp.array2d[wp.spatial_vector],
-):
-  w, b = wp.tid()
-  frc = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-  if b != 0:
-    ci = cinert_in[w, b]
-    cv = cvel_in[w, b]
-    frc = smooth.rne_body_force(ci, cv, cacc_in[w, b])
-  cfrc_local_out[w, b] = frc
 
 
 # smooth._cinert

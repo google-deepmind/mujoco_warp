@@ -691,6 +691,7 @@ def step_backward_scratch(m: Model, d: Data, d_out: Data, bc: BackwardContext) -
     xquat=d_kin.xquat,
     xipos=d_kin.xipos,
     xiquat=d_kin.xiquat,
+    xanchor=d_kin.xanchor,
     geom_xpos=d_kin.geom_xpos,
     geom_xquat=d_kin.geom_xquat,
     subtree_com=d_kin.subtree_com,

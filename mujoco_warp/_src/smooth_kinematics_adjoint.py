@@ -27,6 +27,9 @@ from mujoco_warp._src.types import Model
 
 wp.set_module_options({"enable_backward": False})
 
+# Lanes per DOF in position VJP reductions.
+_DOF_VJP_LANES = 8
+
 
 @wp.func
 def _mocap_quat_vjp(quat: wp.quat, torque: wp.vec3) -> wp.quat:
@@ -151,6 +154,9 @@ def _cdof_qpos_vjp(
   w, k, lane = wp.tid()
   cdof_k = cdof_in[w, k]
   jk = dof_jntid[k]
+  if jnt_type[jk] == JointType.FREE and k - jnt_dofadr[jk] < 3:
+    # Combine CDOF and COM-origin translation terms in _subtree_com_qpos_vjp.
+    return
   acc = float(0.0)
   for i in range(lane, nv, lanes):
     ji = dof_jntid[i]
@@ -189,13 +195,14 @@ def _build_ceff(
   ceff_out: wp.array2d[wp.vec3],
 ):
   w, b = wp.tid()
-  ceff = adj_subtree_com[w, b]
+  origin = wp.vec3()
   if b > 0 and body_rootid[b] == b:
-    for i in range(nv):
+    for index in range(nv):
+      i = nv - 1 - index
       if body_rootid[dof_bodyid[i]] == b:
         adj = adj_cdof[w, i]
-        ceff += wp.cross(wp.spatial_bottom(adj), wp.spatial_top(cdof_in[w, i]))
-  ceff_out[w, b] = ceff
+        origin += wp.cross(wp.spatial_top(cdof_in[w, i]), wp.spatial_bottom(adj))
+  ceff_out[w, b] = adj_subtree_com[w, b] - origin
 
 
 @wp.kernel(module="unique", enable_backward=False)
@@ -206,7 +213,11 @@ def _subtree_com_qpos_vjp(
   body_rootid: wp.array[int],
   body_mass: wp.array2d[float],
   body_subtreemass: wp.array2d[float],
+  jnt_type: wp.array[int],
+  jnt_dofadr: wp.array[int],
   dof_bodyid: wp.array[int],
+  dof_jntid: wp.array[int],
+  body_subtreenum: wp.array[int],
   body_isdofancestor: wp.array2d[int],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
@@ -215,10 +226,28 @@ def _subtree_com_qpos_vjp(
   # In:
   lanes: int,
   adj_subtree_com: wp.array2d[wp.vec3],
+  ceff: wp.array2d[wp.vec3],
   # Out:
   adj_dof_out: wp.array2d[float],
 ):
   w, k, lane = wp.tid()
+  joint = dof_jntid[k]
+  axis = k - jnt_dofadr[joint]
+  if jnt_type[joint] == JointType.FREE and axis < 3:
+    if lane == 0:
+      root = body_rootid[dof_bodyid[k]]
+      value = adj_subtree_com[w, root][axis]
+      subtree_mass = body_subtreemass[w % body_subtreemass.shape[0], root]
+      if subtree_mass >= MJ_MINVAL and ceff[w, root][axis] != 0.0:
+        mass_sum = float(0.0)
+        for body in range(root, root + body_subtreenum[root]):
+          mass_sum += body_mass[w % body_mass.shape[0], body]
+        # Retain the COM-frame correction if mutable masses differ from the stored subtree mass.
+        value += ((mass_sum - subtree_mass) / subtree_mass) * ceff[w, root][axis]
+      adj_dof_out[w, k] += value
+    return
+  if ceff[w, body_rootid[dof_bodyid[k]]] == wp.vec3():
+    return
   wm = w % body_mass.shape[0]
   acc = float(0.0)
   for body in range(1 + lane, nbody, lanes):
@@ -242,7 +271,7 @@ def _subtree_com_qpos_vjp(
       mass = 1.0 if body == root else 0.0
     else:
       mass = body_mass[wm, body] / subtree_mass
-    acc += mass * wp.dot(jacp, adj_subtree_com[w, root])
+    acc += mass * wp.dot(jacp, ceff[w, root])
   wp.atomic_add(adj_dof_out, w, k, acc)  # kernel_analyzer: ignore[atomic]
 
 
@@ -293,8 +322,7 @@ def kinematics_qpos_backward(
   adj_qpos: wp.array2d[float],
 ):
   """Accumulates the cdof and subtree-COM adjoints into qpos."""
-  # Split each DOF's scan across lanes while keeping the partial sums in registers.
-  lanes = 8 if d.qpos.device.is_cuda else 1
+  lanes = _DOF_VJP_LANES
   wp.launch(
     _cdof_qpos_vjp,
     dim=(d.nworld, m.nv, lanes),
@@ -317,12 +345,17 @@ def kinematics_qpos_backward(
       m.body_rootid,
       m.body_mass,
       m.body_subtreemass,
+      m.jnt_type,
+      m.jnt_dofadr,
       m.dof_bodyid,
+      m.dof_jntid,
+      m.body_subtreenum,
       m.body_isdofancestor,
       d.xipos,
       d.subtree_com,
       d.cdof,
       lanes,
+      adj_subtree_com,
       ceff,
     ],
     outputs=[adj_dof],

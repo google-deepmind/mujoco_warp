@@ -27,6 +27,7 @@ from mujoco_warp._src.types import BackwardContext
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import GeomType
+from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.warp_util import event_scope
 
@@ -506,10 +507,15 @@ def _geom_pose_dof_vjp(
   ngeom: int,
   body_parentid: wp.array[int],
   body_rootid: wp.array[int],
+  jnt_type: wp.array[int],
   dof_bodyid: wp.array[int],
+  dof_jntid: wp.array[int],
   geom_bodyid: wp.array[int],
+  geom_pos: wp.array2d[wp.vec3],
   body_isdofancestor: wp.array2d[int],
   # Data in:
+  xquat_in: wp.array2d[wp.quat],
+  xanchor_in: wp.array2d[wp.vec3],
   geom_xpos_in: wp.array2d[wp.vec3],
   geom_xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -522,9 +528,12 @@ def _geom_pose_dof_vjp(
 ):
   w, k = wp.tid()
   acc = float(0.0)
+  joint = dof_jntid[k]
   for g in range(ngeom):
     rgp = res_geom_xpos[w, g]
     rgm = res_geom_xquat[w, g]
+    if rgp == wp.vec3() and rgm == wp.quat():
+      continue
     body = geom_bodyid[g]
     jacp, jacr = support.jac_dof(
       body_parentid,
@@ -537,6 +546,15 @@ def _geom_pose_dof_vjp(
       body,
       k,
       w,
+    )
+    jacp = adjoint_util._jac_dof_pos(
+      jacp,
+      jacr,
+      geom_xpos_in[w, g],
+      xanchor_in[w, joint],
+      xquat_in[w, body],
+      geom_pos[w % geom_pos.shape[0], g],
+      jnt_type[joint] == JointType.FREE and dof_bodyid[k] == body,
     )
     tau = adjoint_util._adj_quat_rotation(geom_xquat_in[w, g], rgm)
     acc += wp.dot(jacp, rgp) + wp.dot(jacr, tau)
@@ -646,9 +664,14 @@ def contact_qpos_vjp(
       m.ngeom,
       m.body_parentid,
       m.body_rootid,
+      m.jnt_type,
       m.dof_bodyid,
+      m.dof_jntid,
       m.geom_bodyid,
+      m.geom_pos,
       m.body_isdofancestor,
+      d_out.xquat,
+      d_out.xanchor,
       d_out.geom_xpos,
       d_out.geom_xquat,
       d_out.subtree_com,

@@ -183,6 +183,26 @@ def _adj_quat_to_vel(quat: wp.quat, adj_ret: wp.vec3):
 
 
 @wp.func
+def _jac_dof_pos(
+  # In:
+  jacp: wp.vec3,
+  jacr: wp.vec3,
+  point: wp.vec3,
+  anchor: wp.vec3,
+  rotation: wp.quat,
+  local_point: wp.vec3,
+  free_body: bool,
+) -> wp.vec3:
+  """Evaluates a point's positional Jacobian without cancelling COM-relative offsets."""
+  if jacr == wp.vec3():
+    return jacp
+  offset = point - anchor
+  if free_body:
+    offset = math.rot_vec_quat(local_point, rotation)
+  return wp.cross(jacr, offset)
+
+
+@wp.func
 def _adj_quat_rotation(rotation: wp.quat, adj_rotation: wp.quat) -> wp.vec3:
   """Maps a wxyz quaternion cotangent to its world angular tangent cotangent."""
   seed = math.mul_quat(adj_rotation, math.quat_inv(rotation))
