@@ -28,6 +28,7 @@ from mujoco_warp._src import sensor
 from mujoco_warp._src import sleep
 from mujoco_warp._src import smooth
 from mujoco_warp._src import solver
+from mujoco_warp._src import sort
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.support import mat33_to_quat_polar
@@ -2802,7 +2803,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   if m.opt.run_collision_detection:
     if sleep_enabled:
       ctx = collision_driver.prepare_collision_context(m, d)
-      collision_driver.collision(m, d, ctx=ctx)
+      collision_driver.collision(m, d, ctx=ctx, sort_contacts=False)
 
       ctx.woke.zero_()
       sleep.wake_collision(m, d, woke=ctx.woke)
@@ -2812,13 +2813,22 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
         def finish_wake():
           wp.copy(ctx.awake_prev, d.body_awake)
           sleep.update_sleep(m, d)
-          collision_driver.collision(m, d, ctx=ctx, awake_prev=ctx.awake_prev)
+          collision_driver.collision(m, d, ctx=ctx, awake_prev=ctx.awake_prev, sort_contacts=False)
 
         wp.capture_if(ctx.woke, on_true=finish_wake)
       else:
         collision_driver.copy_body_awake_if_woke(m, d, ctx.woke, ctx.awake_prev)
         sleep.update_sleep(m, d, woke=ctx.woke)
-        collision_driver.collision(m, d, ctx=ctx, awake_prev=ctx.awake_prev, woke=ctx.woke)
+        collision_driver.collision(m, d, ctx=ctx, awake_prev=ctx.awake_prev, woke=ctx.woke, sort_contacts=False)
+
+      # Sort once after both passes. The second pass only appends contacts, and sorting allocates
+      # scratch buffers, which CUDA conditional bodies do not support.
+      if (
+        d.naconmax > 0
+        and not (m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT))
+        and (m.opt.deterministic & DeterminismType.CONTACTS)
+      ):
+        sort.contacts(d)
     else:
       collision_driver.collision(m, d)
 

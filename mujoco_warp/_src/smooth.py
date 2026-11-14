@@ -3256,7 +3256,6 @@ def _comvel_branch(enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
-    body_parentid: wp.array[int],
     body_jntnum: wp.array[int],
     body_jntadr: wp.array[int],
     body_dofadr: wp.array[int],
@@ -3284,10 +3283,9 @@ def _comvel_branch(enable_sleep: bool = False):
     qvel = qvel_in[worldid]
     cdof = cdof_in[worldid]
 
+    cvel = wp.spatial_vector()
     for i in range(start, end):
       bodyid = body_branches[i]
-      pid = body_parentid[bodyid]
-      cvel = cvel_out[worldid, pid]
       dofid = body_dofadr[bodyid]
       jntid = body_jntadr[bodyid]
       jntnum = body_jntnum[bodyid]
@@ -3351,7 +3349,6 @@ def com_vel(m: Model, d: Data):
     _comvel_branch(enable_sleep),
     dim=(d.nworld, m.nbranch),
     inputs=[
-      m.body_parentid,
       m.body_jntnum,
       m.body_jntadr,
       m.body_dofadr,
