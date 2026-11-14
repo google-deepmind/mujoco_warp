@@ -220,7 +220,6 @@ class RenderTest(parameterized.TestCase):
     self.assertNotEqual(np.unique(rgb[0]).shape[0], 1)
     np.testing.assert_array_equal(rgb[0], rgb[1])
 
-  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires CUDA.")
   def test_render_graph_capture(self):
     mjm, mjd, m, d = test_data.fixture("humanoid/humanoid.xml")
     rc = mjw.create_render_context(
@@ -231,14 +230,19 @@ class RenderTest(parameterized.TestCase):
     )
 
     mjw.render(m, d, rc)
-    rgb_np = rc.rgb_data.numpy()
+    rgb_np = rc.rgb_data.numpy().copy()
+    depth_np = rc.depth_data.numpy().copy()
 
     with wp.ScopedCapture() as capture:
       mjw.render(m, d, rc)
 
+    # clear the outputs the eager render above already filled
+    rc.rgb_data.zero_()
+    rc.depth_data.fill_(wp.inf)
     wp.capture_launch(capture.graph)
 
-    _assert_eq(rgb_np, rc.rgb_data.numpy(), "rgb_data")
+    np.testing.assert_array_equal(rc.rgb_data.numpy(), rgb_np)
+    _assert_eq(rc.depth_data.numpy(), depth_np, "depth_data")
 
   @parameterized.product(backend=_BACKENDS, nworld=(2, 512))
   def test_render_segmentation(self, nworld: int, backend: str):

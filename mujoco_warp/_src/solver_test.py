@@ -1240,7 +1240,7 @@ class SolverTest(parameterized.TestCase):
         _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
         _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
-  @absltest.skipIf(not wp.get_device().is_cuda, "CUDA graph capture requires CUDA")
+  @absltest.skipIf(not wp.get_device().is_cuda, "Side streams only fork during CUDA graph capture")
   def test_solve_graph_capture_sparse(self):
     """A captured sparse solve forks jv onto a second stream, joins it and matches eager."""
     _, _, m, d = test_data.fixture(

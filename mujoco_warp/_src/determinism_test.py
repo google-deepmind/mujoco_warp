@@ -1020,7 +1020,6 @@ class DeterminismTest(parameterized.TestCase):
       mjw.forward(m, d)
     self.assertEqual((contacts.call_count, constraints.call_count), ncalls)
 
-  @absltest.skipIf(not wp.get_device().is_cuda, "CUDA graph capture requires CUDA")
   @parameterized.parameters(True, False)
   def test_graph_capture(self, graph_conditional):
     """Captured deterministic steps are bitwise equal to uncaptured steps and to each other."""
