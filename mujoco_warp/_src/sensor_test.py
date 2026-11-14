@@ -1159,6 +1159,41 @@ class SensorTest(parameterized.TestCase):
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
+  @parameterized.parameters(DisableBit.CONTACT, DisableBit.CONSTRAINT)
+  def test_sensor_collision_contact_disabled(self, disableflag):
+    """Tests collision sensors with contacts disabled."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="plane" type="plane" size="10 10 .01"/>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom name="sphere" type="sphere" size=".1"/>
+          </body>
+          <body pos=".4 .1 .04">
+            <freejoint/>
+            <geom name="box" type="box" size=".05 .05 .05"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <distance geom1="sphere" geom2="plane" cutoff="1"/>
+          <distance geom1="box" geom2="plane" cutoff="1"/>
+          <normal geom1="sphere" geom2="box" cutoff="1"/>
+          <fromto geom1="sphere" geom2="box" cutoff="1"/>
+        </sensor>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": disableflag},
+    )
+
+    d.sensordata.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    self.assertEqual(d.nefc.numpy()[0], 0)
+
   @parameterized.product(dist=(1e-6, -1e-6), nworld=(1, 2))
   def test_sensor_collision_shallow(self, dist, nworld):
     """Tests collision sensors for two spheres a micrometer apart, away from the origin."""
