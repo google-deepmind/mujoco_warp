@@ -27,6 +27,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_driver
+from mujoco_warp._src import collision_primitive
 from mujoco_warp._src import constraint
 from mujoco_warp._src import sort
 from mujoco_warp._src import types
@@ -2265,6 +2266,34 @@ class SortTest(parameterized.TestCase):
       self.assertTrue(np.any(results[0]["surfacevel"][:count] != 0))
     else:
       np.testing.assert_array_equal(results[0]["surfacevel"], 3)
+
+  def test_contact_buffer_released(self):
+    """A collision context that is reused does not keep the buffer of the sort."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="0 0 .09">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nconmax=8,
+      overrides={"opt.deterministic": mjw.DeterminismType.CONTACTS},
+    )
+    self.assertIsNotNone(sort.contact_buffer(m, d))
+    ctx = collision_driver.prepare_collision_context(m, d)
+    collision_driver.collision(m, d, ctx=ctx)
+    self.assertIsNone(ctx.contact)
+    # A narrowphase that is called with the context afterwards writes its contacts to `d.contact`.
+    d.nacon.zero_()
+    d.contact.dist.fill_(wp.inf)
+    collision_primitive.primitive_narrowphase(m, d, ctx, [(mjw.GeomType.PLANE, mjw.GeomType.SPHERE)])
+    self.assertEqual(d.nacon.numpy()[0], 1)
+    np.testing.assert_allclose(d.contact.dist.numpy()[:1], mjd.contact.dist, rtol=1e-5, atol=1e-5)
 
 
 _CONTACTS_XML = """

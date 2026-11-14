@@ -1305,3 +1305,4 @@ def collision(
 
   if sort_contacts and (m.opt.deterministic & DeterminismType.CONTACTS):
     sort.contacts(d, ctx.contact, m.flg_surfacevel)
+    ctx.contact = None

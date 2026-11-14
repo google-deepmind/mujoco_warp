@@ -22,7 +22,7 @@ import warp as wp
 from mujoco_warp._src import types
 from mujoco_warp._src.warp_util import cache_kernel
 
-wp.set_module_options({"default_grid_stride": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 # One launch orders blocks of elements by counting, and the merge passes only start at the width of
 # a block. Each launch costs more than the comparisons of a small batch, which sorts wide blocks.
