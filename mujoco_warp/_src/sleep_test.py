@@ -36,6 +36,37 @@ wp.set_module_options({"enable_backward": False})
 
 
 class SleepTest(parameterized.TestCase):
+  @parameterized.parameters("pyramidal", "elliptic")
+  def test_compact_solve_unconstrained_zeros_qfrc_constraint(self, cone):
+    """An unconstrained sparse compact solve zeroes the constraint force."""
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option jacobian="sparse" cone="{cone}">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="0 0 .1">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+          <body pos="1 0 .1">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    self.assertEqual(mjd.nefc, 0)
+    d.cqfrc_constraint.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjwarp.solve(m, d)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(d.qfrc_constraint.numpy()[0], 0.0, atol=1e-5)
+
   @parameterized.parameters(1, 2)
   def test_sleep_initiation(self, nworld):
     """Verify that a stationary body on a flat plane goes to sleep."""
