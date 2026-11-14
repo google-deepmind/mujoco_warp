@@ -15,8 +15,10 @@
 
 """Tests for solver functions."""
 
+import contextlib
 import copy
 import dataclasses
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -2024,6 +2026,77 @@ class SolverTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(d.qpos.numpy()[0], d.qpos.numpy()[1]))
+
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    nworld=(1, 2),
+    sparse_blocks=(False, True),
+  )
+  def test_noslip_inertia_blocks(self, jacobian, nworld, sparse_blocks):
+    """Tests noslip solver for each inertia block kind with per-world masses against MuJoCo."""
+    # the 7-dof tree exceeds the patched dense block size and joins the sparse LDL region
+    blocks = mock.patch.multiple("mujoco_warp._src.types", M_BLOCK_DENSE_MAX=6)
+    with blocks if sparse_blocks else contextlib.nullcontext():
+      mjm, mjd, m, d = test_data.fixture(
+        xml="""
+      <mujoco>
+        <option noslip_iterations="3" noslip_tolerance="0">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint frictionloss=".5"/>
+            <geom pos=".2 0 0" size=".1" mass="1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint axis="1 0 0" frictionloss=".5"/>
+            <joint axis="0 1 0" frictionloss=".5"/>
+            <geom pos=".1 .1 .1" type="box" size=".1 .2 .1" mass=".7"/>
+          </body>
+          <body pos="2 0 0">
+            <freejoint/>
+            <geom type="box" size=".1 .2 .3" mass="2"/>
+            <body pos=".2 0 0">
+              <joint axis="0 1 0" frictionloss=".5"/>
+              <geom pos=".1 0 0" size=".05" mass=".5"/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+        qpos_noise=0.3,
+        qvel_noise=1.0,
+        # three sweeps do not converge, so the result depends on the row order: use MuJoCo's
+        overrides={"opt.jacobian": jacobian, "opt.deterministic": types.DeterminismType.CONSTRAINT},
+        nworld=nworld,
+        batch_sizes={"body_mass": nworld},
+      )
+    block_adr = m.qLD_block_adr.numpy()[mjm.tree_dofadr]
+    # the 2-dof scalar block takes the first 4 entries of qLD, ahead of the 7-dof tile block
+    expected_blocks = [types.Q_LD_BLOCK_COMPACT, 0, types.Q_LD_BLOCK_SPARSE if sparse_blocks else 4]
+    self.assertEqual(sorted(block_adr), sorted(expected_blocks))
+
+    # main solver forces without noslip, used to check that noslip has an effect
+    mjd_slip = copy.copy(mjd)
+    mujoco.mj_forward(_noslip_model(mjm, noslip_iterations=0), mjd_slip)
+    mujoco.mj_forward(mjm, mjd)
+    self.assertGreater(np.abs(mjd.qacc - mjd_slip.qacc).max(), 1e-6)
+
+    body_mass = m.body_mass.numpy()
+    body_mass[nworld - 1] *= 1.0 + np.arange(mjm.nbody) / mjm.nbody
+    m.body_mass.assign(body_mass)
+    d.qacc.fill_(wp.inf)
+    d.efc.force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    qacc, efc_force = d.qacc.numpy(), d.efc.force.numpy()
+    for w in range(nworld):
+      mjm.body_mass[:] = body_mass[w]
+      mujoco.mj_forward(mjm, mjd)
+      _assert_eq(qacc[w], mjd.qacc, f"qacc{w}", tol=_NOSLIP_TOLERANCE)
+      _assert_eq(efc_force[w, : mjd.nefc], mjd.efc_force, f"efc_force{w}", tol=_NOSLIP_TOLERANCE)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
 
   @parameterized.parameters(1, 2)
   def test_noslip_tolerance(self, nworld):
