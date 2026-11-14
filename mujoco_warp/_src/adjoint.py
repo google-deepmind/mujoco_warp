@@ -78,12 +78,42 @@ def backward_context(bc: BackwardContext):
     _ACTIVE_BACKWARD_CONTEXT.reset(token)
 
 
+# BackwardContext scratch accumulators; helper-local buffers are initialized by their producers.
+_SCRATCH_FIELDS_TO_ZERO = (
+  # State and residual accumulators.
+  "adj_qpos",
+  "adj_qvel",
+  "adj_qacc",
+  "adj_mocap_pos",
+  "adj_mocap_quat",
+  "res_qpos",
+  "res_qvel",
+  "adj_dof",
+  "res_dof",
+  # Contact accumulators.
+  "adj_efc_pos",
+  "adj_contact_pos",
+  "adj_contact_frame",
+  "adj_subtree_com",
+  "adj_cdof",
+  # Constraint-parameter accumulators.
+  "res_dof_frictionloss",
+  "res_dof_solref",
+  "res_dof_solimp",
+  "res_eq_solref",
+  "res_eq_solimp",
+  "res_jnt_solref",
+  "res_jnt_solimp",
+)
+
+
 def _reset_backward_context(bc: BackwardContext):
-  """Zeros a backward context and its array gradients."""
+  """Resets accumulators, leaving producer-initialized scratch for its next use."""
   for field in dataclasses.fields(bc):
     value = getattr(bc, field.name)
     if isinstance(value, wp.array):
-      value.zero_()
+      if field.name in _SCRATCH_FIELDS_TO_ZERO:
+        value.zero_()
       if value.grad is not None:
         value.grad.zero_()
 

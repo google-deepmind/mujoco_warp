@@ -850,6 +850,10 @@ def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
       )
 
     adj_qacc = bc.adj_qacc_root
+  else:
+    # Later VJPs have no direct integration-mass contribution without a solve.
+    bc.y_remap.zero_()
+    bc.w_dir.zero_()
 
   wp.launch(adjoint_util._accum_cols, dim=(nworld, nv), inputs=[d_out.qacc.grad], outputs=[adj_qacc])
   return adj_qpos, adj_qvel, adj_qacc
