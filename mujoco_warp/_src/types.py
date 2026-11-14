@@ -2543,7 +2543,8 @@ class Data:
     crb: com-based composite inertia and mass                   (nworld, nbody, 10)
     M: total inertia, CSR                                       (nworld, nC)
     qLD: per-block factor: packed dense region, then the nC     (nworld, qLD_block_total + nC)
-         L'*D*L region at offset qLD_block_total (nC=0 if no sparse block)
+         L'*D*L region at offset qLD_block_total (nC=0 if no sparse block);
+         forward stores dense blocks only for the CG solver
     qLDiagInv: reciprocal diagonal for compact and sparse blocks (nworld, nv)
     tree_awake: is tree awake; 0: asleep; 1: awake              (nworld, ntree)
     body_awake: body sleep state (SleepState)                   (nworld, nbody)
