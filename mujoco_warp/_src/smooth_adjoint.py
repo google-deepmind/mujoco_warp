@@ -21,7 +21,6 @@ from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import smooth_kinematics_adjoint
-from mujoco_warp._src import support
 from mujoco_warp._src.types import BackwardContext
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
@@ -576,7 +575,20 @@ def rne_backward(
   _cinert_vjp(m, d, bc.adj_cinert, bc)
   if xfrc_applied is not None:
     xfrc_kinematics_backward(m, d, lam, xfrc_applied, bc)
-  return _kinematic_qpos_vjp(m, d, bc.adj_cdof, bc)
+  bc.smooth_res_qpos.zero_()
+  smooth_kinematics_adjoint.kinematics_qpos_vjp(
+    m,
+    d,
+    d.qpos,
+    bc.adj_xipos,
+    bc.adj_xiquat,
+    bc.adj_cdof,
+    bc.adj_subtree_com,
+    bc.smooth_ceff,
+    bc.smooth_res_dof,
+    bc.smooth_res_qpos,
+  )
+  return bc.smooth_res_qpos
 
 
 # Reverse com_vel into qvel and cdof without materializing its Jacobian.
@@ -782,70 +794,8 @@ def comvel_backward(
   return {"qvel": bc.smooth_cv_adj_qvel, "cdof": adj_cdof}
 
 
-# --------------------------------------------------------------------------------------------
-# cinert reverse: the last kinematic dqpos leaf. cinert depends on qpos via xiquat / xipos /
-# subtree_com[root]: source-AD the body-local _cinert leaf, chain xipos/xiquat -> qpos via
-# support.jac_dof, route adj_subtree_com through _subtree_com_qpos_vjp. cvel/cdof_dot have no
-# direct qpos path (it flows through the total adj_cdof via _cdof_qpos_vjp).
-# --------------------------------------------------------------------------------------------
-
-
-# chain adj_{xipos_in, xiquat_in} to a per-dof tangent gradient via support.jac_dof
-@wp.kernel(module="unique", enable_backward=False)
-def _cinert_pose_dof_vjp(
-  # Model:
-  nbody: int,
-  body_parentid: wp.array[int],
-  body_rootid: wp.array[int],
-  dof_bodyid: wp.array[int],
-  dof_jntid: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
-  # Data in:
-  xipos_in: wp.array2d[wp.vec3],
-  xiquat_in: wp.array2d[wp.quat],
-  xanchor_in: wp.array2d[wp.vec3],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
-  # In:
-  lanes: int,
-  adj_xipos: wp.array2d[wp.vec3],
-  adj_xiquat: wp.array2d[wp.quat],
-  # Out:
-  res_dof_out: wp.array2d[float],  # (+=): per-dof tangent gradient
-):
-  w, k, lane = wp.tid()
-  acc = float(0.0)
-  joint = dof_jntid[k]
-  for b in range(1 + lane, nbody, lanes):
-    if body_isdofancestor[b, k] == 0:  # dof k does not move body b -> jac = 0
-      continue
-    jacp, jacr = support.jac_dof(
-      body_parentid,
-      body_rootid,
-      dof_bodyid,
-      body_isdofancestor,
-      subtree_com_in,
-      cdof_in,
-      xipos_in[w, b],
-      b,
-      k,
-      w,
-    )
-    jacp = adjoint_util._jac_dof_pos(
-      jacp,
-      jacr,
-      xipos_in[w, b],
-      xanchor_in[w, joint],
-      wp.quat(),
-      wp.vec3(),
-      False,
-    )
-    tau = adjoint_util._adj_quat_rotation(xiquat_in[w, b], adj_xiquat[w, b])
-    acc += wp.dot(jacp, adj_xipos[w, b]) + wp.dot(jacr, tau)
-  wp.atomic_add(res_dof_out, w, k, acc)  # kernel_analyzer: ignore[atomic]
-
-
 def _cinert_vjp(m: Model, d: Data, adj_cinert: wp.array2d, bc: BackwardContext):
+  """Reverses body inertia in the COM frame into pose, COM and parameter cotangents."""
   # Explicit sinks prevent Warp from falling back to the model parameters' own .grad arrays.
   mass_grad = bc.res_body_mass if m.body_mass.requires_grad else None
   inertia_grad = bc.res_body_inertia if m.body_inertia.requires_grad else None
@@ -862,44 +812,3 @@ def _cinert_vjp(m: Model, d: Data, adj_cinert: wp.array2d, bc: BackwardContext):
     adj_outputs=[adj_cinert],
     adjoint=True,
   )
-
-
-def _kinematic_qpos_vjp(m: Model, d: Data, adj_cdof: wp.array2d, bc: BackwardContext):
-  nworld, nv = d.nworld, m.nv
-  smooth_res_dof, smooth_res_qpos = bc.smooth_res_dof, bc.smooth_res_qpos
-  smooth_res_dof.zero_()
-  smooth_res_qpos.zero_()
-  lanes = smooth_kinematics_adjoint._DOF_VJP_LANES
-  wp.launch(
-    _cinert_pose_dof_vjp,
-    dim=(nworld, nv, lanes),
-    inputs=[
-      m.nbody,
-      m.body_parentid,
-      m.body_rootid,
-      m.dof_bodyid,
-      m.dof_jntid,
-      m.body_isdofancestor,
-      d.xipos,
-      d.xiquat,
-      d.xanchor,
-      d.subtree_com,
-      d.cdof,
-      lanes,
-      bc.adj_xipos,
-      bc.adj_xiquat,
-    ],
-    outputs=[smooth_res_dof],
-    block_dim=128,
-  )
-  smooth_kinematics_adjoint.kinematics_qpos_backward(
-    m,
-    d,
-    d.qpos,
-    adj_cdof,
-    bc.adj_subtree_com,
-    smooth_res_dof,
-    bc.smooth_ceff,
-    smooth_res_qpos,
-  )
-  return smooth_res_qpos

@@ -21,13 +21,11 @@ from mujoco_warp._src import collision_convex_adjoint
 from mujoco_warp._src import collision_primitive_core
 from mujoco_warp._src import math
 from mujoco_warp._src import smooth_kinematics_adjoint
-from mujoco_warp._src import support
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BackwardContext
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import GeomType
-from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.warp_util import event_scope
 
@@ -500,67 +498,6 @@ def _gather_efc_to_contact(
   adj_dist_out[cid] = res_efc_pos[contact_worldid_in[cid], e0]
 
 
-# chain narrowphase geom-pose adjoints to the per-dof tangent gradient via support.jac_dof
-@wp.kernel(enable_backward=False)
-def _geom_pose_dof_vjp(
-  # Model:
-  ngeom: int,
-  body_parentid: wp.array[int],
-  body_rootid: wp.array[int],
-  jnt_type: wp.array[int],
-  dof_bodyid: wp.array[int],
-  dof_jntid: wp.array[int],
-  geom_bodyid: wp.array[int],
-  geom_pos: wp.array2d[wp.vec3],
-  body_isdofancestor: wp.array2d[int],
-  # Data in:
-  xquat_in: wp.array2d[wp.quat],
-  xanchor_in: wp.array2d[wp.vec3],
-  geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xquat_in: wp.array2d[wp.quat],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
-  # In:
-  res_geom_xpos: wp.array2d[wp.vec3],  # adj(geom_xpos) from the narrowphase backward
-  res_geom_xquat: wp.array2d[wp.quat],  # adj(geom_xquat)
-  # Out:
-  res_dof_out: wp.array2d[float],  # per-dof tangent gradient d(contact)/d(dof k)
-):
-  w, k = wp.tid()
-  acc = float(0.0)
-  joint = dof_jntid[k]
-  for g in range(ngeom):
-    rgp = res_geom_xpos[w, g]
-    rgm = res_geom_xquat[w, g]
-    if rgp == wp.vec3() and rgm == wp.quat():
-      continue
-    body = geom_bodyid[g]
-    jacp, jacr = support.jac_dof(
-      body_parentid,
-      body_rootid,
-      dof_bodyid,
-      body_isdofancestor,
-      subtree_com_in,
-      cdof_in,
-      geom_xpos_in[w, g],
-      body,
-      k,
-      w,
-    )
-    jacp = adjoint_util._jac_dof_pos(
-      jacp,
-      jacr,
-      geom_xpos_in[w, g],
-      xanchor_in[w, joint],
-      xquat_in[w, body],
-      geom_pos[w % geom_pos.shape[0], g],
-      jnt_type[joint] == JointType.FREE and dof_bodyid[k] == body,
-    )
-    tau = adjoint_util._adj_quat_rotation(geom_xquat_in[w, g], rgm)
-    acc += wp.dot(jacp, rgp) + wp.dot(jacr, tau)
-  res_dof_out[w, k] += acc
-
-
 @event_scope
 def contact_qpos_vjp(
   m: Model,
@@ -576,8 +513,8 @@ def contact_qpos_vjp(
 ):
   """Accumulates the contact residual's dqpos into res_qpos from the exposed input-adjoints.
 
-  Primitive and heightfield narrowphase replays yield adj(geom poses); analytic Jacobian VJPs
-  chain these into one per-dof tangent buffer that _dof_to_qpos lifts.
+  Primitive and heightfield narrowphase replays produce geometry-pose cotangents,
+  which the kinematics VJP projects into joint coordinates.
   Box-box requires the primitive collider (nativeccd disabled).
 
   Args:
@@ -596,8 +533,6 @@ def contact_qpos_vjp(
     from mujoco_warp._src import adjoint
 
     bc = adjoint.create_backward_context(m, d_out)
-  nworld = d_out.qpos.shape[0]
-  nv = m.nv
   nconmax = d_out.contact.pos.shape[0]
   contact_point, contact_feature = bc.contact_point, bc.contact_feature
   contact_adj_dist = bc.contact_adj_dist
@@ -607,8 +542,6 @@ def contact_qpos_vjp(
   contact_adj_dist.zero_()
   res_geom_xpos.zero_()
   res_geom_xquat.zero_()
-  contact_res_dof.zero_()
-  contact_ceff.zero_()
 
   wp.launch(
     _narrowphase_witness,
@@ -657,37 +590,16 @@ def contact_qpos_vjp(
     collision_convex_adjoint.hfield_contact_pose_vjp(
       m, d_out, bc.collision_convex_ctx, res_contact_pos, res_contact_frame, contact_adj_dist, res_geom_xpos, res_geom_xquat
     )
-  wp.launch(
-    _geom_pose_dof_vjp,
-    dim=(nworld, nv),
-    inputs=[
-      m.ngeom,
-      m.body_parentid,
-      m.body_rootid,
-      m.jnt_type,
-      m.dof_bodyid,
-      m.dof_jntid,
-      m.geom_bodyid,
-      m.geom_pos,
-      m.body_isdofancestor,
-      d_out.xquat,
-      d_out.xanchor,
-      d_out.geom_xpos,
-      d_out.geom_xquat,
-      d_out.subtree_com,
-      d_out.cdof,
-      res_geom_xpos,
-      res_geom_xquat,
-    ],
-    outputs=[contact_res_dof],
-  )
-  smooth_kinematics_adjoint.kinematics_qpos_backward(
+  smooth_kinematics_adjoint.kinematics_qpos_vjp(
     m,
     d_out,
     qpos_in,
+    res_geom_xpos,
+    res_geom_xquat,
     res_cdof,
     res_subtree_com,
-    contact_res_dof,
     contact_ceff,
+    contact_res_dof,
     res_qpos,
+    contact=True,
   )

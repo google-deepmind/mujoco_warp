@@ -592,8 +592,7 @@ def _body_wrench(
   if adj_xpos:
     force = adj_xpos[worldid, bodyid]
   if adj_xquat:
-    quat_seed = math.mul_quat(adj_xquat[worldid, bodyid], math.quat_inv(rotation))
-    torque = 0.5 * wp.vec3(quat_seed[1], quat_seed[2], quat_seed[3])
+    torque = adjoint_util._adj_quat_rotation(rotation, adj_xquat[worldid, bodyid])
   return wp.spatial_vector(torque, force)
 
 
@@ -648,7 +647,7 @@ def _kinematics_vjp(nbody: int):
               if site_bodyid[siteid] == body:
                 seed = adj_site_xpos[worldid, siteid]
                 offset = math.rot_vec_quat(site_pos[site_worldid, siteid], rotation)
-                wrench += wp.spatial_vector(wp.cross(offset, seed), seed)
+                wrench += smooth.transform_force(seed, wp.vec3(), -offset)
         wp.tile_assign(positions, wp.tile(position, preserve_type=True), offset=(start,))
         wp.tile_assign(wrenches, wp.tile(wrench, preserve_type=True), offset=(start,))
 
@@ -666,7 +665,8 @@ def _kinematics_vjp(nbody: int):
           wrench = wrenches[child - body_start]
           child_force = wp.spatial_bottom(wrench)
           force += child_force
-          torque += wp.spatial_top(wrench) + wp.cross(position - origin, child_force)
+          shifted = smooth.transform_force(child_force, wp.spatial_top(wrench), origin - position)
+          torque += wp.spatial_top(shifted)
         if inputid < njnt:
           qposadr = jnt_qposadr[inputid]
           jnt_type_ = jnt_type[inputid]
@@ -679,15 +679,13 @@ def _kinematics_vjp(nbody: int):
                 adj_qpos_out[worldid, qposadr + i] = value
               qposadr += 3
             torque_local = math.rot_vec_quat(torque, math.quat_inv(xquat_in[worldid, bodyid]))
-            # Lift the joint-local angular cotangent into quaternion coordinates.
             qpos_quat = wp.quat(
               qpos_in[worldid, qposadr],
               qpos_in[worldid, qposadr + 1],
               qpos_in[worldid, qposadr + 2],
               qpos_in[worldid, qposadr + 3],
             )
-            norm2 = wp.dot(qpos_quat, qpos_quat)
-            quat_grad = (2.0 / norm2) * math.quat_mul_axis(qpos_quat, torque_local) if norm2 > 0.0 else wp.quat()
+            quat_grad = smooth_kinematics_adjoint._joint_quat_vjp(qpos_quat, torque_local)
             for i in range(4):
               value = quat_grad[i]
               if body_start > 0:
