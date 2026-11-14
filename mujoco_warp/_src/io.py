@@ -1305,6 +1305,11 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   # M_hinit_i: row index of each CSR entry (its madr is the flat index). The dense Newton H-init
   # uses (M_hinit_i, M_colind) to scatter M's upper triangle into the dense H tile from CSR.
   M_hinit_i = np.zeros(mjm.nC, dtype=np.int32)
+  # M_tile_colmask/M_tile_offdiag: tile pattern of M, which seeds the sparse-tile Newton Cholesky
+  tile = types.TILE_SIZE_JTDAJ_DENSE
+  ntiles = max(1, (m.nv_pad + tile - 1) // tile)
+  M_tile_colmask = np.zeros((ntiles, (ntiles + 63) // 64), dtype=np.uint64)
+  M_tile_offdiag = np.zeros(ntiles, dtype=np.int32)
   for i in range(mjm.nv):
     rowadr = mjm.M_rowadr[i]
     rownnz = mjm.M_rownnz[i]
@@ -1313,8 +1318,22 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       col = int(mjm.M_colind[madr])
       M_elemid[i, col] = madr
       M_hinit_i[madr] = i
+      if col // tile < i // tile:
+        M_tile_colmask[i // tile, col // tile // 64] |= np.uint64(1) << np.uint64(col // tile % 64)
+      elif col != i:
+        M_tile_offdiag[i // tile] = 1
   m.M_elemid = M_elemid
   m.M_hinit_i = M_hinit_i
+  m.M_tile_colmask = M_tile_colmask
+  m.M_tile_offdiag = M_tile_offdiag
+  # whether M and its reverse-elimination fill-in cover every tile holding real DOFs
+  ntiles_nv = (mjm.nv + tile - 1) // tile
+  colmask = [sum(int(w) << (64 * k) for k, w in enumerate(row)) for row in M_tile_colmask[:ntiles_nv]]
+  for tk in range(ntiles_nv - 1, 0, -1):
+    if colmask[tk]:
+      parent = colmask[tk].bit_length() - 1
+      colmask[parent] |= colmask[tk] & ((1 << parent) - 1)
+  m.M_tile_full = all(colmask[tk] == (1 << tk) - 1 for tk in range(ntiles_nv))
 
   # Precompute per-block gather indices for the dense-block densify (tile_load_indexed). For each
   # dense block and flat slot (row, col), store the CSR address of M[max(i,j), min(i,j)], or nC
@@ -1658,6 +1677,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nqLD_all_updates": len(m.qLD_all_updates),
       "nqLD_level_offsets": len(m.qLD_level_offsets),
       "nM_fullm": len(m.M_fullm_i),
+      "nv_tile": m.M_tile_colmask.shape[0],
+      "nv_tile_word": m.M_tile_colmask.shape[1],
       "nqD_fullm": len(m.qD_fullm_i),
       "nv_plus_1": len(m.M_mulm_rowadr),
       "nM_mulm": len(m.M_mulm_col),

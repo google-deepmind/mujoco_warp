@@ -1737,6 +1737,10 @@ class Model:
     M_fullm_j: sparse mass matrix addressing
     M_elemid: (row, col) -> CSR madr addresses; -1 if not a chain ancestor
     M_hinit_i: row index of each CSR M entry; for densifying M into the dense Newton H (nC,)
+    M_tile_colmask: per Newton H tile, bitmask of the tiles above it coupled by M; read by the
+                    sparse-tile Newton Cholesky                  (nv_tile, nv_tile_word)
+    M_tile_offdiag: per Newton H tile, whether M couples DOFs within it (nv_tile,)
+    M_tile_full: M and its fill-in cover every tile of the Newton H, so no tile can be skipped
     qD_fullm_i: D-structure row indices for RNE derivatives
     qD_fullm_j: D-structure column indices for RNE derivatives
     M_mulm_rowadr: sparse matmul row pointers
@@ -2307,6 +2311,9 @@ class Model:
   M_fullm_j: array("nM_fullm", int)
   M_elemid: array("nv", "nv", int)  # (row, col) -> CSR madr address; -1 if col is not a chain ancestor of row
   M_hinit_i: array("nC", int)  # row index of each CSR M entry (for densifying M into the dense Newton H)
+  M_tile_colmask: array("nv_tile", "nv_tile_word", wp.uint64)  # per Newton H tile, bitmask of the tiles above it coupled by M
+  M_tile_offdiag: array("nv_tile", int)  # per Newton H tile, whether M couples DOFs within it
+  M_tile_full: bool  # M and its fill-in cover every tile of the Newton H, so no tile can be skipped
   qD_fullm_i: array("nqD_fullm", int)  # D-structure (full square) row indices for RNE derivatives
   qD_fullm_j: array("nqD_fullm", int)  # D-structure (full square) column indices for RNE derivatives
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
@@ -2883,9 +2890,11 @@ class SolverContext:
   flex_scratch: Optional[tuple] = None
   solve_ld_scratch: Optional[wp.array] = None
   tw_diag: Optional[wp.array] = None
+  # only allocated when the sparse-tile pattern is detected from the values of H
   h_tile_nz: Optional[wp.array3d[int]] = None
   h_row_mask: Optional[wp.array3d[wp.uint64]] = None
   h_col_mask: Optional[wp.array3d[wp.uint64]] = None
+  # holds whether each diagonal tile has off-diagonal entries until the symbolic factorization
   h_tile_is_diag: Optional[wp.array2d[int]] = None
   h_rhs_work: Optional[wp.array3d[float]] = None
 

@@ -3190,33 +3190,47 @@ class CompactSolverTest(parameterized.TestCase):
     np.testing.assert_allclose(d3.qacc.numpy()[0], mjd3.qacc, atol=1e-3, rtol=1e-2)
 
   @parameterized.parameters(
-    (1, "pyramidal"),
-    (2, "pyramidal"),
-    (2, "elliptic"),
+    (1, "pyramidal", "Euler"),
+    (2, "pyramidal", "Euler"),
+    (2, "elliptic", "Euler"),
+    (2, "pyramidal", "discrete"),
   )
-  def test_newton_sparse_tiles_blocked_cholesky(self, nworld, cone):
+  def test_newton_sparse_tiles_blocked_cholesky(self, nworld, cone, integrator):
     """Verifies Newton blocked Cholesky with sparse-tile and diagonal-tile awareness (nv > 96)."""
-    # 18 free spheres (nv = 108, ntiles = 7): first 3 spheres in ground contact + equality
-    # constraint, remaining 15 spheres in free fall (purely diagonal tiles).
-    # Parameterized over pyramidal (incremental skip_unchanged path) and elliptic (non-incremental
-    # inplace_cholesky path).
+    # 20 free spheres (nv = 120, ntiles = 8): first 3 spheres in ground contact + equality
+    # constraint, the others in free fall.
+    # Parameterized over pyramidal (incremental skip_unchanged path), elliptic (non-incremental
+    # inplace_cholesky path) and the discrete integrator (tile pattern scanned from H).
+    # Spheres 13 (tiles 4 and 5) and 19 (tile 7) have an offset center of mass, so M couples their
+    # DOFs. Spheres 5 and 6 (tiles 1 and 2) are within contact margin but apart, so their contact
+    # rows stay inactive.
     bodies_xml = []
-    for i in range(18):
+    for i in range(20):
       z = 0.015 if i < 3 else 0.5
+      geom_pos = "0.005 0 0" if i in (13, 19) else "0 0 0"
+      margin = 0.05 if i in (5, 6) else 0.0
       bodies_xml.append(
-        f'<body name="b{i}" pos="{i * 0.08} 0 {z}"><freejoint/><geom type="sphere" size="0.02" mass="0.1"/></body>'
+        f'<body name="b{i}" pos="{i * 0.08} 0 {z}"><freejoint/>'
+        f'<geom type="sphere" size="0.02" mass="0.1" pos="{geom_pos}" margin="{margin}"/><site name="s{i}"/></body>'
       )
     xml = f"""
     <mujoco>
-      <option integrator="Euler" solver="Newton" cone="{cone}" timestep="0.005" iterations="20" tolerance="1e-10">
+      <option integrator="{integrator}" solver="Newton" cone="{cone}" timestep="0.005" iterations="20" tolerance="1e-10">
         <flag warmstart="disable"/>
       </option>
       <worldbody>
         <geom type="plane" size="5 5 0.1"/>
         {"".join(bodies_xml)}
       </worldbody>
+      <tendon>
+        <spatial name="t9"><site site="s16"/><site site="s9"/></spatial>
+        <spatial name="t14"><site site="s16"/><site site="s14"/></spatial>
+      </tendon>
       <equality>
         <connect body1="b0" body2="b2" anchor="0 0 0"/>
+        <!-- tile 6 couples tiles 3 and 5, which fills in tile (3, 5) -->
+        <tendon tendon1="t9"/>
+        <tendon tendon1="t14"/>
       </equality>
     </mujoco>
     """
@@ -3226,10 +3240,10 @@ class CompactSolverTest(parameterized.TestCase):
     qpos_np = d.qpos.numpy().copy()
     qvel_np = d.qvel.numpy().copy()
     if nworld > 1:
-      # Perturb world 1 so sphere 8 (in tile 3) is also in ground contact, producing distinct
+      # Perturb world 1 so sphere 7 (in tile 2) is also in ground contact, producing distinct
       # per-world tile masks.
-      qpos_np[1, 8 * 7 + 2] = 0.012
-      qvel_np[1, 8 * 6 : 9 * 6] = np.array([-0.2, 0.15, -0.3, 0.4, -0.25, 0.1], dtype=np.float32)
+      qpos_np[1, 7 * 7 + 2] = 0.012
+      qvel_np[1, 7 * 6 : 8 * 6] = np.array([-0.2, 0.15, -0.3, 0.4, -0.25, 0.1], dtype=np.float32)
       d.qpos.assign(qpos_np)
       d.qvel.assign(qvel_np)
 
@@ -3238,7 +3252,8 @@ class CompactSolverTest(parameterized.TestCase):
     mjw.forward(m, d)
 
     ctx = solver._create_solver_context(m, d, inplace_cholesky=True)
-    self.assertIsNotNone(ctx.h_tile_nz)
+    structural = integrator != "discrete"
+    self.assertEqual(ctx.h_tile_nz is None, structural)
     self.assertIsNotNone(ctx.h_row_mask)
     self.assertIsNotNone(ctx.h_col_mask)
     self.assertIsNotNone(ctx.h_tile_is_diag)
@@ -3251,12 +3266,84 @@ class CompactSolverTest(parameterized.TestCase):
     if nworld > 1:
       self.assertFalse(np.array_equal(ctx.h_tile_is_diag.numpy()[0], ctx.h_tile_is_diag.numpy()[1]))
 
+    if structural:
+      # the structural tile pattern matches the one detected from the values of H
+      ctx_value = solver._create_solver_context(m, d)
+      ntiles = ctx.h_col_mask.shape[1]
+      ctx_value.h_tile_nz = wp.empty((nworld, ntiles, ntiles), dtype=int)
+      solver.init_context(m, d, ctx_value, grad=True)
+      for mask in ("h_row_mask", "h_col_mask", "h_tile_is_diag"):
+        np.testing.assert_array_equal(getattr(ctx, mask).numpy(), getattr(ctx_value, mask).numpy())
+
+      # the multi-word marking for more than 64 tiles matches the one-word marking
+      marks = []
+      for nwords in (1, 2):
+        col_mask = wp.zeros((nworld, ntiles, nwords), dtype=wp.uint64)
+        offdiag = wp.zeros((nworld, ntiles), dtype=int)
+        wp.launch(
+          solver._mark_h_tile_pattern_efc(nwords),
+          dim=(nworld, d.njmax),
+          inputs=[
+            d.nefc,
+            d.contact.dim,
+            d.contact.efc_address,
+            d.efc.id,
+            d.efc.J_rownnz,
+            d.efc.J_rowadr,
+            d.efc.J_colind,
+            d.efc.J,
+            d.efc.state,
+            ctx.done,
+            d.nefc,
+            d.nefc,
+          ],
+          outputs=[col_mask, offdiag],
+        )
+        marks.append((col_mask.numpy(), offdiag.numpy()))
+      np.testing.assert_array_equal(marks[0][0][..., 0], marks[1][0][..., 0])
+      np.testing.assert_array_equal(marks[1][0][..., 1], 0)
+      np.testing.assert_array_equal(marks[0][1], marks[1][1])
+
     for w in range(nworld):
       mjd.qpos[:] = qpos_np[w]
       mjd.qvel[:] = qvel_np[w]
       mujoco.mj_forward(mjm, mjd)
       np.testing.assert_allclose(d.qacc.numpy()[w], mjd.qacc, atol=1e-3, rtol=1e-3)
       np.testing.assert_allclose(d.qfrc_constraint.numpy()[w], mjd.qfrc_constraint, atol=1e-3, rtol=1e-3)
+
+  def test_newton_full_tile_pattern_blocked_cholesky(self):
+    """A single chain couples every tile through M, so no tile can be skipped."""
+    nlink = 100
+    chain = (
+      "".join(
+        f'<body pos="0 0 -0.1"><joint axis="0 1 0" range="-0.05 0.05" armature="1"/>'
+        f'<geom type="capsule" size="0.01" fromto="0 0 0 0 0 -0.1" mass="0.1"/>'
+        for _ in range(nlink)
+      )
+      + "</body>" * nlink
+    )
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option>
+          <flag warmstart="disable"/>
+        </option>
+        <worldbody>{chain}</worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.1,
+      nconmax=16,
+      njmax=256,
+    )
+    self.assertGreater(m.nv, solver._SPARSE_BLOCK_CHOLESKY_DIM)
+    self.assertTrue(m.M_tile_full)
+    self.assertIsNone(solver._create_solver_context(m, d).h_col_mask)
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+    mujoco.mj_forward(mjm, mjd)
+    self.assertGreater(mjd.nefc, 0)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, atol=1e-2, rtol=1e-3)
 
 
 if __name__ == "__main__":

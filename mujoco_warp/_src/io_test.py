@@ -514,6 +514,15 @@ class IOTest(parameterized.TestCase):
     )
     self.assertEqual(m.nv_pad, expected)
 
+  def test_M_tile_pattern(self):
+    """Two 24-DOF chains: tile 1 holds DOFs of both, tile 2 only couples to the second chain."""
+    links = "".join('<body><joint axis="0 1 0"/><geom size=".1"/>' for _ in range(24)) + "</body>" * 24
+    mjm = mujoco.MjModel.from_xml_string(f"<mujoco><worldbody>{links}{links}</worldbody></mujoco>")
+    m = put_model(mjm)
+    np.testing.assert_array_equal(m.M_tile_colmask.numpy()[:3, 0], [0b0, 0b1, 0b10])
+    np.testing.assert_array_equal(m.M_tile_offdiag.numpy()[:3], [1, 1, 1])
+    self.assertFalse(m.M_tile_full)  # tile 2 never couples to tile 0
+
   @parameterized.parameters((15, 16), (16, 16), (31, 32), (32, 32), (33, 48), (47, 48), (48, 48), (49, 64), (63, 64), (64, 80))
   def test_augmented_cholesky_nvmax_padding(self, nvmax, expected):
     self.assertEqual(io._nvmax_pad(nvmax), expected)
