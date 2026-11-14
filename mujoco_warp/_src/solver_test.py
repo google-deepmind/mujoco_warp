@@ -3129,13 +3129,16 @@ class CompactSolverTest(parameterized.TestCase):
       f"qfrc_constraint should be zeroed, but got max abs: {np.max(np.abs(qfrc_constraint_post))}",
     )
 
-  @parameterized.parameters(1, 2)
-  def test_solve_compact_sparse_qfrc_constraint(self, nworld):
+  @parameterized.product(
+    nworld=(1, 2),
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+  )
+  def test_solve_compact_sparse_qfrc_constraint(self, nworld, cone):
     """The compact solve of a sparse model zeroes qfrc_constraint in worlds without constraints."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
-        <option jacobian="sparse" solver="Newton" iterations="20">
+        <option jacobian="sparse">
           <flag sleep="enable"/>
         </option>
         <worldbody>
@@ -3158,6 +3161,7 @@ class CompactSolverTest(parameterized.TestCase):
       </mujoco>
       """,
       keyframe=0,
+      overrides={"opt.cone": cone},
       nworld=nworld,
     )
     self.assertTrue(m.is_sparse)
