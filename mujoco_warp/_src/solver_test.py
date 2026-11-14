@@ -166,10 +166,8 @@ def _qcqp_kernel(
 
 def _elliptic_dense_hessian_reference(m, d, ctx):
   contact_dim = d.contact.dim.numpy()
-  contact_dist = d.contact.dist.numpy()
   contact_efc_address = d.contact.efc_address.numpy()
   contact_friction = d.contact.friction.numpy()
-  contact_includemargin = d.contact.includemargin.numpy()
   contact_worldid = d.contact.worldid.numpy()
   efc_D = d.efc.D.numpy()
   efc_J = d.efc.J.numpy()
@@ -179,8 +177,6 @@ def _elliptic_dense_hessian_reference(m, d, ctx):
   h = np.zeros((d.nworld, m.nv, m.nv), dtype=np.float64)
 
   for conid in range(d.nacon.numpy()[0]):
-    if contact_dist[conid] - contact_includemargin[conid] >= 0.0:
-      continue
     worldid = contact_worldid[conid]
     efcid0 = contact_efc_address[conid, 0]
     if efcid0 < 0 or efc_state[worldid, efcid0] != types.ConstraintState.CONE.value:
@@ -1374,74 +1370,137 @@ class SolverTest(parameterized.TestCase):
     self.assertNotEqual(solver._update_gradient_grad_tiled.module, shared_module)
     self.assertNotEqual(solver._solve_search_update_cg_tiled.module, shared_module)
 
-  def test_elliptic_dense_hessian(self):
-    """Structured dense cone contraction matches the reference Hessian."""
-    condims = (3, 4, 6)
-    bodies = "".join(
-      f'<body pos="{i * 0.25 - 0.25:.3f} 0 0.020">'
-      f'<freejoint/><geom type="box" size="0.04 0.05 0.03" mass="0.5" condim="{condim}"/></body>'
-      for i, condim in enumerate(condims)
+  @parameterized.parameters(1, 2)
+  def test_elliptic_dense_hessian(self, nworld):
+    """The elliptic term of the dense Hessian matches the reference cone curvature."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option cone="elliptic" jacobian="dense"/>
+        <worldbody>
+          <geom type="plane" size="5 5 .1" friction="1 0.01 0.001" condim="1"/>
+          <body pos="-0.25 0 0.02">
+            <freejoint/>
+            <geom type="box" size="0.04 0.05 0.03" mass="0.5" condim="3"/>
+          </body>
+          <body pos="0 0 0.02">
+            <freejoint/>
+            <geom type="box" size="0.04 0.05 0.03" mass="0.5" condim="4"/>
+          </body>
+          <body pos="0.25 0 0.02">
+            <freejoint/>
+            <geom type="box" size="0.04 0.05 0.03" mass="0.5" condim="6"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
     )
-    xml = f"""
-    <mujoco>
-      <option cone="elliptic" solver="Newton" jacobian="dense" iterations="20" ls_iterations="20"/>
-      <worldbody>
-        <geom type="plane" size="5 5 .1" friction="1 0.01 0.001" condim="1"/>
-        {bodies}
-      </worldbody>
-    </mujoco>
-    """
-    mjm, mjd, m, _ = test_data.fixture(xml=xml)
     self.assertFalse(m.is_sparse)
 
-    mjd.qvel[0::6] = 1.5
-    mujoco.mj_forward(mjm, mjd)
-    self.assertEqual(set(mjd.contact.dim[: mjd.ncon]), set(condims))
+    # slide the boxes so their contacts are in the cone state, differently per world
+    qvel = np.zeros((nworld, mjm.nv))
+    qvel[:, 0::6] = 1.5
+    if nworld == 2:
+      qvel[1, 1::6] = -0.8
+    d.qvel.assign(qvel)
+    mjw.forward(m, d)
+    self.assertEqual(set(d.contact.dim.numpy()[: d.nacon.numpy()[0]]), {3, 4, 6})
 
-    d = mjw.put_data(mjm, mjd)
     ctx = solver._create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
-    ctx.h.zero_()
     ctx.done.fill_(False)
 
-    if wp.get_device().is_cuda:
-      dim_block = (wp.get_device().sm_count * 6 * 256 + m.dof_tri_row.size - 1) // m.dof_tri_row.size
-      nblocks_perblock = (d.naconmax + dim_block - 1) // dim_block
-    else:
-      dim_block = 1
-      nblocks_perblock = d.naconmax
-    wp.launch(
-      solver._update_gradient_JTCJ_dense(0),
-      dim=(dim_block, m.dof_tri_row.size),
-      inputs=[
-        m.opt.impratio_invsqrt,
-        m.dof_tri_row,
-        m.dof_tri_col,
-        d.contact.dist,
-        d.contact.includemargin,
-        d.contact.friction,
-        d.contact.dim,
-        d.contact.efc_address,
-        d.contact.worldid,
-        d.efc.J,
-        d.efc.D,
-        d.efc.state,
-        d.naconmax,
-        d.nacon,
-        ctx.Jaref,
-        ctx.done,
-        nblocks_perblock,
-        dim_block,
-      ],
-      outputs=[ctx.h],
-    )
+    def dense_hessian(elliptic):
+      ctx.h.fill_(wp.inf)
+      wp.launch_tiled(
+        solver._update_gradient_JTDAJ_dense_tiled(
+          m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0], elliptic
+        ),
+        dim=d.nworld,
+        inputs=[
+          m.nv,
+          m.M_colind,
+          m.M_hinit_i,
+          d.nefc,
+          d.M,
+          d.efc.J,
+          d.efc.D,
+          d.efc.state,
+          ctx.done,
+          ctx.cone_coef,
+          ctx.cone_weight,
+          ctx.cone_base,
+        ],
+        outputs=[ctx.h],
+        block_dim=m.block_dim.update_gradient_JTDAJ_dense,
+      )
+      return np.triu(ctx.h.numpy()[:, : m.nv, : m.nv])
 
-    np.testing.assert_allclose(
-      ctx.h.numpy()[:, : m.nv, : m.nv],
-      _elliptic_dense_hessian_reference(m, d, ctx),
-      rtol=1e-5,
-      atol=1e-6,
+    # the elliptic variant adds exactly the cone curvature to M + J'DJ
+    cone = dense_hessian(True) - dense_hessian(False)
+    for worldid in range(nworld):
+      self.assertTrue(np.any(cone[worldid] != 0.0))
+    np.testing.assert_allclose(cone, _elliptic_dense_hessian_reference(m, d, ctx), rtol=1e-5, atol=1e-6)
+    if nworld == 2:
+      self.assertFalse(np.allclose(cone[0], cone[1]))
+
+  def test_elliptic_dense_njmax_below_chunk(self):
+    """Dense elliptic Newton matches MuJoCo with njmax below the Hessian row chunk size."""
+    mjm, mjd, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option cone="elliptic" jacobian="dense"/>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="-0.5 0 0.08"><freejoint/><geom size=".1"/></body>
+          <body pos="0 0 0.08"><freejoint/><geom size=".1"/></body>
+          <body pos="0.5 0 0.08"><freejoint/><geom size=".1"/></body>
+        </worldbody>
+      </mujoco>
+      """
     )
+    mjd.qvel[0::6] = 5.0
+    mujoco.mj_forward(mjm, mjd)
+    d = mjw.put_data(mjm, mjd, njmax=13)
+    self.assertLess(d.njmax, types.TILE_SIZE_JTDAJ_DENSE)
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    nefc = d.nefc.numpy()[0]
+    self.assertTrue((d.efc.state.numpy()[0, :nefc] == types.ConstraintState.CONE).any())
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+
+  def test_elliptic_truncated_contact(self):
+    """Rows of an elliptic contact truncated by njmax get zero force and no curvature."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option cone="elliptic" jacobian="dense"/>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="0 0 0.02"><freejoint/><geom type="box" size="0.04 0.05 0.03" mass="0.5"/></body>
+        </worldbody>
+      </mujoco>
+    """)
+    m = mjw.put_model(mjm)
+    m.opt.warn_overflow = 0
+    d = mjw.make_data(mjm, njmax=11)  # 4 contacts of condim 3
+    d.qvel.assign(np.array([[1.5, 0.0, 0.0, 0.0, 0.0, 0.0]]))
+
+    # efc.state and efc.force persist across steps
+    d.efc.state.fill_(types.ConstraintState.CONE)
+    d.efc.force.fill_(1.0e3)
+    mjw.forward(m, d)
+
+    self.assertGreater(d.nefc.numpy()[0], d.njmax)
+    efc_address = d.contact.efc_address.numpy()[: d.nacon.numpy()[0], :3]
+    truncated = efc_address[(efc_address < 0).any(axis=1)]
+    rows = truncated[truncated >= 0]
+    self.assertGreater(rows.size, 0)
+    np.testing.assert_array_equal(d.efc.state.numpy()[0, rows], types.ConstraintState.SATISFIED)
+    np.testing.assert_array_equal(d.efc.force.numpy()[0, rows], 0.0)
+    self.assertTrue(np.all(np.isfinite(d.qacc.numpy())))
 
   @parameterized.parameters("dense", "sparse")
   def test_elliptic_hessian_scale_invariance(self, jacobian):
@@ -1467,6 +1526,7 @@ class SolverTest(parameterized.TestCase):
 
     def _get_h(scale):
       ctx.Jaref = wp.array(jaref * scale, dtype=float, device=ctx.Jaref.device)
+      solver._update_constraint(m, d, ctx)  # the dense cone rows are built from Jaref here
       solver._update_gradient(m, d, ctx)
       return ctx.h.numpy()[:, : m.nv, : m.nv].copy()
 
@@ -2964,24 +3024,35 @@ class CompactSolverTest(parameterized.TestCase):
     np.testing.assert_allclose(out[0, :2], baseline[0, :2], rtol=1e-4, atol=1e-5)
     np.testing.assert_array_equal(out[0, 2:], np.zeros(m.nv - 2))
 
-  def test_constrained_solve_equivalence_all_active(self):
+  @parameterized.product(cone=("pyramidal", "elliptic"), jacobian=("sparse", "dense"))
+  def test_constrained_solve_equivalence_all_active(self, cone, jacobian):
     """With every tree active and nvmax=nv, the compacted Newton solve matches baseline qacc."""
-    for cone in ("pyramidal", "elliptic"):
-      with self.subTest(cone=cone):
-        xml = _COMPACT_CONTACT_XML.replace('iterations="20"', f'iterations="20" cone="{cone}"')
-        _, _, m, d = _put_compact(xml)
-        self.assertTrue(m.is_sparse)
-        mjw.forward(m, d)  # full baseline solve (also builds efc.J, M)
-        self.assertGreater(d.nacon.numpy()[0], 0)  # contacts exist
-        baseline_qacc = d.qacc.numpy().copy()
+    # elliptic: a single Newton step from the warmstart, so that qacc depends on the cone Hessian
+    iterations = 1 if cone == "elliptic" else 20
+    xml = _COMPACT_CONTACT_XML.replace('iterations="20"', f'iterations="{iterations}" cone="{cone}"')
+    xml = xml.replace('jacobian="sparse"', f'jacobian="{jacobian}"')
+    _, _, m, d = _put_compact(xml)
+    self.assertEqual(m.is_sparse, jacobian == "sparse")
+    # slide the spheres so that elliptic contacts are in the cone state
+    qvel = np.zeros((d.nworld, m.nv))
+    qvel[:, 1] = 5.0
+    qvel[:, 7] = -3.0
+    d.qvel.assign(qvel)
+    mjw.forward(m, d)  # full baseline solve (also builds efc.J, M)
+    self.assertGreater(d.nacon.numpy()[0], 0)  # contacts exist
+    if cone == "elliptic":
+      nefc = d.nefc.numpy()[0]
+      self.assertTrue((d.efc.state.numpy()[0, :nefc] == types.ConstraintState.CONE).any())
+    baseline_qacc = d.qacc.numpy().copy()
 
-        d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
-        island.update_active_dofs(m, d)
-        self.assertEqual(d.ncdof.numpy()[0], m.nv)
+    d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
+    island.update_active_dofs(m, d)
+    self.assertEqual(d.ncdof.numpy()[0], m.nv)
 
-        solver.solve_compact(m, d)
+    d.qacc.fill_(wp.inf)
+    solver.solve_compact(m, d)
 
-        np.testing.assert_allclose(d.qacc.numpy(), baseline_qacc, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(d.qacc.numpy(), baseline_qacc, rtol=1e-3, atol=1e-4)
 
   @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
   def test_compact_hessian_dof_friction(self, cone):
@@ -3035,7 +3106,7 @@ class CompactSolverTest(parameterized.TestCase):
 
     # the compact (m, d) that solve_compact passes to the solver
     nvp = d.nvmax_pad
-    m2 = dataclasses.replace(m, nv=nvp, nv_pad=nvp, is_sparse=False, dof_tri_row=d.cdof_tri_row, dof_tri_col=d.cdof_tri_col)
+    m2 = dataclasses.replace(m, nv=nvp, nv_pad=nvp, is_sparse=False)
     efc2 = dataclasses.replace(d.efc, J=d.cJ, Ma=d.cMa)
     d2 = dataclasses.replace(
       d,

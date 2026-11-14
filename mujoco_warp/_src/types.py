@@ -1668,8 +1668,6 @@ class Model:
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
     jnt_limited_ball_adr: limited/ball jntadr
     body_isdofancestor: precomputed mask of which DOFs affect each body
-    dof_tri_row: dof upper triangle row (used in solver)
-    dof_tri_col: dof upper triangle col (used in solver)
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]
     nxn_geom_pair_filtered: valid collision pair geom ids
                             [-1, ngeom - 1]
@@ -2244,8 +2242,6 @@ class Model:
   jnt_limited_slide_hinge_adr: array("njnt_limited_slide_hinge", int)
   jnt_limited_ball_adr: array("njnt_limited_ball", int)
   body_isdofancestor: array("nbody", "nv_pad", int)
-  dof_tri_row: array("ndof_tri", int)
-  dof_tri_col: array("ndof_tri", int)
   nxn_geom_pair: array("nnxn_geom_pair", wp.vec2i)
   nxn_geom_pair_filtered: array("nnxn_geom_pair_filtered", wp.vec2i)
   nxn_pairid: array("nnxn_geom_pair", wp.vec2i)
@@ -2606,8 +2602,6 @@ class Data:
     ncdof: number of active (compacted) DOFs per world          (nworld,)
     dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
     cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
-    cdof_tri_row: row index of compacted Hessian dof-pairs      (ncdof_tri,)
-    cdof_tri_col: col index of compacted Hessian dof-pairs      (ncdof_tri,)
     cM: compacted dense inertia                                 (nworld, nvmax_pad, nvmax_pad)
     cJ: compacted dense constraint Jacobian                     (nworld, njmax_pad, nvmax_pad)
     cMa: compacted M @ qacc workspace                           (nworld, nvmax_pad)
@@ -2780,8 +2774,6 @@ class Data:
   ncdof: array("nworld", int)
   dof_cdof: array("nworld", "nv", int)
   cdof_dof: array("nworld", "nvmax_pad", int)
-  cdof_tri_row: array("ncdof_tri", int)
-  cdof_tri_col: array("ncdof_tri", int)
   cM: array("nworld", "nvmax_pad", "nvmax_pad", float)
   cJ: array("nworld", "njmax_pad", "nvmax_pad", float)
   cMa: array("nworld", "nvmax_pad", float)
@@ -2883,6 +2875,10 @@ class SolverContext:
   flex_scratch: Optional[tuple] = None
   solve_ld_scratch: Optional[wp.array] = None
   tw_diag: Optional[wp.array] = None
+  # dense elliptic Newton: virtual Hessian rows of cone-state rows (solver._cone_virtual_row)
+  cone_coef: Optional[wp.array] = None
+  cone_weight: Optional[wp.array] = None
+  cone_base: Optional[wp.array] = None
   h_tile_nz: Optional[wp.array3d[int]] = None
   h_row_mask: Optional[wp.array3d[wp.uint64]] = None
   h_col_mask: Optional[wp.array3d[wp.uint64]] = None
