@@ -683,8 +683,11 @@ def _sensor_pos(
   subtree_com_in: wp.array2d[wp.vec3],
   ten_length_in: wp.array2d[float],
   actuator_length_in: wp.array2d[float],
+  contact_dist_in: wp.array[float],
+  contact_pos_in: wp.array[wp.vec3],
+  contact_frame_in: wp.array[wp.mat33],
   # In:
-  sensor_collision_in: wp.array4d[float],
+  sensor_collision_in: wp.array2d[wp.uint64],
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
@@ -809,32 +812,26 @@ def _sensor_pos(
         else:
           pairid = math.upper_tri_index(ngeom, geomid2, geomid1)
         collisionid = nxn_pairid[pairid][1]
+        if collisionid >= 0:
+          packed = sensor_collision_in[worldid, collisionid]
+          if packed != ~wp.uint64(0):
+            conid = int(wp.uint32(packed))
+            dist_new = contact_dist_in[conid]
 
-        for i in range(8):
-          dist_new = sensor_collision_in[worldid, collisionid, i, 0]
+            if dist_new < dist:
+              dist = dist_new
 
-          if dist_new < dist:
-            dist = dist_new
+              if sensortype == SensorType.GEOMFROMTO:
+                pos = contact_pos_in[conid]
+              if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
+                normal = contact_frame_in[conid][0]
 
-            if sensortype == SensorType.GEOMFROMTO:
-              pos = wp.vec3(
-                sensor_collision_in[worldid, collisionid, i, 1],
-                sensor_collision_in[worldid, collisionid, i, 2],
-                sensor_collision_in[worldid, collisionid, i, 3],
-              )
-            if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
-              normal = wp.vec3(
-                sensor_collision_in[worldid, collisionid, i, 4],
-                sensor_collision_in[worldid, collisionid, i, 5],
-                sensor_collision_in[worldid, collisionid, i, 6],
-              )
-
-            if geom_type[geomid1] > geom_type[geomid2]:
-              flip = True
-            elif geom_type[geomid1] == geom_type[geomid2]:
-              flip = geomid1 > geomid2
-            else:
-              flip = False
+              if geom_type[geomid1] > geom_type[geomid2]:
+                flip = True
+              elif geom_type[geomid1] == geom_type[geomid2]:
+                flip = geomid1 > geomid2
+              else:
+                flip = False
     # the segment from geom 1 to geom 2, which points along the contact normal or against it
     if dist >= sensor_cutoff[sensorid] or dist == 0.0:
       segment = wp.vec3()
@@ -902,19 +899,16 @@ def _sensor_collision(
   nxn_pairid: wp.array[wp.vec2i],
   # Data in:
   contact_dist_in: wp.array[float],
-  contact_pos_in: wp.array[wp.vec3],
-  contact_frame_in: wp.array[wp.mat33],
   contact_geom_in: wp.array[wp.vec2i],
   contact_worldid_in: wp.array[int],
   contact_type_in: wp.array[int],
-  contact_geomcollisionid_in: wp.array[int],
   nacon_in: wp.array[int],
   # Out:
-  sensor_collision_out: wp.array4d[float],
+  sensor_collision_out: wp.array2d[wp.uint64],
 ):
   conid = wp.tid()
 
-  if conid >= nacon_in[0]:
+  if conid >= wp.min(nacon_in[0], contact_dist_in.shape[0]):
     return
 
   if not (contact_type_in[conid] & ContactType.SENSOR):
@@ -926,21 +920,17 @@ def _sensor_collision(
   else:
     pairid = math.upper_tri_index(ngeom, geom[1], geom[0])
 
-  worldid = contact_worldid_in[conid]
   collisionid = nxn_pairid[pairid][1]
-  geomcollisionid = contact_geomcollisionid_in[conid]
+  if collisionid < 0:
+    return
 
-  dist = contact_dist_in[conid]
-  pos = contact_pos_in[conid]
-  frame = contact_frame_in[conid]
-
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 0] = dist
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 1] = pos[0]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 2] = pos[1]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 3] = pos[2]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 4] = frame[0, 0]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 5] = frame[0, 1]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 6] = frame[0, 2]
+  # Pack ordered float32 distance bits above unique contact index for exact min reduction.
+  worldid = contact_worldid_in[conid]
+  bits = wp.cast(contact_dist_in[conid], wp.uint32)
+  sign = wp.uint32(1) << wp.uint32(31)
+  dist_key = wp.where((bits & sign) != wp.uint32(0), ~bits, bits ^ sign)
+  key = (wp.uint64(dist_key) << wp.uint64(32)) | wp.uint64(conid)
+  wp.atomic_min(sensor_collision_out, worldid, collisionid, key)  # kernel_analyzer: ignore[atomic]
 
 
 @event_scope
@@ -1021,7 +1011,7 @@ def sensor_pos(m: Model, d: Data):
     energy_vel(m, d)
 
   # collision sensors (distance, normal, fromto)
-  sensor_collision = wp.full((d.nworld, m.nsensorcollision, 8, 7), 1.0e32, dtype=float)
+  sensor_collision = wp.full((d.nworld, m.nsensorcollision), 0xFFFFFFFFFFFFFFFF, dtype=wp.uint64)
   if m.nsensorcollision:
     wp.launch(
       _sensor_collision,
@@ -1030,12 +1020,9 @@ def sensor_pos(m: Model, d: Data):
         m.ngeom,
         m.nxn_pairid,
         d.contact.dist,
-        d.contact.pos,
-        d.contact.frame,
         d.contact.geom,
         d.contact.worldid,
         d.contact.type,
-        d.contact.geomcollisionid,
         d.nacon,
       ],
       outputs=[sensor_collision],
@@ -1087,6 +1074,9 @@ def sensor_pos(m: Model, d: Data):
       d.subtree_com,
       d.ten_length,
       d.actuator_length,
+      d.contact.dist,
+      d.contact.pos,
+      d.contact.frame,
       sensor_collision,
     ],
     outputs=[d.sensordata],

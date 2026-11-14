@@ -3133,8 +3133,11 @@ class FlexCollisionTest(parameterized.TestCase):
     np.testing.assert_allclose(pos_sat[idx_sat], pos_nosat[idx_nosat], atol=1e-5)
     np.testing.assert_allclose(dist_sat[idx_sat], dist_nosat[idx_nosat], atol=1e-5)
 
-  @parameterized.parameters(32, 256)
-  def test_parallel_fps_numpy_parity(self, block_dim):
+  @parameterized.product(
+    block_dim=(32, 256),
+    deterministic=(types.DeterminismType.NONE, types.DeterminismType.CONTACTS),
+  )
+  def test_parallel_fps_numpy_parity(self, block_dim, deterministic):
     """Test that parallel FPS selects candidates matching a serial NumPy reference."""
     _, _, m, d = test_data.fixture(
       xml="""
@@ -3158,6 +3161,7 @@ class FlexCollisionTest(parameterized.TestCase):
     d.nacon.fill_(-1)
     d.contact.dist.fill_(wp.inf)
 
+    m.opt.deterministic = deterministic
     m.block_dim.flex_fps = block_dim
     mjw.kinematics(m, d)
 
@@ -3172,28 +3176,22 @@ class FlexCollisionTest(parameterized.TestCase):
     sort_val = ws.filter_val.numpy()[:ncand]
     cand_active_sorted = ws.cand_active_sorted.numpy()[:ncand]
     cand_pos = ws.pos.numpy()[:ncand]
+    pos_bits = cand_pos.view(np.uint32)
+    cand_pos_key = np.where(pos_bits & np.uint32(0x80000000), ~pos_bits, pos_bits ^ np.uint32(0x80000000))
     cand_dist = ws.dist.numpy()[:ncand]
+    cand_flex = ws.flex.numpy()[:ncand]
     cand_elem = ws.elem.numpy()[:ncand]
     cand_vert = ws.vert.numpy()[:ncand]
     num_groups = int(ws.flex_num_groups.numpy()[0])
     group_starts = ws.flex_group_start_indices.numpy()[:num_groups]
 
+    def _tie_key(idx):
+      if deterministic & types.DeterminismType.CONTACTS:
+        return (*cand_elem[idx], *cand_vert[idx], *cand_flex[idx], *cand_pos_key[idx], idx)
+      return (*cand_elem[idx], *cand_vert[idx], idx)
+
     def _tie_break(curr, sel):
-      if sel < 0:
-        return True
-      e1_c, e2_c = cand_elem[curr]
-      e1_s, e2_s = cand_elem[sel]
-      if e1_c != e1_s:
-        return e1_c < e1_s
-      if e2_c != e2_s:
-        return e2_c < e2_s
-      v1_c, v2_c = cand_vert[curr]
-      v1_s, v2_s = cand_vert[sel]
-      if v1_c != v1_s:
-        return v1_c < v1_s
-      if v2_c != v2_s:
-        return v2_c < v2_s
-      return curr < sel
+      return sel < 0 or _tie_key(curr) < _tie_key(sel)
 
     self.assertGreater(num_groups, 0)
     checked_fps = False
