@@ -352,8 +352,27 @@ def implicitfast_inertia_vjp(m: Model, d: Data, acceleration: wp.array, y: wp.ar
   )
 
 
-@wp.kernel(enable_backward=True)
+@wp.func
 def _smooth_param_contract(
+  # In:
+  armature: float,
+  damping: float,
+  velocity: float,
+  acceleration: float,
+  lam: float,
+  y: float,
+  w: float,
+  damper_enabled: bool,
+):
+  """Contracts the smooth force and direct integration terms for one DOF."""
+  phi = armature * (lam * acceleration - y * w)
+  if damper_enabled:
+    phi += damping * lam * velocity
+  return phi
+
+
+@wp.kernel(enable_backward=False)
+def _smooth_param_vjp(
   # Model:
   opt_disableflags: int,
   dof_armature: wp.array2d[float],
@@ -366,17 +385,30 @@ def _smooth_param_contract(
   y: wp.array2d[float],
   w: wp.array2d[float],
   # Out:
-  phi_out: wp.array2d[float],
+  dof_armature_grad_out: wp.array2d[float],
+  dof_damping_grad_out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
-  seed = lam[worldid, dofid]
   # y and w are zero without an implicit integration solve.
-  phi = dof_armature[worldid % dof_armature.shape[0], dofid] * (
-    seed * qacc_in[worldid, dofid] - y[worldid, dofid] * w[worldid, dofid]
+  derivatives = wp.grad(_smooth_param_contract)(
+    dof_armature[worldid % dof_armature.shape[0], dofid],
+    dof_damping[worldid % dof_damping.shape[0], dofid],
+    qvel_in[worldid, dofid],
+    qacc_in[worldid, dofid],
+    lam[worldid, dofid],
+    y[worldid, dofid],
+    w[worldid, dofid],
+    (opt_disableflags & DisableBit.DAMPER) == 0,
   )
-  if not (opt_disableflags & DisableBit.DAMPER):
-    phi += dof_damping[worldid % dof_damping.shape[0], dofid] * seed * qvel_in[worldid, dofid]
-  phi_out[worldid, dofid] = phi
+  # Parameter writeback subtracts the residual cotangent.
+  if dof_armature_grad_out:
+    wp.atomic_sub(
+      dof_armature_grad_out, worldid % dof_armature.shape[0], dofid, derivatives[0]
+    )  # kernel_analyzer: ignore[atomic]
+  if dof_damping_grad_out:
+    wp.atomic_sub(
+      dof_damping_grad_out, worldid % dof_damping.shape[0], dofid, derivatives[1]
+    )  # kernel_analyzer: ignore[atomic]
 
 
 @event_scope

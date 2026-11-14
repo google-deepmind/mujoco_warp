@@ -3142,7 +3142,6 @@ class BackwardContext:
   res_qpos: array("nworld", "nq", float)
   res_qvel: array("nworld", "nv", float)
   adj_efc_pos: array("nworld", "njmax", float)
-  adj_efc_vel: array("nworld", "njmax", float)
   adj_contact_pos: array("naconmax", wp.vec3)
   adj_contact_frame: array("naconmax", wp.mat33)
   adj_xipos: array("nworld", "nbody", wp.vec3)
@@ -3164,8 +3163,6 @@ class BackwardContext:
   w_dir: array("nworld", "nv", float)
   damp_deriv: array("nworld", "nv", float)
   Ma: array("nworld", "nv", float)
-  dampingpoly_Qv: array("nworld", "nv", float)
-  adj_qvel_damp: array("nworld", "nv", float)
   contact_point: array("naconmax", wp.vec3)
   contact_feature: array("naconmax", wp.vec4i)
   contact_adj_dist: array("naconmax", float)
@@ -3174,13 +3171,9 @@ class BackwardContext:
   contact_res_dof: array("nworld", "nv", float)
   contact_ceff: array("nworld", "nbody", wp.vec3)
   res_dof: array("nworld", "nv", float)
-  efc_Z: array("nworld", "njmax", float)
-  efc_invw: array("nworld", "njmax", float)
-  efc_phi: array("nworld", "njmax", float)
   qLU: array("nworld", "nD", float)
   M_D: array("nworld", "nD", float)
   adj_dof: array("nworld", "nv", float)
-  smooth_r: array("nworld", "nv", float)
   res_dof_frictionloss: wp.array
   res_dof_solref: wp.array
   res_dof_solimp: wp.array

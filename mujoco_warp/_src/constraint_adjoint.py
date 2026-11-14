@@ -38,183 +38,83 @@ _MAXCONDIM = 6  # max valid MuJoCo condim; elliptic friction rows = dimid 1..con
 _MAX_PYRAMID_EDGES = 10  # 2*(_MAXCONDIM - 1) pyramidal edges at condim 6
 
 
-# Non-contact constraint residual VJP (equality / joint-limit / dof-friction rows), orchestrated by
-# adjoint._residual_constraint_sparse; contact rows live in the bottom section of this file.
-#   gather (manual): Z_e = sum_i J_ei*lam_i + true topology invweight (A/V stay frozen anchors).
-#   leaf _constraint_row_phi (loop-free, only AD'd piece): phi_e = -Z*f, f anchored to efc.force.
-#   scatter (manual): res_qvel += J*Vbar (all rows); res_dof += J*Pbar (position-bearing only).
-# Routing: dense or CSR according to m.is_sparse.
-
-
-# gather (manual): per active non-contact row, reduce Z = J*lam and the topology invweight;
-# mirrors solver._solve_init_jaref_kernel's CSR/dense J iterator (keep in sync)
-@cache_kernel
-def _constraint_gather(is_sparse: bool):
-  @wp.kernel(module="unique", enable_backward=False)
-  def kernel(
-    # Model:
-    nv: int,
-    jnt_dofadr: wp.array[int],
-    dof_invweight0: wp.array2d[float],
-    eq_obj1id: wp.array[int],
-    eq_obj2id: wp.array[int],
-    # Data in:
-    nefc_in: wp.array[int],
-    efc_type_in: wp.array2d[int],
-    efc_id_in: wp.array2d[int],
-    efc_J_rownnz_in: wp.array2d[int],
-    efc_J_rowadr_in: wp.array2d[int],
-    efc_J_colind_in: wp.array3d[int],
-    efc_J_in: wp.array3d[float],
-    efc_state_in: wp.array2d[int],
-    # In:
-    lam_in: wp.array2d[float],
-    # Out:
-    Z_out: wp.array2d[float],
-    invw_out: wp.array2d[float],
-  ):
-    w, row = wp.tid()
-    Z_out[w, row] = 0.0
-    invw_out[w, row] = 0.0
-    if row >= nefc_in[w]:
-      return
-    ty = efc_type_in[w, row]
-    if ty != ConstraintType.EQUALITY and ty != ConstraintType.LIMIT_JOINT and ty != ConstraintType.FRICTION_DOF:
-      return  # contact rows -> _contact_*; TODO(etaoxing): tendon limit/friction (structural gate raises)
-    if efc_state_in[w, row] == ConstraintState.SATISFIED:
-      return
-    Z = float(0.0)
-    if wp.static(is_sparse):
-      rownnz = efc_J_rownnz_in[w, row]
-      rowadr = efc_J_rowadr_in[w, row]
-      for k in range(rownnz):
-        sid = rowadr + k
-        Z += efc_J_in[w, 0, sid] * lam_in[w, efc_J_colind_in[w, 0, sid]]
-    else:
-      for i in range(nv):
-        Z += efc_J_in[w, row, i] * lam_in[w, i]
-    Z_out[w, row] = Z
-    cid = efc_id_in[w, row]
-    if ty == ConstraintType.FRICTION_DOF:
-      invw_out[w, row] = dof_invweight0[w % dof_invweight0.shape[0], cid]
-    elif ty == ConstraintType.LIMIT_JOINT:
-      invw_out[w, row] = dof_invweight0[w % dof_invweight0.shape[0], jnt_dofadr[cid]]
-    else:  # The support gate admits only joint equalities; match constraint._equality_joint.
-      model_worldid = w % dof_invweight0.shape[0]
-      invweight = dof_invweight0[model_worldid, jnt_dofadr[eq_obj1id[cid]]]
-      joint2 = eq_obj2id[cid]
-      if joint2 >= 0:
-        invweight += dof_invweight0[model_worldid, jnt_dofadr[joint2]]
-      invw_out[w, row] = invweight
-
-  return kernel
-
-
-# loop-free row leaf: phi_e = -Z*f, f value-anchored to the stored efc.force
-@wp.kernel(enable_backward=True)
-def _constraint_row_phi(
-  # Model:
-  opt_timestep: wp.array[float],
-  opt_disableflags: int,
-  jnt_solref: wp.array2d[wp.vec2],
-  jnt_solimp: wp.array2d[vec5],
-  dof_solref: wp.array2d[wp.vec2],
-  dof_solimp: wp.array2d[vec5],
-  dof_frictionloss: wp.array2d[float],
-  eq_solref: wp.array2d[wp.vec2],
-  eq_solimp: wp.array2d[vec5],
-  # Data in:
-  nefc_in: wp.array[int],
-  efc_type_in: wp.array2d[int],
-  efc_id_in: wp.array2d[int],
-  efc_pos_in: wp.array2d[float],
-  efc_margin_in: wp.array2d[float],
-  efc_D_in: wp.array2d[float],
-  efc_vel_in: wp.array2d[float],
-  efc_aref_in: wp.array2d[float],
-  efc_force_in: wp.array2d[float],
-  efc_state_in: wp.array2d[int],
-  # In:
-  Z_in: wp.array2d[float],  # = J*lam (gather) -> Zbar (= -f; the dJ/dq topology seed, unused for G1)
-  invw_in: wp.array2d[float],  # topology inverse weight
-  ctx_Jaref_in: wp.array2d[float],  # frozen J*qacc - aref (jaref value anchor)
-  # Out:
-  phi_out: wp.array2d[float],
-):
-  w, row = wp.tid()
-  phi_out[w, row] = 0.0  # assign the output before any early return
-  if row >= nefc_in[w]:
-    return
-  ty = efc_type_in[w, row]
-  if ty != ConstraintType.EQUALITY and ty != ConstraintType.LIMIT_JOINT and ty != ConstraintType.FRICTION_DOF:
-    return
-  st = efc_state_in[w, row]
-  if st == ConstraintState.SATISFIED:
-    return
-  cid = efc_id_in[w, row]
-  Z = Z_in[w, row]
-  if ty == ConstraintType.FRICTION_DOF and st == ConstraintState.LINEARNEG:  # saturated friction: force = +frictionloss
-    phi_out[w, row] = -Z * dof_frictionloss[w % dof_frictionloss.shape[0], cid]
-    return
-  if ty == ConstraintType.FRICTION_DOF and st == ConstraintState.LINEARPOS:  # saturated friction: force = -frictionloss
-    phi_out[w, row] = -Z * (-dof_frictionloss[w % dof_frictionloss.shape[0], cid])
-    return
-  # QUADRATIC (equality / active limit / stuck friction): f = -D*jaref, value-anchored to efc.force.
-  dt = opt_timestep[w % opt_timestep.shape[0]]
-  P = efc_pos_in[w, row] - efc_margin_in[w, row]
-  V = efc_vel_in[w, row]
-  if ty == ConstraintType.FRICTION_DOF:
-    sr = dof_solref[w % dof_solref.shape[0], cid]
-    si = dof_solimp[w % dof_solimp.shape[0], cid]
-    kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P, False)
-  elif ty == ConstraintType.EQUALITY:
-    sr = eq_solref[w % eq_solref.shape[0], cid]
-    si = eq_solimp[w % eq_solimp.shape[0], cid]
-    kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P, False)
-  else:  # LIMIT_JOINT (slide/hinge scalar J; ball 3-dof -axis J)
-    sr = jnt_solref[w % jnt_solref.shape[0], cid]
-    si = jnt_solimp[w % jnt_solimp.shape[0], cid]
-    kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P, False)
-  k = 0.0 if ty == ConstraintType.FRICTION_DOF else kbi[0]
-  b = kbi[1]
-  imp = kbi[2]
-  g = k * imp * P + b * V
-  Jaref0 = ctx_Jaref_in[w, row]
-  jaref = Jaref0 + efc_aref_in[w, row] + g  # value == Jaref0 at base (efc.aref = -g_base, same _contact_kbimp)
-  D_ref = efc_D_in[w, row]
-  D = constraint._efc_D(invw_in[w, row], imp)
-  F_state = -D * jaref
-  F_state0 = -D_ref * Jaref0  # frozen base (== F_state at base)
-  f = efc_force_in[w, row] + (F_state - F_state0)  # value anchor: f base == efc.force_ref byte-exact
-  phi_out[w, row] = -Z * f
+# Non-contact residuals gather J*lambda, differentiate a scalar row contraction, and scatter
+# its cotangents in one kernel. Constraint states and solver quantities remain frozen.
 
 
 @wp.func
-def _joint_jacobian_objective(x: float, data: vec12, seed: float):
+def _constraint_contract(
+  # In:
+  pos: float,
+  velocity: float,
+  Z: float,
+  solref: wp.vec2,
+  solimp: vec5,
+  frictionloss: float,
+  invweight: float,
+  timestep: float,
+  disableflags: int,
+  constraint_type: int,
+  state: int,
+  aref: float,
+  force: float,
+  D_ref: float,
+  Jaref_ref: float,
+):
+  """Returns phi = -Z*f for an active non-contact row, anchored to its stored force."""
+  if constraint_type == ConstraintType.FRICTION_DOF:
+    if state == ConstraintState.LINEARNEG:
+      return -Z * frictionloss
+    if state == ConstraintState.LINEARPOS:
+      return -Z * (-frictionloss)
+  kbi = constraint._contact_kbimp(disableflags, timestep, solref, solimp, pos, False)
+  k = 0.0 if constraint_type == ConstraintType.FRICTION_DOF else kbi[0]
+  b, imp = kbi[1], kbi[2]
+  g = k * imp * pos + b * velocity
+  jaref = Jaref_ref + aref + g
+  D = constraint._efc_D(invweight, imp)
+  F_state = -D * jaref
+  F_state0 = -D_ref * Jaref_ref
+  f = force + (F_state - F_state0)
+  phi = -Z * f
+  return phi
+
+
+@wp.func
+def _joint_jacobian_contract(x: float, data: vec12, seed: float):
   _, slope = constraint._joint_polynomial(data, x)
   return -seed * slope
 
 
 @wp.func
-def _ball_jacobian_objective(delta: wp.vec3, quat: wp.quat, seed: wp.vec3):
+def _ball_jacobian_contract(delta: wp.vec3, quat: wp.quat, seed: wp.vec3):
   rotated = math.quat_integrate(quat, delta, 1.0)
   axis, _ = constraint._ball_axis_angle(rotated)
   return -wp.dot(axis, seed)
 
 
-# scatter (manual): re-walk the row's J support; res_qvel_out += J*Vbar for all active rows,
-# res_dof_out += J*Pbar only for position-bearing rows (a friction row's P is identically zero)
 @cache_kernel
-def _constraint_scatter(is_sparse: bool):
+def _constraint_residual(is_sparse: bool, param_grad: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     nv: int,
+    opt_timestep: wp.array[float],
+    opt_disableflags: int,
     qpos0: wp.array2d[float],
     jnt_type: wp.array[int],
     jnt_qposadr: wp.array[int],
     jnt_dofadr: wp.array[int],
+    jnt_solref: wp.array2d[wp.vec2],
+    jnt_solimp: wp.array2d[vec5],
+    dof_solref: wp.array2d[wp.vec2],
+    dof_solimp: wp.array2d[vec5],
+    dof_frictionloss: wp.array2d[float],
+    dof_invweight0: wp.array2d[float],
+    eq_obj1id: wp.array[int],
     eq_obj2id: wp.array[int],
+    eq_solref: wp.array2d[wp.vec2],
+    eq_solimp: wp.array2d[vec5],
     eq_data: wp.array2d[vec12],
     # Data in:
     nefc_in: wp.array[int],
@@ -227,17 +127,26 @@ def _constraint_scatter(is_sparse: bool):
     efc_J_rowadr_in: wp.array2d[int],
     efc_J_colind_in: wp.array3d[int],
     efc_J_in: wp.array3d[float],
+    efc_pos_in: wp.array2d[float],
+    efc_margin_in: wp.array2d[float],
     efc_D_in: wp.array2d[float],
+    efc_vel_in: wp.array2d[float],
+    efc_aref_in: wp.array2d[float],
+    efc_force_in: wp.array2d[float],
     efc_state_in: wp.array2d[int],
     # In:
-    adjP_in: wp.array2d[float],  # Pbar (dphi/defc.pos)
-    adjV_in: wp.array2d[float],  # Vbar (dphi/defc.vel)
     lam_in: wp.array2d[float],
-    Z_in: wp.array2d[float],
-    adjZ_in: wp.array2d[float],
+    ctx_Jaref_in: wp.array2d[float],
     # Out:
     res_qvel_out: wp.array2d[float],
     res_dof_out: wp.array2d[float],
+    res_jnt_solref_out: wp.array2d[wp.vec2],
+    res_jnt_solimp_out: wp.array2d[vec5],
+    res_dof_solref_out: wp.array2d[wp.vec2],
+    res_dof_solimp_out: wp.array2d[vec5],
+    res_dof_frictionloss_out: wp.array2d[float],
+    res_eq_solref_out: wp.array2d[wp.vec2],
+    res_eq_solimp_out: wp.array2d[vec5],
   ):
     w, row = wp.tid()
     if row >= nefc_in[w]:
@@ -245,19 +154,90 @@ def _constraint_scatter(is_sparse: bool):
     ty = efc_type_in[w, row]
     if ty != ConstraintType.EQUALITY and ty != ConstraintType.LIMIT_JOINT and ty != ConstraintType.FRICTION_DOF:
       return
-    if efc_state_in[w, row] == ConstraintState.SATISFIED:
+    st = efc_state_in[w, row]
+    if st == ConstraintState.SATISFIED:
       return
-    Vb = adjV_in[w, row]
-    Pb = adjP_in[w, row]
-    # position-bearing rows; FRICTION_DOF excluded (its P == 0, no qpos route)
-    route_p = ty == ConstraintType.LIMIT_JOINT or ty == ConstraintType.EQUALITY
-    count = nv
-    start = int(0)
+
+    # Gather the same dense or CSR row in its original order.
+    count, start = nv, int(0)
     if wp.static(is_sparse):
       count = efc_J_rownnz_in[w, row]
       start = efc_J_rowadr_in[w, row]
+    Z = float(0.0)
     for k in range(count):
-      i = k
+      i, jj = k, float(0.0)
+      if wp.static(is_sparse):
+        sid = start + k
+        i = efc_J_colind_in[w, 0, sid]
+        jj = efc_J_in[w, 0, sid]
+      else:
+        jj = efc_J_in[w, row, i]
+      Z += jj * lam_in[w, i]
+
+    cid = efc_id_in[w, row]
+    model_worldid = w % dof_invweight0.shape[0]
+    invweight = float(0.0)
+    sr, si, frictionloss = wp.vec2(), vec5(), float(0.0)
+    if ty == ConstraintType.FRICTION_DOF:
+      invweight = dof_invweight0[model_worldid, cid]
+      sr = dof_solref[w % dof_solref.shape[0], cid]
+      si = dof_solimp[w % dof_solimp.shape[0], cid]
+      frictionloss = dof_frictionloss[w % dof_frictionloss.shape[0], cid]
+    elif ty == ConstraintType.LIMIT_JOINT:
+      invweight = dof_invweight0[model_worldid, jnt_dofadr[cid]]
+      sr = jnt_solref[w % jnt_solref.shape[0], cid]
+      si = jnt_solimp[w % jnt_solimp.shape[0], cid]
+    else:
+      invweight = dof_invweight0[model_worldid, jnt_dofadr[eq_obj1id[cid]]]
+      joint2 = eq_obj2id[cid]
+      if joint2 >= 0:
+        invweight += dof_invweight0[model_worldid, jnt_dofadr[joint2]]
+      sr = eq_solref[w % eq_solref.shape[0], cid]
+      si = eq_solimp[w % eq_solimp.shape[0], cid]
+
+    derivatives = wp.grad(_constraint_contract)(
+      efc_pos_in[w, row] - efc_margin_in[w, row],
+      efc_vel_in[w, row],
+      Z,
+      sr,
+      si,
+      frictionloss,
+      invweight,
+      opt_timestep[w % opt_timestep.shape[0]],
+      opt_disableflags,
+      ty,
+      st,
+      efc_aref_in[w, row],
+      efc_force_in[w, row],
+      efc_D_in[w, row],
+      ctx_Jaref_in[w, row],
+    )
+    Pb, Vb, Zb = derivatives[0], derivatives[1], derivatives[2]
+    if wp.static(param_grad):
+      if ty == ConstraintType.FRICTION_DOF:
+        if res_dof_solref_out:
+          wp.atomic_add(res_dof_solref_out, w % dof_solref.shape[0], cid, derivatives[3])  # kernel_analyzer: ignore[atomic]
+        if res_dof_solimp_out:
+          wp.atomic_add(res_dof_solimp_out, w % dof_solimp.shape[0], cid, derivatives[4])  # kernel_analyzer: ignore[atomic]
+        if res_dof_frictionloss_out:
+          wp.atomic_add(
+            res_dof_frictionloss_out, w % dof_frictionloss.shape[0], cid, derivatives[5]
+          )  # kernel_analyzer: ignore[atomic]
+      elif ty == ConstraintType.LIMIT_JOINT:
+        if res_jnt_solref_out:
+          wp.atomic_add(res_jnt_solref_out, w % jnt_solref.shape[0], cid, derivatives[3])  # kernel_analyzer: ignore[atomic]
+        if res_jnt_solimp_out:
+          wp.atomic_add(res_jnt_solimp_out, w % jnt_solimp.shape[0], cid, derivatives[4])  # kernel_analyzer: ignore[atomic]
+      else:
+        if res_eq_solref_out:
+          wp.atomic_add(res_eq_solref_out, w % eq_solref.shape[0], cid, derivatives[3])  # kernel_analyzer: ignore[atomic]
+        if res_eq_solimp_out:
+          wp.atomic_add(res_eq_solimp_out, w % eq_solimp.shape[0], cid, derivatives[4])  # kernel_analyzer: ignore[atomic]
+
+    # Friction rows have no position dependence. Nonlinear joint Jacobians add a separate term.
+    route_p = ty == ConstraintType.LIMIT_JOINT or ty == ConstraintType.EQUALITY
+    for k in range(count):
+      i, jj = k, float(0.0)
       if wp.static(is_sparse):
         sid = start + k
         i = efc_J_colind_in[w, 0, sid]
@@ -265,38 +245,32 @@ def _constraint_scatter(is_sparse: bool):
       else:
         jj = efc_J_in[w, row, i]
       if jj != 0.0:
-        wp.atomic_add(res_qvel_out[w], i, jj * Vb)  # kernel_analyzer: ignore[atomic]
+        wp.atomic_add(res_qvel_out, w, i, jj * Vb)  # kernel_analyzer: ignore[atomic]
         if route_p:
-          wp.atomic_add(res_dof_out[w], i, jj * Pb)  # kernel_analyzer: ignore[atomic]
-
+          wp.atomic_add(res_dof_out, w, i, jj * Pb)  # kernel_analyzer: ignore[atomic]
     if not route_p:
       return
-    cid = efc_id_in[w, row]
     jointid = cid
     if ty == ConstraintType.EQUALITY:
       jointid = eq_obj2id[cid]
       if jointid < 0:
         return
-    else:
-      if jnt_type[jointid] != JointType.BALL:
-        return
-
+    elif jnt_type[jointid] != JointType.BALL:
+      return
     qadr, dadr = jnt_qposadr[jointid], jnt_dofadr[jointid]
-    force_seed = adjZ_in[w, row]
-    acceleration_seed = efc_D_in[w, row] * Z_in[w, row]
-    # Each Jacobian column receives Zbar*lambda + Vbar*v + Abar*a.
+    acceleration_seed = efc_D_in[w, row] * Z
     if ty == ConstraintType.EQUALITY:
-      seed = force_seed * lam_in[w, dadr] + Vb * qvel_in[w, dadr] + acceleration_seed * qacc_in[w, dadr]
+      seed = Zb * lam_in[w, dadr] + Vb * qvel_in[w, dadr] + acceleration_seed * qacc_in[w, dadr]
       x = qpos_in[w, qadr] - qpos0[w % qpos0.shape[0], qadr]
-      derivatives = wp.grad(_joint_jacobian_objective)(x, eq_data[w % eq_data.shape[0], cid], seed)
-      wp.atomic_add(res_dof_out, w, dadr, derivatives[0])  # kernel_analyzer: ignore[atomic]
+      jacobian_grad = wp.grad(_joint_jacobian_contract)(x, eq_data[w % eq_data.shape[0], cid], seed)[0]
+      wp.atomic_add(res_dof_out, w, dadr, jacobian_grad)  # kernel_analyzer: ignore[atomic]
     else:
       axis_seed = wp.vec3()
       for i in range(3):
         dof = dadr + i
-        axis_seed[i] = force_seed * lam_in[w, dof] + Vb * qvel_in[w, dof] + acceleration_seed * qacc_in[w, dof]
+        axis_seed[i] = Zb * lam_in[w, dof] + Vb * qvel_in[w, dof] + acceleration_seed * qacc_in[w, dof]
       quat = wp.quat(qpos_in[w, qadr], qpos_in[w, qadr + 1], qpos_in[w, qadr + 2], qpos_in[w, qadr + 3])
-      rotation_grad = wp.grad(_ball_jacobian_objective)(wp.vec3(), quat, axis_seed)[0]
+      rotation_grad = wp.grad(_ball_jacobian_contract)(wp.vec3(), quat, axis_seed)[0]
       for i in range(3):
         wp.atomic_add(res_dof_out, w, dadr + i, rotation_grad[i])  # kernel_analyzer: ignore[atomic]
 

@@ -195,27 +195,24 @@ def _create_backward_context(m: Model, d: Data) -> BackwardContext:
     if is_array_spec(field.type)
   }
   arrays.update(
-    res_dof_frictionloss=wp.zeros_like(m.dof_frictionloss),
-    res_dof_solref=wp.zeros_like(m.dof_solref),
-    res_dof_solimp=wp.zeros_like(m.dof_solimp),
-    res_eq_solref=wp.zeros_like(m.eq_solref),
-    res_eq_solimp=wp.zeros_like(m.eq_solimp),
-    res_jnt_solref=wp.zeros_like(m.jnt_solref),
-    res_jnt_solimp=wp.zeros_like(m.jnt_solimp),
-    res_body_mass=wp.zeros_like(m.body_mass),
-    res_body_inertia=wp.zeros_like(m.body_inertia),
-    res_body_ipos=wp.zeros_like(m.body_ipos),
-    res_body_iquat=wp.zeros_like(m.body_iquat),
+    res_dof_frictionloss=wp.zeros_like(m.dof_frictionloss, requires_grad=False),
+    res_dof_solref=wp.zeros_like(m.dof_solref, requires_grad=False),
+    res_dof_solimp=wp.zeros_like(m.dof_solimp, requires_grad=False),
+    res_eq_solref=wp.zeros_like(m.eq_solref, requires_grad=False),
+    res_eq_solimp=wp.zeros_like(m.eq_solimp, requires_grad=False),
+    res_jnt_solref=wp.zeros_like(m.jnt_solref, requires_grad=False),
+    res_jnt_solimp=wp.zeros_like(m.jnt_solimp, requires_grad=False),
+    res_body_mass=wp.zeros_like(m.body_mass, requires_grad=False),
+    res_body_inertia=wp.zeros_like(m.body_inertia, requires_grad=False),
+    res_body_ipos=wp.zeros_like(m.body_ipos, requires_grad=False),
+    res_body_iquat=wp.zeros_like(m.body_iquat, requires_grad=False),
   )
-  bc = BackwardContext(
+  return BackwardContext(
     solver_ctx=solver._create_solver_context(m, d),
     scratch=adjoint_util._clone_nograd(d),
     collision_convex_ctx=collision_convex_adjoint.create_collision_convex_backward_context(m, d),
     **arrays,
   )
-  for name in ("efc_Z", "efc_phi", "smooth_r"):
-    getattr(bc, name).requires_grad = True
-  return bc
 
 
 def _assert_step_supported(m: Model):
@@ -309,7 +306,7 @@ def solve_backward(m: Model, d_bwd: Data, adj_qacc: wp.array, bc: BackwardContex
 
 
 @event_scope
-def _residual_constraint_sparse(
+def _residual_constraint(
   m: Model,
   d: Data,
   d_bwd: Data,
@@ -319,68 +316,29 @@ def _residual_constraint_sparse(
   res_dof: wp.array,
   bc: BackwardContext,
 ):
-  """Contracts all active non-contact rows and accumulates their residual VJP."""
-  nworld, nv = d_bwd.nworld, m.nv
-  njmax = d_bwd.efc.type.shape[1]
-  efc_Z, efc_invw = bc.efc_Z, bc.efc_invw
-  gather = constraint_adjoint._constraint_gather(m.is_sparse)
+  """Contracts active non-contact rows and scatters their state and parameter cotangents."""
+  params = model_adjoint._constraint_param_pairs(m, bc)
   wp.launch(
-    gather,
-    dim=(nworld, njmax),
+    constraint_adjoint._constraint_residual(m.is_sparse, any(param.requires_grad for param, _ in params)),
+    dim=(d_bwd.nworld, d_bwd.efc.type.shape[1]),
     inputs=[
-      nv,
-      m.jnt_dofadr,
-      m.dof_invweight0,
-      m.eq_obj1id,
-      m.eq_obj2id,
-      d_bwd.nefc,
-      d_bwd.efc.type,
-      d_bwd.efc.id,
-      d_bwd.efc.J_rownnz,
-      d_bwd.efc.J_rowadr,
-      d_bwd.efc.J_colind,
-      d_bwd.efc.J,
-      d_bwd.efc.state,
-      lam,
-    ],
-    outputs=[efc_Z, efc_invw],
-  )
-
-  efc_phi = bc.efc_phi
-  res_efc_pos, res_efc_vel = bc.adj_efc_pos, bc.adj_efc_vel
-  constraint_params = model_adjoint._constraint_param_pairs(m, bc)
-  pairs = [
-    (m.opt.timestep, None),
-    (m.opt.disableflags, None),
-    *((param, residual if param.requires_grad else None) for param, residual in constraint_params),
-    (d_bwd.nefc, None),
-    (d_bwd.efc.type, None),
-    (d_bwd.efc.id, None),
-    (d_bwd.efc.pos, res_efc_pos),
-    (d_bwd.efc.margin, None),
-    (d_bwd.efc.D, None),
-    (d_bwd.efc.vel, res_efc_vel),
-    (d_bwd.efc.aref, None),
-    (d_bwd.efc.force, None),
-    (d_bwd.efc.state, None),
-    (efc_Z, efc_Z.grad),
-    (efc_invw, None),
-    (ctx_Jaref, None),
-  ]
-  efc_phi.grad.fill_(1.0)
-  adjoint_util._launch_vjp(constraint_adjoint._constraint_row_phi, (nworld, njmax), pairs, [efc_phi], [efc_phi.grad])
-
-  scatter = constraint_adjoint._constraint_scatter(m.is_sparse)
-  wp.launch(
-    scatter,
-    dim=(nworld, njmax),
-    inputs=[
-      nv,
+      m.nv,
+      m.opt.timestep,
+      m.opt.disableflags,
       m.qpos0,
       m.jnt_type,
       m.jnt_qposadr,
       m.jnt_dofadr,
+      m.jnt_solref,
+      m.jnt_solimp,
+      m.dof_solref,
+      m.dof_solimp,
+      m.dof_frictionloss,
+      m.dof_invweight0,
+      m.eq_obj1id,
       m.eq_obj2id,
+      m.eq_solref,
+      m.eq_solimp,
       m.eq_data,
       d_bwd.nefc,
       d.qpos,
@@ -392,17 +350,18 @@ def _residual_constraint_sparse(
       d_bwd.efc.J_rowadr,
       d_bwd.efc.J_colind,
       d_bwd.efc.J,
+      d_bwd.efc.pos,
+      d_bwd.efc.margin,
       d_bwd.efc.D,
+      d_bwd.efc.vel,
+      d_bwd.efc.aref,
+      d_bwd.efc.force,
       d_bwd.efc.state,
-      res_efc_pos,
-      res_efc_vel,
       lam,
-      efc_Z,
-      efc_Z.grad,
+      ctx_Jaref,
     ],
-    outputs=[res_qvel, res_dof],
+    outputs=[res_qvel, res_dof, *(residual if param.requires_grad else None for param, residual in params)],
   )
-
   model_adjoint.constraint_params_backward(m, bc)
 
 
@@ -418,7 +377,7 @@ def noncontact_constraint_backward(
   bc: BackwardContext,
 ):
   """Accumulates non-contact residuals in input position and velocity space."""
-  _residual_constraint_sparse(m, d, d_bwd, ctx_Jaref, lam, res_qvel, bc.res_dof, bc)
+  _residual_constraint(m, d, d_bwd, ctx_Jaref, lam, res_qvel, bc.res_dof, bc)
   wp.launch(
     smooth_kinematics_adjoint._dof_to_qpos,
     dim=(d.nworld, m.njnt),
@@ -522,24 +481,14 @@ def contact_constraint_backward(
 def smooth_params_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, bc: BackwardContext):
   """Accumulates smooth Model parameter gradients."""
   if m.dof_armature.requires_grad or m.dof_damping.requires_grad:
-    pairs = [
-      (m.opt.disableflags, None),
-      (m.dof_armature, m.dof_armature.grad if m.dof_armature.requires_grad else None),
-      (m.dof_damping, m.dof_damping.grad if m.dof_damping.requires_grad else None),
-      # State VJPs were already consumed; explicit sinks avoid Warp's .grad fallback.
-      (d.qvel, bc.smooth_adj_qvel),
-      (d_bwd.qacc, bc.smooth_adj_qacc),
-      (lam, None),
-      (bc.y_remap, None),
-      (bc.w_dir, None),
-    ]
-    bc.smooth_r.grad.fill_(-1.0)
-    adjoint_util._launch_vjp(
-      model_adjoint._smooth_param_contract,
-      (d.nworld, m.nv),
-      pairs,
-      [bc.smooth_r],
-      [bc.smooth_r.grad],
+    wp.launch(
+      model_adjoint._smooth_param_vjp,
+      dim=(d.nworld, m.nv),
+      inputs=[m.opt.disableflags, m.dof_armature, m.dof_damping, d.qvel, d_bwd.qacc, lam, bc.y_remap, bc.w_dir],
+      outputs=[
+        m.dof_armature.grad if m.dof_armature.requires_grad else None,
+        m.dof_damping.grad if m.dof_damping.requires_grad else None,
+      ],
     )
 
 

@@ -440,8 +440,15 @@ def _xfrc_applied_vjp(
   adj_xfrc_applied_out[worldid, bodyid] += wp.spatial_vector(force, torque)
 
 
-@wp.kernel(enable_backward=True)
-def _dampingpoly_Qv_leaf(
+@wp.func
+def _damping_contract(velocity: float, damping: float, poly: wp.vec2, dt: float, acceleration: float, seed: float):
+  """Contracts the velocity-dependent integration matrix with its solve cotangent."""
+  phi = dt * util_misc._poly_force_deriv(damping, poly, velocity, 1) * acceleration
+  return seed * phi
+
+
+@wp.kernel(enable_backward=False)
+def _damping_vjp(
   # Model:
   opt_timestep: wp.array[float],
   jnt_actuatorid: wp.array[int],
@@ -456,8 +463,11 @@ def _dampingpoly_Qv_leaf(
   # Data in:
   qvel_in: wp.array2d[float],
   qacc_in: wp.array2d[float],
+  # In:
+  y: wp.array2d[float],
   # Out:
-  out: wp.array2d[float],
+  adj_qvel_out: wp.array2d[float],
+  dof_damping_grad_out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
   dt = opt_timestep[worldid % opt_timestep.shape[0]]
@@ -474,7 +484,15 @@ def _dampingpoly_Qv_leaf(
     worldid,
     dofid,
   )
-  out[worldid, dofid] = dt * util_misc._poly_force_deriv(damping, poly, qvel_in[worldid, dofid], 1) * qacc_in[worldid, dofid]
+  derivatives = wp.grad(_damping_contract)(
+    qvel_in[worldid, dofid], damping, poly, dt, qacc_in[worldid, dofid], -y[worldid, dofid]
+  )
+  adj_qvel_out[worldid, dofid] += derivatives[0]
+  if dof_damping_grad_out:
+    # dof_damping_total adds the DOF coefficient to the actuator contribution.
+    wp.atomic_add(
+      dof_damping_grad_out, worldid % dof_damping.shape[0], dofid, derivatives[1]
+    )  # kernel_analyzer: ignore[atomic]
 
 
 @wp.kernel(enable_backward=False)
@@ -812,23 +830,26 @@ def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
     if not (m.opt.disableflags & DisableBit.DAMPER):
       # Q = M + dt*D, where D = -d(force_damper)/dv. Its VJP affects velocity and,
       # when optimized, damping itself. Use a negative seed because qacc = Q^-1 Ma.
-      wp.launch(adjoint_util._neg_cols, dim=(nworld, nv), inputs=[bc.y_remap], outputs=[bc.smooth_r.grad])
-      pairs = [
-        (m.opt.timestep, None),
-        (m.jnt_actuatorid, None),
-        (m.dof_jntid, None),
-        (m.dof_damping, m.dof_damping.grad if m.dof_damping.requires_grad else None),
-        (m.dof_dampingpoly, None),
-        (m.actuator_trntype, None),
-        (m.actuator_trnid, None),
-        (m.actuator_damping, None),
-        (m.actuator_dampingpoly, None),
-        (m.actuator_gear, None),
-        (d_bwd.qvel, bc.adj_qvel_damp),
-        (qacc_advance, None),
-      ]
-      adjoint_util._launch_vjp(_dampingpoly_Qv_leaf, (nworld, nv), pairs, [bc.dampingpoly_Qv], [bc.smooth_r.grad])
-      wp.launch(adjoint_util._accum_cols, dim=(nworld, nv), inputs=[bc.adj_qvel_damp], outputs=[adj_qvel])
+      wp.launch(
+        _damping_vjp,
+        dim=(nworld, nv),
+        inputs=[
+          m.opt.timestep,
+          m.jnt_actuatorid,
+          m.dof_jntid,
+          m.dof_damping,
+          m.dof_dampingpoly,
+          m.actuator_trntype,
+          m.actuator_trnid,
+          m.actuator_damping,
+          m.actuator_dampingpoly,
+          m.actuator_gear,
+          d_bwd.qvel,
+          qacc_advance,
+          bc.y_remap,
+        ],
+        outputs=[adj_qvel, m.dof_damping.grad if m.dof_damping.requires_grad else None],
+      )
 
     adj_qacc = bc.adj_qacc_root
 
@@ -981,10 +1002,18 @@ def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos
   with_mass = (m.opt.integrator == IntegratorType.IMPLICITFAST and (m.opt.disableflags & flags) != flags) or (
     m.opt.integrator == IntegratorType.EULER and not (m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER))
   )
-  # Bound cooperative RNE scratch to eight 128-element spatial-vector tiles.
-  if d.qpos.device.is_cuda and m.nbody <= 128:
+  shared_rne = d.qpos.device.is_cuda and m.nbody <= smooth_adjoint.RNE_MAX_BODIES
+  if shared_rne:
+    passive_enabled = (m.opt.disableflags & (DisableBit.SPRING | DisableBit.DAMPER)) != (DisableBit.SPRING | DisableBit.DAMPER)
     residual = smooth_adjoint.smooth_force_channels_backward(
-      m, d_bwd, lam, bc.y_remap if with_mass else None, bc.w_dir if with_mass else None, bc, xfrc_applied=d.xfrc_applied
+      m,
+      d_bwd,
+      lam,
+      bc.y_remap if with_mass else None,
+      bc.w_dir if with_mass else None,
+      bc,
+      xfrc_applied=d.xfrc_applied,
+      body_gravcomp=m.body_gravcomp if passive_enabled else None,
     )
   else:
     if with_mass:
@@ -998,19 +1027,17 @@ def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos
   wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
   if mocap_grad:
     smooth_kinematics_adjoint.kinematics_mocap_backward(m, d_bwd, bc)
-  # Consume the inertia cotangents before gravcomp reuses the workspace.
+  # Consume the inertia cotangents before another force reverse reuses the workspace.
   model_adjoint.inertia_param_vjp(m, d_bwd, bc)
-  for vjp in (
-    smooth_adjoint.spring_qpos_vjp,
-    smooth_adjoint.actuator_qpos_vjp,
-    smooth_adjoint.gravcomp_qpos_vjp,
-  ):
+  for vjp in (smooth_adjoint.spring_qpos_vjp, smooth_adjoint.actuator_qpos_vjp):
     residual = vjp(m, d_bwd, lam, bc=bc)
     wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
-  # Gravcomp leaves mass and COM cotangents in the same workspace.
-  if mocap_grad:
-    smooth_kinematics_adjoint.kinematics_mocap_backward(m, d_bwd, bc)
-  model_adjoint.inertia_param_vjp(m, d_bwd, bc)
+  if not shared_rne:
+    residual = smooth_adjoint.gravcomp_qpos_vjp(m, d_bwd, lam, bc=bc)
+    wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
+    if mocap_grad:
+      smooth_kinematics_adjoint.kinematics_mocap_backward(m, d_bwd, bc)
+    model_adjoint.inertia_param_vjp(m, d_bwd, bc)
 
 
 @event_scope

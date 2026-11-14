@@ -38,6 +38,9 @@ from mujoco_warp._src.warp_util import event_scope
 # Adjoint reductions use unordered atomics; deterministic backward execution is deferred.
 wp.set_module_options({"enable_backward": True})
 
+# Bound the eight spatial-vector RNE tiles to 24 KiB of values.
+RNE_MAX_BODIES = 128
+
 
 @event_scope
 def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | None = None):
@@ -484,12 +487,12 @@ def smooth_force_backward(
 
 
 @wp.func
-def _rne_force_objective(ci: vec10, cv: wp.spatial_vector, ca: wp.spatial_vector, seed: wp.spatial_vector):
+def _rne_force_contract(ci: vec10, cv: wp.spatial_vector, ca: wp.spatial_vector, seed: wp.spatial_vector):
   return wp.dot(smooth.rne_body_force(ci, cv, ca), seed)
 
 
 @wp.func
-def _rne_channels_objective(
+def _rne_channels_contract(
   # In:
   ci: vec10,
   cv: wp.spatial_vector,
@@ -513,6 +516,7 @@ def _rne_channels(nbody: int, with_mass: bool):
     body_parentid: wp.array[int],
     body_dofnum: wp.array[int],
     body_dofadr: wp.array[int],
+    body_gravcomp: wp.array2d[float],
     dof_bodyid: wp.array[int],
     body_subtreenum: wp.array[int],
     # Data in:
@@ -575,16 +579,19 @@ def _rne_channels(nbody: int, with_mass: bool):
         b = body_parentid[b]
       if gravity_enabled:
         gravity = opt_gravity[w % opt_gravity.shape[0]]
+        if body_gravcomp:
+          # Combine bias gravity and passive compensation in the force channel.
+          gravity *= 1.0 - body_gravcomp[w % body_gravcomp.shape[0], lane]
         ca -= wp.spatial_vector(0.0, 0.0, 0.0, gravity[0], gravity[1], gravity[2])
       ci = cinert_in[w, lane]
       cv = cvel_in[w, lane]
       # Seed derivatives also recover the primal forces for the DOF transpose.
       if wp.static(with_mass):
-        ci_bar, cv_bar, ca_bar, mass_ca_bar, force, mass_force = wp.grad(_rne_channels_objective)(
+        ci_bar, cv_bar, ca_bar, mass_ca_bar, force, mass_force = wp.grad(_rne_channels_contract)(
           ci, cv, ca, mass_ca, seed, mass_seed
         )
       else:
-        ci_bar, cv_bar, ca_bar, force = wp.grad(_rne_force_objective)(ci, cv, ca, seed)
+        ci_bar, cv_bar, ca_bar, force = wp.grad(_rne_force_contract)(ci, cv, ca, seed)
       adj_cinert_out[w, lane] = ci_bar
       adj_cvel_out[w, lane] = cv_bar
     elif lane == 0:
@@ -628,11 +635,13 @@ def smooth_force_channels_backward(
   mass_w: wp.array2d | None,
   bc: BackwardContext,
   xfrc_applied: wp.array2d | None = None,
+  body_gravcomp: wp.array2d | None = None,
 ):
   """Combines force and optional direct-mass cotangents before their kinematic reverse.
 
   The mass channel contributes with a negative sign because the caller subtracts this residual
-  VJP. All intermediates are recomputed from the frozen input kinematics; no forward tape grows.
+  VJP. Optional body_gravcomp folds passive compensation into the force channel, leaving the
+  direct-mass channel unchanged. All intermediates are recomputed from frozen input kinematics.
   """
   block_dim = max(32, 1 << (m.nbody - 1).bit_length())
   wp.launch_tiled(
@@ -645,6 +654,7 @@ def smooth_force_channels_backward(
       m.body_parentid,
       m.body_dofnum,
       m.body_dofadr,
+      body_gravcomp,
       m.dof_bodyid,
       m.body_subtreenum,
       d.qvel,
