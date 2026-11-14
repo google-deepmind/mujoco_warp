@@ -869,6 +869,60 @@ class ForwardTest(parameterized.TestCase):
       energy = float(d.energy.numpy()[0, 1])
       self.assertLess(energy, 1.01 * initial_energy, f"step {i}")
 
+  @parameterized.parameters(IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST)
+  def test_standalone_free_body_actuator_tendon_damping(self, integrator):
+    """Verify a standalone free body keeps actuator and tendon damping implicit, as MuJoCo does.
+
+    The free-body block is mjd_freeMhat's M - h * qDeriv: the site/refsite actuators' velocity
+    bias and the spatial tendon's damping act on the body's own DOFs (h * c / I ~ 120 about x),
+    which an explicit treatment turns unstable within a few steps.
+    """
+    mjm, mjd, m_warp, d_warp = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.002"/>
+        <worldbody>
+          <site name="anchor" pos="0 .1 1.2"/>
+          <site name="ref" pos="0 0 1" euler="10 0 0"/>
+          <body pos="0 0 1" euler="5 -10 15">
+            <freejoint/>
+            <geom type="box" size=".05 .02 .01" mass=".05"/>
+            <site name="base"/>
+            <site name="tip" pos=".05 0 0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial damping="2">
+            <site site="anchor"/>
+            <site site="tip"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <general site="base" refsite="ref" gear="0 0 0 1 0 0" biastype="affine" biasprm="0 -1 -.5"/>
+          <general site="base" refsite="ref" gear="0 0 0 0 1 0" biastype="affine" biasprm="0 -1 -.5"/>
+          <general site="base" refsite="ref" gear="1 0 0 0 0 0" biastype="affine" biasprm="0 0 -5"/>
+        </actuator>
+        <keyframe>
+          <key qpos="0 0 1 1 0 0 0" qvel=".3 -.2 .1 2 -1 .5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.integrator": integrator},
+    )
+    self.assertEqual(m_warp.body_freeadr.size, 1)
+
+    for i in range(10):
+      mjw.step(m_warp, d_warp)
+      mujoco.mj_step(mjm, mjd)
+      np.testing.assert_allclose(
+        d_warp.qvel.numpy()[0],
+        mjd.qvel,
+        atol=1e-3,
+        rtol=1e-3,
+        err_msg=f"step {i} qvel mismatch between {integrator} and MuJoCo",
+      )
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_implicit_tendon_damping(self, jacobian):
     mjm, mjd, m, d = test_data.fixture(
