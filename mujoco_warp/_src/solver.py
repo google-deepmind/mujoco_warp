@@ -31,6 +31,7 @@ from mujoco_warp._src.block_cholesky import create_blocked_cholesky_sparse_tiles
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_sparse_tiles_solve_newton_func
 from mujoco_warp._src.block_cholesky import ctz64
 from mujoco_warp._src.block_cholesky import solve_search_sums
+from mujoco_warp._src.block_cholesky import solve_search_sums_float64
 from mujoco_warp._src.types import InverseContext
 from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import SolverContext
@@ -41,6 +42,37 @@ from mujoco_warp._src.warp_util import side_stream
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 _SPARSE_BLOCK_CHOLESKY_DIM = 96
+
+
+def _htype(m: types.Model) -> type:
+  """Scalar type of the Newton Hessian (ctx.h, ctx.hfactor), its assembly and its factorization.
+
+  float64 when `m.opt.newton_hessian_float64` is set, else float32. On light bodies under stiff
+  contacts, H = M + J'DJ can be SPD in float64 but indefinite once assembled in float32. With
+  float64, every Hessian contribution is formed and summed in float64 from the float32 inputs, and
+  the factor and solve run in float64. The gradient, the search direction and the line search stay
+  float32, so each step is an inexact Newton step and accuracy is limited by float32. H and its
+  factor take 16 * nworld * nv_pad^2 bytes for blocked solves.
+  """
+  return wp.float64 if m.opt.newton_hessian_float64 else float
+
+
+def _use_sparse_tile_cholesky(m: types.Model) -> bool:
+  """Whether the Newton solve factors H with the sparse-tile blocked Cholesky.
+
+  It is used above _SPARSE_BLOCK_CHOLESKY_DIM. The float64 Hessian keeps the dense blocked
+  Cholesky, whose tile functions take the Hessian scalar type.
+  """
+  return m.nv > _SPARSE_BLOCK_CHOLESKY_DIM and _htype(m) is not wp.float64
+
+
+@wp.func
+def _safe_div_float64(x: wp.float64, y: wp.float64) -> wp.float64:
+  return x / wp.where(y != wp.float64(0.0), y, wp.float64(types.MJ_MINVAL))
+
+
+def _safe_div(htype: type):
+  return _safe_div_float64 if htype is wp.float64 else math.safe_div
 
 
 def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
@@ -90,12 +122,13 @@ def _create_solver_context(
 
   alloc_h = m.opt.solver == types.SolverType.NEWTON
   alloc_hfactor = alloc_h and nv > types.H_ONE_TILE_MAX
-  alloc_sparse_tiles = alloc_h and nv > _SPARSE_BLOCK_CHOLESKY_DIM
+  alloc_sparse_tiles = alloc_h and _use_sparse_tile_cholesky(m)
   alloc_mgrad = m.opt.solver == types.SolverType.CG
   alloc_incremental = _use_incremental(m)
   alloc_solve_ld_scratch = (
     alloc_mgrad and d.qLD.shape[1] > m.qLD_block_total and bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
   )
+  htype = _htype(m)
   has_passive = not ((m.opt.disableflags & types.DisableBit.SPRING) and (m.opt.disableflags & types.DisableBit.DAMPER))
   alloc_tw_diag = (
     m.opt.integrator == types.IntegratorType.DISCRETE
@@ -103,7 +136,7 @@ def _create_solver_context(
     and (m.nefmdof > 0 or (m.nflexrodedge > 0 and has_passive))
   )
 
-  h = wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float)
+  h = wp.empty((nworld, nv_pad, nv_pad), dtype=htype) if alloc_h else wp.empty((nworld, 0, 0), dtype=htype)
   if alloc_hfactor:
     # Non-incremental Newton rebuilds the upper triangle of h every iteration,
     # and blocked Cholesky loads each upper-triangular tile before storing U.
@@ -112,7 +145,7 @@ def _create_solver_context(
         raise ValueError(f"inplace_cholesky requires an augmented padding column (nv={nv}, nv_pad={nv_pad})")
       hfactor = h
     else:
-      hfactor = wp.empty((nworld, nv_pad, nv_pad), dtype=float)
+      hfactor = wp.empty((nworld, nv_pad, nv_pad), dtype=htype)
     ntiles = nv_pad // types.TILE_SIZE_JTDAJ_DENSE
     nwords = (ntiles + 63) // 64
     h_tile_nz = wp.empty((nworld, ntiles, ntiles), dtype=int) if alloc_sparse_tiles else None
@@ -121,7 +154,7 @@ def _create_solver_context(
     h_tile_is_diag = wp.empty((nworld, ntiles), dtype=int) if alloc_sparse_tiles else None
     h_rhs_work = wp.empty((nworld, nv_pad, 1), dtype=float) if alloc_sparse_tiles else None
   else:
-    hfactor = wp.empty((nworld, 0, 0), dtype=float)
+    hfactor = wp.empty((nworld, 0, 0), dtype=htype)
     h_tile_nz = None
     h_row_mask = None
     h_col_mask = None
@@ -2221,60 +2254,69 @@ def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool):
   return kernel
 
 
-@wp.kernel
-def _update_gradient_h_incremental(
-  # Model:
-  nv: int,
-  # Data in:
-  efc_J_in: wp.array3d[float],
-  efc_D_in: wp.array2d[float],
-  efc_state_in: wp.array2d[int],
-  # In:
-  quad_changed_ids_in: wp.array2d[int],
-  quad_changed_count_in: wp.array[int],
-  threads_per_world: int,
-  # Out:
-  ctx_h_out: wp.array3d[float],
-):
-  """Incrementally update upper triangle of H for changed constraints.
+@cache_kernel
+def _update_gradient_h_incremental_typed(htype: type = float):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    nv: int,
+    # Data in:
+    efc_J_in: wp.array3d[float],
+    efc_D_in: wp.array2d[float],
+    efc_state_in: wp.array2d[int],
+    # In:
+    quad_changed_ids_in: wp.array2d[int],
+    quad_changed_count_in: wp.array[int],
+    threads_per_world: int,
+    # Out:
+    ctx_h_out: wp.array3d[htype],
+  ):
+    """Incrementally update upper triangle of H for changed constraints.
 
-  Each world's threads stride over its unique (i, j) elements, so a world without
-  changes costs a few warps instead of one thread per element. For each changed
-  constraint, adds or subtracts D * J[i] * J[j].
-  """
-  worldid, threadid = wp.tid()
+    Each world's threads stride over its unique (i, j) elements, so a world without
+    changes costs a few warps instead of one thread per element. For each changed
+    constraint, adds or subtracts D * J[i] * J[j].
+    """
+    worldid, threadid = wp.tid()
 
-  n_changes = quad_changed_count_in[worldid]
-  if n_changes == 0:
-    return
+    n_changes = quad_changed_count_in[worldid]
+    if n_changes == 0:
+      return
 
-  for elementid in range(threadid, nv * (nv + 1) // 2, threads_per_world):
-    # Upper-triangle enumeration: elementid -> (row, col) where row <= col.
-    col = (int(wp.sqrt(float(1 + 8 * elementid))) - 1) // 2
-    row = elementid - (col * (col + 1)) // 2
+    for elementid in range(threadid, nv * (nv + 1) // 2, threads_per_world):
+      # Upper-triangle enumeration: elementid -> (row, col) where row <= col.
+      col = (int(wp.sqrt(float(1 + 8 * elementid))) - 1) // 2
+      row = elementid - (col * (col + 1)) // 2
 
-    delta = float(0.0)
-    for change_idx in range(n_changes):
-      efcid = quad_changed_ids_in[worldid, change_idx]
-      Jrow = efc_J_in[worldid, efcid, row]
-      if Jrow == 0.0:
-        continue
-      Jcol = efc_J_in[worldid, efcid, col]
-      if Jcol == 0.0:
-        continue
+      delta = htype(0.0)
+      for change_idx in range(n_changes):
+        efcid = quad_changed_ids_in[worldid, change_idx]
+        Jrow = efc_J_in[worldid, efcid, row]
+        if Jrow == 0.0:
+          continue
+        Jcol = efc_J_in[worldid, efcid, col]
+        if Jcol == 0.0:
+          continue
 
-      D = efc_D_in[worldid, efcid]
-      if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
-        delta += D * Jrow * Jcol
-      else:
-        delta -= D * Jrow * Jcol
+        D = efc_D_in[worldid, efcid]
+        if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
+          delta += htype(D) * htype(Jrow) * htype(Jcol)
+        else:
+          delta -= htype(D) * htype(Jrow) * htype(Jcol)
 
-    if delta != 0.0:
-      ctx_h_out[worldid, row, col] += delta
+      if delta != htype(0.0):
+        ctx_h_out[worldid, row, col] += delta
+
+  return kernel
+
+
+_update_gradient_h_incremental = _update_gradient_h_incremental_typed(float)
 
 
 @cache_kernel
-def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, deterministic: bool = False):
+def _update_gradient_h_incremental_sparse(
+  compact: bool, max_records: int = 0, htype: type = float, deterministic: bool = False
+):
   COMPACT = compact
   module_options = {"enable_backward": False}
   if deterministic:
@@ -2296,7 +2338,7 @@ def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, d
     quad_changed_count_in: wp.array[int],
     slots_per_world: int,
     # Out:
-    ctx_h_out: wp.array3d[float],
+    ctx_h_out: wp.array3d[htype],
   ):
     """Incrementally update upper triangle of H for changed constraints (sparse J).
 
@@ -2309,8 +2351,8 @@ def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, d
     n_changes = quad_changed_count_in[worldid]
     for change_idx in range(slot, n_changes, slots_per_world):
       efcid = quad_changed_ids_in[worldid, change_idx]
-      D = efc_D_in[worldid, efcid]
-      sign = float(0.0)
+      D = htype(efc_D_in[worldid, efcid])
+      sign = htype(0.0)
       if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
         sign = D
       else:
@@ -2325,8 +2367,8 @@ def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, d
         jj = entry - ii * (ii + 1) // 2
         Ji = efc_J_in[worldid, 0, rowadr + ii]
         Jj = efc_J_in[worldid, 0, rowadr + jj]
-        h = sign * Ji * Jj
-        if h != 0.0:
+        h = sign * htype(Ji) * htype(Jj)
+        if h != htype(0.0):
           colindi = efc_J_colind_in[worldid, 0, rowadr + ii]
           colindj = efc_J_colind_in[worldid, 0, rowadr + jj]
           if wp.static(COMPACT):
@@ -2541,7 +2583,7 @@ _INIT_H_SECTOR = 8
 
 
 @cache_kernel
-def _update_gradient_init_h_sparse(compact: bool):
+def _update_gradient_init_h_sparse(compact: bool, htype: type = float):
   COMPACT = compact
 
   @wp.kernel(module="unique", enable_backward=False)
@@ -2559,7 +2601,7 @@ def _update_gradient_init_h_sparse(compact: bool):
     # In:
     ctx_done_in: wp.array[bool],
     # Out:
-    ctx_h_out: wp.array3d[float],
+    ctx_h_out: wp.array3d[htype],
   ):
     worldid, i, lane = wp.tid()
 
@@ -2596,7 +2638,7 @@ def _update_gradient_init_h_sparse(compact: bool):
       next_row = e >= row_end
       r = wp.where(next_row, i + 1, i)
       c = e - r * n
-      h = float(0.0)
+      h = htype(0.0)
       if c >= r:
         dof_r = wp.where(next_row, dof_next, dof_i)
         padded_row = wp.where(next_row, padded_next, padded_i)
@@ -2608,30 +2650,32 @@ def _update_gradient_init_h_sparse(compact: bool):
           padded = c >= nv
         if padded_row:
           # identity on padded dofs keeps the factorization well conditioned
-          h = wp.where(r == c, 1.0, 0.0)
+          h = wp.where(r == c, htype(1.0), htype(0.0))
         elif not padded:
           # sparse M is stored in the lower triangle and dof_c >= dof_r
           elemid = M_elemid[dof_c, dof_r]
           if elemid >= 0:
-            h = M_in[worldid, elemid]
+            h = htype(M_in[worldid, elemid])
           # a DOF friction row (J = e_dof) has no JTDAJ block: it adds D to the diagonal while
           # quadratic
           if r == c and nf_in[worldid] > 0:
             efcid = dof_frictionadr_in[worldid, dof_r]
             if efcid >= 0:
               if efc_state_in[worldid, efcid] == types.ConstraintState.QUADRATIC.value:
-                h += efc_D_in[worldid, efcid]
+                h += htype(efc_D_in[worldid, efcid])
       ctx_h_out[worldid, r, c] = h
 
   return kernel
 
 
 @cache_kernel
-def _add_tendon_metric_dense(max_ten_J_rownnz: int, deterministic: bool = False):
+def _add_tendon_metric_dense(max_ten_J_rownnz: int, htype: type = float, diagonal: bool = False, deterministic: bool = False):
+  DIAGONAL = diagonal  # with the diagonal: the float64 path assembles the whole metric in h, not in qH
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = max_ten_J_rownnz * (max_ten_J_rownnz - 1) // 2
+    # one record per dof pair c2 > c1 of the tendon, and per dof with the diagonal
+    module_options["deterministic_max_records"] = max_ten_J_rownnz * (max_ten_J_rownnz + (1 if diagonal else -1)) // 2
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
@@ -2645,7 +2689,7 @@ def _add_tendon_metric_dense(max_ten_J_rownnz: int, deterministic: bool = False)
     # In:
     ctx_done_in: wp.array[bool],
     # Out:
-    h_out: wp.array3d[float],
+    h_out: wp.array3d[htype],
   ):
     worldid, t = wp.tid()
     if ctx_done_in[worldid]:
@@ -2657,22 +2701,23 @@ def _add_tendon_metric_dense(max_ten_J_rownnz: int, deterministic: bool = False)
       for i in range(rnnz):
         c1 = ten_J_colind[radr + i]
         v1 = ten_J_in[worldid, radr + i]
-        ts_v1 = ts * v1
+        ts_v1 = htype(ts) * htype(v1)
         for j in range(rnnz):
           c2 = ten_J_colind[radr + j]
-          if c2 > c1:
+          if c2 > c1 or (wp.static(DIAGONAL) and c2 == c1):
             v2 = ten_J_in[worldid, radr + j]
-            wp.atomic_add(h_out, worldid, c1, c2, ts_v1 * v2)
+            wp.atomic_add(h_out, worldid, c1, c2, ts_v1 * htype(v2))
 
   return kernel
 
 
 @cache_kernel
-def _add_actuator_metric_dense(nv: int, deterministic: bool = False):
+def _add_actuator_metric_dense(nv: int, htype: type = float, diagonal: bool = False, deterministic: bool = False):
+  DIAGONAL = diagonal  # as _add_tendon_metric_dense
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = nv * (nv - 1) // 2
+    module_options["deterministic_max_records"] = nv * (nv + (1 if diagonal else -1)) // 2
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
@@ -2685,7 +2730,7 @@ def _add_actuator_metric_dense(nv: int, deterministic: bool = False):
     # In:
     ctx_done_in: wp.array[bool],
     # Out:
-    h_out: wp.array3d[float],
+    h_out: wp.array3d[htype],
   ):
     worldid, a = wp.tid()
     if ctx_done_in[worldid]:
@@ -2697,18 +2742,64 @@ def _add_actuator_metric_dense(nv: int, deterministic: bool = False):
       for i in range(rnnz):
         c1 = moment_colind_in[worldid, radr + i]
         v1 = actuator_moment_in[worldid, radr + i]
-        as_v1 = as_val * v1
+        as_v1 = htype(as_val) * htype(v1)
         for j in range(rnnz):
           c2 = moment_colind_in[worldid, radr + j]
-          if c2 > c1:
+          if c2 > c1 or (wp.static(DIAGONAL) and c2 == c1):
             v2 = actuator_moment_in[worldid, radr + j]
-            wp.atomic_add(h_out, worldid, c1, c2, as_v1 * v2)
+            wp.atomic_add(h_out, worldid, c1, c2, as_v1 * htype(v2))
 
   return kernel
 
 
 @cache_kernel
-def _add_efmK_metric_dense(nv: int, deterministic: bool = False):
+def _add_dof_metric_dense_typed(htype: type = float):
+  """Add diag(efm_diag), the discrete integrator's h*D + h^2*K, to H (else folded into qH)."""
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    efm_diag_in: wp.array2d[float],
+    # In:
+    ctx_done_in: wp.array[bool],
+    # Out:
+    h_out: wp.array3d[htype],
+  ):
+    worldid, dofid = wp.tid()
+    if ctx_done_in[worldid]:
+      return
+    h_out[worldid, dofid, dofid] += htype(efm_diag_in[worldid, dofid])
+
+  return kernel
+
+
+@cache_kernel
+def _add_fluid_metric_dense_typed(htype: type = float):
+  """Add the fluid drag blocks, stored in M's sparsity pattern, to H (else folded into qH)."""
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    M_colind: wp.array[int],
+    M_hinit_i: wp.array[int],
+    # Data in:
+    efm_fluid_in: wp.array2d[float],
+    # In:
+    ctx_done_in: wp.array[bool],
+    # Out:
+    h_out: wp.array3d[htype],
+  ):
+    worldid, elemid = wp.tid()
+    if ctx_done_in[worldid]:
+      return
+    # entry (i, col <= i) of M goes to the upper position (col, i), as the tiled J'DJ densifies M
+    h_out[worldid, M_colind[elemid], M_hinit_i[elemid]] += htype(efm_fluid_in[worldid, elemid])
+
+  return kernel
+
+
+@cache_kernel
+def _add_efmK_metric_dense(nv: int, htype: type = float, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2725,7 +2816,7 @@ def _add_efmK_metric_dense(nv: int, deterministic: bool = False):
     # In:
     ctx_done_in: wp.array[bool],
     # Out:
-    h_out: wp.array3d[float],
+    h_out: wp.array3d[htype],
   ):
     worldid, r = wp.tid()
     if ctx_done_in[worldid]:
@@ -2735,13 +2826,13 @@ def _add_efmK_metric_dense(nv: int, deterministic: bool = False):
     for k in range(rnnz):
       c = efm_K_colind[radr + k]
       if c >= r:
-        wp.atomic_add(h_out, worldid, r, c, efm_K_val_in[worldid, radr + k])
+        wp.atomic_add(h_out, worldid, r, c, htype(efm_K_val_in[worldid, radr + k]))
 
   return kernel
 
 
 @cache_kernel
-def _add_flexcon_metric_dense(max_dof: int, deterministic: bool = False):
+def _add_flexcon_metric_dense(max_dof: int, htype: type = float, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2759,7 +2850,7 @@ def _add_flexcon_metric_dense(max_dof: int, deterministic: bool = False):
     efm_con_nnz_in: wp.array[int],
     ctx_done_in: wp.array[bool],
     # Out:
-    h_out: wp.array3d[float],
+    h_out: wp.array3d[htype],
   ):
     cid = wp.tid()
     if cid >= nacon_in[0]:
@@ -2772,61 +2863,73 @@ def _add_flexcon_metric_dense(max_dof: int, deterministic: bool = False):
     if scale != 0.0 and nnz > 0:
       for i in range(nnz):
         c1 = efm_con_dof_in[cid, i]
-        s_v1 = scale * efm_con_val_in[cid, i]
+        s_v1 = htype(scale) * htype(efm_con_val_in[cid, i])
         for j in range(nnz):
           c2 = efm_con_dof_in[cid, j]
           if c2 >= c1:
-            wp.atomic_add(h_out, worldid, c1, c2, s_v1 * efm_con_val_in[cid, j])
+            wp.atomic_add(h_out, worldid, c1, c2, s_v1 * htype(efm_con_val_in[cid, j]))
 
   return kernel
 
 
-@wp.kernel
-def _add_rod_twist_metric_dense(
-  # Model:
-  opt_timestep: wp.array[float],
-  opt_disableflags: int,
-  jnt_dofadr: wp.array[int],
-  flex_bendingadr: wp.array[int],
-  flex_bending: wp.array[float],
-  flex_damping: wp.array[float],
-  flex_rigid: wp.array[bool],
-  flex_rod_has_twist: wp.array[bool],
-  flex_rod_edgeadr: wp.array[int],
-  flex_rod_edgenum: wp.array[int],
-  flex_rodedge_jnt: wp.array[int],
-  # In:
-  ctx_done_in: wp.array[bool],
-  # Out:
-  h_out: wp.array3d[float],
-):
-  worldid, flexid = wp.tid()
-  if ctx_done_in[worldid]:
-    return
-  if flex_rigid[flexid] or not support.rod_has_twist(flex_rod_has_twist, flexid):
-    return
-  h_dt = opt_timestep[worldid % opt_timestep.shape[0]]
-  s1 = 0.0 if (opt_disableflags & types.DisableBit.SPRING) else h_dt * h_dt
-  s2 = 0.0 if (opt_disableflags & types.DisableBit.DAMPER) else h_dt
-  scale_f = s1 + s2 * flex_damping[flexid]
-  b_adr = flex_bendingadr[flexid]
-  nhinge = int(flex_bending[b_adr])
-  if scale_f <= 0.0 or nhinge <= 0:
-    return
-  eadr = flex_rod_edgeadr[flexid]
-  for hi in range(nhinge):
-    kt = flex_bending[b_adr + 1 + types.ROD_HINGE_SIZE * hi + 8]
-    if kt <= 0.0:
-      continue
-    jnt0 = flex_rodedge_jnt[eadr + hi]
-    jnt1 = flex_rodedge_jnt[eadr + hi + 1]
-    dof0 = jnt_dofadr[jnt0] if jnt0 >= 0 else -1
-    dof1 = jnt_dofadr[jnt1] if jnt1 >= 0 else -1
-    if dof0 < 0 or dof1 < 0 or dof0 == dof1:
-      continue
-    r = wp.min(dof0, dof1)
-    c = wp.max(dof0, dof1)
-    h_out[worldid, r, c] -= scale_f * 2.0 * kt
+@cache_kernel
+def _add_rod_twist_metric_dense_typed(htype: type = float, diagonal: bool = False):
+  DIAGONAL = diagonal  # with the diagonal: the float64 path assembles the whole metric in h, not in qH
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    opt_disableflags: int,
+    jnt_dofadr: wp.array[int],
+    flex_bendingadr: wp.array[int],
+    flex_bending: wp.array[float],
+    flex_damping: wp.array[float],
+    flex_rigid: wp.array[bool],
+    flex_rod_has_twist: wp.array[bool],
+    flex_rod_edgeadr: wp.array[int],
+    flex_rod_edgenum: wp.array[int],
+    flex_rodedge_jnt: wp.array[int],
+    # In:
+    ctx_done_in: wp.array[bool],
+    # Out:
+    h_out: wp.array3d[htype],
+  ):
+    worldid, flexid = wp.tid()
+    if ctx_done_in[worldid]:
+      return
+    if flex_rigid[flexid] or not support.rod_has_twist(flex_rod_has_twist, flexid):
+      return
+    h_dt = opt_timestep[worldid % opt_timestep.shape[0]]
+    s1 = 0.0 if (opt_disableflags & types.DisableBit.SPRING) else h_dt * h_dt
+    s2 = 0.0 if (opt_disableflags & types.DisableBit.DAMPER) else h_dt
+    scale_f = s1 + s2 * flex_damping[flexid]
+    b_adr = flex_bendingadr[flexid]
+    nhinge = int(flex_bending[b_adr])
+    if scale_f <= 0.0 or nhinge <= 0:
+      return
+    eadr = flex_rod_edgeadr[flexid]
+    for hi in range(nhinge):
+      kt = flex_bending[b_adr + 1 + types.ROD_HINGE_SIZE * hi + 8]
+      if kt <= 0.0:
+        continue
+      jnt0 = flex_rodedge_jnt[eadr + hi]
+      jnt1 = flex_rodedge_jnt[eadr + hi + 1]
+      dof0 = jnt_dofadr[jnt0] if jnt0 >= 0 else -1
+      dof1 = jnt_dofadr[jnt1] if jnt1 >= 0 else -1
+      scale = htype(scale_f) * htype(2.0 * kt)
+      if wp.static(DIAGONAL):  # as derivative._eff_add_rod_twist_qH_diag adds to qH
+        if dof0 >= 0:
+          h_out[worldid, dof0, dof0] += scale
+        if dof1 >= 0:
+          h_out[worldid, dof1, dof1] += scale
+      if dof0 < 0 or dof1 < 0 or dof0 == dof1:
+        continue
+      r = wp.min(dof0, dof1)
+      c = wp.max(dof0, dof1)
+      h_out[worldid, r, c] -= scale
+
+  return kernel
 
 
 @wp.func
@@ -2846,7 +2949,7 @@ def _active_check(tid: int, threshold: int) -> float:
 
 
 @cache_kernel
-def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njmax: int):
+def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njmax: int, htype: type = float):
   """Compact-path variant of _update_gradient_JTDAJ_dense_tiled.
 
   Takes M_in as a dense 3D array (nworld, nv_pad, nv_pad) -- the compacted active-DOF
@@ -2870,7 +2973,7 @@ def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njma
     # In:
     ctx_done_in: wp.array[bool],
     # Out:
-    ctx_h_out: wp.array3d[float],
+    ctx_h_out: wp.array3d[htype],
   ):
     worldid, rank = wp.tid()
 
@@ -2880,7 +2983,12 @@ def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njma
     nefc = nefc_in[worldid]
 
     # Load full symmetric compact inertia tile (Cholesky only reads upper triangle).
-    sum_val = wp.tile_load(M_in[worldid], shape=(wp.static(nv_pad), wp.static(nv_pad)), bounds_check=True)
+    if wp.static(htype is wp.float64):
+      sum_val = wp.tile_astype(
+        wp.tile_load(M_in[worldid], shape=(wp.static(nv_pad), wp.static(nv_pad)), bounds_check=True), htype
+      )
+    else:
+      sum_val = wp.tile_load(M_in[worldid], shape=(wp.static(nv_pad), wp.static(nv_pad)), bounds_check=True)
 
     for k in range(0, njmax, TILE_SIZE_K):
       if k >= nefc:
@@ -2899,9 +3007,14 @@ def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njma
       active_tile = wp.tile_map(_active_check, tid_tile, threshold_tile)
       D_k = wp.tile_map(wp.mul, active_tile, D_k)
 
-      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_kj), wp.tile_broadcast(D_k, shape=(nv_pad, TILE_SIZE_K)))
-
-      sum_val += wp.tile_matmul(J_ki, J_kj)
+      if wp.static(htype is wp.float64):
+        # float64 products: J * D is exact and J'DJ is summed in float64
+        J64 = wp.tile_astype(J_kj, htype)
+        D64 = wp.tile_broadcast(wp.tile_astype(D_k, htype), shape=(nv_pad, TILE_SIZE_K))
+        sum_val += wp.tile_matmul(wp.tile_map(wp.mul, wp.tile_transpose(J64), D64), J64)
+      else:
+        J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_kj), wp.tile_broadcast(D_k, shape=(nv_pad, TILE_SIZE_K)))
+        sum_val += wp.tile_matmul(J_ki, J_kj)
 
     wp.tile_store(ctx_h_out[worldid], sum_val, bounds_check=False)
 
@@ -2909,7 +3022,7 @@ def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njma
 
 
 @cache_kernel
-def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, nC: int):
+def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, nC: int, htype: type = float):
   if njmax < tile_size:
     tile_size = njmax
 
@@ -2930,7 +3043,7 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
     # In:
     ctx_done_in: wp.array[bool],
     # Out:
-    ctx_h_out: wp.array3d[float],
+    ctx_h_out: wp.array3d[htype],
   ):
     worldid, rank = wp.tid()
 
@@ -2942,7 +3055,7 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
     # CSR entries have unique destinations, so initializing M needs no atomics.
     # Densify M's upper triangle from CSR into the shared H tile (Cholesky reads fill_mode="upper").
     # Entry (i, col<=i) of M goes to the upper position (col, i); the lower triangle stays zero.
-    m_tile = wp.tile_zeros(shape=(wp.static(nv_pad * nv_pad),), dtype=float, storage="shared")
+    m_tile = wp.tile_zeros(shape=(wp.static(nv_pad * nv_pad),), dtype=htype, storage="shared")
     # Uniform trip count from the RUNTIME lane count: every lane iterates iters times (so the
     # collective scatter is always called by all lanes -- a divergent range(rank, nC, bd)
     # deadlocks). wp.block_dim() is 1 on the CPU backend, so lane 0 then covers every entry.
@@ -2953,12 +3066,12 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
       enable = e < nC
       ec = wp.where(enable, e, 0)
       pos = M_colind[ec] * nv_pad + M_hinit_i[ec]
-      wp.tile_scatter_masked(m_tile, pos, M_in[worldid, ec], enable)
+      wp.tile_scatter_masked(m_tile, pos, htype(M_in[worldid, ec]), enable)
     # identity on padded dofs keeps the factorization well conditioned
     for it in range((nv_pad - nv + lanes - 1) // lanes):
       dofid = nv + it * lanes + rank
       enable = dofid < nv_pad
-      wp.tile_scatter_masked(m_tile, wp.where(enable, dofid * (nv_pad + 1), 0), 1.0, enable)
+      wp.tile_scatter_masked(m_tile, wp.where(enable, dofid * (nv_pad + 1), 0), htype(1.0), enable)
     sum_val = wp.tile_reshape(m_tile, (nv_pad, nv_pad))
 
     # Each tile processes one output tile by looping over all constraints
@@ -2984,9 +3097,14 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
       active_tile = wp.tile_map(_active_check, tid_tile, threshold_tile)
       D_k = wp.tile_map(wp.mul, active_tile, D_k)
 
-      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_kj), wp.tile_broadcast(D_k, shape=(nv_pad, TILE_SIZE_K)))
-
-      sum_val += wp.tile_matmul(J_ki, J_kj)
+      if wp.static(htype is wp.float64):
+        # float64 products: J * D is exact and J'DJ is summed in float64
+        J64 = wp.tile_astype(J_kj, htype)
+        D64 = wp.tile_broadcast(wp.tile_astype(D_k, htype), shape=(nv_pad, TILE_SIZE_K))
+        sum_val += wp.tile_matmul(wp.tile_map(wp.mul, wp.tile_transpose(J64), D64), J64)
+      else:
+        J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_kj), wp.tile_broadcast(D_k, shape=(nv_pad, TILE_SIZE_K)))
+        sum_val += wp.tile_matmul(J_ki, J_kj)
 
     wp.tile_store(ctx_h_out[worldid], sum_val, bounds_check=False)
 
@@ -2996,16 +3114,16 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
 @wp.func
 def _elliptic_hessian_entry_from_projections(
   # In:
-  dm: float,
-  mu: float,
-  mu_n_over_t: float,
-  tangent_diag: float,
-  z01: float,
-  z02: float,
-  projection1: float,
-  projection2: float,
-  tangent_dot: float,
-) -> float:
+  dm: Any,
+  mu: Any,
+  mu_n_over_t: Any,
+  tangent_diag: Any,
+  z01: Any,
+  z02: Any,
+  projection1: Any,
+  projection2: Any,
+  tangent_dot: Any,
+) -> Any:
   # Contract the diagonal-plus-rank-one curvature without materializing the cone Hessian.
   return dm * (
     z01 * z02
@@ -3016,7 +3134,8 @@ def _elliptic_hessian_entry_from_projections(
 
 
 @cache_kernel
-def _update_gradient_JTCJ_dense(nblocks_perblock: int, deterministic: bool = False):
+def _update_gradient_JTCJ_dense(nblocks_perblock: int, htype: type = float, deterministic: bool = False):
+  safe_div = _safe_div(htype)
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -3046,7 +3165,7 @@ def _update_gradient_JTCJ_dense(nblocks_perblock: int, deterministic: bool = Fal
     nblocks_perblock: int,
     dim_block: int,
     # Out:
-    ctx_h_out: wp.array3d[float],
+    ctx_h_out: wp.array3d[htype],
   ):
     conid_start, elementid = wp.tid()
 
@@ -3079,35 +3198,35 @@ def _update_gradient_JTCJ_dense(nblocks_perblock: int, deterministic: bool = Fal
         continue
 
       fri = contact_friction_in[conid]
-      mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+      mu = htype(fri[0]) * htype(opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]])
 
       mu2 = mu * mu
-      dm = math.safe_div(efc_D_in[worldid, efcid0], mu2 * (1.0 + mu2))
+      dm = safe_div(htype(efc_D_in[worldid, efcid0]), mu2 * (htype(1.0) + mu2))
 
-      if dm == 0.0:
+      if dm == htype(0.0):
         continue
 
-      n = ctx_Jaref_in[worldid, efcid0] * mu
-      z01 = mu * efc_J_in[worldid, efcid0, dof1id]
-      z02 = mu * efc_J_in[worldid, efcid0, dof2id]
-      tt = float(0.0)
-      projection1 = float(0.0)
-      projection2 = float(0.0)
-      tangent_dot = float(0.0)
+      n = htype(ctx_Jaref_in[worldid, efcid0]) * mu
+      z01 = mu * htype(efc_J_in[worldid, efcid0, dof1id])
+      z02 = mu * htype(efc_J_in[worldid, efcid0, dof2id])
+      tt = htype(0.0)
+      projection1 = htype(0.0)
+      projection2 = htype(0.0)
+      tangent_dot = htype(0.0)
       for dim in range(1, condim):
         efcid = contact_efc_address_in[conid, dim]
         if efcid >= 0:
-          scale = fri[dim - 1]
-          u = ctx_Jaref_in[worldid, efcid] * scale
-          z1 = scale * efc_J_in[worldid, efcid, dof1id]
-          z2 = scale * efc_J_in[worldid, efcid, dof2id]
+          scale = htype(fri[dim - 1])
+          u = htype(ctx_Jaref_in[worldid, efcid]) * scale
+          z1 = scale * htype(efc_J_in[worldid, efcid, dof1id])
+          z2 = scale * htype(efc_J_in[worldid, efcid, dof2id])
           tt += u * u
           projection1 += u * z1
           projection2 += u * z2
           tangent_dot += z1 * z2
 
-      t = wp.max(wp.sqrt(tt), types.MJ_MINVAL)
-      inv_t = math.safe_div(1.0, t)
+      t = wp.max(wp.sqrt(tt), htype(types.MJ_MINVAL))
+      inv_t = safe_div(htype(1.0), t)
       mu_n_over_t = mu * n * inv_t
       h = _elliptic_hessian_entry_from_projections(
         dm,
@@ -3127,14 +3246,15 @@ def _update_gradient_JTCJ_dense(nblocks_perblock: int, deterministic: bool = Fal
 
 
 @cache_kernel
-def _update_gradient_cholesky(tile_size: int, skip_noflip: bool = False):
+def _update_gradient_cholesky(tile_size: int, skip_noflip: bool = False, htype: type = float):
   SKIP_NOFLIP = skip_noflip
+  FLOAT64 = htype is wp.float64
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # In:
     ctx_grad_in: wp.array2d[float],
-    h_in: wp.array3d[float],
+    h_in: wp.array3d[htype],
     state_changed_count_in: wp.array[int],
     ctx_done_in: wp.array[bool],
     # Out:
@@ -3155,13 +3275,21 @@ def _update_gradient_cholesky(tile_size: int, skip_noflip: bool = False):
 
     mat_tile = wp.tile_load(h_in[worldid], shape=(TILE_SIZE, TILE_SIZE))
     wp.tile_cholesky_inplace(mat_tile, fill_mode="upper")
-    input_tile = wp.tile_load(ctx_grad_in[worldid], shape=TILE_SIZE)
-    output_tile = wp.tile_cholesky_solve(mat_tile, input_tile, fill_mode="upper")
-    sums = wp.tile_reduce(wp.add, wp.tile_map(solve_search_sums, input_tile, output_tile))[0]
-    ctx_search_dot_out[worldid] = sums[0]
-    ctx_newton_decrement_out[worldid] = sums[1]
     # search has nv entries: the bounds-checked store drops the padding
-    wp.tile_store(ctx_search_out[worldid], wp.tile_map(wp.mul, output_tile, -1.0))
+    if wp.static(FLOAT64):
+      input_tile = wp.tile_astype(wp.tile_load(ctx_grad_in[worldid], shape=TILE_SIZE), htype)
+      output_tile = wp.tile_cholesky_solve(mat_tile, input_tile, fill_mode="upper")
+      sums = wp.tile_reduce(wp.add, wp.tile_map(solve_search_sums_float64, input_tile, output_tile))[0]
+      ctx_search_dot_out[worldid] = float(sums[0])
+      ctx_newton_decrement_out[worldid] = float(sums[1])
+      wp.tile_store(ctx_search_out[worldid], wp.tile_astype(wp.tile_map(wp.mul, output_tile, htype(-1.0)), float))
+    else:
+      input_tile = wp.tile_load(ctx_grad_in[worldid], shape=TILE_SIZE)
+      output_tile = wp.tile_cholesky_solve(mat_tile, input_tile, fill_mode="upper")
+      sums = wp.tile_reduce(wp.add, wp.tile_map(solve_search_sums, input_tile, output_tile))[0]
+      ctx_search_dot_out[worldid] = sums[0]
+      ctx_newton_decrement_out[worldid] = sums[1]
+      wp.tile_store(ctx_search_out[worldid], wp.tile_map(wp.mul, output_tile, -1.0))
 
   return kernel
 
@@ -3469,7 +3597,9 @@ def _update_gradient_cholesky_blocked_sparse_tiles_skip_unchanged(
 
 
 @cache_kernel
-def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, vector_size: int, compact: bool = False):
+def _update_gradient_cholesky_blocked(
+  tile_size: int, matrix_size: int, vector_size: int, compact: bool = False, htype: type = float
+):
   COMPACT = compact
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"enable_mathdx_gemm": False})
@@ -3479,8 +3609,8 @@ def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, vector_s
     # In:
     ctx_done_in: wp.array[bool],
     ctx_grad_in: wp.array3d[float],
-    ctx_h_in: wp.array3d[float],
-    ctx_hfactor: wp.array3d[float],
+    ctx_h_in: wp.array3d[htype],
+    ctx_hfactor: wp.array3d[htype],
     # Out:
     ctx_search_out: wp.array3d[float],
     ctx_search_dot_out: wp.array[float],
@@ -3501,7 +3631,7 @@ def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, vector_s
       ncdof = ncdof_in[worldid]
       active_size = wp.min(matrix_size, ((ncdof + TILE_SIZE) // TILE_SIZE) * TILE_SIZE)
 
-    sums = wp.static(create_blocked_cholesky_augmented_factorize_solve_newton_func(TILE_SIZE, matrix_size, vector_size))(
+    sums = wp.static(create_blocked_cholesky_augmented_factorize_solve_newton_func(TILE_SIZE, matrix_size, vector_size, htype))(
       ctx_h_in[worldid],
       ctx_grad_in[worldid],
       active_size,
@@ -3516,7 +3646,12 @@ def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, vector_s
 
 @cache_kernel
 def _update_gradient_cholesky_blocked_skip_unchanged(
-  tile_size: int, matrix_size: int, vector_size: int, skip_noflip: bool = False, compact: bool = False
+  tile_size: int,
+  matrix_size: int,
+  vector_size: int,
+  skip_noflip: bool = False,
+  compact: bool = False,
+  htype: type = float,
 ):
   """Blocked Cholesky that skips factorization when no constraints changed."""
   SKIP_NOFLIP = skip_noflip
@@ -3529,10 +3664,10 @@ def _update_gradient_cholesky_blocked_skip_unchanged(
     # In:
     ctx_done_in: wp.array[bool],
     ctx_grad_in: wp.array3d[float],
-    ctx_h_in: wp.array3d[float],
+    ctx_h_in: wp.array3d[htype],
     quad_changed_count_in: wp.array[int],
     state_changed_count_in: wp.array[int],
-    ctx_hfactor: wp.array3d[float],
+    ctx_hfactor: wp.array3d[htype],
     # Out:
     ctx_search_out: wp.array3d[float],
     ctx_search_dot_out: wp.array[float],
@@ -3556,7 +3691,9 @@ def _update_gradient_cholesky_blocked_skip_unchanged(
       active_size = wp.min(matrix_size, ((ncdof + TILE_SIZE) // TILE_SIZE) * TILE_SIZE)
 
     if quad_changed_count_in[worldid] > 0:
-      sums = wp.static(create_blocked_cholesky_augmented_factorize_solve_newton_func(TILE_SIZE, matrix_size, vector_size))(
+      sums = wp.static(
+        create_blocked_cholesky_augmented_factorize_solve_newton_func(TILE_SIZE, matrix_size, vector_size, htype)
+      )(
         ctx_h_in[worldid],
         ctx_grad_in[worldid],
         active_size,
@@ -3564,7 +3701,7 @@ def _update_gradient_cholesky_blocked_skip_unchanged(
         ctx_search_out[worldid],
       )
     else:
-      sums = wp.static(create_blocked_cholesky_solve_newton_func(TILE_SIZE, matrix_size, vector_size))(
+      sums = wp.static(create_blocked_cholesky_solve_newton_func(TILE_SIZE, matrix_size, vector_size, htype))(
         ctx_hfactor[worldid],
         ctx_grad_in[worldid],
         active_size,
@@ -3590,20 +3727,23 @@ def _cholesky_factorize_solve(
   If skip_unchanged is True (blocked path only), worlds where no constraints
   changed reuse the cached factorization in hfactor instead of refactorizing.
   """
+  htype = _htype(m)
   if m.nv <= types.H_ONE_TILE_MAX:
     wp.launch_tiled(
-      _update_gradient_cholesky(m.nv_pad, skip_noflip),
+      _update_gradient_cholesky(m.nv_pad, skip_noflip, htype),
       dim=d.nworld,
       inputs=[ctx.grad, ctx.h, ctx.state_changed_count if skip_noflip else d.nefc, ctx.done],
       outputs=[ctx.search, ctx.search_dot, ctx.newton_decrement],
       block_dim=m.block_dim.update_gradient_cholesky,
     )
-  elif m.nv <= _SPARSE_BLOCK_CHOLESKY_DIM:
+  elif not _use_sparse_tile_cholesky(m):
     if skip_unchanged:
       if ctx.hfactor.ptr == ctx.h.ptr:
         raise ValueError("skip_unchanged requires separate h and hfactor buffers")
       wp.launch_tiled(
-        _update_gradient_cholesky_blocked_skip_unchanged(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, m.nv, skip_noflip, compact),
+        _update_gradient_cholesky_blocked_skip_unchanged(
+          types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, m.nv, skip_noflip, compact, htype
+        ),
         dim=d.nworld,
         inputs=[
           d.ncdof,
@@ -3623,7 +3763,7 @@ def _cholesky_factorize_solve(
       )
     else:
       wp.launch_tiled(
-        _update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, m.nv, compact),
+        _update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, m.nv, compact, htype),
         dim=d.nworld,
         inputs=[d.ncdof, ctx.done, ctx.grad.reshape(shape=(d.nworld, ctx.grad.shape[1], 1)), ctx.h, ctx.hfactor],
         outputs=[
@@ -3728,11 +3868,17 @@ def _JTDACJ_sparse(
   max_condim: int,
   block_dim: int = types.BlockDim.update_gradient_JTDAJ_sparse,
   max_records: int = 0,
+  htype: type = float,
   deterministic: bool = False,
 ):
   COMPACT = compact
   ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   MAX_CONDIM = max_condim
+  # float64: the cone curvature (its tangent normalization included) is formed in float64 too:
+  # the rank-deficient cone Hessian turns indefinite at ~eps32 of its scale when its float32
+  # terms disagree
+  vec16h = wp.types.vector(16, wp.float64) if htype is wp.float64 else types.vec16
+  safe_div = _safe_div(htype)
   module_options = {"enable_backward": False, "block_dim": block_dim}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -3751,28 +3897,28 @@ def _JTDACJ_sparse(
       worldid: int,
       efcid0: int,
       block_rows: int,
-    ) -> types.vec16:
-      mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+    ) -> vec16h:
+      mu = htype(fri[0]) * htype(opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]])
       mu2 = mu * mu
-      dm = math.safe_div(efc_D_in[worldid, efcid0], mu2 * (1.0 + mu2))
-      if dm == 0.0:
-        return types.vec16()
+      dm = safe_div(htype(efc_D_in[worldid, efcid0]), mu2 * (htype(1.0) + mu2))
+      if dm == htype(0.0):
+        return vec16h()
 
-      n = ctx_Jaref_in[worldid, efcid0] * mu
-      terms = types.vec16()
+      n = htype(ctx_Jaref_in[worldid, efcid0]) * mu
+      terms = vec16h()
       terms[6] = mu
-      tt = float(0.0)
+      tt = htype(0.0)
       for dim in range(1, wp.static(condim)):
         if dim < block_rows:
           efcid = efcid0 + dim
-          scale = fri[dim - 1]
-          u = ctx_Jaref_in[worldid, efcid] * scale
+          scale = htype(fri[dim - 1])
+          u = htype(ctx_Jaref_in[worldid, efcid]) * scale
           terms[dim] = u
           terms[6 + dim] = scale
           tt += u * u
 
-      t = wp.max(wp.sqrt(tt), types.MJ_MINVAL)
-      inv_t = math.safe_div(1.0, t)
+      t = wp.max(wp.sqrt(tt), htype(types.MJ_MINVAL))
+      inv_t = safe_div(htype(1.0), t)
       for dim in range(1, wp.static(condim)):
         terms[dim] = terms[dim] * inv_t
 
@@ -3799,15 +3945,15 @@ def _JTDACJ_sparse(
       worldid: int,
       pos1: int,
       pos2: int,
-    ) -> float:
-      z01 = terms[6] * efc_J_in[worldid, 0, rowadr[0] + pos1]
-      z02 = terms[6] * efc_J_in[worldid, 0, rowadr[0] + pos2]
-      projection1 = float(0.0)
-      projection2 = float(0.0)
-      tangent_dot = float(0.0)
+    ) -> htype:
+      z01 = terms[6] * htype(efc_J_in[worldid, 0, rowadr[0] + pos1])
+      z02 = terms[6] * htype(efc_J_in[worldid, 0, rowadr[0] + pos2])
+      projection1 = htype(0.0)
+      projection2 = htype(0.0)
+      tangent_dot = htype(0.0)
       for dim in range(1, wp.static(condim)):
-        z1 = terms[6 + dim] * efc_J_in[worldid, 0, rowadr[dim] + pos1]
-        z2 = terms[6 + dim] * efc_J_in[worldid, 0, rowadr[dim] + pos2]
+        z1 = terms[6 + dim] * htype(efc_J_in[worldid, 0, rowadr[dim] + pos1])
+        z2 = terms[6 + dim] * htype(efc_J_in[worldid, 0, rowadr[dim] + pos2])
         projection1 += terms[dim] * z1
         projection2 += terms[dim] * z2
         tangent_dot += z1 * z2
@@ -3846,7 +3992,7 @@ def _JTDACJ_sparse(
     efcid0: int,
     condim: int,
     block_rows: int,
-  ) -> types.vec16:
+  ) -> vec16h:
     if wp.static(MAX_CONDIM == 3):
       return curvature_terms3(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows)
 
@@ -3869,7 +4015,7 @@ def _JTDACJ_sparse(
     pos1: int,
     pos2: int,
     condim: int,
-  ) -> float:
+  ) -> htype:
     if wp.static(MAX_CONDIM == 3):
       return hessian_entry3(efc_J_in, terms, rowadr, worldid, pos1, pos2)
 
@@ -3904,7 +4050,7 @@ def _JTDACJ_sparse(
     ctx_done_in: wp.array[bool],
     groups_per_world: int,
     # Out:
-    h_out: wp.array3d[float],
+    h_out: wp.array3d[htype],
   ):
     worldid, slot, lane = wp.tid()
     if wp.static(ELLIPTIC):
@@ -3936,7 +4082,7 @@ def _JTDACJ_sparse(
           for dim in range(1, wp.static(MAX_CONDIM)):
             if dim < block_rows:
               cone_rowadr[dim] = head_adr + dim * support
-          local_terms = types.vec16()
+          local_terms = vec16h()
           if lane == 0:
             local_terms = curvature_terms(
               opt_impratio_invsqrt,
@@ -3948,7 +4094,7 @@ def _JTDACJ_sparse(
               condim,
               block_rows,
             )
-          cone_terms = wp.tile_zeros(shape=(16,), dtype=float, storage="shared")
+          cone_terms = wp.tile_zeros(shape=(16,), dtype=htype, storage="shared")
           for term_id in range(1, 16):
             wp.tile_scatter_masked(cone_terms, term_id, local_terms[term_id], lane == 0)
 
@@ -3957,7 +4103,7 @@ def _JTDACJ_sparse(
         block_row = entry - block_col * (block_col + 1) // 2
         dof_row = efc_J_colind_in[worldid, 0, head_adr + block_row]
         dof_col = efc_J_colind_in[worldid, 0, head_adr + block_col]
-        hval = float(0.0)
+        hval = htype(0.0)
         if wp.static(ELLIPTIC):
           if is_cone:
             hval = hessian_entry(
@@ -3976,8 +4122,8 @@ def _JTDACJ_sparse(
               member_adr = efc_J_rowadr_in[worldid, member_row]
               j_row = efc_J_in[worldid, 0, member_adr + block_row]
               j_col = efc_J_in[worldid, 0, member_adr + block_col]
-              hval += j_row * efc_D_in[worldid, member_row] * j_col
-        if hval != 0.0:
+              hval += htype(j_row) * htype(efc_D_in[worldid, member_row]) * htype(j_col)
+        if hval != htype(0.0):
           if wp.static(COMPACT):
             dof_row = dof_cdof_in[worldid, dof_row]
             dof_col = dof_cdof_in[worldid, dof_col]
@@ -4037,13 +4183,17 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       smooth.solve_m(m, d, ctx.Mgrad, ctx.grad, x_scratch=ctx.solve_ld_scratch)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = M + (efc_J.T * efc_D * active) @ efc_J
+    htype = _htype(m)
+    # float64: the discrete integrator's effective metric is assembled in h from M and its parts,
+    # since the float32 qH has already rounded M's diagonal against the much larger metric terms
+    metric_in_h = is_discrete and htype is wp.float64
     sc = _sparse_compact(ctx)
     if m.is_sparse or sc:
       mj = ctx.compact_m_full if sc else m
       dj = ctx.compact_d_full if sc else d
-      m_mat = dj.qH if is_discrete else dj.M
+      m_mat = dj.qH if is_discrete and not metric_in_h else dj.M
       wp.launch(
-        _update_gradient_init_h_sparse(sc),
+        _update_gradient_init_h_sparse(sc, htype),
         dim=(d.nworld, m.nv_pad, _INIT_H_SECTOR),
         inputs=[
           mj.nv,
@@ -4065,12 +4215,12 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       elliptic = m.opt.cone == types.ConeType.ELLIPTIC
       threads_per_group = 1 if elliptic and wp.get_device().is_cpu else _JTDAJ_THREADS_PER_GROUP
       block_dim = threads_per_group if elliptic else mj.block_dim.update_gradient_JTDAJ_sparse
-      jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim)
+      jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, 0, htype)
       groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax, jtdaj_kernel)
       if bool(m.opt.deterministic & types.DeterminismType.ATOMICS):
         entries_per_lane = ceil((mj.nv * (mj.nv + 1) // 2) / threads_per_group)
         max_records = ceil(d.njmax / groups_per_world) * entries_per_lane
-        jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, max_records, True)
+        jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, max_records, htype, True)
       jtdaj_inputs = [
         m.opt.impratio_invsqrt,
         d.contact.friction,
@@ -4098,11 +4248,11 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         block_dim=block_dim,
       )
     else:
-      m_mat = d.qH if is_discrete else d.M
+      m_mat = d.qH if is_discrete and not metric_in_h else d.M
       if compact:
         # compact path: d.M is the dense 3D compact inertia block (nworld, nv_pad, nv_pad)
         wp.launch_tiled(
-          _update_gradient_JTDAJ_dense_tiled_compact(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax),
+          _update_gradient_JTDAJ_dense_tiled_compact(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, htype),
           dim=d.nworld,
           inputs=[
             d.nefc,
@@ -4117,7 +4267,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         )
       else:
         wp.launch_tiled(
-          _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0]),
+          _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0], htype),
           dim=d.nworld,
           inputs=[
             m.nv,
@@ -4136,21 +4286,32 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
 
     det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
     if is_discrete:
+      if metric_in_h:
+        wp.launch(_add_dof_metric_dense_typed(htype), dim=(d.nworld, m.nv), inputs=[d.efm_diag, ctx.done], outputs=[ctx.h])
+        if m.has_fluid and not (
+          (m.opt.disableflags & types.DisableBit.SPRING) and (m.opt.disableflags & types.DisableBit.DAMPER)
+        ):  # derivative.eff_actuation's condition for folding efm_fluid into qH
+          wp.launch(
+            _add_fluid_metric_dense_typed(htype),
+            dim=(d.nworld, m.M_colind.shape[0]),
+            inputs=[m.M_colind, m.M_hinit_i, d.efm_fluid, ctx.done],
+            outputs=[ctx.h],
+          )
       wp.launch(
-        _add_tendon_metric_dense(m.max_ten_J_rownnz if det_atomics else 0, det_atomics),
+        _add_tendon_metric_dense(m.max_ten_J_rownnz if det_atomics else 0, htype, metric_in_h, det_atomics),
         dim=(d.nworld, m.ntendon),
         inputs=[m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, d.ten_J, d.efm_ts, ctx.done],
         outputs=[ctx.h],
       )
       wp.launch(
-        _add_actuator_metric_dense(m.nv if det_atomics else 0, det_atomics),
+        _add_actuator_metric_dense(m.nv if det_atomics else 0, htype, metric_in_h, det_atomics),
         dim=(d.nworld, m.nactuator),
         inputs=[d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment, d.efm_as, ctx.done],
         outputs=[ctx.h],
       )
       if m.nefmK > 0:
         wp.launch(
-          _add_efmK_metric_dense(m.nv if det_atomics else 0, det_atomics),
+          _add_efmK_metric_dense(m.nv if det_atomics else 0, htype, det_atomics),
           dim=(d.nworld, m.nv),
           inputs=[m.efm_K_rownnz, m.efm_K_rowadr, m.efm_K_colind, d.efm_K_val, ctx.done],
           outputs=[ctx.h],
@@ -4159,7 +4320,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         (m.opt.disableflags & types.DisableBit.SPRING) and (m.opt.disableflags & types.DisableBit.DAMPER)
       ):
         wp.launch(
-          _add_rod_twist_metric_dense,
+          _add_rod_twist_metric_dense_typed(htype, metric_in_h),
           dim=(d.nworld, m.nflex),
           inputs=[
             m.opt.timestep,
@@ -4181,7 +4342,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         efm_con = ctx.efm_con if ctx.efm_con is not None else derivative.build_efm_contact(m, d)
         efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = efm_con
         wp.launch(
-          _add_flexcon_metric_dense(m.efm_con_max_dof if det_atomics else 0, det_atomics),
+          _add_flexcon_metric_dense(m.efm_con_max_dof if det_atomics else 0, htype, det_atomics),
           dim=d.naconmax,
           inputs=[
             d.contact.worldid,
@@ -4219,7 +4380,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         nblocks_perblock = d.naconmax
 
       wp.launch(
-        _update_gradient_JTCJ_dense(nblocks_perblock if det_atomics else 0, det_atomics),
+        _update_gradient_JTCJ_dense(nblocks_perblock if det_atomics else 0, htype, det_atomics),
         dim=(dim_block, m.dof_tri_row.size),
         inputs=[
           m.opt.impratio_invsqrt,
@@ -4266,16 +4427,17 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
 def _update_h_incremental(m: types.Model, d: types.Data, ctx: SolverContext):
   """Update upper triangle of H with delta from constraints that changed QUADRATIC state."""
   det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+  htype = _htype(m)
   sc = _sparse_compact(ctx)
   if m.is_sparse or sc:
     mj = ctx.compact_m_full if sc else m
     dj = ctx.compact_d_full if sc else d
-    inc_kernel = _update_gradient_h_incremental_sparse(sc)
+    inc_kernel = _update_gradient_h_incremental_sparse(sc, 0, htype)
     slots = _jtdaj_groups_per_world(d.nworld, ctx.quad_changed_ids.shape[1], inc_kernel)
     if det_atomics:
       entries_per_lane = ceil((mj.nv * (mj.nv + 1) // 2) / _JTDAJ_THREADS_PER_GROUP)
       max_records = ceil(ctx.quad_changed_ids.shape[1] / slots) * entries_per_lane
-      inc_kernel = _update_gradient_h_incremental_sparse(sc, max_records, True)
+      inc_kernel = _update_gradient_h_incremental_sparse(sc, max_records, htype, True)
     wp.launch(
       inc_kernel,
       dim=(d.nworld, slots, _JTDAJ_THREADS_PER_GROUP),
@@ -4296,10 +4458,11 @@ def _update_h_incremental(m: types.Model, d: types.Data, ctx: SolverContext):
   else:
     # two groups per world keep busy iterations at large nworld as fast as one thread per element
     ntri = m.nv * (m.nv + 1) // 2
-    groups = _jtdaj_groups_per_world(d.nworld, ceil(ntri / _JTDAJ_THREADS_PER_GROUP), _update_gradient_h_incremental, 2)
+    inc_kernel = _update_gradient_h_incremental_typed(htype)
+    groups = _jtdaj_groups_per_world(d.nworld, ceil(ntri / _JTDAJ_THREADS_PER_GROUP), inc_kernel, 2)
     threads_per_world = min(groups * _JTDAJ_THREADS_PER_GROUP, ntri)
     wp.launch(
-      _update_gradient_h_incremental,
+      inc_kernel,
       dim=(d.nworld, threads_per_world),
       inputs=[
         m.nv,
