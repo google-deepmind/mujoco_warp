@@ -2891,6 +2891,36 @@ class SolverContext:
 
 
 @dataclasses.dataclass
+class OptixScene:
+  """OptiX acceleration structures of all worlds and the compiled render pipeline.
+
+  Attributes:
+    mesh_traversable: triangle acceleration structure id per mesh
+    hfield_traversable: triangle acceleration structure id per heightfield
+    primitive_traversable: id of the unit-cube custom-primitive acceleration structure that
+                           instances of analytic geoms scale to their bounds (0 if unused)
+    instances: OptiX instance records (nworld, nenabled geom)
+    ias: instance acceleration structure over all worlds (warp_optix.Accel)
+    extent: half-size of the region each world's bounded geometry and rays occupy
+    planes: enabled plane geom ids, which cast_ray intersects without the IAS
+    grid: worlds per axis of the cubic world grid
+    write_instances: kernel writing `instances` from the current geom poses
+    pipeline: render pipeline (warp_optix.Pipeline), compiled with the render context
+  """
+
+  mesh_traversable: wp.array
+  hfield_traversable: wp.array
+  primitive_traversable: int
+  instances: wp.array2d
+  ias: object
+  extent: float
+  planes: tuple
+  grid: int
+  write_instances: wp.Kernel
+  pipeline: object = None
+
+
+@dataclasses.dataclass
 class RenderContext:
   """Context for rendering.
 
@@ -3007,6 +3037,8 @@ class RenderContext:
     has_reframed_meshes: True iff any mesh BVH uses its authored frame
     any_rgb: True iff any active camera renders RGB
     any_seg: True iff any active camera renders segmentation
+    backend: Ray-casting backend, "warp" or "optix"
+    optix: OptiX scene and pipeline when backend is "optix", else None
   """
 
   nrender: int
@@ -3093,4 +3125,6 @@ class RenderContext:
   any_rgb: bool = False
   any_seg: bool = False
   geom_ray_types: tuple = ()
+  backend: str = "warp"
+  optix: Optional[OptixScene] = None
   _megakernel: Optional[wp.Kernel] = None

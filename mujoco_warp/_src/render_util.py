@@ -13,11 +13,14 @@
 # limitations under the License.
 # ==============================================================================
 
+import warnings
+
 import mujoco
 import numpy as np
 import warp as wp
 
 from mujoco_warp._src import bvh
+from mujoco_warp._src import render_optix
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.types import ProjectionType
@@ -290,7 +293,9 @@ def get_segmentation(rc: RenderContext, camera_index: int, seg_out: wp.array3d[w
   )
 
 
-_TILE_ROWS = 8
+# Rows per ray tile by backend. OptiX orders its launch indices for coherence itself, so tiling
+# there only scatters the pixel writes.
+TILE_ROWS = {"warp": 8, "optix": 1}
 
 
 @wp.func
@@ -299,12 +304,13 @@ def tile_pixel(
   rayid_local: int,
   img_w: int,
   img_h: int,
+  tile_rows: int,
 ) -> tuple[int, int, int]:
   """Map a camera-local ray index to a 2D-tiled (px, py, pixelid) coordinate."""
-  strip_pixels = img_w * wp.static(_TILE_ROWS)
+  strip_pixels = img_w * tile_rows
   strip_id = rayid_local // strip_pixels
-  base_y = strip_id * wp.static(_TILE_ROWS)
-  strip_h = wp.min(wp.static(_TILE_ROWS), img_h - base_y)
+  base_y = strip_id * tile_rows
+  strip_h = wp.min(tile_rows, img_h - base_y)
   in_strip = rayid_local - strip_id * strip_pixels
   px = in_strip // strip_h
   py = base_y + (in_strip % strip_h)
@@ -325,12 +331,13 @@ def _build_rays(
   n: int,
   sx: int,
   sy: int,
+  tile_rows: int,
   # Out:
   ray_out: wp.array[wp.vec3],
   ray_offset_out: wp.array[wp.vec3],
 ):
   rayid_local = wp.tid()
-  px, py, _ = tile_pixel(rayid_local, img_w, img_h)
+  px, py, _ = tile_pixel(rayid_local, img_w, img_h, tile_rows)
   ray_dir, ray_offset = compute_ray(
     projection, fovy, sensorsize, intrinsic, img_w * n, img_h * n, px * n + sx, py * n + sy, znear
   )
@@ -370,6 +377,7 @@ def create_render_context(
   splat_adr: np.ndarray | None = None,
   splat_group_id: np.ndarray | None = None,
   deterministic: bool = False,
+  backend: str = "warp",
 ) -> RenderContext:
   """Creates a render context on device.
 
@@ -429,6 +437,10 @@ def create_render_context(
                     use the first splat group.
     deterministic: Whether to use deterministic execution for flex BVH vertex
                    normal accumulation.
+    backend: Ray-casting backend, "warp" (Warp BVH) or "optix" (requires the optix extra
+             and an OptiX-capable GPU). If "optix" is unavailable for the device or
+             model, a warning explains why and "warp" is used. OptiX launches cannot be
+             recorded into CUDA graphs.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -677,6 +689,28 @@ def create_render_context(
   znear = float(mjm.vis.map.znear * mjm.stat.extent)
   zfar = float(mjm.vis.map.zfar * mjm.stat.extent)
 
+  if backend not in ("warp", "optix"):
+    raise ValueError(f"backend must be 'warp' or 'optix', got {backend!r}")
+  if backend == "optix":
+    reason = ""
+    wo = render_optix.get_wo()
+    if wo is None:
+      reason = "warp-optix is not installed (pip install mujoco-warp[optix])"
+    elif flex_geom_flexid or splat_count:
+      reason = "the OptiX backend does not support flexes or splats yet"
+    elif nworld * mjm.ngeom >= 1 << 24:
+      reason = "OptiX instance ids hold 24 bits, so nworld * ngeom must be below 2**24"
+    else:
+      device = wp.get_device()
+      try:
+        # OptiX raises device-specific errors when it cannot create a context.
+        wo.get_context(device)
+      except Exception as e:
+        reason = f"OptiX is not supported on device {device.alias} ({e})"
+    if reason:
+      warnings.warn(f"backend='optix' is unavailable, using backend='warp': {reason}")
+      backend = "warp"
+
   if samples_per_pixel < 1:
     raise ValueError("samples_per_pixel must be at least 1.")
   if samples_per_pixel > 1 and ri == 0:
@@ -712,6 +746,7 @@ def create_render_context(
             samples_per_pixel,
             sample % samples_per_pixel,
             sample // samples_per_pixel,
+            TILE_ROWS[backend],
           ],
           outputs=[ray, ray_offset],
         )
@@ -827,9 +862,18 @@ def create_render_context(
     splat_upper=splat_upper,
     splat_group_root=splat_group_root,
     splat_count=splat_count,
+    backend=backend,
   )
 
-  bvh.build_scene_bvh(mjm, mjd, rc, nworld)
+  if backend == "optix":
+    # render imports this module, so import it here.
+    from mujoco_warp._src import render  # noqa: PLC0415
+
+    render_optix.build_scene_bvh(mjm, mjd, rc, nworld)
+    rc._megakernel = render._build_megakernel(mjm.nlight, rc)
+    rc.optix.pipeline = render_optix.create_pipeline(rc.optix, rc._megakernel, rc.geom_ray_types, rc.enable_backface_culling)
+  else:
+    bvh.build_scene_bvh(mjm, mjd, rc, nworld)
 
   warp_util.mark_batched(rc)
   return rc

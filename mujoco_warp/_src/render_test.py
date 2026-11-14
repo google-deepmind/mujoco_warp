@@ -15,6 +15,7 @@
 """Tests for render functions."""
 
 import os
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -25,7 +26,12 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import bvh
+from mujoco_warp._src import render_optix
 from mujoco_warp._src.types import vec6
+
+warp_optix = render_optix.get_wo()
+
+_BACKENDS = ("warp", "optix") if wp.get_device().is_cuda and warp_optix is not None else ("warp",)
 
 try:
   mujoco.Renderer(mujoco.MjModel.from_xml_string("<mujoco/>"))
@@ -134,8 +140,8 @@ class RenderTest(parameterized.TestCase):
 
     self.assertEqual(center_with, center_without)
 
-  @parameterized.parameters(2, 512)
-  def test_render(self, nworld: int):
+  @parameterized.product(backend=_BACKENDS, nworld=(1, 2, 512), cam_active=(False, True))
+  def test_render(self, nworld: int, cam_active: bool, backend: str):
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=nworld)
 
     rc = mjw.create_render_context(
@@ -144,9 +150,27 @@ class RenderTest(parameterized.TestCase):
       cam_res=(32, 32),
       render_rgb=True,
       render_depth=True,
+      backend=backend,
+      cam_active=[cam_active],
     )
 
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 0] += 0.15
+      d.qpos.assign(qpos)
+      geom_size = np.repeat(m.geom_size.numpy(), nworld, axis=0)
+      geom_size[1] *= 1.25
+      m.geom_size = wp.array(geom_size, dtype=wp.vec3)
+      mjw.kinematics(m, d)
+    mjw.refit_bvh(m, d, rc)
+    rc.rgb_data.fill_(wp.uint32(0xFFFFFFFF))
+    rc.depth_data.fill_(wp.inf)
     mjw.render(m, d, rc)
+    if not cam_active:
+      self.assertEqual(rc.total_rays, 0)
+      self.assertEqual(rc.rgb_data.size, 0)
+      self.assertEqual(rc.depth_data.size, 0)
+      return
 
     rgb = rc.rgb_data.numpy()
     depth = rc.depth_data.numpy()
@@ -157,20 +181,27 @@ class RenderTest(parameterized.TestCase):
     self.assertNotEqual(np.unique(rgb).shape[0], 1)
     self.assertNotEqual(np.unique(depth).shape[0], 1)
 
-  def test_render_humanoid(self):
+    if nworld == 2:
+      self.assertFalse(np.array_equal(rgb[0], rgb[1]))
+      self.assertFalse(np.array_equal(depth[0], depth[1]))
+
+  @parameterized.product(backend=_BACKENDS)
+  def test_render_humanoid(self, backend: str):
     mjm, mjd, m, d = test_data.fixture("humanoid/humanoid.xml")
     rc = mjw.create_render_context(
       mjm,
       cam_res=(32, 32),
       render_rgb=True,
       render_depth=True,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     rgb = rc.rgb_data.numpy()
 
     self.assertNotEqual(np.unique(rgb).shape[0], 1)
 
-  def test_render_texture_by_reference(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_render_texture_by_reference(self, backend: str):
     """A scene with a by-reference file texture renders the same image as its eager compile."""
     path = os.path.join(os.path.dirname(test_data.__file__), "mug", "mug.xml")
     spec = mujoco.MjSpec.from_file(path)
@@ -182,7 +213,7 @@ class RenderTest(parameterized.TestCase):
 
     rgb = []
     for mjm_i, m_i, d_i in ((mjm, m, d), (mjm_ref, m_ref, d_ref)):
-      rc = mjw.create_render_context(mjm_i, cam_res=(64, 64), render_rgb=True, use_textures=True)
+      rc = mjw.create_render_context(mjm_i, cam_res=(64, 64), render_rgb=True, use_textures=True, backend=backend)
       mjw.render(m_i, d_i, rc)
       rgb.append(rc.rgb_data.numpy().copy())
 
@@ -209,8 +240,8 @@ class RenderTest(parameterized.TestCase):
 
     _assert_eq(rgb_np, rc.rgb_data.numpy(), "rgb_data")
 
-  @parameterized.parameters(2, 512)
-  def test_render_segmentation(self, nworld: int):
+  @parameterized.product(backend=_BACKENDS, nworld=(2, 512))
+  def test_render_segmentation(self, nworld: int, backend: str):
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=nworld)
 
     rc = mjw.create_render_context(
@@ -220,6 +251,7 @@ class RenderTest(parameterized.TestCase):
       render_rgb=False,
       render_depth=False,
       render_seg=True,
+      backend=backend,
     )
 
     mjw.render(m, d, rc)
@@ -230,7 +262,8 @@ class RenderTest(parameterized.TestCase):
     self.assertTrue(np.any(geom_mask), "Expected at least one geom hit")
     self.assertGreater(np.unique(seg[..., 0][geom_mask]).shape[0], 1)
 
-  def test_render_rgb_and_segmentation(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_render_rgb_and_segmentation(self, backend: str):
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=2)
 
     rc = mjw.create_render_context(
@@ -239,6 +272,7 @@ class RenderTest(parameterized.TestCase):
       cam_res=(32, 32),
       render_rgb=True,
       render_seg=True,
+      backend=backend,
     )
 
     mjw.render(m, d, rc)
@@ -249,7 +283,8 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(np.count_nonzero(rgb), 0)
     self.assertTrue(np.any(seg[..., 1] == int(mjw.ObjType.GEOM)))
 
-  def test_render_spot_light_with_attenuation(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_render_spot_light_with_attenuation(self, backend: str):
     """Kernel runs under `has_spot_lights=True` and non-default attenuation."""
     xml = """
     <mujoco>
@@ -266,14 +301,15 @@ class RenderTest(parameterized.TestCase):
     </mujoco>
     """
     mjm, _, m, d = test_data.fixture(xml=xml)
-    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True)
+    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True, backend=backend)
     self.assertTrue(rc.has_spot_lights, "fixture must trigger `has_spot_lights`")
     self.assertFalse(rc.light_attenuation_is_default, "fixture must trigger non-default attenuation")
     mjw.render(m, d, rc)
     rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
     self.assertGreater(int(rgb.max()), 10, "spot light should illuminate the floor cone")
 
-  def test_render_with_features_disabled(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_render_with_features_disabled(self, backend: str):
     """Kernel compiles + runs with static options disabled."""
     xml = """
     <mujoco>
@@ -293,15 +329,18 @@ class RenderTest(parameterized.TestCase):
       mjm,
       cam_res=(32, 32),
       render_rgb=True,
+      use_fast_math=False,
       enable_specular=False,
       enable_emission=False,
       enable_per_light_ambient=False,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
     self.assertGreater(int(rgb.max()), 10, "directional light + headlight should still light the scene")
 
-  def test_render_per_world_mat_texid_batch_size(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_render_per_world_mat_texid_batch_size(self, backend: str):
     """Tests render uses per-world material texture IDs allocated by put_model."""
     nworld = 2
     mjm = mujoco.MjModel.from_xml_string(
@@ -340,6 +379,7 @@ class RenderTest(parameterized.TestCase):
       use_textures=True,
       enable_specular=False,
       enable_emission=False,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     rgb = _unpack_rgb(rc.rgb_data.numpy()).reshape(nworld, 16, 16, 3).mean(axis=(1, 2))
@@ -358,7 +398,8 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(rgb[0, 1], rgb[0, 0] + 0.1)
     self.assertGreater(rgb[1, 0], rgb[1, 1] + 0.1)
 
-  def test_render_textured_mesh_texcoords_handling(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_render_textured_mesh_texcoords_handling(self, backend: str):
     """Meshes without texcoords in a scene with textured UV meshes must not mis-index."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -379,7 +420,7 @@ class RenderTest(parameterized.TestCase):
     self.assertGreaterEqual(mjm.mesh_texcoordadr[0], 0, "m_uv must have texcoords")
     self.assertEqual(mjm.mesh_texcoordadr[1], -1, "tetra must have no texcoords")
 
-    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True, render_seg=True)
+    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True, render_seg=True, backend=backend)
     rc.rgb_data.fill_(0)
     rc.seg_data.fill_(wp.vec2i(-1, -1))
 
@@ -393,8 +434,8 @@ class RenderTest(parameterized.TestCase):
     self.assertTrue(np.all(rgb[:, 0] > rgb[:, 1]), "mesh should read as red from its texture")
     self.assertTrue(np.all(rgb[:, 0] > rgb[:, 2]), "mesh should read as red from its texture")
 
-  @parameterized.product(corner=(0, 1, 2), preceding_uv=(False, True))
-  def test_render_mesh_missing_face_texcoord(self, corner, preceding_uv):
+  @parameterized.product(backend=_BACKENDS, corner=(0, 1, 2), preceding_uv=(False, True))
+  def test_render_mesh_missing_face_texcoord(self, corner, preceding_uv, backend: str):
     """Incomplete face UVs use mesh projection without reading adjacent UV data."""
     prefix = (
       '<mesh name="prefix" vertex="1 1 1  1 -1 -1  -1 1 -1  -1 -1 1" texcoord="0.75 0.75  0.75 0.75  0.75 0.75  0.75 0.75"/>'
@@ -424,7 +465,7 @@ class RenderTest(parameterized.TestCase):
     def render(texcoordadr, facetexcoord):
       mjm.mesh_texcoordadr[mesh_id] = texcoordadr
       mjm.mesh_facetexcoord[face_adr:] = facetexcoord
-      rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True, render_seg=True)
+      rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_rgb=True, render_seg=True, backend=backend)
       mjw.render(m, d, rc)
       mask = rc.seg_data.numpy()[0, :, 1] == int(mjw.ObjType.GEOM)
       self.assertTrue(np.any(mask), "Expected the mesh to be hit")
@@ -442,7 +483,8 @@ class RenderTest(parameterized.TestCase):
     self.assertFalse(np.array_equal(valid, projected))
     self.assertNotEqual(np.any(valid[:, 0] > valid[:, 1]), np.any(valid[:, 1] > valid[:, 0]))
 
-  def test_disable_ambient_lighting(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_disable_ambient_lighting(self, backend: str):
     xml = """
     <mujoco>
       <visual>
@@ -463,6 +505,7 @@ class RenderTest(parameterized.TestCase):
       cam_res=(32, 32),
       render_rgb=True,
       render_seg=True,
+      backend=backend,
     )
     mjw.render(m, d, rc)
 
@@ -479,6 +522,7 @@ class RenderTest(parameterized.TestCase):
       render_rgb=True,
       render_seg=True,
       use_ambient_lighting=False,
+      backend=backend,
     )
     mjw.render(m, d, rc)
 
@@ -488,7 +532,8 @@ class RenderTest(parameterized.TestCase):
     np.testing.assert_array_equal(rgb[geom_mask], 0)
 
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
-  def test_segmentation_matches_mujoco(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_segmentation_matches_mujoco(self, backend: str):
     """Segmentation should match native MuJoCo's `(object_id, object_type)` output."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=1, overrides={"vis.quality.offsamples": 0})
     cam_w, cam_h = 32, 32
@@ -498,6 +543,7 @@ class RenderTest(parameterized.TestCase):
       nworld=1,
       cam_res=(cam_w, cam_h),
       render_seg=[True],
+      backend=backend,
     )
     mjw.render(m, d, rc)
 
@@ -524,11 +570,14 @@ class RenderTest(parameterized.TestCase):
     </mujoco>
   """
 
-  def test_render_segmentation_orthographic(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_render_segmentation_orthographic(self, backend: str):
     """Orthographic camera's rays must shift across pixels, depending on its offset."""
     mjm, mjd, m, d = test_data.fixture(xml=self._ORTHOGRAPHIC_SCENE)
 
-    rc = mjw.create_render_context(mjm, nworld=1, cam_res=(64, 64), render_rgb=False, render_depth=False, render_seg=True)
+    rc = mjw.create_render_context(
+      mjm, nworld=1, cam_res=(64, 64), render_rgb=False, render_depth=False, render_seg=True, backend=backend
+    )
     mjw.render(m, d, rc)
 
     seg = rc.seg_data.numpy().reshape(1, 64, 64, 2)[0]
@@ -539,8 +588,15 @@ class RenderTest(parameterized.TestCase):
     self.assertFalse(bottom_left_ids & top_right_ids, "the two boxes are distinct geoms")
 
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
-  @parameterized.named_parameters(("precomputed_rays", True), ("dynamic_rays", False))
-  def test_segmentation_orthographic_matches_mujoco(self, use_precomputed_rays: bool):
+  @parameterized.named_parameters(
+    (f"{case[0]}_{backend}", *case[1:], backend)
+    for case in (
+      ("precomputed_rays", True),
+      ("dynamic_rays", False),
+    )
+    for backend in _BACKENDS
+  )
+  def test_segmentation_orthographic_matches_mujoco(self, use_precomputed_rays: bool, backend: str):
     """Orthographic segmentation should match native MuJoCo, including vertical orientation."""
     mjm, mjd, m, d = test_data.fixture(xml=self._ORTHOGRAPHIC_SCENE)
     cam_w, cam_h = 64, 64
@@ -551,6 +607,7 @@ class RenderTest(parameterized.TestCase):
       cam_res=(cam_w, cam_h),
       render_seg=[True],
       use_precomputed_rays=use_precomputed_rays,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     warp_seg_np = rc.seg_data.numpy()[0].reshape(-1, 2)
@@ -562,12 +619,15 @@ class RenderTest(parameterized.TestCase):
 
     np.testing.assert_array_equal(warp_seg_np, mj_seg)
 
-  def test_depth_orthographic_is_correct(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_depth_orthographic_is_correct(self, backend: str):
     """Orthographic depth should equal the true planar distance to each box's near face."""
     mjm, mjd, m, d = test_data.fixture(xml=self._ORTHOGRAPHIC_SCENE)
     cam_w, cam_h = 64, 64
 
-    rc = mjw.create_render_context(mjm, nworld=1, cam_res=(cam_w, cam_h), render_depth=[True], render_seg=[True])
+    rc = mjw.create_render_context(
+      mjm, nworld=1, cam_res=(cam_w, cam_h), render_depth=[True], render_seg=[True], backend=backend
+    )
     mjw.render(m, d, rc)
     depth = rc.depth_data.numpy()[0]
     seg = rc.seg_data.numpy()[0]
@@ -579,12 +639,13 @@ class RenderTest(parameterized.TestCase):
     _assert_eq(depth[hit], 9.0, "orthographic depth")
     self.assertTrue(np.all(depth[~hit] == 0.0))  # background
 
-  def test_rgb_orthographic_is_correct(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_rgb_orthographic_is_correct(self, backend: str):
     """Orthographic RGB should show each box's color in the correct quadrant of the frame."""
     mjm, mjd, m, d = test_data.fixture(xml=self._ORTHOGRAPHIC_SCENE)
     cam_w, cam_h = 64, 64
 
-    rc = mjw.create_render_context(mjm, nworld=1, cam_res=(cam_w, cam_h), render_rgb=[True], render_seg=[True])
+    rc = mjw.create_render_context(mjm, nworld=1, cam_res=(cam_w, cam_h), render_rgb=[True], render_seg=[True], backend=backend)
     mjw.render(m, d, rc)
     rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(cam_h, cam_w, 3).astype(np.int16)
     seg = rc.seg_data.numpy()[0].reshape(cam_h, cam_w, 2)
@@ -604,7 +665,8 @@ class RenderTest(parameterized.TestCase):
     self.assertTrue(np.all(top_right_colors[:, 2] > top_right_colors[:, 0]), "top-right box should read blue, not red")
 
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
-  def test_depth_matches_mujoco(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_depth_matches_mujoco(self, backend: str):
     """Depth values should match native MuJoCo (planar depth, not Euclidean)."""
     mjm, mjd, m, d = test_data.fixture("primitives.xml", nworld=1, overrides={"vis.quality.offsamples": 0})
     cam_w, cam_h = 32, 32
@@ -616,6 +678,7 @@ class RenderTest(parameterized.TestCase):
       cam_res=(cam_w, cam_h),
       render_rgb=[False],
       render_depth=[True],
+      backend=backend,
     )
     mjw.render(m, d, rc)
     warp_depth = rc.depth_data.numpy()[0]  # flat array for world 0
@@ -666,8 +729,10 @@ class RenderTest(parameterized.TestCase):
     ("mesh", _MESH_ASSET, 'type="mesh" mesh="tetra"'),
   )
 
-  @parameterized.named_parameters(*_BACKFACE_CULL_PRIMITIVES)
-  def test_backface_cull_camera_inside_primitive(self, asset: str, enclosure: str):
+  @parameterized.named_parameters(
+    (f"{case[0]}_{backend}", *case[1:], backend) for case in _BACKFACE_CULL_PRIMITIVES for backend in _BACKENDS
+  )
+  def test_backface_cull_camera_inside_primitive(self, asset: str, enclosure: str, backend: str):
     """Camera inside a geom must not render that geom's back face."""
     xml = self._BACKFACE_CULL_SCENE.format(asset=asset, enclosure=enclosure)
     mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=1)
@@ -680,6 +745,7 @@ class RenderTest(parameterized.TestCase):
       render_rgb=True,
       render_depth=True,
       render_seg=True,
+      backend=backend,
     )
     mjw.render(m, d, rc)
 
@@ -708,8 +774,10 @@ class RenderTest(parameterized.TestCase):
       self.assertGreater(float(np.min(marker_depth)), 1.0)
 
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
-  @parameterized.named_parameters(*_BACKFACE_CULL_PRIMITIVES)
-  def test_backface_cull_matches_mujoco(self, asset: str, enclosure: str):
+  @parameterized.named_parameters(
+    (f"{case[0]}_{backend}", *case[1:], backend) for case in _BACKFACE_CULL_PRIMITIVES for backend in _BACKENDS
+  )
+  def test_backface_cull_matches_mujoco(self, asset: str, enclosure: str, backend: str):
     """Backface-cull behavior must match native MuJoCo for every geom type."""
     xml = self._BACKFACE_CULL_SCENE.format(asset=asset, enclosure=enclosure)
     mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=1, overrides={"vis.quality.offsamples": 0})
@@ -720,6 +788,7 @@ class RenderTest(parameterized.TestCase):
       nworld=1,
       cam_res=(cam_w, cam_h),
       render_seg=[True],
+      backend=backend,
     )
     mjw.render(m, d, rc)
     warp_seg = rc.seg_data.numpy()[0].reshape(-1, 2)
@@ -731,8 +800,10 @@ class RenderTest(parameterized.TestCase):
 
     np.testing.assert_array_equal(warp_seg, mj_seg)
 
-  @parameterized.named_parameters(*_BACKFACE_CULL_PRIMITIVES)
-  def test_backface_cull_disabled_keeps_enclosure(self, asset: str, enclosure: str):
+  @parameterized.named_parameters(
+    (f"{case[0]}_{backend}", *case[1:], backend) for case in _BACKFACE_CULL_PRIMITIVES for backend in _BACKENDS
+  )
+  def test_backface_cull_disabled_keeps_enclosure(self, asset: str, enclosure: str, backend: str):
     """When `enable_backface_culling=False`, the enclosure must reappear."""
     xml = self._BACKFACE_CULL_SCENE.format(asset=asset, enclosure=enclosure)
     mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=1)
@@ -744,6 +815,7 @@ class RenderTest(parameterized.TestCase):
       cam_res=(cam_w, cam_h),
       render_seg=True,
       enable_backface_culling=False,
+      backend=backend,
     )
     mjw.render(m, d, rc)
 
@@ -756,7 +828,8 @@ class RenderTest(parameterized.TestCase):
       "with cull disabled, enclosing geom should appear in segmentation",
     )
 
-  def test_per_world_skybox_textures(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_per_world_skybox_textures(self, backend: str):
     """Verifies that different skybox textures can be assigned to different worlds."""
     # Load checkerboard skybox fixture (contains skybox and grid textures)
     mjm, mjd, m, d = test_data.fixture("skybox/checker.xml", nworld=2)
@@ -767,6 +840,7 @@ class RenderTest(parameterized.TestCase):
       cam_res=(32, 32),
       render_rgb=True,
       render_skybox=True,
+      backend=backend,
     )
 
     # Manually configure world 0 to use the skybox texture,
@@ -785,7 +859,8 @@ class RenderTest(parameterized.TestCase):
     # Verify that the two worlds rendered different skybox backgrounds
     self.assertFalse(np.array_equal(rgb_w0, rgb_w1))
 
-  def test_mesh_bounds_contain_offcentre_mesh(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_mesh_bounds_contain_offcentre_mesh(self, backend: str):
     # Recentred on its centroid the pyramid (height 0.4) spans -0.1 to 0.3, but a
     # half-extent of 0.5 * (pmax - pmin) reaches only 0.2, cutting the apex off.
     # The camera sits on that cut (z = 0.3) looking along the horizon, so rays
@@ -804,7 +879,7 @@ class RenderTest(parameterized.TestCase):
     </mujoco>
     """
     )
-    rc = mjw.create_render_context(mjm, cam_res=(64, 64), render_seg=True)
+    rc = mjw.create_render_context(mjm, cam_res=(64, 64), render_seg=True, backend=backend)
     mjw.render(m, d, rc)
     seg = rc.seg_data.numpy()[0].reshape(64, 64, 2)[..., 0]
 
@@ -817,7 +892,7 @@ class RenderTest(parameterized.TestCase):
   def test_coincident_geoms_resolve_to_higher_index(self, geom: str):
     # Two geoms in the same place: MuJoCo's GL depth test (GL_LEQUAL) leaves the
     # last-drawn geom on top, so the higher index must win every pixel, not
-    # whichever the BVH reaches first.
+    # whichever the BVH reaches first. OptiX resolves ties in any order.
     mjm, _, m, d = test_data.fixture(
       xml=f"""
     <mujoco>
@@ -877,7 +952,8 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(np.count_nonzero(seg == nbox[1]), 0)
     self.assertEqual(np.count_nonzero(seg == nbox[0]), 0)
 
-  def test_backface_cull_skips_culled_triangles(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_backface_cull_skips_culled_triangles(self, backend: str):
     # An inside-out tetra: like GL, culling must drop its near faces yet still
     # draw the far face behind them, not drop the whole mesh.
     mjm, _, m, d = test_data.fixture(
@@ -893,13 +969,14 @@ class RenderTest(parameterized.TestCase):
     </mujoco>
     """
     )
-    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_seg=True, enable_backface_culling=True)
+    rc = mjw.create_render_context(mjm, cam_res=(32, 32), render_seg=True, enable_backface_culling=True, backend=backend)
     mjw.render(m, d, rc)
     seg = rc.seg_data.numpy()[0].reshape(-1, 2)[..., 0]
 
     self.assertGreater(np.count_nonzero(seg == 0), 0)
 
-  def test_backfaces_are_shaded_two_sided(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_backfaces_are_shaded_two_sided(self, backend: str):
     # Camera inside the box: every visible face points away from it. Shading
     # those hits with an unflipped normal leaves the interior at zero diffuse.
     mjm, _, m, d = test_data.fixture(
@@ -914,14 +991,20 @@ class RenderTest(parameterized.TestCase):
     """
     )
     rc = mjw.create_render_context(
-      mjm, cam_res=(32, 32), render_rgb=True, enable_backface_culling=False, use_ambient_lighting=False
+      mjm,
+      cam_res=(32, 32),
+      render_rgb=True,
+      enable_backface_culling=False,
+      use_ambient_lighting=False,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     rgb = _unpack_rgb(rc.rgb_data.numpy()[0])
 
     self.assertGreater(int(rgb.min()), 0)
 
-  def test_unusable_vertex_normals_fall_back_to_the_face(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_unusable_vertex_normals_fall_back_to_the_face(self, backend: str):
     # A bare-vertex hull has no authored normals: at a cube corner MuJoCo's face
     # contributions cancel and it stores the [0, 0, 1] sentinel. Rejecting those
     # against the face normal must render the hull exactly like the primitive.
@@ -942,13 +1025,14 @@ class RenderTest(parameterized.TestCase):
       </mujoco>
       """
       )
-      rc = mjw.create_render_context(mjm, cam_res=(64, 64), render_rgb=True, use_ambient_lighting=False)
+      rc = mjw.create_render_context(mjm, cam_res=(64, 64), render_rgb=True, use_ambient_lighting=False, backend=backend)
       mjw.render(m, d, rc)
       rgb.append(_unpack_rgb(rc.rgb_data.numpy()[0]))
 
     np.testing.assert_array_equal(rgb[0], rgb[1])
 
-  def test_authored_normals_shade_smoothly_unless_disabled(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_authored_normals_shade_smoothly_unless_disabled(self, backend: str):
     # On a sphere hull neighbouring faces stay inside the tolerance, so MuJoCo
     # keeps real vertex normals: interpolating them must leave no flat facet,
     # while enable_vertex_normals=False must collapse back to facet levels.
@@ -979,6 +1063,7 @@ class RenderTest(parameterized.TestCase):
         render_seg=True,
         use_ambient_lighting=False,
         enable_vertex_normals=enable_vertex_normals,
+        backend=backend,
       )
       mjw.render(m, d, rc)
       red = _unpack_rgb(rc.rgb_data.numpy()[0])[..., 0]
@@ -1012,8 +1097,8 @@ class RenderTest(parameterized.TestCase):
     mjw.render(m, d, rc)
     self.assertIs(rc._megakernel, kernel)
 
-  @parameterized.parameters(0.0, 0.3, 1.0)
-  def test_shadow_light_fraction_scales_shadowed_light(self, fraction: float):
+  @parameterized.product(backend=_BACKENDS, fraction=(0.0, 0.3, 1.0))
+  def test_shadow_light_fraction_scales_shadowed_light(self, fraction: float, backend: str):
     # How much of a light survives its own shadow: 0 renders the shadowed floor
     # black, 1 erases the shadow, and mid-fractions sit strictly between.
     mjm, _, m, d = test_data.fixture(
@@ -1038,6 +1123,7 @@ class RenderTest(parameterized.TestCase):
       use_ambient_lighting=False,
       enable_specular=False,
       shadow_light_fraction=fraction,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     red = _unpack_rgb(rc.rgb_data.numpy()[0])[..., 0]
@@ -1053,7 +1139,8 @@ class RenderTest(parameterized.TestCase):
       self.assertGreater(int(floor.min()), 0)
       self.assertLess(int(floor.min()), int(floor.max()))
 
-  def test_supersampling_antialiases_edges(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_supersampling_antialiases_edges(self, backend: str):
     # At one sample a slanted silhouette is binary: geom or background, nothing
     # between. More samples must add blends without moving those two levels.
     xml = """
@@ -1068,7 +1155,7 @@ class RenderTest(parameterized.TestCase):
     blended = []
     for samples in (1, 2, 3):
       mjm, _, m, d = test_data.fixture(xml=xml)
-      rc = mjw.create_render_context(mjm, cam_res=(64, 64), render_rgb=True, samples_per_pixel=samples)
+      rc = mjw.create_render_context(mjm, cam_res=(64, 64), render_rgb=True, samples_per_pixel=samples, backend=backend)
       mjw.render(m, d, rc)
       red = _unpack_rgb(rc.rgb_data.numpy()[0])[..., 0].astype(int)
       value, count = np.unique(red, return_counts=True)
@@ -1080,7 +1167,8 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(blended[1], 50)
     self.assertGreater(blended[2], blended[1])
 
-  def test_supersampling_preserves_segmentation_and_depth(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_supersampling_preserves_segmentation_and_depth(self, backend: str):
     # Depth and seg come from a single sample: extra samples must not dilate the
     # segmentation silhouette or disturb the background depth.
     coverage = []
@@ -1097,7 +1185,13 @@ class RenderTest(parameterized.TestCase):
       """
       )
       rc = mjw.create_render_context(
-        mjm, cam_res=(64, 64), render_rgb=True, render_depth=True, render_seg=True, samples_per_pixel=samples
+        mjm,
+        cam_res=(64, 64),
+        render_rgb=True,
+        render_depth=True,
+        render_seg=True,
+        samples_per_pixel=samples,
+        backend=backend,
       )
       mjw.render(m, d, rc)
       hits = rc.seg_data.numpy()[0][:, 0] >= 0
@@ -1106,7 +1200,43 @@ class RenderTest(parameterized.TestCase):
 
     self.assertLess(abs(coverage[1] - coverage[0]), 10)
 
-  def test_supersampling_validation(self):
+  def test_optix_backend_falls_back_without_warp_optix(self):
+    mjm, _, _, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <camera pos="0 -1 0" xyaxes="1 0 0 0 0 1"/>
+        <geom type="sphere" size="0.1"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    # Fake a missing warp-optix install.
+    with mock.patch.object(render_optix, "get_wo", return_value=None):
+      with self.assertWarnsRegex(UserWarning, "warp-optix is not installed"):
+        rc = mjw.create_render_context(mjm, backend="optix")
+    self.assertEqual(rc.backend, "warp")
+
+  @absltest.skipIf(warp_optix is None, "warp-optix is not installed")
+  def test_optix_backend_falls_back_on_unsupported_device(self):
+    mjm, _, _, _ = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <camera pos="0 -1 0" xyaxes="1 0 0 0 0 1"/>
+        <geom type="sphere" size="0.1"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    # Fake a device without OptiX support.
+    with mock.patch.object(warp_optix, "get_context", side_effect=RuntimeError("no OptiX")):
+      with self.assertWarnsRegex(UserWarning, "OptiX is not supported on device"):
+        rc = mjw.create_render_context(mjm, backend="optix")
+    self.assertEqual(rc.backend, "warp")
+
+  @parameterized.product(backend=_BACKENDS)
+  def test_supersampling_validation(self, backend: str):
     mjm, _, _, _ = test_data.fixture(
       xml="""
     <mujoco>
@@ -1118,12 +1248,13 @@ class RenderTest(parameterized.TestCase):
     """
     )
     with self.assertRaisesRegex(ValueError, "at least 1"):
-      mjw.create_render_context(mjm, samples_per_pixel=0)
-    with self.assertRaisesRegex(ValueError, "render_rgb"):
-      mjw.create_render_context(mjm, samples_per_pixel=2, render_rgb=False)
+      mjw.create_render_context(mjm, samples_per_pixel=0, backend=backend)
 
-  @parameterized.parameters(False, True)
-  def test_supersampling_dynamic_rays_matches_precomputed(self, orthographic: bool):
+    with self.assertRaisesRegex(ValueError, "render_rgb"):
+      mjw.create_render_context(mjm, samples_per_pixel=2, render_rgb=False, backend=backend)
+
+  @parameterized.product(orthographic=(False, True), backend=_BACKENDS)
+  def test_supersampling_dynamic_rays_matches_precomputed(self, orthographic: bool, backend: str):
     mjm, _, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
@@ -1145,6 +1276,7 @@ class RenderTest(parameterized.TestCase):
         render_seg=True,
         samples_per_pixel=2,
         use_precomputed_rays=use_precomputed_rays,
+        backend=backend,
       )
       rc.rgb_data.fill_(wp.uint32(0xDEADBEEF))
       rc.depth_data.fill_(wp.inf)
@@ -1159,7 +1291,8 @@ class RenderTest(parameterized.TestCase):
     self.assertGreaterEqual(float(np.mean(same_hit)), 0.995)
     np.testing.assert_allclose(outputs[0][1][same_hit], outputs[1][1][same_hit], atol=1e-5)
 
-  def test_supersampling_multi_camera_mixed_outputs(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_supersampling_multi_camera_mixed_outputs(self, backend: str):
     # RGB buffer spans only the RGB camera pixels; a depth-only camera must not widen it.
     mjm, _, m, d = test_data.fixture(
       xml="""
@@ -1178,6 +1311,7 @@ class RenderTest(parameterized.TestCase):
       render_rgb=[True, False],
       render_depth=[False, True],
       samples_per_pixel=2,
+      backend=backend,
     )
     mjw.render(m, d, rc)
 
@@ -1185,7 +1319,8 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(np.count_nonzero(rc.rgb_data.numpy()[0]), 0)
     self.assertGreater(np.count_nonzero(rc.depth_data.numpy()[0]), 0)
 
-  def test_supersampling_batched_worlds(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_supersampling_batched_worlds(self, backend: str):
     mjm, _, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -1198,7 +1333,7 @@ class RenderTest(parameterized.TestCase):
     """,
       nworld=4,
     )
-    rc = mjw.create_render_context(mjm, nworld=4, cam_res=(32, 32), render_rgb=True, samples_per_pixel=2)
+    rc = mjw.create_render_context(mjm, nworld=4, cam_res=(32, 32), render_rgb=True, samples_per_pixel=2, backend=backend)
     mjw.render(m, d, rc)
 
     for world in range(4):
@@ -1207,13 +1342,17 @@ class RenderTest(parameterized.TestCase):
 
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
   @parameterized.named_parameters(
-    ("box", "box", "0.4 0.4 0.4"),
-    ("sphere", "sphere", "0.4"),
-    ("cylinder", "cylinder", "0.3 0.4"),
-    ("capsule", "capsule", "0.25 0.3"),
-    ("ellipsoid", "ellipsoid", "0.4 0.3 0.2"),
+    (f"{case[0]}_{backend}", *case[1:], backend)
+    for case in (
+      ("box", "box", "0.4 0.4 0.4"),
+      ("sphere", "sphere", "0.4"),
+      ("cylinder", "cylinder", "0.3 0.4"),
+      ("capsule", "capsule", "0.25 0.3"),
+      ("ellipsoid", "ellipsoid", "0.4 0.3 0.2"),
+    )
+    for backend in _BACKENDS
   )
-  def test_render_primitive_canonical_textures_match_mujoco(self, geom_type: str, geom_size: str):
+  def test_render_primitive_canonical_textures_match_mujoco(self, geom_type: str, geom_size: str, backend: str):
     """Primitive shapes textured with checker pattern must match native MuJoCo."""
     cam_w, cam_h = 48, 48
     mjm, mjd, m, d = test_data.fixture(
@@ -1240,6 +1379,7 @@ class RenderTest(parameterized.TestCase):
       render_rgb=True,
       use_textures=True,
       enable_specular=False,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     warp_rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(cam_h, cam_w, 3)
@@ -1264,11 +1404,15 @@ class RenderTest(parameterized.TestCase):
 
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
   @parameterized.named_parameters(
-    ("finite", "2 2 0.1"),
-    ("infinite", "0 0 0.1"),
-    ("mixed", "2 0 0.1"),
+    (f"{case[0]}_{backend}", *case[1:], backend)
+    for case in (
+      ("finite", "2 2 0.1"),
+      ("infinite", "0 0 0.1"),
+      ("mixed", "2 0 0.1"),
+    )
+    for backend in _BACKENDS
   )
-  def test_plane_checkerboard_parity(self, size: str):
+  def test_plane_checkerboard_parity(self, size: str, backend: str):
     """Finite, infinite, and mixed planes textured with checkerboard match MuJoCo."""
     cam_w, cam_h = 32, 32
     mjm, mjd, m, d = test_data.fixture(
@@ -1294,6 +1438,7 @@ class RenderTest(parameterized.TestCase):
       render_rgb=True,
       use_textures=True,
       enable_specular=False,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     warp_rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(cam_h, cam_w, 3)
@@ -1308,7 +1453,8 @@ class RenderTest(parameterized.TestCase):
     agreement = float(np.mean(mj_dom == warp_dom))
     self.assertGreater(agreement, 0.90, f"Plane ({size}) checkerboard agreement {agreement:.3f} below 0.90")
 
-  def test_mat_texuniform_spatial_scaling(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_mat_texuniform_spatial_scaling(self, backend: str):
     """texuniform=True causes texture repeats to scale with object physical size."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -1337,6 +1483,7 @@ class RenderTest(parameterized.TestCase):
       render_rgb=True,
       use_textures=True,
       enable_specular=False,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(64, 64, 3)
@@ -1344,7 +1491,8 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(np.count_nonzero(rgb[..., 0] > 100), 50)
     self.assertGreater(np.count_nonzero(rgb[..., 1] > 100), 50)
 
-  def test_ellipsoid_anisotropic_texuniform(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_ellipsoid_anisotropic_texuniform(self, backend: str):
     """Ellipsoid with anisotropic radii scales S by size[0] and T by size[1]."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -1368,6 +1516,7 @@ class RenderTest(parameterized.TestCase):
       render_rgb=True,
       use_textures=True,
       enable_specular=False,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(64, 64, 3)
@@ -1377,10 +1526,14 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(np.count_nonzero(rgb[..., 2] > 100), 50)
 
   @parameterized.named_parameters(
-    ("mesh", "mesh"),
-    ("sdf", "sdf"),
+    (f"{case[0]}_{backend}", *case[1:], backend)
+    for case in (
+      ("mesh", "mesh"),
+      ("sdf", "sdf"),
+    )
+    for backend in _BACKENDS
   )
-  def test_mesh_and_sdf_rendering(self, geom_type: str):
+  def test_mesh_and_sdf_rendering(self, geom_type: str, backend: str):
     """Mesh and SDF geoms render using the underlying mesh geometry."""
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
@@ -1408,6 +1561,7 @@ class RenderTest(parameterized.TestCase):
       render_seg=True,
       use_textures=True,
       enable_specular=False,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
@@ -1417,7 +1571,8 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(np.count_nonzero(seg[..., 0] == 0), 10)
     self.assertGreater(np.count_nonzero(rgb > 40), 10)
 
-  def test_skybox_only_texture_materialization(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_skybox_only_texture_materialization(self, backend: str):
     """When use_textures=False and render_skybox=True, only the skybox texture is uploaded."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -1442,13 +1597,15 @@ class RenderTest(parameterized.TestCase):
       render_rgb=True,
       use_textures=False,
       render_skybox=True,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
     self.assertFalse(np.any(np.isnan(rc.rgb_data.numpy())))
 
   @absltest.skipIf(not _HAS_RENDERER, "MuJoCo rendering requires OpenGL")
-  def test_capsule_dome_and_mantle_uv_parity(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_capsule_dome_and_mantle_uv_parity(self, backend: str):
     """Capsule dome and mantle texture coordinates match MuJoCo OpenGL."""
     cam_w, cam_h = 64, 64
     mjm, mjd, m, d = test_data.fixture(
@@ -1474,6 +1631,7 @@ class RenderTest(parameterized.TestCase):
       render_rgb=True,
       use_textures=True,
       enable_specular=False,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     warp_rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(cam_h, cam_w, 3)
@@ -1491,10 +1649,14 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(agreement, 0.95, f"Capsule texture agreement {agreement:.3f} below 0.95")
 
   @parameterized.named_parameters(
-    ("top", "0 0 4", "1 0 0 0 1 0"),
-    ("bottom", "0 0 -4", "1 0 0 0 -1 0"),
+    (f"{case[0]}_{backend}", *case[1:], backend)
+    for case in (
+      ("top", "0 0 4", "1 0 0 0 1 0"),
+      ("bottom", "0 0 -4", "1 0 0 0 -1 0"),
+    )
+    for backend in _BACKENDS
   )
-  def test_cylinder_cap_orientation(self, cam_pos: str, xyaxes: str):
+  def test_cylinder_cap_orientation(self, cam_pos: str, xyaxes: str, backend: str):
     """Cylinder top and bottom caps have consistent texture orientation."""
     cam_w, cam_h = 64, 64
     mjm, mjd, m, d = test_data.fixture(
@@ -1520,6 +1682,7 @@ class RenderTest(parameterized.TestCase):
       render_rgb=True,
       use_textures=True,
       enable_specular=False,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     warp_rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(cam_h, cam_w, 3)
@@ -1537,7 +1700,8 @@ class RenderTest(parameterized.TestCase):
       agreement = float(np.mean(mj_dom == warp_dom))
       self.assertGreater(agreement, 0.95, f"Cylinder cap agreement {agreement:.3f} below 0.95")
 
-  def test_heightfield_texture_parity(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_heightfield_texture_parity(self, backend: str):
     """Heightfield surfaces sample texture coordinates across horizontal extent."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -1563,6 +1727,7 @@ class RenderTest(parameterized.TestCase):
       render_rgb=True,
       use_textures=True,
       enable_specular=False,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(64, 64, 3)
@@ -1715,39 +1880,57 @@ class RenderTest(parameterized.TestCase):
     np.testing.assert_allclose(_unpack_rgb(rc.rgb_data.numpy())[0, 4], expected_color, atol=1)
 
   @parameterized.named_parameters(
-    ("inside", 0.5, True),
-    ("clipped", 5.0, False),
+    (f"{name}_{backend}_{nworld}", dist, zfar, is_visible, nworld, backend)
+    for name, dist, zfar, is_visible in (
+      ("inside", 0.5, 1.0, True),
+      ("clipped", 5.0, 1.0, False),
+      ("outside_cell", 6.0, 100.0, True),
+    )
+    for nworld in (1, 2)
+    for backend in _BACKENDS
   )
-  def test_zfar_clipping(self, dist: float, is_visible: bool):
-    """Geometry past the far clipping plane (zfar) is clipped."""
-    mjm, mjd, m, d = test_data.fixture(
+  def test_zfar_clipping(self, dist: float, zfar: float, is_visible: bool, nworld: int, backend: str):
+    """Clip distant geometry and handle cameras outside the scene bounds."""
+    # extent="1" makes zfar absolute instead of relative to the model extent.
+    mjm, _, m, d = test_data.fixture(
       xml=f"""
-    <mujoco>
-      <visual>
-        <map zfar="1.0"/>
-      </visual>
-      <worldbody>
-        <camera pos="0 0 0" xyaxes="1 0 0 0 0 1" fovy="45"/>
-        <geom type="box" size="0.1 0.1 0.1" pos="0 {dist} 0" rgba="1 0 0 1"/>
-      </worldbody>
-    </mujoco>
-    """,
-      nworld=1,
+      <mujoco>
+        <statistic extent="1"/>
+        <visual>
+          <map zfar="{zfar}"/>
+        </visual>
+        <worldbody>
+          <camera pos="0 {-dist} 0" xyaxes="1 0 0 0 0 1" fovy="45"/>
+          <geom type="box" size="0.1 0.1 0.1" rgba="1 0 0 1"/>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
     )
     rc = mjw.create_render_context(
-      mjm,
-      nworld=1,
-      cam_res=(32, 32),
-      render_rgb=True,
-      render_depth=True,
+      mjm, nworld=nworld, cam_res=(32, 32), render_rgb=True, render_depth=True, render_seg=True, backend=backend
     )
+    if nworld == 2:
+      geom_xpos = d.geom_xpos.numpy()
+      geom_xpos[1, 0, 0] = 0.2
+      d.geom_xpos.assign(geom_xpos)
+    mjw.refit_bvh(m, d, rc)
+    rc.rgb_data.fill_(wp.uint32(0xFFFFFFFF))
+    rc.depth_data.fill_(wp.inf)
+    rc.seg_data.fill_(wp.vec2i(-2, -2))
     mjw.render(m, d, rc)
-    rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
-    red_count = np.count_nonzero(rgb[..., 0] > 100)
+    rgb = _unpack_rgb(rc.rgb_data.numpy())
+    mask = rc.seg_data.numpy()[..., 0] == 0
     if is_visible:
-      self.assertGreater(red_count, 0, f"Box at dist {dist} should be visible")
+      self.assertTrue(np.any(mask))
+      # The front face is the nearest hit; the shifted box in world 1 also shows a side face.
+      np.testing.assert_allclose(rc.depth_data.numpy()[mask].min(), dist - 0.1, rtol=1e-5, atol=1e-5)
+      self.assertGreater(np.count_nonzero(rgb[..., 0] > 100), 0)
+      if nworld == 2:
+        self.assertFalse(np.array_equal(rgb[0], rgb[1]))
     else:
-      self.assertEqual(red_count, 0, f"Box at dist {dist} should be clipped")
+      self.assertFalse(np.any(mask))
+      self.assertEqual(np.count_nonzero(rgb[..., 0] > 100), 0)
 
   @parameterized.named_parameters(
     ("inside", 0.0, True),
@@ -1786,7 +1969,8 @@ class RenderTest(parameterized.TestCase):
     else:
       self.assertEqual(green_count, 0, f"Flex at dist {dist} should be clipped")
 
-  def test_authored_frame_mesh_bvh_parity(self):
+  @parameterized.product(backend=_BACKENDS)
+  def test_authored_frame_mesh_bvh_parity(self, backend: str):
     """Reframed mesh BVHs match inertia-frame BVHs for rendering and ray casts."""
     # Symmetric cube precedes the L-shaped mesh to exercise non-zero mesh_vertadr / mesh_faceadr
     # offsets and mixed un-reframed (mesh 0) + reframed (mesh 1) mesh_bvh_rot indexing.
@@ -1822,6 +2006,7 @@ class RenderTest(parameterized.TestCase):
       render_depth=True,
       render_seg=True,
       use_shadows=True,
+      backend=backend,
     )
     self.assertTrue(rc.has_reframed_meshes)
     np.testing.assert_allclose(rc.mesh_bvh_rot.numpy()[0], np.eye(3), atol=1e-6)
@@ -1845,6 +2030,7 @@ class RenderTest(parameterized.TestCase):
         render_depth=True,
         render_seg=True,
         use_shadows=True,
+        backend=backend,
       )
     finally:
       bvh._REFRAME_MIN_GAIN = orig_gain
@@ -1864,6 +2050,8 @@ class RenderTest(parameterized.TestCase):
     np.testing.assert_allclose(depth_reframed[same_hit], rc_inertia.depth_data.numpy()[same_hit], atol=1e-4)
 
     # Also verify mjw.ray with rc uses mesh_bvh_rot and matches un-reframed ray casts.
+    if backend == "optix":
+      return  # ray casts do not take OptiX render contexts
     pnt = wp.array([[[0.2, -1.2, 0.2]]], dtype=wp.vec3)
     vec = wp.array([[[0.0, 1.0, -0.05]]], dtype=wp.vec3)
     dist_rc, geomid_rc, normal_rc = mjw.ray(m, d, pnt, vec, rc=rc)
@@ -1872,9 +2060,10 @@ class RenderTest(parameterized.TestCase):
     np.testing.assert_allclose(dist_rc.numpy(), dist_no_rc.numpy(), atol=1e-5)
     np.testing.assert_allclose(normal_rc.numpy(), normal_no_rc.numpy(), atol=1e-5)
 
-  @parameterized.parameters((7, 5), (19, 13), (33, 17))
-  def test_tiled_dispatch_non_multiple_resolutions(self, width: int, height: int):
+  @parameterized.product(size=((7, 5), (19, 13), (33, 17)), backend=_BACKENDS)
+  def test_tiled_dispatch_non_multiple_resolutions(self, size: tuple[int, int], backend: str):
     """Cameras with non-multiple-of-8 dimensions preserve exact row-major pixel order."""
+    width, height = size
     mjm, _, m, d = test_data.fixture(xml=self._ORTHOGRAPHIC_SCENE)
     outputs = []
     for use_precomputed_rays in (True, False):
@@ -1885,6 +2074,7 @@ class RenderTest(parameterized.TestCase):
         render_depth=True,
         render_seg=True,
         use_precomputed_rays=use_precomputed_rays,
+        backend=backend,
       )
       rc.rgb_data.fill_(wp.uint32(0xDEADBEEF))
       rc.depth_data.fill_(wp.inf)
