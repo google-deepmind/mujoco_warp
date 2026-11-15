@@ -382,33 +382,6 @@ def upper_trid_index(n: int, i: int, j: int) -> int:
 
 
 @wp.func
-def inert_com(
-  # In:
-  mass: float,
-  inertia: wp.vec3,
-  rotation: wp.mat33,
-  offset: wp.vec3,
-) -> types.vec10:
-  """Express principal inertia in a rotated, translated COM frame (mju_inertCom)."""
-  row0 = wp.cw_mul(rotation[0], inertia)
-  row1 = wp.cw_mul(rotation[1], inertia)
-  row2 = wp.cw_mul(rotation[2], inertia)
-  x, y, z = offset[0], offset[1], offset[2]
-  return types.vec10(
-    wp.dot(row0, rotation[0]) + mass * (y * y + z * z),
-    wp.dot(row1, rotation[1]) + mass * (x * x + z * z),
-    wp.dot(row2, rotation[2]) + mass * (x * x + y * y),
-    wp.dot(row0, rotation[1]) - mass * x * y,
-    wp.dot(row0, rotation[2]) - mass * x * z,
-    wp.dot(row1, rotation[2]) - mass * y * z,
-    mass * x,
-    mass * y,
-    mass * z,
-    mass,
-  )
-
-
-@wp.func
 def free_bias_vel_blocks(
   # In:
   mass: float,

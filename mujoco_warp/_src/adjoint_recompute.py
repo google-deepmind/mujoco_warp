@@ -24,7 +24,6 @@ from mujoco_warp._src import math
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import JointType
-from mujoco_warp._src.types import vec10
 
 # Adjoint reductions use unordered atomics; deterministic backward execution is deferred.
 wp.set_module_options({"enable_backward": True})
@@ -118,25 +117,3 @@ def _spring_qfrc_recompute(
   else:
     fdif = qpos_in[w, qposid] - qpos_spring[spring_worldid, qposid]
     qfrc_spring_out[w, dofid] = -fdif * util_misc._poly_force(stiffness, stiffnesspoly, fdif, 0)
-
-
-# smooth._cinert
-@wp.kernel
-def _cinert_recompute(
-  # Model:
-  body_rootid: wp.array[int],
-  body_mass: wp.array2d[float],
-  body_inertia: wp.array2d[wp.vec3],
-  # Data in:
-  xipos_in: wp.array2d[wp.vec3],
-  xiquat_in: wp.array2d[wp.quat],
-  subtree_com_in: wp.array2d[wp.vec3],
-  # Data out:
-  cinert_out: wp.array2d[vec10],
-):
-  w, b = wp.tid()
-  mat = math.quat_to_mat(xiquat_in[w, b])
-  inert = body_inertia[w % body_inertia.shape[0], b]
-  mass = body_mass[w % body_mass.shape[0], b]
-  dif = xipos_in[w, b] - subtree_com_in[w, body_rootid[b]]
-  cinert_out[w, b] = math.inert_com(mass, inert, mat, dif)

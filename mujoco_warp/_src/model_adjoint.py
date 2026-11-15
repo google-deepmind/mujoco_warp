@@ -18,6 +18,7 @@ import warp as wp
 
 from mujoco_warp._src import adjoint_recompute
 from mujoco_warp._src import math
+from mujoco_warp._src import smooth
 from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BackwardContext
@@ -226,7 +227,7 @@ def _inertial_objective(
 ):
   world_pos = position + math.rot_vec_quat(ipos, orientation)
   world_mat = math.quat_to_mat(math.mul_quat(orientation, iquat))
-  value = wp.dot(math.inert_com(mass, inertia, world_mat, world_pos - com), inertia_seed)
+  value = wp.dot(smooth.inert_com(mass, inertia, world_mat, world_pos - com), inertia_seed)
   weight = mass / com_mass if com_mass >= MJ_MINVAL else float(is_root)
   return value + weight * wp.dot(com_seed, world_pos)
 

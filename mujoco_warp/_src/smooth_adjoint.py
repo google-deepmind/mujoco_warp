@@ -330,6 +330,12 @@ def _rne_contract(
 
 
 @wp.func
+def _cinert_contract(mass: float, inertia: wp.vec3, orientation: wp.quat, offset: wp.vec3, seed: vec10):
+  phi = wp.dot(smooth.inert_com(mass, inertia, math.quat_to_mat(orientation), offset), seed)
+  return phi
+
+
+@wp.func
 def _rne_body_inputs(
   # Model:
   body_dofnum: wp.array[int],
@@ -362,7 +368,7 @@ def _rne_body_inputs(
 
 
 @cache_kernel
-def _rne_vjp(nbody: int, with_mass: bool):
+def _rne_vjp(nbody: int, with_mass: bool, mass_grad: bool, inertia_grad: bool):
   tile_size = min(smooth.WORLD_SUM_BLOCK, max(32, 1 << (nbody - 1).bit_length()))
 
   @wp.kernel(module="unique", enable_backward=False)
@@ -371,14 +377,20 @@ def _rne_vjp(nbody: int, with_mass: bool):
     nv: int,
     opt_gravity: wp.array[wp.vec3],
     body_parentid: wp.array[int],
+    body_rootid: wp.array[int],
     body_dofnum: wp.array[int],
     body_dofadr: wp.array[int],
+    body_mass: wp.array2d[float],
+    body_inertia: wp.array2d[wp.vec3],
     body_gravcomp: wp.array2d[float],
     dof_bodyid: wp.array[int],
     body_subtreenum: wp.array[int],
     # Data in:
     qvel_in: wp.array2d[float],
     qacc_in: wp.array2d[float],
+    xipos_in: wp.array2d[wp.vec3],
+    xiquat_in: wp.array2d[wp.quat],
+    subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     cinert_in: wp.array2d[vec10],
     cvel_in: wp.array2d[wp.spatial_vector],
@@ -395,6 +407,11 @@ def _rne_vjp(nbody: int, with_mass: bool):
     adj_cdof_dot_out: wp.array2d[wp.spatial_vector],
     adj_cvel_out: wp.array2d[wp.spatial_vector],
     adj_cinert_out: wp.array2d[vec10],
+    adj_xipos_out: wp.array2d[wp.vec3],
+    adj_xiquat_out: wp.array2d[wp.quat],
+    adj_subtree_com_out: wp.array2d[wp.vec3],
+    res_body_mass_out: wp.array2d[float],
+    res_body_inertia_out: wp.array2d[wp.vec3],
   ):
     w, lane = wp.tid()
     ca_local = wp.tile_empty(shape=(wp.static(tile_size),), dtype=wp.spatial_vector, storage="shared")
@@ -485,9 +502,26 @@ def _rne_vjp(nbody: int, with_mass: bool):
             ci_bar, cv_bar, ca_bar, force = wp.grad(_rne_force_contract)(ci, cv, ca, seed)
           adj_cinert_out[w, body] = ci_bar
           adj_cvel_out[w, body] = cv_bar
+          root = body_rootid[body]
+          mass_bar, inertia_bar, orientation_bar, offset_bar, _ = wp.grad(_cinert_contract)(
+            body_mass[w % body_mass.shape[0], body],
+            body_inertia[w % body_inertia.shape[0], body],
+            xiquat_in[w, body],
+            xipos_in[w, body] - subtree_com_in[w, root],
+            ci_bar,
+          )
+          adj_xipos_out[w, body] = offset_bar
+          adj_xiquat_out[w, body] = orientation_bar
+          wp.atomic_sub(adj_subtree_com_out, w, root, offset_bar)  # kernel_analyzer: ignore[atomic]
+          if wp.static(mass_grad):
+            wp.atomic_add(res_body_mass_out, w % body_mass.shape[0], body, mass_bar)  # kernel_analyzer: ignore[atomic]
+          if wp.static(inertia_grad):
+            wp.atomic_add(res_body_inertia_out, w % body_inertia.shape[0], body, inertia_bar)  # kernel_analyzer: ignore[atomic]
         elif body == 0:
           adj_cinert_out[w, 0] = vec10()
           adj_cvel_out[w, 0] = wp.spatial_vector()
+          adj_xipos_out[w, 0] = wp.vec3()
+          adj_xiquat_out[w, 0] = wp.quat()
         wp.tile_assign(force_tile, wp.tile(force, preserve_type=True), offset=(start,))
         wp.tile_assign(ca_bar_tile, wp.tile(ca_bar, preserve_type=True), offset=(start,))
         if wp.static(with_mass):
@@ -541,22 +575,35 @@ def rne_backward(
   Includes -mass_y.T @ M(q) @ mass_w when supplied. Applied forces and passive gravity
   compensation contribute to the same residual. Intermediates are recomputed from input kinematics.
   """
+  bc.adj_subtree_com.zero_()
+  mass_grad = m.body_mass.requires_grad
+  inertia_grad = m.body_inertia.requires_grad
+  if mass_grad:
+    bc.res_body_mass.zero_()
+  if inertia_grad:
+    bc.res_body_inertia.zero_()
   block_dim = min(smooth.WORLD_SUM_BLOCK, max(32, 1 << (m.nbody - 1).bit_length()))
   wp.launch_tiled(
-    _rne_vjp(m.nbody, mass_y is not None),
+    _rne_vjp(m.nbody, mass_y is not None, mass_grad, inertia_grad),
     dim=d.nworld,
     block_dim=block_dim,
     inputs=[
       m.nv,
       m.opt.gravity,
       m.body_parentid,
+      m.body_rootid,
       m.body_dofnum,
       m.body_dofadr,
+      m.body_mass,
+      m.body_inertia,
       body_gravcomp,
       m.dof_bodyid,
       m.body_subtreenum,
       d.qvel,
       d.qacc,
+      d.xipos,
+      d.xiquat,
+      d.subtree_com,
       d.cdof,
       d.cinert,
       d.cvel,
@@ -566,13 +613,21 @@ def rne_backward(
       mass_y,
       mass_w,
     ],
-    outputs=[bc.smooth_adj_qvel, bc.smooth_adj_qacc, bc.adj_cdof, bc.adj_cdof_dot, bc.adj_cvel, bc.adj_cinert],
+    outputs=[
+      bc.smooth_adj_qvel,
+      bc.smooth_adj_qacc,
+      bc.adj_cdof,
+      bc.adj_cdof_dot,
+      bc.adj_cvel,
+      bc.adj_cinert,
+      bc.adj_xipos,
+      bc.adj_xiquat,
+      bc.adj_subtree_com,
+      bc.res_body_mass if mass_grad else None,
+      bc.res_body_inertia if inertia_grad else None,
+    ],
   )
   comvel_backward(m, d, bc.adj_cvel, bc.adj_cdof_dot, bc=bc)
-  bc.adj_xipos.zero_()
-  bc.adj_xiquat.zero_()
-  bc.adj_subtree_com.zero_()
-  _cinert_vjp(m, d, bc.adj_cinert, bc)
   if xfrc_applied is not None:
     xfrc_kinematics_backward(m, d, lam, xfrc_applied, bc)
   bc.smooth_res_qpos.zero_()
@@ -792,23 +847,3 @@ def comvel_backward(
     outputs=[bc.smooth_cv_adj_qvel, adj_cdof],
   )
   return {"qvel": bc.smooth_cv_adj_qvel, "cdof": adj_cdof}
-
-
-def _cinert_vjp(m: Model, d: Data, adj_cinert: wp.array2d, bc: BackwardContext):
-  """Reverses body inertia in the COM frame into pose, COM and parameter cotangents."""
-  # Explicit sinks prevent Warp from falling back to the model parameters' own .grad arrays.
-  mass_grad = bc.res_body_mass if m.body_mass.requires_grad else None
-  inertia_grad = bc.res_body_inertia if m.body_inertia.requires_grad else None
-  if mass_grad is not None:
-    mass_grad.zero_()
-  if inertia_grad is not None:
-    inertia_grad.zero_()
-  wp.launch(
-    adjoint_recompute._cinert_recompute,
-    dim=(d.nworld, m.nbody),
-    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.xiquat, d.subtree_com],
-    outputs=[d.cinert],
-    adj_inputs=[None, mass_grad, inertia_grad, bc.adj_xipos, bc.adj_xiquat, bc.adj_subtree_com],
-    adj_outputs=[adj_cinert],
-    adjoint=True,
-  )
