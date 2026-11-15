@@ -1740,6 +1740,44 @@ class CollisionTest(parameterized.TestCase):
     np.testing.assert_equal(d.nacon.numpy()[0], 4)
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
 
+  @parameterized.named_parameters(("at_capacity", False), ("over_capacity", True))
+  def test_hfield_capacity_boundary(self, extra_contact):
+    """Tests that a full prism cache only overflows on another eligible contact."""
+    ncol = types.MJ_MAXCONPAIR // 2 + 2
+    heights = np.ones((2, ncol), dtype=np.float32)
+    heights[0, -2:] = 0
+    if extra_contact:
+      heights[0, -1] = 1
+
+    # Both triangles of the first ncol - 2 cells intersect the box: MJ_MAXCONPAIR prisms.
+    # The last cell slopes away from the box. Both prisms pass the height test but are
+    # separated. Raising its bottom-right vertex adds just the final triangle's contact.
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <hfield name="hfield" nrow="2" ncol="{ncol}" size="{(ncol - 1) / 2} 1 1 .1"/>
+        </asset>
+        <worldbody>
+          <body pos="0 -.9 1">
+            <freejoint/>
+            <geom type="box" size="{ncol / 2} .05 .5"/>
+          </body>
+          <geom type="hfield" hfield="hfield"/>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"hfield_data": heights.ravel()},
+    )
+
+    d.nacon.fill_(-1)
+    d.overflow.zero_()
+
+    mjw.collision(m, d)
+
+    self.assertGreater(d.nacon.numpy()[0], 0)
+    self.assertEqual(d.overflow.numpy()[0], types.OverflowType.HFIELD if extra_contact else 0)
+
   @parameterized.parameters(1, 2)
   def test_hfield_sparse_subgrid_contacts(self, nworld):
     """Tests that non-colliding prisms in the subgrid do not starve active contacts."""
