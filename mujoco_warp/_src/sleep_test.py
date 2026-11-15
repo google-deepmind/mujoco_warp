@@ -1739,23 +1739,6 @@ class SleepTest(parameterized.TestCase):
     if nworld == 2:
       self.assertEqual(int(tree_awake[1, 1]), 0)
 
-    # Under PGS, discrete metric tendons still wake coupled sleeping trees (mj_isMetric)
-    m.opt.solver = int(mujoco.mjtSolver.mjSOL_PGS)
-    tree_asleep[0, 0] = sleep.K_AWAKE_VAL
-    tree_asleep[0, 1] = 1
-    if nworld == 2:
-      tree_asleep[1, 0] = 0
-      tree_asleep[1, 1] = 1
-    d.tree_asleep.assign(tree_asleep)
-    sleep.update_sleep(m, d)
-    sleep.wake_tendon(m, d)
-    d.tree_awake.fill_(-1)
-    sleep.update_sleep(m, d)
-    tree_awake = d.tree_awake.numpy()
-    self.assertEqual(int(tree_awake[0, 1]), 1)
-    if nworld == 2:
-      self.assertEqual(int(tree_awake[1, 1]), 0)
-
   @parameterized.parameters(1, 2)
   def test_wake_tendon_frictionloss_and_disable_flags(self, nworld):
     """Verify tendon frictionloss wakes coupled sleeping trees unless disabled."""

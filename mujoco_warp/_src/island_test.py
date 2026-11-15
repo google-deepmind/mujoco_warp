@@ -426,19 +426,6 @@ class IslandDiscoveryConstraintsTest(parameterized.TestCase):
     np.testing.assert_array_equal(tree_island[1], np.full(mjm.ntree, -1, dtype=np.int32))
     np.testing.assert_array_equal(d.efc.island.numpy()[0, : mjd.nefc], mjd.efc_island[: mjd.nefc])
 
-    # Under PGS, metric couplings are inactive (matching mj_effCouplings in C)
-    mjm.opt.solver = mujoco.mjtSolver.mjSOL_PGS
-    m.opt.solver = int(mujoco.mjtSolver.mjSOL_PGS)
-    mujoco.mj_forward(mjm, mjd)
-    d.nisland.fill_(-1)
-    d.tree_island.fill_(-1)
-    d.efc.island.fill_(-1)
-    island.island(m, d)
-    island.compute_island_mapping(m, d)
-    self.assertEqual(mjd.nisland, 2)
-    np.testing.assert_array_equal(d.nisland.numpy(), np.array([2, 0], dtype=np.int32))
-    np.testing.assert_array_equal(d.tree_island.numpy()[0], mjd.tree_island[: mjm.ntree])
-
   @parameterized.product(
     mode=("tendon", "slidercrank"),
     nworld=(1, 2),

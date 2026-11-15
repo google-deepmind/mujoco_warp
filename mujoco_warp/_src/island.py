@@ -26,7 +26,6 @@ from mujoco_warp._src.types import EqType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import OverflowType
-from mujoco_warp._src.types import SolverType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
@@ -874,11 +873,7 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
     ],
     block_dim=types.BlockDim.island_dsu,
   )
-  if (
-    m.opt.integrator == IntegratorType.DISCRETE
-    and m.opt.solver in (SolverType.CG, SolverType.NEWTON)
-    and (m.has_tendon_stiffness or m.has_tendon_damping or m.has_efm_actuator)
-  ):
+  if m.opt.integrator == IntegratorType.DISCRETE and (m.has_tendon_stiffness or m.has_tendon_damping or m.has_efm_actuator):
     wp.launch(
       _island_dsu_metric_couplings,
       dim=(d.nworld, max(m.ntendon, m.nactuator)),
