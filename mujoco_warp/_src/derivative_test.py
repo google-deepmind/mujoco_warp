@@ -4203,6 +4203,251 @@ class DerivativeTest(parameterized.TestCase):
     scale = max(1.0, float(np.abs(mjd.qacc).max()))
     np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, atol=2e-3 * scale, rtol=2e-2)
 
+  @parameterized.parameters(1, 2)
+  def test_eff_chol_1d_rod_exact(self, nworld):
+    """Tests sparse 3x3-blocked reverse Cholesky preconditioner and exact fast path on 1D rods."""
+    if types.ROD_HINGE_SIZE != 10:
+      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
+
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.005"/>
+        <worldbody>
+          <body name="crank" pos="0 0 0.5">
+            <joint name="drive" axis="0 1 0" damping="0.2"/>
+            <geom size="0.03" mass="0.2"/>
+          </body>
+          <flexcomp name="rod" type="grid" count="8 1 1" spacing="0.06 0.06 0.06" pos="0 0.2 0.5"
+                    radius="0.008" dim="1" mass="0.16">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="2e6" poisson="0.3" damping="0.02" section="box" sectionsize="0.015 0.008"/>
+          </flexcomp>
+          <flexcomp name="ring" type="circle" count="10 1 1" spacing="0.12 0.12 0.05" pos="0 -0.2 0.5"
+                    radius="0.008" dim="1" mass="0.2">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e6" damping="0.015"/>
+          </flexcomp>
+        </worldbody>
+        <actuator>
+          <position joint="drive" kp="20" kv="2"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertTrue(m.efm_chol_active)
+    self.assertTrue(m.efm_prec_exact)
+    self.assertFalse(m.efm_all_covered_or_twist)
+
+    rng = np.random.default_rng(42)
+    qvel_np = rng.uniform(-0.5, 0.5, size=(nworld, mjm.nv)).astype(np.float32)
+    ctrl_np = rng.uniform(-0.3, 0.3, size=(nworld, mjm.nu)).astype(np.float32)
+    d.qvel.assign(qvel_np)
+    d.ctrl.assign(ctrl_np)
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    # Verify eff_prec is an exact inverse of eff_mul_m on all DOFs (rigid + flex + twist)
+    x_np = rng.uniform(-1.0, 1.0, size=(nworld, mjm.nv)).astype(np.float32)
+    x_wp = wp.array(x_np, dtype=float)
+    rhs_wp = wp.zeros_like(x_wp)
+    sol_wp = wp.zeros_like(x_wp)
+    derivative.eff_mul_m(m, d, rhs_wp, x_wp)
+    derivative.eff_prec(m, d, sol_wp, rhs_wp)
+    np.testing.assert_allclose(sol_wp.numpy(), x_np, rtol=1e-4, atol=1e-5)
+
+    qacc_smooth = d.qacc_smooth.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qvel[:] = qvel_np[w]
+      mjd_w.ctrl[:] = ctrl_np[w]
+      mujoco.mj_forward(mjm, mjd_w)
+      _assert_eq(qacc_smooth[w], mjd_w.qacc_smooth, f"qacc_smooth_w{w}")
+      _assert_eq(qacc[w], mjd_w.qacc, f"qacc_w{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc_smooth[0], qacc_smooth[1]))
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+
+  @absltest.skipIf(types.ROD_HINGE_SIZE != 10, "Requires 1D flex rod torsion support in MuJoCo")
+  @parameterized.parameters(1, 2)
+  def test_eff_chol_1d_rod_ring_only(self, nworld):
+    """Tests 3*nefmdof == nv fast path on a closed 1D rod ring without twist joints."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.005"/>
+        <worldbody>
+          <flexcomp name="ring" type="circle" count="8 1 1" spacing="0.1 0.1 0.05" pos="0 0 0.5"
+                    radius="0.008" dim="1" mass="0.2">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e6" damping="0.015"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertTrue(m.efm_chol_active)
+    self.assertTrue(m.efm_prec_exact)
+    self.assertTrue(m.efm_all_covered_or_twist)
+    self.assertEqual(3 * m.nefmdof, m.nv)
+    self.assertEqual(m.nflexrodedge, 0)
+
+    rng = np.random.default_rng(43)
+    qvel_np = rng.uniform(-0.5, 0.5, size=(nworld, mjm.nv)).astype(np.float32)
+    d.qvel.assign(qvel_np)
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    qacc_smooth = d.qacc_smooth.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qvel[:] = qvel_np[w]
+      mujoco.mj_forward(mjm, mjd_w)
+      _assert_eq(qacc_smooth[w], mjd_w.qacc_smooth, f"qacc_smooth_w{w}")
+      _assert_eq(qacc[w], mjd_w.qacc, f"qacc_w{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc_smooth[0], qacc_smooth[1]))
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+
+  @absltest.skipIf(types.ROD_HINGE_SIZE != 10, "Requires 1D flex rod torsion support in MuJoCo")
+  @parameterized.product(nworld=(1, 2), disable_spring=(False, True))
+  def test_eff_chol_1d_rod_twist_only(self, nworld, disable_spring):
+    """Tests efm_all_covered_or_twist path on a pure open 1D rod with twist (including disabled springs + zero damping)."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.005"/>
+        <worldbody>
+          <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.06 0.06 0.06" pos="0 0 0.5"
+                    radius="0.008" dim="1" mass="0.15">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="2e6" poisson="0.3" section="box" sectionsize="0.015 0.008"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": mujoco.mjtDisableBit.mjDSBL_SPRING} if disable_spring else {},
+      nworld=nworld,
+    )
+    self.assertTrue(m.efm_chol_active)
+    self.assertTrue(m.efm_prec_exact)
+    self.assertTrue(m.efm_all_covered_or_twist)
+    self.assertGreater(m.nflexrodedge, 0)
+
+    rng = np.random.default_rng(44)
+    qvel_np = rng.uniform(-0.5, 0.5, size=(nworld, mjm.nv)).astype(np.float32)
+    qfrc_np = rng.uniform(-0.2, 0.2, size=(nworld, mjm.nv)).astype(np.float32)
+    d.qvel.assign(qvel_np)
+    d.qfrc_applied.assign(qfrc_np)
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    qacc_smooth = d.qacc_smooth.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qvel[:] = qvel_np[w]
+      mjd_w.qfrc_applied[:] = qfrc_np[w]
+      mujoco.mj_forward(mjm, mjd_w)
+      _assert_eq(qacc_smooth[w], mjd_w.qacc_smooth, f"qacc_smooth_w{w}")
+      _assert_eq(qacc[w], mjd_w.qacc, f"qacc_w{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc_smooth[0], qacc_smooth[1]))
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+
+  @absltest.skipIf(types.ROD_HINGE_SIZE != 10, "Requires 1D flex rod torsion support in MuJoCo")
+  @parameterized.parameters(1, 2)
+  def test_eff_chol_1d_rod_articulated_child(self, nworld):
+    """Tests PCG fallback (efm_prec_exact == False) when a 1D rod vertex has an articulated child joint."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" timestep="0.005"/>
+        <worldbody>
+          <body name="v0" pos="0 0.1 0.5">
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+            <geom size="0.02" mass="0.2" contype="0" conaffinity="0"/>
+            <body name="pendulum" pos="0 0 -0.1">
+              <joint axis="0 1 0" damping="0.05"/>
+              <geom size="0.02" mass="0.2" contype="0" conaffinity="0"/>
+            </body>
+          </body>
+          <body name="v1" pos="0 0 0.5">
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+            <geom size="0.02" mass="0.2" contype="0" conaffinity="0"/>
+          </body>
+          <body name="v2" pos="0.1 0 0.5">
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+            <geom size="0.02" mass="0.2" contype="0" conaffinity="0"/>
+          </body>
+          <body name="v3" pos="0.1 0.1 0.5">
+            <joint type="slide" axis="1 0 0"/>
+            <joint type="slide" axis="0 1 0"/>
+            <joint type="slide" axis="0 0 1"/>
+            <geom size="0.02" mass="0.2" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+        <deformable>
+          <flex name="zrod" dim="1" radius="0.01" body="v0 v1 v2 v3" element="0 1 1 2 2 3">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e6" poisson="0.25" damping="0.02"/>
+          </flex>
+        </deformable>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertTrue(m.efm_chol_active)
+    self.assertFalse(m.efm_prec_exact)
+    self.assertFalse(m.efm_all_covered_or_twist)
+
+    rng = np.random.default_rng(45)
+    qvel_np = rng.uniform(-0.5, 0.5, size=(nworld, mjm.nv)).astype(np.float32)
+    qfrc_np = rng.uniform(-0.3, 0.3, size=(nworld, mjm.nv)).astype(np.float32)
+    d.qvel.assign(qvel_np)
+    d.qfrc_applied.assign(qfrc_np)
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    qacc_smooth = d.qacc_smooth.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qvel[:] = qvel_np[w]
+      mjd_w.qfrc_applied[:] = qfrc_np[w]
+      mujoco.mj_forward(mjm, mjd_w)
+      _assert_eq(qacc_smooth[w], mjd_w.qacc_smooth, f"qacc_smooth_w{w}")
+      _assert_eq(qacc[w], mjd_w.qacc, f"qacc_w{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc_smooth[0], qacc_smooth[1]))
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+
 
 if __name__ == "__main__":
   wp.init()
