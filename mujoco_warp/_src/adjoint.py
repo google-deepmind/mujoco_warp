@@ -296,7 +296,7 @@ def _solve_adjoint_cholesky(nv: int):
     w = wp.tid()
     h = wp.tile_load(h_in[w], shape=(nv, nv))
     wp.tile_cholesky_inplace(h, fill_mode="upper")
-    rhs = wp.tile_load(rhs_in[w], shape=nv)
+    rhs = wp.tile_load(rhs_in[w], shape=nv, bounds_check=True)
     solution = wp.tile_cholesky_solve(h, rhs, fill_mode="upper")
     wp.tile_store(solution_out[w], solution)
 
@@ -312,18 +312,17 @@ def solve_backward(m: Model, d_bwd: Data, adj_qacc: wp.array, bc: BackwardContex
       smooth.solve_m(m, d_bwd, solver_ctx.search, adj_qacc)
     return solver_ctx
   solver.init_context(m, d_bwd, solver_ctx, grad=True)
-  # Only the Hessian is needed; replace the initializer's gradient with the adjoint RHS.
-  wp.launch(_load_rhs, dim=(d_bwd.nworld, m.nv_pad), inputs=[m.nv, adj_qacc], outputs=[solver_ctx.grad])
   if m.nv <= H_ONE_TILE_MAX:
     wp.launch_tiled(
-      _solve_adjoint_cholesky(m.nv),
+      _solve_adjoint_cholesky(m.nv_pad),
       dim=d_bwd.nworld,
-      inputs=[solver_ctx.h, solver_ctx.grad],
+      inputs=[solver_ctx.h, adj_qacc],
       outputs=[solver_ctx.search],
       block_dim=m.block_dim.update_gradient_cholesky,
     )
   else:
-    # init_context already initializes the padded Hessian block to the identity.
+    wp.launch(_load_rhs, dim=(d_bwd.nworld, m.nv_pad), inputs=[m.nv, adj_qacc], outputs=[solver_ctx.grad])
+    # init_context initializes the padded block to the identity.
     rhs = solver_ctx.grad.reshape((d_bwd.nworld, m.nv_pad, 1))
     # This helper loads the entire RHS before storing its solution, so reuse the padded buffer.
     wp.launch_tiled(
