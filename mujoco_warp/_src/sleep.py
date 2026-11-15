@@ -561,7 +561,7 @@ def _wake_collision_kernel(
   if conid >= nacon_in[0]:
     return
   ctype = contact_type_in[conid]
-  if ctype != 0 and not (ctype & (ContactType.CONSTRAINT | ContactType.PASSIVE)):
+  if not (ctype & (ContactType.CONSTRAINT | ContactType.PASSIVE)):
     return
 
   geom_pair = contact_geom_in[conid]

@@ -348,11 +348,13 @@ class EnableBit(enum.IntFlag):
     ENERGY: energy computation
     INVDISCRETE: discrete-time inverse dynamics
     SLEEP: sleeping
+    SPECULATIVE: speculative contact detection
   """
 
   ENERGY = mujoco.mjtEnableBit.mjENBL_ENERGY
   INVDISCRETE = mujoco.mjtEnableBit.mjENBL_INVDISCRETE
   SLEEP = mujoco.mjtEnableBit.mjENBL_SLEEP
+  SPECULATIVE = mujoco.mjtEnableBit.mjENBL_SPECULATIVE
   # unsupported: OVERRIDE, FWDINV, ISLAND, DIAGEXACT
 
 
@@ -2421,11 +2423,13 @@ class ContactType(enum.IntFlag):
     CONSTRAINT: contact for constraint solver
     SENSOR: contact for collision sensor (GEOMDIST, GEOMNORMAL, GEOMFROMTO)
     PASSIVE: passive contact for effective metric
+    SPECULATIVE: speculative contact active even when dist >= includemargin
   """
 
   CONSTRAINT = 1 << 0
   SENSOR = 1 << 1
   PASSIVE = 1 << 2
+  SPECULATIVE = 1 << 3
 
 
 @dataclasses.dataclass

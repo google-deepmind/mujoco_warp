@@ -33,6 +33,7 @@ wp.set_module_options({"default_grid_stride": False})
 # MuJoCo contact exclusion flags (mjdata.h):
 # 0: include, 1: in gap, 2: fused, 3: no dofs, 4: passive.
 CONTACT_EXCLUDE_INCLUDE = 0
+CONTACT_EXCLUDE_GAP = 1
 CONTACT_EXCLUDE_PASSIVE = 4
 
 
@@ -2938,9 +2939,16 @@ def put_data(
   contact.efc_address = wp.array(contact.efc_address, dtype=int)
   contact.worldid = np.pad(np.repeat(np.arange(nworld), mjd.ncon), (0, naconmax - nworld * mjd.ncon))
   contact.worldid = wp.array(contact.worldid, dtype=int)
-  con_type = np.ones(mjd.ncon, dtype=int)
+  con_type = np.full(mjd.ncon, int(types.ContactType.CONSTRAINT), dtype=int)
   if mjd.ncon > 0:
-    con_type[mjd.contact.exclude[: mjd.ncon] == CONTACT_EXCLUDE_PASSIVE] = int(types.ContactType.PASSIVE)
+    exclude = mjd.contact.exclude[: mjd.ncon]
+    con_type[exclude == CONTACT_EXCLUDE_PASSIVE] = int(types.ContactType.PASSIVE)
+    is_speculative = (
+      (exclude == CONTACT_EXCLUDE_INCLUDE)
+      & (mjd.contact.dist[: mjd.ncon] >= mjd.contact.includemargin[: mjd.ncon])
+      & (mjd.contact.adhesion[: mjd.ncon] == 0.0)
+    )
+    con_type[is_speculative] |= int(types.ContactType.SPECULATIVE)
   contact.type = wp.array(
     np.pad(np.tile(con_type, nworld), (0, naconmax - nworld * mjd.ncon), constant_values=1),
     dtype=int,
@@ -3283,7 +3291,18 @@ def get_data_into(
   result.contact.dim[:ncon] = d.contact.dim.numpy()[ncon_filter]
   result.contact.geom[:ncon] = d.contact.geom.numpy()[ncon_filter]
   is_passive = (contact_type[ncon_filter] & types.ContactType.PASSIVE) != 0
-  result.contact.exclude[:ncon] = np.where(is_passive, CONTACT_EXCLUDE_PASSIVE, CONTACT_EXCLUDE_INCLUDE)
+  is_speculative = (contact_type[ncon_filter] & types.ContactType.SPECULATIVE) != 0
+  is_gap = (
+    ~is_passive
+    & ~is_speculative
+    & (result.contact.dist[:ncon] >= result.contact.includemargin[:ncon])
+    & (result.contact.adhesion[:ncon] == 0.0)
+  )
+  result.contact.exclude[:ncon] = np.where(
+    is_passive,
+    CONTACT_EXCLUDE_PASSIVE,
+    np.where(is_gap, CONTACT_EXCLUDE_GAP, CONTACT_EXCLUDE_INCLUDE),
+  )
   if mjm.nflex > 0:
     result.contact.flex[:ncon] = d.contact.flex.numpy()[ncon_filter]
     result.contact.elem[:ncon] = d.contact.elem.numpy()[ncon_filter]

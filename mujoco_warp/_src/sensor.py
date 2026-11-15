@@ -1682,6 +1682,7 @@ def sensor_vel(m: Model, d: Data):
         m.weld_tactile_id,
         d.contact.geom,
         d.contact.worldid,
+        d.contact.type,
         d.nacon,
       ],
       outputs=[weld_geom_seen],
@@ -2199,12 +2200,15 @@ def _mark_tactile_contacts(
   # Data in:
   contact_geom_in: wp.array[wp.vec2i],
   contact_worldid_in: wp.array[int],
+  contact_type_in: wp.array[int],
   nacon_in: wp.array[int],
   # Out:
   weld_geom_seen_out: wp.array3d[wp.uint32],
 ):
   conid = wp.tid()
   if conid >= wp.min(nacon_in[0], contact_geom_in.shape[0]):
+    return
+  if not (contact_type_in[conid] & (ContactType.CONSTRAINT | ContactType.PASSIVE)):
     return
 
   contact_geom = contact_geom_in[conid]

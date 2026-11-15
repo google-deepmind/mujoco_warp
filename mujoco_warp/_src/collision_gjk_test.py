@@ -23,8 +23,12 @@ from mujoco_warp import GeomType
 from mujoco_warp import Model
 from mujoco_warp import test_data
 from mujoco_warp._src.collision_core import Geom
+from mujoco_warp._src.collision_core import geom_collision_pair
+from mujoco_warp._src.collision_core import make_gjk_geom
 from mujoco_warp._src.collision_gjk import ccd
+from mujoco_warp._src.collision_gjk import gjk
 from mujoco_warp._src.collision_gjk import multicontact
+from mujoco_warp._src.collision_gjk import multicontact_from_features
 from mujoco_warp._src.collision_gjk import support
 from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
@@ -234,7 +238,6 @@ def _geom_dist(
         endvert,
         face1,
         face2,
-        vert,
         vert_index,
         face[idx],
         x1,
@@ -1654,6 +1657,379 @@ class GJKTest(parameterized.TestCase):
       direction = (w1[i] - w2[i]) / np.linalg.norm(w1[i] - w2[i])
       np.testing.assert_allclose(direction, [0.0, 0.0, 1.0], atol=1e-5)
       self.assertAlmostEqual(pos[i][2], -0.005, places=5)
+
+  def test_gjk_warmstart_and_coinciding_centers(self):
+    """Test direct gjk() warm-start, coinciding centers, and smooth sub-tolerance distance."""
+
+    @wp.kernel(enable_backward=False)
+    def _gjk_kernel(
+      # Model:
+      geom_type: wp.array[int],
+      geom_dataid: wp.array2d[int],
+      geom_size: wp.array2d[wp.vec3],
+      mesh_vertadr: wp.array[int],
+      mesh_vertnum: wp.array[int],
+      mesh_graphadr: wp.array[int],
+      mesh_vert: wp.array[wp.vec3],
+      mesh_graph: wp.array[int],
+      # Data in:
+      geom_xpos_in: wp.array2d[wp.vec3],
+      geom_xquat_in: wp.array2d[wp.quat],
+      # In:
+      gid1: int,
+      gid2: int,
+      x1_init: wp.vec3,
+      x2_init: wp.vec3,
+      tolerance: float,
+      cutoff: float,
+      is_discrete: bool,
+      # Out:
+      dist_out: wp.array[float],
+      dim_out: wp.array[int],
+      x1_out: wp.array[wp.vec3],
+      x2_out: wp.array[wp.vec3],
+    ):
+      type1 = geom_type[gid1]
+      type2 = geom_type[gid2]
+      geom1 = make_gjk_geom(
+        geom_dataid,
+        geom_size,
+        mesh_vertadr,
+        mesh_vertnum,
+        mesh_graphadr,
+        mesh_vert,
+        mesh_graph,
+        geom_xpos_in,
+        geom_xquat_in,
+        type1,
+        gid1,
+        0,
+      )
+      geom2 = make_gjk_geom(
+        geom_dataid,
+        geom_size,
+        mesh_vertadr,
+        mesh_vertnum,
+        mesh_graphadr,
+        mesh_vert,
+        mesh_graph,
+        geom_xpos_in,
+        geom_xquat_in,
+        type2,
+        gid2,
+        0,
+      )
+
+      res = gjk(tolerance, 50, geom1, geom2, x1_init, x2_init, type1, type2, cutoff, is_discrete)
+      dist_out[0] = res.dist
+      dim_out[0] = res.dim
+      x1_out[0] = res.x1
+      x2_out[0] = res.x2
+
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="low" vertex="-0.5 -0.5 -1.5  0.5 -0.5 -1.5  0.5 0.5 -1.5  -0.5 0.5 -1.5
+                                   -0.5 -0.5 -0.5  0.5 -0.5 -0.5  0.5 0.5 -0.5  -0.5 0.5 -0.5"/>
+          <mesh name="high" vertex="-0.5 -0.5 0.5  0.5 -0.5 0.5  0.5 0.5 0.5  -0.5 0.5 0.5
+                                    -0.5 -0.5 1.5  0.5 -0.5 1.5  0.5 0.5 1.5  -0.5 0.5 1.5"/>
+        </asset>
+        <worldbody>
+          <geom type="box" size="1 1 1"/>
+          <geom type="box" pos="0 0 5" size="1 1 1"/>
+          <geom type="mesh" mesh="low"/>
+          <geom type="mesh" mesh="high"/>
+          <geom type="ellipsoid" size="0.1 0.1 0.1"/>
+          <geom type="ellipsoid" size="0.1 0.08 0.06"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    dist_out = wp.empty(1, dtype=float)
+    dim_out = wp.empty(1, dtype=int)
+    x1_out = wp.empty(1, dtype=wp.vec3)
+    x2_out = wp.empty(1, dtype=wp.vec3)
+
+    def _run_gjk(
+      gid1: int,
+      gid2: int,
+      x1_init: wp.vec3,
+      x2_init: wp.vec3,
+      tolerance: float = 1.0e-6,
+      cutoff: float = 10.0,
+      is_discrete: bool = True,
+    ):
+      dist_out.fill_(wp.inf)
+      dim_out.fill_(-1)
+      x1_out.fill_(wp.vec3(wp.inf))
+      x2_out.fill_(wp.vec3(wp.inf))
+      wp.launch(
+        _gjk_kernel,
+        dim=1,
+        inputs=[
+          m.geom_type,
+          m.geom_dataid,
+          m.geom_size,
+          m.mesh_vertadr,
+          m.mesh_vertnum,
+          m.mesh_graphadr,
+          m.mesh_vert,
+          m.mesh_graph,
+          d.geom_xpos,
+          d.geom_xquat,
+          gid1,
+          gid2,
+          x1_init,
+          x2_init,
+          tolerance,
+          cutoff,
+          is_discrete,
+        ],
+        outputs=[dist_out, dim_out, x1_out, x2_out],
+      )
+      return float(dist_out.numpy()[0]), int(dim_out.numpy()[0]), x1_out.numpy()[0].copy(), x2_out.numpy()[0].copy()
+
+    # Cold GJK on two separated boxes -> dist = 3.0
+    cold_dist, cold_dim, cold_x1, cold_x2 = _run_gjk(0, 1, wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 5.0))
+    self.assertAlmostEqual(cold_dist, 3.0, places=5)
+    self.assertGreater(cold_dim, 0)
+    self.assertAlmostEqual(float(cold_x1[2]), 1.0, places=5)
+    self.assertAlmostEqual(float(cold_x2[2]), 4.0, places=5)
+
+    # Exact warm-start seeded with optimal witnesses (k == 0 exit) preserves dist, dim, witnesses
+    warm_dist, warm_dim, warm_x1, warm_x2 = _run_gjk(0, 1, wp.vec3(*cold_x1), wp.vec3(*cold_x2))
+    self.assertAlmostEqual(warm_dist, 3.0, places=5)
+    self.assertGreater(warm_dim, 0)
+    np.testing.assert_allclose(warm_x1, cold_x1, atol=1e-5)
+    np.testing.assert_allclose(warm_x2, cold_x2, atol=1e-5)
+
+    # Coinciding initial centers (x1_0 == x2_0 == 0) on offset meshes separated by 1.0
+    coinc_dist, coinc_dim, coinc_x1, coinc_x2 = _run_gjk(2, 3, wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0))
+    self.assertAlmostEqual(coinc_dist, 1.0, places=5)
+    self.assertGreater(coinc_dim, 0)
+    self.assertAlmostEqual(float(coinc_x1[2]), -0.5, places=5)
+    self.assertAlmostEqual(float(coinc_x2[2]), 0.5, places=5)
+
+    # Coinciding smooth ellipsoids with cutoff == 0 build simplex rather than exiting at n == 1
+    ov_dist, ov_dim, _, _ = _run_gjk(
+      4, 5, wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0), tolerance=1.0e-3, cutoff=0.0, is_discrete=False
+    )
+    self.assertEqual(ov_dist, 0.0)
+    self.assertGreaterEqual(ov_dim, 2)
+
+  def test_plane_multicontact_from_features(self):
+    """Test multicontact_from_features with GeomType.PLANE in either slot against convex geoms."""
+
+    @wp.kernel(enable_backward=False)
+    def _plane_multicontact_kernel(
+      # Model:
+      geom_type: wp.array[int],
+      geom_dataid: wp.array2d[int],
+      geom_size: wp.array2d[wp.vec3],
+      mesh_vertadr: wp.array[int],
+      mesh_vertnum: wp.array[int],
+      mesh_graphadr: wp.array[int],
+      mesh_vert: wp.array[wp.vec3],
+      mesh_graph: wp.array[int],
+      mesh_polynum: wp.array[int],
+      mesh_polyadr: wp.array[int],
+      mesh_polynormal: wp.array[wp.vec3],
+      mesh_polyvertadr: wp.array[int],
+      mesh_polyvertnum: wp.array[int],
+      mesh_polyvert: wp.array[int],
+      mesh_polymapadr: wp.array[int],
+      mesh_polymapnum: wp.array[int],
+      mesh_polymap: wp.array[int],
+      # Data in:
+      geom_xpos_in: wp.array2d[wp.vec3],
+      geom_xquat_in: wp.array2d[wp.quat],
+      # In:
+      gid1: int,
+      gid2: int,
+      polygon: wp.array[wp.vec3],
+      clipped: wp.array[wp.vec3],
+      pnormal: wp.array[wp.vec3],
+      pdist: wp.array[float],
+      idx1: wp.array[int],
+      idx2: wp.array[int],
+      n1: wp.array[wp.vec3],
+      n2: wp.array[wp.vec3],
+      edge: wp.array[wp.vec3],
+      endvert: wp.array[wp.vec3],
+      face1: wp.array[wp.vec3],
+      face2: wp.array[wp.vec3],
+      # Out:
+      ncon_out: wp.array[int],
+      w1_out: wp.array[wp.vec3],
+      w2_out: wp.array[wp.vec3],
+      dists_out: wp.array[float],
+    ):
+      type1 = geom_type[gid1]
+      type2 = geom_type[gid2]
+      geom1, geom2 = geom_collision_pair(
+        geom_type,
+        geom_dataid,
+        geom_size,
+        mesh_vertadr,
+        mesh_vertnum,
+        mesh_graphadr,
+        mesh_vert,
+        mesh_graph,
+        mesh_polynum,
+        mesh_polyadr,
+        mesh_polynormal,
+        mesh_polyvertadr,
+        mesh_polyvertnum,
+        mesh_polyvert,
+        mesh_polymapadr,
+        mesh_polymapnum,
+        mesh_polymap,
+        geom_xpos_in,
+        geom_xquat_in,
+        wp.vec2i(gid1, gid2),
+        0,
+      )
+
+      if type1 == GeomType.PLANE:
+        pn = geom1.rot[:, 2]
+        sp = support(geom2, type2, -pn)
+        x2 = sp.point
+        dist = wp.dot(pn, x2 - geom1.pos)
+        x1 = x2 - dist * pn
+        nface1 = 0
+        feat1 = wp.vec3i(-1, -1, -1)
+        nface2 = 1
+        feat2 = wp.vec3i(sp.vertex_index, -1, -1)
+      else:
+        pn = geom2.rot[:, 2]
+        sp = support(geom1, type1, -pn)
+        x1 = sp.point
+        dist = wp.dot(pn, x1 - geom2.pos)
+        x2 = x1 - dist * pn
+        nface1 = 1
+        feat1 = wp.vec3i(sp.vertex_index, -1, -1)
+        nface2 = 0
+        feat2 = wp.vec3i(-1, -1, -1)
+
+      ncon, witness1, witness2, dists = multicontact_from_features(
+        polygon,
+        clipped,
+        pnormal,
+        pdist,
+        idx1,
+        idx2,
+        n1,
+        n2,
+        edge,
+        endvert,
+        face1,
+        face2,
+        nface1,
+        feat1,
+        nface2,
+        feat2,
+        x1,
+        x2,
+        dist,
+        geom1,
+        geom2,
+        type1,
+        type2,
+      )
+      ncon_out[0] = ncon
+      for i in range(ncon):
+        w1_out[i] = witness1[i]
+        w2_out[i] = witness2[i]
+        dists_out[i] = dists[i]
+
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="cube" vertex="-0.05 -0.05 -0.05  0.05 -0.05 -0.05  0.05 0.05 -0.05  -0.05 0.05 -0.05
+                                    -0.05 -0.05  0.05  0.05 -0.05  0.05  0.05 0.05  0.05  -0.05 0.05  0.05"/>
+        </asset>
+        <worldbody>
+          <geom name="ground" type="plane" size="4 4 0.01"/>
+          <geom name="box" type="box" pos="0 0 0.04" size="0.05 0.05 0.05"/>
+          <geom name="cap" type="capsule" pos="0 0 0.01" size="0.02 0.1" euler="0 90 0"/>
+          <geom name="cyl" type="cylinder" pos="0 0 0.04" size="0.05 0.05"/>
+          <geom name="msh" type="mesh" pos="0 0 0.04" mesh="cube"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    npoly = 16
+    ndeg = 10
+    polygon = wp.empty(2 * npoly, dtype=wp.vec3)
+    clipped = wp.empty(2 * npoly, dtype=wp.vec3)
+    pnormal = wp.empty(npoly, dtype=wp.vec3)
+    pdist = wp.empty(npoly, dtype=float)
+    idx1 = wp.empty(ndeg, dtype=int)
+    idx2 = wp.empty(ndeg, dtype=int)
+    n1 = wp.empty(ndeg, dtype=wp.vec3)
+    n2 = wp.empty(ndeg, dtype=wp.vec3)
+    edge = wp.empty(ndeg, dtype=wp.vec3)
+    endvert = wp.empty(ndeg, dtype=wp.vec3)
+    face1 = wp.empty(npoly, dtype=wp.vec3)
+    face2 = wp.empty(npoly, dtype=wp.vec3)
+    ncon_out = wp.empty(1, dtype=int)
+    w1_out = wp.empty(4, dtype=wp.vec3)
+    w2_out = wp.empty(4, dtype=wp.vec3)
+    dists_out = wp.empty(4, dtype=float)
+
+    for other_gid, expected_ncon, expected_dist in ((1, 4, -0.01), (2, 2, -0.01), (3, 4, -0.01), (4, 4, -0.01)):
+      for g1, g2 in ((0, other_gid), (other_gid, 0)):
+        ncon_out.fill_(-1)
+        w1_out.fill_(wp.vec3(wp.inf))
+        w2_out.fill_(wp.vec3(wp.inf))
+        dists_out.fill_(wp.inf)
+        wp.launch(
+          _plane_multicontact_kernel,
+          dim=1,
+          inputs=[
+            m.geom_type,
+            m.geom_dataid,
+            m.geom_size,
+            m.mesh_vertadr,
+            m.mesh_vertnum,
+            m.mesh_graphadr,
+            m.mesh_vert,
+            m.mesh_graph,
+            m.mesh_polynum,
+            m.mesh_polyadr,
+            m.mesh_polynormal,
+            m.mesh_polyvertadr,
+            m.mesh_polyvertnum,
+            m.mesh_polyvert,
+            m.mesh_polymapadr,
+            m.mesh_polymapnum,
+            m.mesh_polymap,
+            d.geom_xpos,
+            d.geom_xquat,
+            g1,
+            g2,
+            polygon,
+            clipped,
+            pnormal,
+            pdist,
+            idx1,
+            idx2,
+            n1,
+            n2,
+            edge,
+            endvert,
+            face1,
+            face2,
+          ],
+          outputs=[ncon_out, w1_out, w2_out, dists_out],
+        )
+        ncon = int(ncon_out.numpy()[0])
+        self.assertEqual(ncon, expected_ncon, f"pair=({g1}, {g2})")
+        np.testing.assert_allclose(dists_out.numpy()[:ncon], expected_dist, atol=1e-5)
 
 
 if __name__ == "__main__":

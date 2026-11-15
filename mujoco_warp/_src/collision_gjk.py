@@ -699,6 +699,8 @@ def gjk(
   # so we can ignore tolerance
   # TODO(kbayes): look into relative tolerances based off of xnorm
   epsilon = wp.where(is_discrete, 0.0, 0.5 * tolerance * tolerance)
+  # Diverges from MuJoCo C (which uses MINVAL when cutoff > 0): in float32, iterating smooth/margin
+  # geoms below tolerance collapses overlapping simplices into rounding noise and breaks EPAfaces.
   min_norm = wp.where(is_discrete, MINVAL, tolerance)
 
   # set initial guess
@@ -1579,30 +1581,40 @@ def _polygon_quad(polygon: wp.array[wp.vec3], npolygon: int) -> wp.vec4i:
   return res
 
 
-# return number (1, 2 or 3) of dimensions of a simplex; reorder vertices if necessary
 @wp.func
-def _feature_dim(
-  face: wp.vec3i, vert_index: wp.array[int], vert: wp.array[wp.vec3], offset: int
-) -> Tuple[int, wp.vec3i, wp.mat33]:
-  v1i = vert_index[2 * face[0] + offset]
-  v2i = vert_index[2 * face[1] + offset]
-  v3i = vert_index[2 * face[2] + offset]
-
+def _dedup_feature_indices(v1i: int, v2i: int, v3i: int) -> Tuple[int, wp.vec3i]:
+  """Deduplicate three simplex vertex indices into feature dimension and reordered indices."""
   feature_index = wp.vec3i(v1i, v2i, v3i)
-  feature_vert = wp.mat33()
-  feature_vert[0] = vert[2 * face[0] + offset]
-  feature_vert[1] = vert[2 * face[1] + offset]
-  feature_vert[2] = vert[2 * face[2] + offset]
-
   if v1i != v2i:
     dim = wp.where(v3i == v1i or v3i == v2i, 2, 3)
-    return dim, feature_index, feature_vert
-
+    return dim, feature_index
   feature_index[1] = v3i
-  feature_vert[1] = vert[2 * face[2] + offset]
-
   dim = wp.where(v1i != v3i, 2, 1)
-  return dim, feature_index, feature_vert
+  return dim, feature_index
+
+
+# return number (1, 2 or 3) of dimensions of a simplex; reorder vertices if necessary
+@wp.func
+def _feature_dim(face: wp.vec3i, vert_index: wp.array[int], offset: int) -> Tuple[int, wp.vec3i]:
+  return _dedup_feature_indices(
+    vert_index[2 * face[0] + offset],
+    vert_index[2 * face[1] + offset],
+    vert_index[2 * face[2] + offset],
+  )
+
+
+@wp.func
+def gjk_simplex_features(result: GJKResult, offset: int) -> Tuple[int, wp.vec3i]:
+  """Extract deduplicated feature dimension and vertex indices from a GJK simplex."""
+  if result.dim < 1:
+    return 0, wp.vec3i(0, 0, 0)
+
+  i2 = wp.where(result.dim > 1, 1, 0)
+  i3 = wp.where(result.dim > 2, 2, 0)
+
+  if offset == 0:
+    return _dedup_feature_indices(result.simplex_index1[0], result.simplex_index1[i2], result.simplex_index1[i3])
+  return _dedup_feature_indices(result.simplex_index2[0], result.simplex_index2[i2], result.simplex_index2[i3])
 
 
 # find two normals that are facing each other within a tolerance, return 1 if found
@@ -1614,10 +1626,11 @@ def _aligned_faces(
   vert2: wp.array[wp.vec3],
   len2: int,
   dir: wp.vec3,
+  face_tol: float,
 ) -> Tuple[int, wp.vec2i]:
   res = wp.vec2i()
   dir_tol = EDGE_TOL * wp.norm_l2(dir)
-  best = float(-FACE_TOL)
+  best = float(-face_tol)
   found = int(0)
   for i in range(len1):
     if wp.dot(vert1[i], dir) >= -dir_tol:
@@ -2040,36 +2053,69 @@ def _cylinder_normals(
   return 0
 
 
-# recover edge of a cylinder from collision point
+# recover edge normal of a cylinder
 @wp.func
 def _cylinder_edge_normals(
   # In:
   dim: int,
   mat: wp.mat33,
-  pos: wp.vec3,
-  size: wp.vec3,
-  margin: float,
-  v: wp.vec3,
-  v1i: int,
   # Out:
   normal_out: wp.array[wp.vec3],
-  endvert_out: wp.array[wp.vec3],
-) -> Tuple[int, wp.vec3]:
+) -> int:
   if dim == 1 or dim == 2:
-    sgn = wp.where(v1i != 0, 1.0, -1.0)
-    # project margin-inflated vertex onto cylinder rim
-    if margin > 0.0:
-      diff = v - pos
-      local0 = wp.dot(mat[:, 0], diff)
-      local1 = wp.dot(mat[:, 1], diff)
-      n2 = local0 * local0 + local1 * local1
-      scl = wp.where(n2 >= MINVAL * MINVAL, safe_div(size[0], wp.sqrt(n2)), 0.0)
-      v = mat @ wp.vec3(scl * local0, scl * local1, -sgn * size[1]) + pos
-    res = mat[:, 2] * sgn
-    normal_out[0] = res
-    endvert_out[0] = v + res * (2.0 * size[1])
-    return 1, v
-  return 0, v
+    normal_out[0] = mat[:, 2]
+    return 1
+  return 0
+
+
+# recover contact edge of a cylinder from a colliding geom face normal
+@wp.func
+def _cylinder_edge(
+  # In:
+  mat: wp.mat33,
+  pos: wp.vec3,
+  size: wp.vec3,
+  other_normal: wp.vec3,
+  # Out:
+  face_out: wp.array[wp.vec3],
+) -> int:
+  radius = size[0]
+  halflen = size[1]
+  axis = mat[:, 2]
+  proj = other_normal - wp.dot(other_normal, axis) * axis
+  n = wp.norm_l2(proj)
+  if n < MINVAL:
+    return 0
+  center = pos - safe_div(radius, n) * proj
+  face_out[0] = center - halflen * axis
+  face_out[1] = center + halflen * axis
+  return 2
+
+
+# recover plane normal
+@wp.func
+def _plane_normals(
+  # In:
+  mat: wp.mat33,
+  # Out:
+  normal_out: wp.array[wp.vec3],
+  index_out: wp.array[int],
+) -> int:
+  normal_out[0] = mat[:, 2]
+  index_out[0] = 0
+  return 1
+
+
+# recover plane point (0 edges as infinite plane needs no edge clipping)
+@wp.func
+def _plane_face(
+  # In:
+  pos: wp.vec3,
+  # Out:
+  face_out: wp.array[wp.vec3],
+) -> int:
+  face_out[0] = pos
+  return 0
 
 
 # recover face of a cylinder (approximated as a 16-gon) from its index
@@ -2181,20 +2227,21 @@ def _polygon_clip(
   witness2 = mat43()
   dists = wp.vec4()
 
-  # clipping face needs to be at least a triangle
-  if nface1 < 3:
+  # clipping face needs to be an infinite plane (0 edges) or at least a triangle
+  if nface1 != 0 and nface1 < 3:
     return 0, witness1, witness2, dists
 
   # compute plane normal and distance to plane for each vertex
   pn = plane_normal
   pd = plane_dist
-  for i in range(nface1 - 1):
-    pdi, pni = _plane_normal(face1[i], face1[i + 1], n)
-    pd[i] = pdi
-    pn[i] = pni
-  pdi, pni = _plane_normal(face1[nface1 - 1], face1[0], n)
-  pd[nface1 - 1] = pdi
-  pn[nface1 - 1] = pni
+  if nface1 > 0:
+    for i in range(nface1 - 1):
+      pdi, pni = _plane_normal(face1[i], face1[i + 1], n)
+      pd[i] = pdi
+      pn[i] = pni
+    pdi, pni = _plane_normal(face1[nface1 - 1], face1[0], n)
+    pd[nface1 - 1] = pdi
+    pn[nface1 - 1] = pni
 
   # reserve 2 * max_sides as max sides for a clipped polygon
   npolygon = nface2
@@ -2314,58 +2361,117 @@ def _set_edge(
   return 2
 
 
-# compute possible edge normals of a geom
 @wp.func
-def _geom_edge_normals(
+def _geom_face_normals(
   # In:
-  geomtype: int,
   geom: Geom,
-  dim: int,
+  geomtype: int,
+  nface: int,
   feature_index: wp.vec3i,
-  feature_vertex: wp.vec3,
-  x: wp.vec3,
-  polyvertadr: wp.array[int],
-  polyvertnum: wp.array[int],
-  polyvert: wp.array[int],
-  polymapadr: wp.array[int],
-  polymapnum: wp.array[int],
-  polymap: wp.array[int],
+  dir: wp.vec3,
   # Out:
   normals_out: wp.array[wp.vec3],
-  endvert_out: wp.array[wp.vec3],
-) -> Tuple[int, wp.vec3]:
+  idx_out: wp.array[int],
+) -> int:
+  """Recover candidate face normals and face indices for a box, mesh, cylinder, or plane."""
   if geomtype == GeomType.BOX:
-    return _box_edge_normals(dim, geom.rot, geom.pos, geom.size, feature_index[0], feature_index[1], normals_out, endvert_out)
+    return _box_normals(nface, feature_index, geom.rot, dir, normals_out, idx_out)
   if geomtype == GeomType.MESH:
-    return _mesh_edge_normals(
-      dim,
+    return _mesh_normals(
+      nface,
+      feature_index,
+      geom.rot,
+      geom.vertadr,
+      geom.mesh_polyadr,
+      geom.mesh_polynormal,
+      geom.mesh_polymapadr,
+      geom.mesh_polymapnum,
+      geom.mesh_polymap,
+      normals_out,
+      idx_out,
+    )
+  if geomtype == GeomType.CYLINDER:
+    return _cylinder_normals(nface, feature_index, geom.rot, normals_out, idx_out)
+  if geomtype == GeomType.PLANE:
+    return _plane_normals(geom.rot, normals_out, idx_out)
+  return int(0)
+
+
+@wp.func
+def _geom_face(
+  # In:
+  geom: Geom,
+  geomtype: int,
+  ind: int,
+  # Out:
+  face_out: wp.array[wp.vec3],
+) -> int:
+  """Recover face polygon vertices for a box, mesh, cylinder, or plane."""
+  if geomtype == GeomType.BOX:
+    return _box_face(geom.rot, geom.pos, geom.size, ind, face_out)
+  if geomtype == GeomType.MESH:
+    return _mesh_face(
       geom.rot,
       geom.pos,
       geom.vertadr,
       geom.mesh_polyadr,
       geom.vert,
-      polyvertadr,
-      polyvertnum,
-      polyvert,
-      polymapadr,
-      polymapnum,
-      polymap,
-      feature_index[0],
-      feature_index[1],
-      normals_out,
-      endvert_out,
+      geom.mesh_polyvertadr,
+      geom.mesh_polyvertnum,
+      geom.mesh_polyvert,
+      ind,
+      face_out,
     )
   if geomtype == GeomType.CYLINDER:
-    return _cylinder_edge_normals(
-      dim, geom.rot, geom.pos, geom.size, geom.margin, feature_vertex, feature_index[0], normals_out, endvert_out
-    )
-  if geomtype == GeomType.CAPSULE:
-    return _capsule_edge_normals(geom.rot, geom.pos, geom.size, x, normals_out, endvert_out)
-  return 0, feature_vertex
+    return _cylinder_face(geom.rot, geom.pos, geom.size, ind, face_out)
+  if geomtype == GeomType.PLANE:
+    return _plane_face(geom.pos, face_out)
+  return int(0)
 
 
 @wp.func
-def multicontact(
+def _geom_edge_normals(
+  # In:
+  geom: Geom,
+  geomtype: int,
+  nface: int,
+  feature_index: wp.vec3i,
+  x: wp.vec3,
+  # Out:
+  edge_out: wp.array[wp.vec3],
+  endvert_out: wp.array[wp.vec3],
+) -> Tuple[int, wp.vec3]:
+  """Recover candidate edge directions and endpoints for a box, mesh, cylinder, or capsule."""
+  if geomtype == GeomType.BOX:
+    return _box_edge_normals(nface, geom.rot, geom.pos, geom.size, feature_index[0], feature_index[1], edge_out, endvert_out)
+  if geomtype == GeomType.MESH:
+    return _mesh_edge_normals(
+      nface,
+      geom.rot,
+      geom.pos,
+      geom.vertadr,
+      geom.mesh_polyadr,
+      geom.vert,
+      geom.mesh_polyvertadr,
+      geom.mesh_polyvertnum,
+      geom.mesh_polyvert,
+      geom.mesh_polymapadr,
+      geom.mesh_polymapnum,
+      geom.mesh_polymap,
+      feature_index[0],
+      feature_index[1],
+      edge_out,
+      endvert_out,
+    )
+  if geomtype == GeomType.CYLINDER:
+    return _cylinder_edge_normals(nface, geom.rot, edge_out), wp.vec3()
+  if geomtype == GeomType.CAPSULE:
+    return _capsule_edge_normals(geom.rot, geom.pos, geom.size, x, edge_out, endvert_out)
+  return int(0), wp.vec3()
+
+
+@wp.func
+def multicontact_from_features(
   # In:
   polygon: wp.array[wp.vec3],
   clipped: wp.array[wp.vec3],
@@ -2379,9 +2485,10 @@ def multicontact(
   endvert: wp.array[wp.vec3],
   face1: wp.array[wp.vec3],
   face2: wp.array[wp.vec3],
-  epa_vert: wp.array[wp.vec3],
-  epa_vert_index: wp.array[int],
-  epa_face: int,
+  nface1_in: int,
+  feature_index1: wp.vec3i,
+  nface2_in: int,
+  feature_index2: wp.vec3i,
   x1: wp.vec3,
   x2: wp.vec3,
   dist: float,
@@ -2390,7 +2497,7 @@ def multicontact(
   geomtype1: int,
   geomtype2: int,
 ) -> Tuple[int, mat43, mat43, wp.vec4]:
-  """Recover clipped contacts from GJK/EPA features.
+  """Recover clipped contacts from precomputed GJK/EPA feature indices.
 
   Returns clipped witnesses and their margin-inflated distances, or the original
   GJK/EPA witness and distance as one fallback contact.
@@ -2402,81 +2509,37 @@ def multicontact(
   witness2[0] = x2
   dists[0] = dist
 
-  if geomtype1 == GeomType.MESH:
-    vert = geom1.vert
-    polynormal = geom1.mesh_polynormal
-    polyvertadr = geom1.mesh_polyvertadr
-    polyvertnum = geom1.mesh_polyvertnum
-    polyvert = geom1.mesh_polyvert
-    polymapadr = geom1.mesh_polymapadr
-    polymapnum = geom1.mesh_polymapnum
-    polymap = geom1.mesh_polymap
-  elif geomtype2 == GeomType.MESH:
-    vert = geom2.vert
-    polynormal = geom2.mesh_polynormal
-    polyvertadr = geom2.mesh_polyvertadr
-    polyvertnum = geom2.mesh_polyvertnum
-    polyvert = geom2.mesh_polyvert
-    polymapadr = geom2.mesh_polymapadr
-    polymapnum = geom2.mesh_polymapnum
-    polymap = geom2.mesh_polymap
+  if (geomtype1 != GeomType.PLANE and nface1_in < 1) or (geomtype2 != GeomType.PLANE and nface2_in < 1):
+    return 1, witness1, witness2, dists
+  if geomtype1 == GeomType.MESH and geom1.mesh_polynum <= 0:
+    return 1, witness1, witness2, dists
+  if geomtype2 == GeomType.MESH and geom2.mesh_polynum <= 0:
+    return 1, witness1, witness2, dists
 
-  face = _get_face_verts(epa_face)
+  nface1 = wp.where(geomtype1 == GeomType.PLANE, 3, nface1_in)
+  nface2 = wp.where(geomtype2 == GeomType.PLANE, 3, nface2_in)
 
-  # get dimensions of features of geoms 1 and 2
-  nface1, feature_index1, feature_vertex1 = _feature_dim(face, epa_vert_index, epa_vert, 0)
-  nface2, feature_index2, feature_vertex2 = _feature_dim(face, epa_vert_index, epa_vert, 1)
-  v1 = feature_vertex1[0]
-  v2 = feature_vertex2[0]
-
-  dir = x2 - x1
-  dir_neg = -dir
+  if geomtype1 == GeomType.PLANE:
+    dir_neg = geom1.rot[:, 2]
+    dir = -dir_neg
+  elif geomtype2 == GeomType.PLANE:
+    dir = geom2.rot[:, 2]
+    dir_neg = -dir
+  else:
+    dir = x2 - x1
+    dir_neg = -dir
 
   # get all possible face normals for each geom
-  nnorms1 = 0
-  nnorms2 = 0
-  if geomtype1 == GeomType.BOX:
-    nnorms1 = _box_normals(nface1, feature_index1, geom1.rot, dir_neg, n1, idx1)
-  elif geomtype1 == GeomType.MESH:
-    nnorms1 = _mesh_normals(
-      nface1,
-      feature_index1,
-      geom1.rot,
-      geom1.vertadr,
-      geom1.mesh_polyadr,
-      polynormal,
-      polymapadr,
-      polymapnum,
-      polymap,
-      n1,
-      idx1,
-    )
-  elif geomtype1 == GeomType.CYLINDER:
-    nnorms1 = _cylinder_normals(nface1, feature_index1, geom1.rot, n1, idx1)
+  nnorms1 = _geom_face_normals(geom1, geomtype1, nface1, feature_index1, dir_neg, n1, idx1)
+  nnorms2 = _geom_face_normals(geom2, geomtype2, nface2, feature_index2, dir, n2, idx2)
 
-  if geomtype2 == GeomType.BOX:
-    nnorms2 = _box_normals(nface2, feature_index2, geom2.rot, dir, n2, idx2)
-  elif geomtype2 == GeomType.MESH:
-    nnorms2 = _mesh_normals(
-      nface2,
-      feature_index2,
-      geom2.rot,
-      geom2.vertadr,
-      geom2.mesh_polyadr,
-      polynormal,
-      polymapadr,
-      polymapnum,
-      polymap,
-      n2,
-      idx2,
-    )
-  elif geomtype2 == GeomType.CYLINDER:
-    nnorms2 = _cylinder_normals(nface2, feature_index2, geom2.rot, n2, idx2)
-
-  # determine if any two face normals match
+  # determine if any two face normals match (planes skip face tolerance)
   is_edge_contact_geom1 = int(0)
   is_edge_contact_geom2 = int(0)
-  nres, res = _aligned_faces(n1, nnorms1, n2, nnorms2, dir)
+  v1 = wp.vec3()
+  v2 = wp.vec3()
+  face_tol = wp.where(geomtype1 == GeomType.PLANE or geomtype2 == GeomType.PLANE, 0.0, FACE_TOL)
+  nres, res = _aligned_faces(n1, nnorms1, n2, nnorms2, dir, face_tol)
   if not nres:
     # check for an edge-face collision: test the edges of geom 2 first if its feature is
     # smaller (or geom 2 has no face normals), then the edges of the other geom if they don't
@@ -2498,45 +2561,15 @@ def multicontact(
       test_geom1 = (k == 0) != geom2_first
       if test_geom1:
         # the edges of geom 1 against the faces of geom 2
-        if nface1 < 3 and nnorms2:
-          nedge, v1 = _geom_edge_normals(
-            geomtype1,
-            geom1,
-            nface1,
-            feature_index1,
-            feature_vertex1[0],
-            x1,
-            polyvertadr,
-            polyvertnum,
-            polyvert,
-            polymapadr,
-            polymapnum,
-            polymap,
-            edge,
-            endvert,
-          )
+        if nface1 < 3 and nnorms2 > 0:
+          nedge, v1 = _geom_edge_normals(geom1, geomtype1, nface1, feature_index1, x1, edge, endvert)
           nres, res = _aligned_face_edge(edge, nedge, n2, nnorms2, dir, dir_tol)
           if nres:
             is_edge_contact_geom1 = 1
             break
-      elif nface2 < 3 and nnorms1:
+      elif nface2 < 3 and nnorms1 > 0:
         # the edges of geom 2 against the faces of geom 1
-        nedge, v2 = _geom_edge_normals(
-          geomtype2,
-          geom2,
-          nface2,
-          feature_index2,
-          feature_vertex2[0],
-          x2,
-          polyvertadr,
-          polyvertnum,
-          polyvert,
-          polymapadr,
-          polymapnum,
-          polymap,
-          edge,
-          endvert,
-        )
+        nedge, v2 = _geom_edge_normals(geom2, geomtype2, nface2, feature_index2, x2, edge, endvert)
         nres, res = _aligned_face_edge(edge, nedge, n1, nnorms1, dir_neg, dir_tol)
         if nres:
           is_edge_contact_geom2 = 1
@@ -2551,56 +2584,34 @@ def multicontact(
 
   # recover geom1 matching edge or face
   if is_edge_contact_geom1:
-    nface1 = _set_edge(v1, endvert, i, face1)
+    if geomtype1 == GeomType.CYLINDER:
+      nface1 = _cylinder_edge(geom1.rot, geom1.pos, geom1.size, n2[j], face1)
+      if nface1 == 0:
+        return 1, witness1, witness2, dists
+    else:
+      nface1 = _set_edge(v1, endvert, i, face1)
   else:
     ind = wp.where(is_edge_contact_geom2, idx1[j], idx1[i])
-    if geomtype1 == GeomType.BOX:
-      nface1 = _box_face(geom1.rot, geom1.pos, geom1.size, ind, face1)
-    elif geomtype1 == GeomType.MESH:
-      nface1 = _mesh_face(
-        geom1.rot,
-        geom1.pos,
-        geom1.vertadr,
-        geom1.mesh_polyadr,
-        vert,
-        polyvertadr,
-        polyvertnum,
-        polyvert,
-        ind,
-        face1,
-      )
-    elif geomtype1 == GeomType.CYLINDER:
-      nface1 = _cylinder_face(geom1.rot, geom1.pos, geom1.size, ind, face1)
+    nface1 = _geom_face(geom1, geomtype1, ind, face1)
 
   # recover geom2 matching edge or face
   if is_edge_contact_geom2:
-    nface2 = _set_edge(v2, endvert, i, face2)
+    if geomtype2 == GeomType.CYLINDER:
+      nface2 = _cylinder_edge(geom2.rot, geom2.pos, geom2.size, n1[j], face2)
+      if nface2 == 0:
+        return 1, witness1, witness2, dists
+    else:
+      nface2 = _set_edge(v2, endvert, i, face2)
   else:
-    if geomtype2 == GeomType.BOX:
-      nface2 = _box_face(geom2.rot, geom2.pos, geom2.size, idx2[j], face2)
-    elif geomtype2 == GeomType.MESH:
-      nface2 = _mesh_face(
-        geom2.rot,
-        geom2.pos,
-        geom2.vertadr,
-        geom2.mesh_polyadr,
-        vert,
-        polyvertadr,
-        polyvertnum,
-        polyvert,
-        idx2[j],
-        face2,
-      )
-    elif geomtype2 == GeomType.CYLINDER:
-      nface2 = _cylinder_face(geom2.rot, geom2.pos, geom2.size, idx2[j], face2)
+    nface2 = _geom_face(geom2, geomtype2, idx2[j], face2)
 
   # remaining uninflated margins (capsule edges are already inflated via x1/x2)
   margin1 = wp.where(geomtype1 != GeomType.CAPSULE, 0.5 * geom1.margin, 0.0)
   margin2 = wp.where(geomtype2 != GeomType.CAPSULE, 0.5 * geom2.margin, 0.0)
   margin = margin1 + margin2
 
-  # face1 is an edge; clip face1 against face2
-  if is_edge_contact_geom1:
+  # face1 is an edge or face2 is a plane; clip face1 against face2
+  if is_edge_contact_geom1 or geomtype2 == GeomType.PLANE:
     wit_dir = -n2[j]
     normal = wit_dir
     nclipped, clipped1, clipped2, d = _polygon_clip(
@@ -2609,12 +2620,13 @@ def multicontact(
     # the faces were flipped in calling _polygon_clip so we need to flip them back
     clipped_w1 = clipped2
     clipped_w2 = clipped1
-  # face2 is an edge; clip face2 against face1
-  elif is_edge_contact_geom2:
-    wit_dir = -n1[j]
-    normal = n1[j]
+  # face2 is an edge or face1 is a plane; clip face2 against face1
+  elif is_edge_contact_geom2 or geomtype1 == GeomType.PLANE:
+    ind = wp.where(is_edge_contact_geom2, j, i)
+    wit_dir = -n1[ind]
+    normal = n1[ind]
     nclipped, clipped_w1, clipped_w2, d = _polygon_clip(
-      plane_normal, plane_dist, face1, nface1, face2, nface2, n1[j], wit_dir, margin, polygon, clipped
+      plane_normal, plane_dist, face1, nface1, face2, nface2, n1[ind], wit_dir, margin, polygon, clipped
     )
   # face-face collision
   else:
@@ -2636,6 +2648,62 @@ def multicontact(
       d[k] -= margin
 
   return nclipped, clipped_w1, clipped_w2, d
+
+
+@wp.func
+def multicontact(
+  # In:
+  polygon: wp.array[wp.vec3],
+  clipped: wp.array[wp.vec3],
+  plane_normal: wp.array[wp.vec3],
+  plane_dist: wp.array[float],
+  idx1: wp.array[int],
+  idx2: wp.array[int],
+  n1: wp.array[wp.vec3],
+  n2: wp.array[wp.vec3],
+  edge: wp.array[wp.vec3],
+  endvert: wp.array[wp.vec3],
+  face1: wp.array[wp.vec3],
+  face2: wp.array[wp.vec3],
+  epa_vert_index: wp.array[int],
+  epa_face: int,
+  x1: wp.vec3,
+  x2: wp.vec3,
+  dist: float,
+  geom1: Geom,
+  geom2: Geom,
+  geomtype1: int,
+  geomtype2: int,
+) -> Tuple[int, mat43, mat43, wp.vec4]:
+  """Recover clipped contacts from GJK/EPA features."""
+  face = _get_face_verts(epa_face)
+  nface1, feature_index1 = _feature_dim(face, epa_vert_index, 0)
+  nface2, feature_index2 = _feature_dim(face, epa_vert_index, 1)
+  return multicontact_from_features(
+    polygon,
+    clipped,
+    plane_normal,
+    plane_dist,
+    idx1,
+    idx2,
+    n1,
+    n2,
+    edge,
+    endvert,
+    face1,
+    face2,
+    nface1,
+    feature_index1,
+    nface2,
+    feature_index2,
+    x1,
+    x2,
+    dist,
+    geom1,
+    geom2,
+    geomtype1,
+    geomtype2,
+  )
 
 
 @wp.func
@@ -2686,9 +2754,16 @@ def _inflate(
 
 
 @wp.func
-def _supports_multiccd(geom1: Geom, geom2: Geom, geomtype1: int, geomtype2: int) -> bool:
-  has_face1 = geomtype1 == GeomType.BOX or geomtype1 == GeomType.MESH or geomtype1 == GeomType.CYLINDER
-  has_face2 = geomtype2 == GeomType.BOX or geomtype2 == GeomType.MESH or geomtype2 == GeomType.CYLINDER
+def supports_multiccd(geomtype1: int, geomtype2: int) -> bool:
+  """Return True if a geom pair supports multicontact polygon clipping."""
+  if geomtype1 == GeomType.PLANE and geomtype2 == GeomType.PLANE:
+    return False
+  has_face1 = (
+    geomtype1 == GeomType.PLANE or geomtype1 == GeomType.BOX or geomtype1 == GeomType.MESH or geomtype1 == GeomType.CYLINDER
+  )
+  has_face2 = (
+    geomtype2 == GeomType.PLANE or geomtype2 == GeomType.BOX or geomtype2 == GeomType.MESH or geomtype2 == GeomType.CYLINDER
+  )
   has_edge1 = geomtype1 == GeomType.CAPSULE
   has_edge2 = geomtype2 == GeomType.CAPSULE
   return (has_face1 and has_face2) or (has_edge1 and has_face2) or (has_face1 and has_edge2)
@@ -2744,7 +2819,7 @@ def gjk_phase(
   empty = GJKResult()
 
   # special handling for sphere, capsule, and margin (shrink to underlying geom)
-  has_non_hfield_margin = _supports_multiccd(geom1, geom2, geomtype1, geomtype2) and (orig_margin1 > 0.0 or orig_margin2 > 0.0)
+  has_non_hfield_margin = supports_multiccd(geomtype1, geomtype2) and (orig_margin1 > 0.0 or orig_margin2 > 0.0)
   if geomtype1 == GeomType.SPHERE or geomtype1 == GeomType.CAPSULE:
     full_margin1 = geom1.size[0] + 0.5 * orig_margin1
     geom1.margin = 0.0
@@ -2902,7 +2977,7 @@ def epa_phase(
   if idx == -1:
     return FLOAT_MAX, 0, wp.vec3(), wp.vec3(), -1
 
-  if not _supports_multiccd(geom1, geom2, geomtype1, geomtype2):
+  if not supports_multiccd(geomtype1, geomtype2):
     idx = -1
 
   return dist, 1, x1, x2, idx
@@ -2938,7 +3013,7 @@ def ccd(
   )
   if not needs_epa:
     idx = -1
-    if dist < 0.0 and result.dim > 0 and _supports_multiccd(geom1, geom2, geomtype1, geomtype2):
+    if dist < 0.0 and result.dim > 0 and supports_multiccd(geomtype1, geomtype2):
       idx = _gjk_simplex_to_epa(result, vert, vert_index, face)
     return dist, ncontact, x1, x2, idx
   return epa_phase(
