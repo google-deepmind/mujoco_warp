@@ -14,7 +14,7 @@
 # ==============================================================================
 
 import dataclasses
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import warp as wp
 
@@ -61,6 +61,12 @@ wp.set_module_options({"enable_backward": False})
 
 
 @wp.func
+def next_position(position: Any, velocity: Any, timestep: float):
+  """Integrates a scalar or Cartesian position at the given velocity."""
+  return position + timestep * velocity
+
+
+@wp.func
 def next_position(
   # Data in:
   qpos_in: wp.array2d[float],
@@ -77,7 +83,7 @@ def next_position(
   """Per-joint semi-implicit position integration from velocity values."""
   if jnttype == JointType.FREE:
     qpos_pos = wp.vec3(qpos_in[worldid, qpos_adr], qpos_in[worldid, qpos_adr + 1], qpos_in[worldid, qpos_adr + 2])
-    qpos_new = qpos_pos + timestep * qvel_lin
+    qpos_new = next_position(qpos_pos, qvel_lin, timestep)
 
     qpos_quat = wp.quat(
       qpos_in[worldid, qpos_adr + 3],
@@ -110,7 +116,13 @@ def next_position(
     qpos_out[worldid, qpos_adr + 3] = qpos_quat_new[3]
 
   else:  # HINGE / SLIDE
-    qpos_out[worldid, qpos_adr] = qpos_in[worldid, qpos_adr] + timestep * qvel_lin[0]
+    qpos_out[worldid, qpos_adr] = next_position(qpos_in[worldid, qpos_adr], qvel_lin[0], timestep)
+
+
+@wp.func
+def next_velocity(timestep: float, velocity: Any, acceleration: Any, scale: float):
+  """Integrates a scalar or vector velocity with scaled acceleration."""
+  return velocity + scale * acceleration * timestep
 
 
 @wp.func
@@ -127,7 +139,7 @@ def next_velocity(
 ) -> float:
   """Returns the next velocity for one dof (value only, not written to qvel)."""
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-  return qvel_in[worldid, dofid] + qacc_scale_in * qacc_in[worldid, dofid] * timestep
+  return next_velocity(timestep, qvel_in[worldid, dofid], qacc_in[worldid, dofid], qacc_scale_in)
 
 
 def check_discrete(m: Model):
