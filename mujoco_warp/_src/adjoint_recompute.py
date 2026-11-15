@@ -29,26 +29,6 @@ from mujoco_warp._src.types import JointType
 wp.set_module_options({"enable_backward": True})
 
 
-# smooth._compute_body_inertial_frames
-@wp.kernel
-def _inertial_frames_recompute(
-  # Model:
-  body_ipos: wp.array2d[wp.vec3],
-  body_iquat: wp.array2d[wp.quat],
-  # Data in:
-  xpos_in: wp.array2d[wp.vec3],
-  xquat_in: wp.array2d[wp.quat],
-  # Data out:
-  xipos_out: wp.array2d[wp.vec3],
-  xiquat_out: wp.array2d[wp.quat],
-):
-  w, b = wp.tid()
-  xpos = xpos_in[w, b]
-  xquat = xquat_in[w, b]
-  xipos_out[w, b] = xpos + math.rot_vec_quat(body_ipos[w % body_ipos.shape[0], b], xquat)
-  xiquat_out[w, b] = math.mul_quat(xquat, body_iquat[w % body_iquat.shape[0], b])
-
-
 # passive._spring_damper_dof_passive (spring path)
 @wp.kernel(enable_backward=True)
 def _spring_qfrc_recompute(

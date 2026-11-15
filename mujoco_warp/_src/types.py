@@ -3191,6 +3191,4 @@ class BackwardContext:
   smooth_ceff: array("nworld", "nbody", wp.vec3)
   res_body_mass: wp.array
   res_body_inertia: wp.array
-  res_body_ipos: wp.array
-  res_body_iquat: wp.array
   collision_convex_ctx: Optional[CollisionConvexBackwardContext] = None

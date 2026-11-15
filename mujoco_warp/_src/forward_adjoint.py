@@ -216,7 +216,7 @@ def _smooth_ctrl_vjp(
 
 
 @wp.func
-def _activation_objective(
+def _activation_contract(
   # In:
   control: float,
   activation: float,
@@ -308,7 +308,7 @@ def _activation_vjp(
     )
     force_seed = actuator_gainprm[w % actuator_gainprm.shape[0], uid][0] * moment_seed
   # Force limits suppress force derivatives, but never the activation update itself.
-  gradients = wp.grad(_activation_objective)(
+  gradients = wp.grad(_activation_contract)(
     ctrl_in[w, uid],
     act_in[w, adr],
     opt_timestep[w % opt_timestep.shape[0]],
@@ -827,7 +827,7 @@ def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
         ],
         outputs=[bc.y_remap, adj_qvel, bc.adj_dof],
       )
-      model_adjoint.implicitfast_inertia_vjp(m, d_bwd, qacc_advance, bc.y_remap)
+      model_adjoint.free_gyro_vjp(m, d_bwd, qacc_advance, bc.y_remap)
       wp.launch(
         smooth_kinematics_adjoint._dof_to_qpos,
         dim=(nworld, m.njnt),
@@ -1032,7 +1032,7 @@ def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos
   wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
   if mocap_grad:
     smooth_kinematics_adjoint.kinematics_mocap_backward(m, d_bwd, bc)
-  model_adjoint.inertia_param_vjp(m, d_bwd, bc)
+  model_adjoint.inertia_vjp(m, d_bwd, bc)
   for vjp in (smooth_adjoint.spring_qpos_vjp, smooth_adjoint.actuator_qpos_vjp):
     residual = vjp(m, d_bwd, lam, bc=bc)
     wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])

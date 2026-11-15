@@ -236,8 +236,6 @@ def _create_backward_context(m: Model, d: Data) -> BackwardContext:
     res_jnt_solimp=wp.zeros_like(m.jnt_solimp, requires_grad=False),
     res_body_mass=wp.zeros_like(m.body_mass, requires_grad=False),
     res_body_inertia=wp.zeros_like(m.body_inertia, requires_grad=False),
-    res_body_ipos=wp.zeros_like(m.body_ipos, requires_grad=False),
-    res_body_iquat=wp.zeros_like(m.body_iquat, requires_grad=False),
   )
   return BackwardContext(
     solver_ctx=solver._create_solver_context(m, d),
