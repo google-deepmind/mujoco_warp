@@ -2685,7 +2685,8 @@ def _flex_hessian_elem(deterministic: bool = False):
     ee_base = flex_elemedgeadr[f] + local_elemid * nedge
     stiffness_adr = flex_stiffnessadr[f] + local_elemid * (FLEX_STIFFNESS_3D if dim == 3 else 21)
     snh = dim == 3 and flex_stiffness[stiffness_adr + 21] != 0.0
-    padr = flex_plasticadr[f] + local_elemid * nedge if (flex_plasticmode[f] & 2) != 0 else -1
+    padr_base = flex_plasticadr[f]
+    padr = padr_base + local_elemid * nedge if padr_base >= 0 and (flex_plasticmode[f] & 2) != 0 else -1
 
     elem_verts = wp.vec4i(-1, -1, -1, -1)
     vert_xpos = mat43()
@@ -3668,7 +3669,8 @@ def _flex_elasticity(deterministic: bool = False):
 
     elemedge_adr = flex_elemedgeadr[f] + local_elemid * nedge
     edge_adr = flex_edgeadr[f]
-    padr = flex_plasticadr[f] + local_elemid * nedge if (flex_plasticmode[f] & 2) != 0 else -1
+    padr_base = flex_plasticadr[f]
+    padr = padr_base + local_elemid * nedge if padr_base >= 0 and (flex_plasticmode[f] & 2) != 0 else -1
 
     elongation_spring = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     if not dsbl_spring:
@@ -4111,9 +4113,11 @@ def _flex_bending(deterministic: bool = False):
     bbase = bendingadr + 17 * eid
     c16 = flex_bending[bbase + 16]
     padr_base = flex_plasticadr[f]
-    if (flex_plasticmode[f] & 1) != 0:
-      stretch_pnum = 3 * flex_elemnum[f] if (flex_plasticmode[f] & 2) != 0 else 0
-      c16 += plastic_in[worldid, padr_base + stretch_pnum + eid]
+    if padr_base >= 0:
+      mode = flex_plasticmode[f]
+      if (mode & 1) != 0:
+        stretch_pnum = 3 * flex_elemnum[f] if (mode & 2) != 0 else 0
+        c16 += plastic_in[worldid, padr_base + stretch_pnum + eid]
     frc = mat43()
     if has_spring and c16 != 0.0:
       ed0 = vpos[1] - vpos[0]
