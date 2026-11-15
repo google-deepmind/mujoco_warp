@@ -16,7 +16,6 @@
 
 import warp as wp
 
-from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import collision_convex_adjoint
 from mujoco_warp._src import collision_primitive_core
 from mujoco_warp._src import math
@@ -334,9 +333,135 @@ def _narrowphase_witness(
     contact_feature_out[cid] = wp.vec4i(feature[0], feature[1], feature[2], candidates[slot])
 
 
-# Replay primitive pairs with the primal contact slots and features fixed.
-@wp.kernel(enable_backward=True)
-def _narrowphase_recompute(
+@wp.func
+def _narrowphase(
+  # In:
+  pos0: wp.vec3,
+  quat0: wp.quat,
+  pos1: wp.vec3,
+  quat1: wp.quat,
+  size0: wp.vec3,
+  size1: wp.vec3,
+  type0: int,
+  type1: int,
+  slot: int,
+  point: wp.vec3,
+  feature: wp.vec4i,
+) -> tuple[float, wp.vec3, wp.mat33]:
+  """Evaluates primitive contact geometry with the primal slot and features fixed."""
+  p0, p1, s0, s1 = pos0, pos1, size0, size1
+  m0, m1 = math.quat_to_mat(quat0), math.quat_to_mat(quat1)
+  dist, pos, frame = float(0.0), wp.vec3(), wp.mat33()
+  if type0 == GeomType.PLANE and type1 == GeomType.SPHERE:
+    n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
+    dist, pos = collision_primitive_core.plane_sphere(n0, p0, p1, s1[0])
+    frame = math.make_frame(n0)
+  elif type0 == GeomType.SPHERE and type1 == GeomType.SPHERE:
+    dist, pos, n = collision_primitive_core.sphere_sphere(p0, s0[0], p1, s1[0])
+    frame = math.make_frame(n)
+  elif type0 == GeomType.SPHERE and type1 == GeomType.BOX:
+    dist, pos, n = collision_primitive_core.sphere_box(p0, s0[0], p1, m1, s1)
+    frame = math.make_frame(n)
+  elif type0 == GeomType.PLANE and type1 == GeomType.CAPSULE:
+    n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
+    axis = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2])  # capsule local z-axis
+    dvec, pmat, frame = collision_primitive_core.plane_capsule(n0, p0, p1, axis, s1[0], s1[1])  # two caps, shared frame
+    if slot == 0:
+      dist = dvec[0]
+      pos = wp.vec3(pmat[0, 0], pmat[0, 1], pmat[0, 2])
+    else:
+      dist = dvec[1]
+      pos = wp.vec3(pmat[1, 0], pmat[1, 1], pmat[1, 2])
+  elif type0 == GeomType.SPHERE and type1 == GeomType.CAPSULE:
+    axis = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2])  # capsule local z-axis
+    dist, pos, n = collision_primitive_core.sphere_capsule(p0, s0[0], p1, axis, s1[0], s1[1])
+    frame = math.make_frame(n)
+  elif type0 == GeomType.SPHERE and type1 == GeomType.CYLINDER:
+    axis = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2])  # cylinder local z-axis
+    dist, pos, n = collision_primitive_core.sphere_cylinder(p0, s0[0], p1, axis, s1[0], s1[1])
+    frame = math.make_frame(n)
+  elif type0 == GeomType.PLANE and type1 == GeomType.ELLIPSOID:
+    n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
+    dist, pos, n = collision_primitive_core.plane_ellipsoid(n0, p0, p1, m1, s1)  # returns normal = plane normal
+    frame = math.make_frame(n)
+  elif type0 == GeomType.CAPSULE and type1 == GeomType.CAPSULE:
+    axis0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2]) * s0[1]
+    axis1 = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2]) * s1[1]
+    a, b = p0 - axis0, p0 + axis0
+    c, e = p1 - axis1, p1 + axis1
+    _, weights0, weights1 = collision_primitive_core._segment_weights(a, b, c, e)
+    weights = weights0 if slot == 0 else weights1
+    # Replay one slot directly to avoid differentiating the forward's output component writes.
+    dist, pos, n = collision_primitive_core.sphere_sphere(a + weights[0] * (b - a), s0[0], c + weights[1] * (e - c), s1[0])
+    frame = math.make_frame(n)
+  elif type0 == GeomType.PLANE and type1 == GeomType.CYLINDER:
+    n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
+    cyl_dist, cyl_pos, cyl_n = collision_primitive_core.plane_cylinder(
+      n0, p0, p1, m1, s1[0], s1[1]
+    )  # 4 contacts, shared normal
+    for i in range(4):  # static unroll; runtime-compare select (no runtime indexing of the adjoint)
+      if i == slot:
+        dist = cyl_dist[i]
+        pos = wp.vec3(cyl_pos[i, 0], cyl_pos[i, 1], cyl_pos[i, 2])
+    frame = math.make_frame(cyl_n)
+  elif type0 == GeomType.PLANE and type1 == GeomType.BOX:
+    n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
+    box_dist, box_pos, box_n = collision_primitive_core.plane_box(
+      n0, p0, p1, m1, s1
+    )  # 8 corners (slot = corner id), shared normal
+    for i in range(8):  # static unroll; runtime-compare select (no runtime indexing of the adjoint)
+      if i == slot:
+        dist = box_dist[i]
+        pos = wp.vec3(box_pos[i, 0], box_pos[i, 1], box_pos[i, 2])
+    frame = math.make_frame(box_n)
+  elif type0 == GeomType.CAPSULE and type1 == GeomType.BOX:
+    axis0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
+    cb_dist, cb_pos, cb_n = _capsule_box_from_witness(
+      p0, axis0, s0[0], s0[1], p1, m1, s1, slot, wp.vec3i(feature[0], feature[1], feature[2])
+    )
+    dist = cb_dist
+    pos = cb_pos
+    frame = math.make_frame(cb_n)
+  elif type0 == GeomType.BOX and type1 == GeomType.BOX:
+    bb_dist, bb_pos, bb_n = _box_box_from_witness(
+      p0, m0, s0, p1, m1, s1, wp.vec3i(feature[0], feature[1], feature[2]), feature[3]
+    )
+    dist = bb_dist
+    pos = bb_pos
+    frame = math.make_frame(bb_n)
+  elif type0 == GeomType.PLANE and type1 == GeomType.MESH:
+    n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
+    vertex = p1 + m1 @ point
+    dist, pos = collision_primitive_core.plane_sphere(n0, p0, vertex, 0.0)
+    frame = math.make_frame(n0)
+  return dist, pos, frame
+
+
+@wp.func
+def _narrowphase_contract(
+  # In:
+  pos0: wp.vec3,
+  quat0: wp.quat,
+  pos1: wp.vec3,
+  quat1: wp.quat,
+  size0: wp.vec3,
+  size1: wp.vec3,
+  type0: int,
+  type1: int,
+  slot: int,
+  point: wp.vec3,
+  feature: wp.vec4i,
+  pos_seed: wp.vec3,
+  dist_seed: float,
+  frame_seed: wp.mat33,
+):
+  dist, pos, frame = _narrowphase(pos0, quat0, pos1, quat1, size0, size1, type0, type1, slot, point, feature)
+  phi = wp.dot(pos, pos_seed) + dist * dist_seed
+  return phi + wp.ddot(frame, frame_seed)
+
+
+@wp.kernel(enable_backward=False)
+def _narrowphase_vjp(
   # Model:
   geom_type: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
@@ -348,133 +473,51 @@ def _narrowphase_recompute(
   contact_geomcollisionid_in: wp.array[int],
   nacon_in: wp.array[int],
   # In:
-  contact_point: wp.array[wp.vec3],  # selected mesh vertex in local coordinates
-  contact_feature: wp.array[wp.vec4i],  # capsule/box feature and box clipping candidate
+  contact_point: wp.array[wp.vec3],
+  contact_feature: wp.array[wp.vec4i],
+  adj_contact_pos: wp.array[wp.vec3],
+  adj_contact_dist: wp.array[float],
+  adj_contact_frame: wp.array[wp.mat33],
   # Out:
-  cpos_out: wp.array[wp.vec3],
-  dist_out: wp.array[float],
-  frame_out: wp.array[wp.mat33],
+  geom_size_grad_out: wp.array2d[wp.vec3],
+  adj_geom_xpos_out: wp.array2d[wp.vec3],
+  adj_geom_xquat_out: wp.array2d[wp.quat],
 ):
   cid = wp.tid()
   if cid >= nacon_in[0]:
     return
   geoms = contact_geom_in[cid]
-  if geoms[0] < 0 or geoms[1] < 0:
+  g0, g1 = geoms[0], geoms[1]
+  if g0 < 0 or g1 < 0:
     return
-  w = contact_worldid_in[cid]
-  slot = contact_geomcollisionid_in[cid]
-  gw = w % geom_size.shape[0]
-  g0 = geoms[0]
-  g1 = geoms[1]
-  p0 = geom_xpos_in[w, g0]
-  m0 = math.quat_to_mat(geom_xquat_in[w, g0])
-  s0 = geom_size[gw, g0]
-  p1 = geom_xpos_in[w, g1]
-  m1 = math.quat_to_mat(geom_xquat_in[w, g1])
-  s1 = geom_size[gw, g1]
-  type0 = geom_type[g0]
-  type1 = geom_type[g1]
-  if type0 == GeomType.PLANE and type1 == GeomType.SPHERE:
-    n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
-    dist, pos = collision_primitive_core.plane_sphere(n0, p0, p1, s1[0])
-    dist_out[cid] = dist
-    cpos_out[cid] = pos
-    frame_out[cid] = math.make_frame(n0)
-  elif type0 == GeomType.SPHERE and type1 == GeomType.SPHERE:
-    dist, pos, n = collision_primitive_core.sphere_sphere(p0, s0[0], p1, s1[0])
-    dist_out[cid] = dist
-    cpos_out[cid] = pos
-    frame_out[cid] = math.make_frame(n)
-  elif type0 == GeomType.SPHERE and type1 == GeomType.BOX:
-    dist, pos, n = collision_primitive_core.sphere_box(p0, s0[0], p1, m1, s1)
-    dist_out[cid] = dist
-    cpos_out[cid] = pos
-    frame_out[cid] = math.make_frame(n)
-  elif type0 == GeomType.PLANE and type1 == GeomType.CAPSULE:
-    n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
-    axis = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2])  # capsule local z-axis
-    dvec, pmat, frame = collision_primitive_core.plane_capsule(n0, p0, p1, axis, s1[0], s1[1])  # two caps, shared frame
-    if slot == 0:
-      dist_out[cid] = dvec[0]
-      cpos_out[cid] = wp.vec3(pmat[0, 0], pmat[0, 1], pmat[0, 2])
-    else:
-      dist_out[cid] = dvec[1]
-      cpos_out[cid] = wp.vec3(pmat[1, 0], pmat[1, 1], pmat[1, 2])
-    frame_out[cid] = frame
-  elif type0 == GeomType.SPHERE and type1 == GeomType.CAPSULE:
-    axis = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2])  # capsule local z-axis
-    dist, pos, n = collision_primitive_core.sphere_capsule(p0, s0[0], p1, axis, s1[0], s1[1])
-    dist_out[cid] = dist
-    cpos_out[cid] = pos
-    frame_out[cid] = math.make_frame(n)
-  elif type0 == GeomType.SPHERE and type1 == GeomType.CYLINDER:
-    axis = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2])  # cylinder local z-axis
-    dist, pos, n = collision_primitive_core.sphere_cylinder(p0, s0[0], p1, axis, s1[0], s1[1])
-    dist_out[cid] = dist
-    cpos_out[cid] = pos
-    frame_out[cid] = math.make_frame(n)
-  elif type0 == GeomType.PLANE and type1 == GeomType.ELLIPSOID:
-    n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
-    dist, pos, n = collision_primitive_core.plane_ellipsoid(n0, p0, p1, m1, s1)  # returns normal = plane normal
-    dist_out[cid] = dist
-    cpos_out[cid] = pos
-    frame_out[cid] = math.make_frame(n)
-  elif type0 == GeomType.CAPSULE and type1 == GeomType.CAPSULE:
-    axis0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2]) * s0[1]
-    axis1 = wp.vec3(m1[0, 2], m1[1, 2], m1[2, 2]) * s1[1]
-    a, b = p0 - axis0, p0 + axis0
-    c, e = p1 - axis1, p1 + axis1
-    _, weights0, weights1 = collision_primitive_core._segment_weights(a, b, c, e)
-    weights = weights0 if slot == 0 else weights1
-    # Replay one slot directly to avoid differentiating the forward's output component writes.
-    dist, pos, n = collision_primitive_core.sphere_sphere(a + weights[0] * (b - a), s0[0], c + weights[1] * (e - c), s1[0])
-    dist_out[cid] = dist
-    cpos_out[cid] = pos
-    frame_out[cid] = math.make_frame(n)
-  elif type0 == GeomType.PLANE and type1 == GeomType.CYLINDER:
-    n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
-    cyl_dist, cyl_pos, cyl_n = collision_primitive_core.plane_cylinder(
-      n0, p0, p1, m1, s1[0], s1[1]
-    )  # 4 contacts, shared normal
-    for i in range(4):  # static unroll; runtime-compare select (no runtime indexing of the adjoint)
-      if i == slot:
-        dist_out[cid] = cyl_dist[i]
-        cpos_out[cid] = wp.vec3(cyl_pos[i, 0], cyl_pos[i, 1], cyl_pos[i, 2])
-    frame_out[cid] = math.make_frame(cyl_n)
-  elif type0 == GeomType.PLANE and type1 == GeomType.BOX:
-    n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
-    box_dist, box_pos, box_n = collision_primitive_core.plane_box(
-      n0, p0, p1, m1, s1
-    )  # 8 corners (slot = corner id), shared normal
-    for i in range(8):  # static unroll; runtime-compare select (no runtime indexing of the adjoint)
-      if i == slot:
-        dist_out[cid] = box_dist[i]
-        cpos_out[cid] = wp.vec3(box_pos[i, 0], box_pos[i, 1], box_pos[i, 2])
-    frame_out[cid] = math.make_frame(box_n)
-  elif type0 == GeomType.CAPSULE and type1 == GeomType.BOX:
-    axis0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
-    feature = contact_feature[cid]
-    cb_dist, cb_pos, cb_n = _capsule_box_from_witness(
-      p0, axis0, s0[0], s0[1], p1, m1, s1, slot, wp.vec3i(feature[0], feature[1], feature[2])
-    )
-    dist_out[cid] = cb_dist
-    cpos_out[cid] = cb_pos
-    frame_out[cid] = math.make_frame(cb_n)
-  elif type0 == GeomType.BOX and type1 == GeomType.BOX:
-    feature = contact_feature[cid]
-    bb_dist, bb_pos, bb_n = _box_box_from_witness(
-      p0, m0, s0, p1, m1, s1, wp.vec3i(feature[0], feature[1], feature[2]), feature[3]
-    )
-    dist_out[cid] = bb_dist
-    cpos_out[cid] = bb_pos
-    frame_out[cid] = math.make_frame(bb_n)
-  elif type0 == GeomType.PLANE and type1 == GeomType.MESH:
-    n0 = wp.vec3(m0[0, 2], m0[1, 2], m0[2, 2])
-    vertex = p1 + m1 @ contact_point[cid]
-    dist, pos = collision_primitive_core.plane_sphere(n0, p0, vertex, 0.0)
-    dist_out[cid] = dist
-    cpos_out[cid] = pos
-    frame_out[cid] = math.make_frame(n0)
+  type0, type1 = geom_type[g0], geom_type[g1]
+  if type0 == GeomType.HFIELD or type1 == GeomType.HFIELD:
+    return
+  worldid = contact_worldid_in[cid]
+  gw = worldid % geom_size.shape[0]
+  derivatives = wp.grad(_narrowphase_contract)(
+    geom_xpos_in[worldid, g0],
+    geom_xquat_in[worldid, g0],
+    geom_xpos_in[worldid, g1],
+    geom_xquat_in[worldid, g1],
+    geom_size[gw, g0],
+    geom_size[gw, g1],
+    type0,
+    type1,
+    contact_geomcollisionid_in[cid],
+    contact_point[cid],
+    contact_feature[cid],
+    adj_contact_pos[cid] if adj_contact_pos else wp.vec3(),
+    adj_contact_dist[cid] if adj_contact_dist else 0.0,
+    adj_contact_frame[cid] if adj_contact_frame else wp.mat33(),
+  )
+  wp.atomic_add(adj_geom_xpos_out, worldid, g0, derivatives[0])  # kernel_analyzer: ignore[atomic]
+  wp.atomic_add(adj_geom_xquat_out, worldid, g0, derivatives[1])  # kernel_analyzer: ignore[atomic]
+  wp.atomic_add(adj_geom_xpos_out, worldid, g1, derivatives[2])  # kernel_analyzer: ignore[atomic]
+  wp.atomic_add(adj_geom_xquat_out, worldid, g1, derivatives[3])  # kernel_analyzer: ignore[atomic]
+  if geom_size_grad_out:
+    wp.atomic_add(geom_size_grad_out, gw, g0, derivatives[4])  # kernel_analyzer: ignore[atomic]
+    wp.atomic_add(geom_size_grad_out, gw, g1, derivatives[5])  # kernel_analyzer: ignore[atomic]
 
 
 # gather dr/defc_pos (efc-row indexed) to the per-contact normal-row distance adjoint
@@ -538,7 +581,7 @@ def contact_qpos_vjp(
   contact_adj_dist = bc.contact_adj_dist
   res_geom_xpos, res_geom_xquat = bc.res_geom_xpos, bc.res_geom_xquat
   contact_res_dof, contact_ceff = bc.contact_res_dof, bc.contact_ceff
-  # _narrowphase_witness overwrites every feature consumed by _narrowphase_recompute.
+  # _narrowphase_witness overwrites every feature consumed by _narrowphase_vjp.
   contact_adj_dist.zero_()
   res_geom_xpos.zero_()
   res_geom_xquat.zero_()
@@ -561,30 +604,31 @@ def contact_qpos_vjp(
     ],
     outputs=[contact_point, contact_feature],
   )
-  pairs = [
-    (m.geom_type, None),
-    (m.geom_size, None),
-    (d_out.geom_xpos, res_geom_xpos),
-    (d_out.geom_xquat, res_geom_xquat),
-    (d_out.contact.geom, None),
-    (d_out.contact.worldid, None),
-    (d_out.contact.geomcollisionid, None),
-    (d_out.nacon, None),
-    (contact_point, None),
-    (contact_feature, None),
-  ]
   wp.launch(
     _gather_efc_to_contact,
     dim=nconmax,
     inputs=[d_out.contact.efc_address, d_out.contact.worldid, d_out.nacon, res_efc_pos],
     outputs=[contact_adj_dist],
   )
-  adjoint_util._launch_vjp(
-    _narrowphase_recompute,
-    nconmax,
-    pairs,
-    [d_out.contact.pos, d_out.contact.dist, d_out.contact.frame],
-    [res_contact_pos, contact_adj_dist, res_contact_frame],
+  wp.launch(
+    _narrowphase_vjp,
+    dim=nconmax,
+    inputs=[
+      m.geom_type,
+      m.geom_size,
+      d_out.geom_xpos,
+      d_out.geom_xquat,
+      d_out.contact.geom,
+      d_out.contact.worldid,
+      d_out.contact.geomcollisionid,
+      d_out.nacon,
+      contact_point,
+      contact_feature,
+      res_contact_pos,
+      contact_adj_dist,
+      res_contact_frame,
+    ],
+    outputs=[m.geom_size.grad, res_geom_xpos, res_geom_xquat],
   )
   if bc.collision_convex_ctx is not None:
     collision_convex_adjoint.hfield_contact_pose_vjp(
