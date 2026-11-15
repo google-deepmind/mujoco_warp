@@ -3151,7 +3151,6 @@ class BackwardContext:
   adj_cvel: array("nworld", "nbody", wp.spatial_vector)
   adj_cdof: array("nworld", "nv", wp.spatial_vector)
   adj_cdof_dot: array("nworld", "nv", wp.spatial_vector)
-  adj_qfrc_spring: array("nworld", "nv", float)
   qDeriv: array("nworld", "nC", float)
   qLD: array("nworld", "qld_total", float)
   qLDiagInv: array("nworld", "nv", float)

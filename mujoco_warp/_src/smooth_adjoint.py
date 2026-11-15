@@ -16,11 +16,10 @@
 
 import warp as wp
 
-from mujoco_warp._src import adjoint_recompute
-from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import smooth_kinematics_adjoint
+from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import BackwardContext
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
@@ -36,21 +35,125 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": True})
 
 
+@wp.func
+def _spring_contract(stiffness: float, poly: wp.vec2, displacement: float, seed: float):
+  force = -displacement * util_misc._poly_force(stiffness, poly, displacement, 0)
+  return seed * force
+
+
+@wp.func
+def _spring_contract(stiffness: float, poly: wp.vec2, displacement: wp.vec3, seed: wp.vec3):
+  k = util_misc._poly_force(stiffness, poly, wp.length(displacement), 0)
+  return wp.dot(seed, -k * displacement)
+
+
+@wp.func
+def _spring_contract(stiffness: float, poly: wp.vec2, rotation: wp.quat, reference: wp.quat, seed: wp.vec3):
+  displacement = math.quat_sub(wp.normalize(rotation), reference)
+  return _spring_contract(stiffness, poly, displacement, seed)
+
+
+@wp.kernel(enable_backward=False)
+def _spring_qpos_vjp(
+  # Model:
+  opt_disableflags: int,
+  qpos_spring: wp.array2d[float],
+  jnt_type: wp.array[int],
+  jnt_qposadr: wp.array[int],
+  jnt_dofadr: wp.array[int],
+  jnt_stiffness: wp.array2d[float],
+  jnt_stiffnesspoly: wp.array2d[wp.vec2],
+  # Data in:
+  qpos_in: wp.array2d[float],
+  # In:
+  lam: wp.array2d[float],
+  # Out:
+  qpos_spring_grad_out: wp.array2d[float],
+  jnt_stiffness_grad_out: wp.array2d[float],
+  jnt_stiffnesspoly_grad_out: wp.array2d[wp.vec2],
+  res_qpos_out: wp.array2d[float],
+):
+  worldid, jntid = wp.tid()
+  jnttype = jnt_type[jntid]
+  qposid = jnt_qposadr[jntid]
+  dofid = jnt_dofadr[jntid]
+  stiffness = jnt_stiffness[worldid % jnt_stiffness.shape[0], jntid]
+  poly = jnt_stiffnesspoly[worldid % jnt_stiffnesspoly.shape[0], jntid]
+  nq = 7 if jnttype == JointType.FREE else (4 if jnttype == JointType.BALL else 1)
+  # Zero coefficients still have derivatives when fitting springs.
+  has_stiffness = stiffness != 0.0 or poly[0] != 0.0 or poly[1] != 0.0
+  if (opt_disableflags & DisableBit.SPRING) or (
+    not has_stiffness and not jnt_stiffness_grad_out and not jnt_stiffnesspoly_grad_out
+  ):
+    for i in range(nq):
+      res_qpos_out[worldid, qposid + i] = 0.0
+    return
+
+  spring_worldid = worldid % qpos_spring.shape[0]
+  # Model gradients use the force sign; qpos returns the negative-force residual VJP.
+  if jnttype == JointType.HINGE or jnttype == JointType.SLIDE:
+    scalar_grad = wp.grad(_spring_contract)(
+      stiffness, poly, qpos_in[worldid, qposid] - qpos_spring[spring_worldid, qposid], lam[worldid, dofid]
+    )
+    stiffness_grad, poly_grad = scalar_grad[0], scalar_grad[1]
+    res_qpos_out[worldid, qposid] = -scalar_grad[2]
+    if qpos_spring_grad_out:
+      wp.atomic_sub(qpos_spring_grad_out, spring_worldid, qposid, scalar_grad[2])  # kernel_analyzer: ignore[atomic]
+  else:
+    stiffness_grad, poly_grad = float(0.0), wp.vec2()
+    if jnttype == JointType.FREE:
+      pos = wp.vec3(qpos_in[worldid, qposid], qpos_in[worldid, qposid + 1], qpos_in[worldid, qposid + 2])
+      ref_pos = wp.vec3(
+        qpos_spring[spring_worldid, qposid], qpos_spring[spring_worldid, qposid + 1], qpos_spring[spring_worldid, qposid + 2]
+      )
+      seed = wp.vec3(lam[worldid, dofid], lam[worldid, dofid + 1], lam[worldid, dofid + 2])
+      linear_grad = wp.grad(_spring_contract)(stiffness, poly, pos - ref_pos, seed)
+      stiffness_grad += linear_grad[0]
+      poly_grad += linear_grad[1]
+      pos_grad = linear_grad[2]
+      for i in range(3):
+        res_qpos_out[worldid, qposid + i] = -pos_grad[i]
+        if qpos_spring_grad_out:
+          wp.atomic_sub(qpos_spring_grad_out, spring_worldid, qposid + i, pos_grad[i])  # kernel_analyzer: ignore[atomic]
+      qposid += 3
+      dofid += 3
+    rot = wp.quat(
+      qpos_in[worldid, qposid], qpos_in[worldid, qposid + 1], qpos_in[worldid, qposid + 2], qpos_in[worldid, qposid + 3]
+    )
+    ref_rot = wp.quat(
+      qpos_spring[spring_worldid, qposid],
+      qpos_spring[spring_worldid, qposid + 1],
+      qpos_spring[spring_worldid, qposid + 2],
+      qpos_spring[spring_worldid, qposid + 3],
+    )
+    seed = wp.vec3(lam[worldid, dofid], lam[worldid, dofid + 1], lam[worldid, dofid + 2])
+    rotation_grad = wp.grad(_spring_contract)(stiffness, poly, rot, ref_rot, seed)
+    stiffness_grad += rotation_grad[0]
+    poly_grad += rotation_grad[1]
+    rot_grad, ref_rot_grad = rotation_grad[2], rotation_grad[3]
+    for i in range(4):
+      res_qpos_out[worldid, qposid + i] = -rot_grad[i]
+      if qpos_spring_grad_out:
+        wp.atomic_add(qpos_spring_grad_out, spring_worldid, qposid + i, ref_rot_grad[i])  # kernel_analyzer: ignore[atomic]
+  if jnt_stiffness_grad_out:
+    wp.atomic_add(
+      jnt_stiffness_grad_out, worldid % jnt_stiffness.shape[0], jntid, stiffness_grad
+    )  # kernel_analyzer: ignore[atomic]
+  if jnt_stiffnesspoly_grad_out:
+    wp.atomic_add(
+      jnt_stiffnesspoly_grad_out, worldid % jnt_stiffnesspoly.shape[0], jntid, poly_grad
+    )  # kernel_analyzer: ignore[atomic]
+
+
 @event_scope
 def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | None = None):
-  """Returns d(lam.T @ -qfrc_spring)/dqpos."""
+  """Returns d(lam.T @ -qfrc_spring)/dqpos and accumulates spring parameter gradients."""
   if bc is None:
     from mujoco_warp._src import adjoint
 
     bc = adjoint.create_backward_context(m, d)
-  smooth_res_qpos = bc.smooth_res_qpos
-  qfrc_spring = d.qfrc_spring
-  smooth_res_qpos.zero_()
-  spring_params = (m.qpos_spring, m.jnt_stiffness, m.jnt_stiffnesspoly)
-  # Model gradients accumulate directly with the force sign; only qpos returns a residual VJP.
-  wp.copy(bc.adj_qfrc_spring, lam)
   wp.launch(
-    adjoint_recompute._spring_qfrc_recompute,
+    _spring_qpos_vjp,
     dim=(d.nworld, m.njnt),
     inputs=[
       m.opt.disableflags,
@@ -61,25 +164,11 @@ def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | No
       m.jnt_stiffness,
       m.jnt_stiffnesspoly,
       d.qpos,
-      any(param.requires_grad for param in spring_params),
+      lam,
     ],
-    outputs=[qfrc_spring],
-    adj_inputs=[
-      None,
-      m.qpos_spring.grad,
-      None,
-      None,
-      None,
-      m.jnt_stiffness.grad,
-      m.jnt_stiffnesspoly.grad,
-      smooth_res_qpos,
-      None,
-    ],
-    adj_outputs=[bc.adj_qfrc_spring],
-    adjoint=True,
+    outputs=[m.qpos_spring.grad, m.jnt_stiffness.grad, m.jnt_stiffnesspoly.grad, bc.smooth_res_qpos],
   )
-  wp.launch(adjoint_util._neg_cols, dim=smooth_res_qpos.shape, inputs=[smooth_res_qpos], outputs=[smooth_res_qpos])
-  return smooth_res_qpos
+  return bc.smooth_res_qpos
 
 
 @wp.func
