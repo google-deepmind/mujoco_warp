@@ -3203,7 +3203,7 @@ def get_data_into(
   """
   # nacon and nefc can overflow.  in that case, only pull up to the max contacts and constraints
   nacon = min(d.nacon.numpy()[0], d.naconmax)
-  nefc = min(d.nefc.numpy()[world_id], d.njmax)
+  nefc_raw = min(d.nefc.numpy()[world_id], d.njmax)
 
   contact_worldid = d.contact.worldid.numpy()
   contact_type = d.contact.type.numpy()
@@ -3212,20 +3212,6 @@ def get_data_into(
   is_exported = (contact_type[:nacon] & exported_type) != 0
   ncon_filter[:nacon] = (contact_worldid[:nacon] == world_id) & is_exported
   ncon = ncon_filter.sum()
-
-  if ncon != result.ncon or nefc != result.nefc:
-    # TODO(team): if sparse, set nJ based on sparse efc_J
-    mujoco._functions._realloc_con_efc(result, ncon=ncon, nefc=nefc, nJ=nefc * mjm.nv)
-
-  # Check island compatibility between MjModel and Data
-  nisland = int(d.nisland.numpy()[world_id])
-  nidof = int(d.nidof.numpy()[world_id]) if nisland > 0 else 0
-  if nisland > 0:
-    needs_realloc = (
-      result.island_idofadr.shape[0] < nisland or result.ifrc_smooth.shape[0] < nidof or result.map_efc2iefc.shape[0] < nefc
-    )
-    if needs_realloc:
-      mujoco._functions._realloc_island(result, nisland=nisland, nidof=nidof)
 
   ne = d.ne.numpy()[world_id]
   nf = d.nf.numpy()[world_id]
@@ -3258,10 +3244,28 @@ def get_data_into(
     efc_idx = np.concatenate((efc_idx_efl, *efc_idx_c)) if efc_idx_c else efc_idx_efl
     contact_efc_address_ordered = np.array(contact_efc_address_ordered)
   else:
-    efc_idx = np.array(np.arange(nefc))
+    efc_idx = np.array(np.arange(nefc_raw))
     contact_efc_address_ordered = np.empty(0)
 
-  efc_idx = efc_idx[:nefc]  # dont emit indices for overflow constraints
+  efc_idx = efc_idx[:nefc_raw]  # dont emit indices for overflow constraints
+  nefc = len(efc_idx)
+  ne = min(ne, nefc)
+  nf = min(nf, nefc - ne)
+  nl = min(nl, nefc - ne - nf)
+
+  if ncon != result.ncon or nefc != result.nefc:
+    # TODO(team): if sparse, set nJ based on sparse efc_J
+    mujoco._functions._realloc_con_efc(result, ncon=ncon, nefc=nefc, nJ=nefc * mjm.nv)
+
+  # Check island compatibility between MjModel and Data
+  nisland = int(d.nisland.numpy()[world_id])
+  nidof = int(d.nidof.numpy()[world_id]) if nisland > 0 else 0
+  if nisland > 0:
+    needs_realloc = (
+      result.island_idofadr.shape[0] < nisland or result.ifrc_smooth.shape[0] < nidof or result.map_efc2iefc.shape[0] < nefc
+    )
+    if needs_realloc:
+      mujoco._functions._realloc_island(result, nisland=nisland, nidof=nidof)
 
   result.solver_niter[0] = d.solver_niter.numpy()[world_id]
   result.ncon = ncon
@@ -3386,16 +3390,16 @@ def get_data_into(
 
   if nefc > 0:
     if is_sparse(mjm):
-      efc_J = np.zeros((nefc, mjm.nv))
+      efc_J = np.zeros((nefc_raw, mjm.nv))
       mujoco.mju_sparse2dense(
         efc_J,
         d.efc.J.numpy()[world_id, 0],
-        d.efc.J_rownnz.numpy()[world_id, :nefc],
-        d.efc.J_rowadr.numpy()[world_id, :nefc],
+        d.efc.J_rownnz.numpy()[world_id, :nefc_raw],
+        d.efc.J_rowadr.numpy()[world_id, :nefc_raw],
         d.efc.J_colind.numpy()[world_id, 0],
       )
     else:
-      efc_J = d.efc.J.numpy()[world_id, :nefc, : mjm.nv]
+      efc_J = d.efc.J.numpy()[world_id, :nefc_raw, : mjm.nv]
 
     # write to mujoco result (format depends on mj_isSparse)
     if mujoco.mj_isSparse(mjm):
@@ -3468,8 +3472,13 @@ def get_data_into(
     result.map_dof2idof[:nv] = d.map_dof2idof.numpy()[world_id, :nv]
     result.map_idof2dof[:nv] = d.map_idof2dof.numpy()[world_id, :nv]
     result.efc_island[:] = d.efc.island.numpy()[world_id, efc_idx]
-    result.map_efc2iefc[:nefc] = d.map_efc2iefc.numpy()[world_id, :nefc]
-    result.map_iefc2efc[:nefc] = d.map_iefc2efc.numpy()[world_id, :nefc]
+    result.map_efc2iefc[:nefc] = d.map_efc2iefc.numpy()[world_id, efc_idx]
+    # remap island-to-efc indices to match compacted/reordered efc_idx
+    old_to_new = np.full(nefc_raw, -1, dtype=np.int32)
+    old_to_new[efc_idx] = np.arange(nefc, dtype=np.int32)
+    niefc = min(int(result.island_nefc[:nisland].sum()), nefc)
+    result.map_iefc2efc[:nefc] = 0
+    result.map_iefc2efc[:niefc] = old_to_new[d.map_iefc2efc.numpy()[world_id, :niefc]]
 
 
 def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):

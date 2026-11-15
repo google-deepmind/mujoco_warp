@@ -1171,9 +1171,9 @@ def _linesearch_iterative_kernel(
     if ctx_done_in[worldid]:
       return
 
-    ne = ne_in[worldid]
-    nf = nf_in[worldid]
     nefc = wp.min(njmax_in, nefc_in[worldid])
+    ne = wp.min(nefc, ne_in[worldid])
+    nf = nf_in[worldid]
 
     # jv = J @ search (fused for small nv); on unchanged search the buffer
     # already holds jv (see _linesearch).

@@ -1973,6 +1973,44 @@ class SensorTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(sensordata[0], sensordata[1]))
 
+  @parameterized.parameters(1, 2)
+  def test_touch_sensor_partial_pyramidal_overflow(self, nworld):
+    """Tests touch sensor when a pyramidal contact partially overflows njmax."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <body pos="0 0 1">
+            <freejoint/>
+            <geom size="0.1" pos="-0.02 0 0"/>
+            <geom size="0.1" pos="0.02 0 0"/>
+            <site name="touch_site" size="0.15"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <touch site="touch_site"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=5,
+    )
+
+    qpos = d.qpos.numpy()
+    qpos[:, 2] = 0.05 if nworld == 1 else [0.05, 0.04]
+    d.qpos.assign(qpos)
+
+    d.sensordata.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    sdata = d.sensordata.numpy()[:, 0]
+    expected = d.efc.force.numpy()[:, :4].sum(axis=1)
+    self.assertTrue(np.all(expected > 0.0))
+    np.testing.assert_allclose(sdata, expected, rtol=1e-5)
+    if nworld == 2:
+      self.assertNotAlmostEqual(float(sdata[0]), float(sdata[1]), places=4)
+
 
 if __name__ == "__main__":
   wp.init()

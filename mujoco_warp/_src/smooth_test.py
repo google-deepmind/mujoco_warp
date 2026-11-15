@@ -2558,6 +2558,76 @@ class SmoothTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(cfrc_ext[0], cfrc_ext[1]))
 
+  @parameterized.product(
+    nworld=(1, 2),
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+  )
+  def test_transmission_body_moment_njmax_overflow(self, nworld, cone):
+    """Tests body adhesion transmission when a contact overflows njmax."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <body name="b1" pos="0 0 1">
+            <freejoint/>
+            <geom size="0.1" pos="-0.1 0 0"/>
+            <geom size="0.1" pos="0.1 0 0"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <adhesion name="adhere" body="b1" ctrlrange="0 1"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=5,
+      overrides={"opt.cone": cone},
+    )
+
+    qpos = d.qpos.numpy()
+    qpos[:, 2] = 0.05
+    if nworld == 2:
+      qpos[1, 2] = 0.04
+      qpos[1, 4] = 0.1
+    d.qpos.assign(qpos)
+
+    d.actuator_length.fill_(wp.inf)
+    d.actuator_moment.fill_(wp.inf)
+    mjw.fwd_position(m, d)
+
+    moment = d.actuator_moment.numpy()
+    self.assertTrue(np.all(np.isfinite(moment)))
+
+    # Compare against MuJoCo C where the same contact has efc_address == -1.
+    efc_addr = d.contact.efc_address.numpy()[: 2 * nworld, 0]
+    worldids = d.contact.worldid.numpy()[: 2 * nworld]
+    geoms = d.contact.geom.numpy()[: 2 * nworld]
+    dense_moments = []
+    for w in range(nworld):
+      mjd_ref = mujoco.MjData(mjm)
+      mjd_ref.qpos[:] = qpos[w]
+      mujoco.mj_fwdPosition(mjm, mjd_ref)
+      dropped = geoms[(worldids == w) & (efc_addr < 0)]
+      self.assertEqual(len(dropped), 1)
+      for ci in range(mjd_ref.ncon):
+        if np.array_equal(mjd_ref.contact.geom[ci], dropped[0]):
+          mjd_ref.contact.efc_address[ci] = -1
+      mujoco.mj_transmission(mjm, mjd_ref)
+      ref_dense = np.zeros((mjm.nu, mjm.nv))
+      wp_dense = np.zeros((mjm.nu, mjm.nv))
+      mujoco.mju_sparse2dense(
+        ref_dense, mjd_ref.actuator_moment, mjd_ref.moment_rownnz, mjd_ref.moment_rowadr, mjd_ref.moment_colind
+      )
+      mujoco.mju_sparse2dense(
+        wp_dense, moment[w], d.moment_rownnz.numpy()[w], d.moment_rowadr.numpy()[w], d.moment_colind.numpy()[w]
+      )
+      _assert_eq(wp_dense, ref_dense, f"actuator_moment_world_{w}")
+      dense_moments.append(wp_dense)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(dense_moments[0], dense_moments[1]))
+
 
 if __name__ == "__main__":
   wp.init()

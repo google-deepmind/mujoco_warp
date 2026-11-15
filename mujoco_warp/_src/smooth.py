@@ -3788,6 +3788,8 @@ def _transmission_body_moment(nmaxpyramid: int, deterministic: bool = False):
       return
 
     contact_exclude = int(contact_dist_in[conid] >= contact_includemargin_in[conid])
+    if contact_exclude == 0 and contact_efc_address_in[conid, 0] < 0:
+      return
 
     if dofid == 0:
       wp.atomic_add(actuator_trntype_body_ncon_out[worldid], trnbodyid, 1)
