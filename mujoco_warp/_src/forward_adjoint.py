@@ -128,11 +128,14 @@ def _smooth_qvel_vjp(
 def _smooth_ctrl_vjp(
   # Model:
   opt_timestep: wp.array[float],
+  jnt_dofadr: wp.array[int],
   jnt_actfrclimited: wp.array[bool],
   jnt_actfrcrange: wp.array2d[wp.vec2],
   dof_jntid: wp.array[int],
+  actuator_trntype: wp.array[int],
   actuator_gaintype: wp.array[int],
   actuator_actadr: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
   actuator_gainprm: wp.array2d[vec10],
   actuator_forcelimited: wp.array[bool],
   actuator_forcerange: wp.array2d[wp.vec2],
@@ -178,7 +181,17 @@ def _smooth_ctrl_vjp(
   if actuator_gaintype[actuatorid] == GainType.AFFINE:
     gain += gainprm[1] * actuator_length_in[worldid, actuatorid] + gainprm[2] * actuator_velocity_in[worldid, actuatorid]
     if implicitfast and gainprm[2] != 0.0:
-      # The implicitfast matrix uses clamped control; saturated controls returned above.
+      if derivative._jnt_actfrc_clamped(
+        jnt_dofadr,
+        jnt_actfrclimited,
+        jnt_actfrcrange,
+        actuator_trntype,
+        actuator_trnid,
+        qfrc_actuator_in,
+        worldid,
+        actuatorid,
+      ):
+        return
       moment_qacc, moment_y = float(0.0), float(0.0)
       for i in range(rownnz):
         elemid = rowadr + i
@@ -910,11 +923,14 @@ def smooth_qvel_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, adj_qvel
         dim=(nworld, m.nu),
         inputs=[
           m.opt.timestep,
+          m.jnt_dofadr,
           m.jnt_actfrclimited,
           m.jnt_actfrcrange,
           m.dof_jntid,
+          m.actuator_trntype,
           m.actuator_gaintype,
           m.actuator_actadr,
+          m.actuator_trnid,
           m.actuator_gainprm,
           m.actuator_forcelimited,
           m.actuator_forcerange,
