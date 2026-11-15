@@ -4017,6 +4017,30 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
     else:
       smooth.solve_m(m, d, ctx.Mgrad, ctx.grad, x_scratch=ctx.solve_ld_scratch)
   elif m.opt.solver == types.SolverType.NEWTON:
+    _update_hessian(m, d, ctx, compact=compact)
+    _cholesky_factorize_solve(m, d, ctx)
+  else:
+    raise ValueError(f"Unknown solver type: {m.opt.solver}")
+
+  if is_discrete and (m.opt.enableflags & types.EnableBit.SLEEP):
+    wp.launch(
+      derivative._zero_sleeping_dofs,
+      dim=(d.nworld, min(m.nv, ctx.Mgrad.shape[1])),
+      inputs=[m.dof_treeid, d.tree_awake],
+      outputs=[ctx.Mgrad],
+    )
+    wp.launch(
+      derivative._zero_sleeping_dofs,
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_treeid, d.tree_awake],
+      outputs=[ctx.search],
+    )
+
+
+def _update_hessian(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
+  """Assembles Newton's Hessian using the current constraint states."""
+  is_discrete = m.opt.integrator == types.IntegratorType.DISCRETE
+  if m.opt.solver == types.SolverType.NEWTON:
     # h = M + (efc_J.T * efc_D * active) @ efc_J
     sc = _sparse_compact(ctx)
     if m.is_sparse or sc:
@@ -4225,23 +4249,8 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         outputs=[ctx.h],
       )
 
-    _cholesky_factorize_solve(m, d, ctx)
   else:
-    raise ValueError(f"Unknown solver type: {m.opt.solver}")
-
-  if is_discrete and (m.opt.enableflags & types.EnableBit.SLEEP):
-    wp.launch(
-      derivative._zero_sleeping_dofs,
-      dim=(d.nworld, min(m.nv, ctx.Mgrad.shape[1])),
-      inputs=[m.dof_treeid, d.tree_awake],
-      outputs=[ctx.Mgrad],
-    )
-    wp.launch(
-      derivative._zero_sleeping_dofs,
-      dim=(d.nworld, m.nv),
-      inputs=[m.dof_treeid, d.tree_awake],
-      outputs=[ctx.search],
-    )
+    raise ValueError("Hessian assembly requires the Newton solver")
 
 
 def _update_h_incremental(m: types.Model, d: types.Data, ctx: SolverContext):
@@ -4639,7 +4648,20 @@ def _solver_iteration(
     )
 
 
-def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True, compact: bool = False):
+def init_context(
+  m: types.Model,
+  d: types.Data,
+  ctx: SolverContext | InverseContext,
+  grad: bool = True,
+  hessian: bool = False,
+  compact: bool = False,
+):
+  """Initializes constraints, optionally with a gradient/search or only Newton's Hessian."""
+  if grad and hessian:
+    raise ValueError("grad and hessian are mutually exclusive")
+  if hessian and m.opt.solver != types.SolverType.NEWTON:
+    raise ValueError("Hessian-only preparation requires the Newton solver")
+
   if m.opt.integrator == types.IntegratorType.DISCRETE:
     if ctx.tw_diag is not None and m.opt.solver == types.SolverType.CG:
       derivative.eff_prec_fold(m, d, tw_diag=ctx.tw_diag)
@@ -4654,7 +4676,7 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
       d = dataclasses.replace(d, qfrc_smooth=qfrc_smooth_eff)
 
   # inverse trace of the inertia matrix, of the full model in a compacted solve
-  if isinstance(ctx, SolverContext):
+  if isinstance(ctx, SolverContext) and not hessian:
     mf = m if ctx.compact_m_full is None else ctx.compact_m_full
     df = d if ctx.compact_d_full is None else ctx.compact_d_full
     launch_inertia_scale(mf, df.M, ctx.inertia_scale)
@@ -4698,6 +4720,11 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
     inputs=[d.nefc, d.qacc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.aref, dj.dof_cdof],
     outputs=[ctx.Jaref],
   )
+
+  if hessian:
+    _update_efc_force(m, d, ctx)
+    _update_hessian(m, d, ctx, compact=compact)
+    return
 
   # Ma = M @ qacc
   _mul_m_compact_aware(m, d, ctx, d.efc.Ma, d.qacc, ctx.done)

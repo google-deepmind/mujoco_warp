@@ -311,7 +311,7 @@ def solve_backward(m: Model, d_bwd: Data, adj_qacc: wp.array, bc: BackwardContex
     if m.nv:
       smooth.solve_m(m, d_bwd, solver_ctx.search, adj_qacc)
     return solver_ctx
-  solver.init_context(m, d_bwd, solver_ctx, grad=True)
+  solver.init_context(m, d_bwd, solver_ctx, grad=False, hessian=True)
   if m.nv <= H_ONE_TILE_MAX:
     wp.launch_tiled(
       _solve_adjoint_cholesky(m.nv_pad),
