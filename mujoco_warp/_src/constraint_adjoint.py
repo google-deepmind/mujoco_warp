@@ -450,6 +450,36 @@ def _contact_material_vjp(
       wp.atomic_add(geom_friction_grad_out, model_worldid, geom[1], grad2)  # kernel_analyzer: ignore[atomic]
 
 
+@wp.func
+def _contact_dof(
+  # Model:
+  body_rootid: wp.array[int],
+  # Data in:
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
+  worldid: int,
+  pos: wp.vec3,
+  body0: int,
+  body1: int,
+  dof0: int,
+  dof1: int,
+):
+  """Returns the next contact dof, its sign, root, COM offset and unsigned Jacobian column."""
+  dofid = dof0
+  side = -1.0
+  body = body0
+  if dof1 > dof0:
+    dofid = dof1
+    side = 1.0
+    body = body1
+  root = body_rootid[body]
+  offset = pos - subtree_com_in[worldid, root]
+  cdof = cdof_in[worldid, dofid]
+  jacr = wp.spatial_top(cdof)
+  return dofid, side, root, offset, wp.spatial_vector(jacr, wp.spatial_bottom(cdof) + wp.cross(jacr, offset))
+
+
 @cache_kernel
 def _contact_residual(cone_type: int, geom_friction_grad: bool, pair_friction_grad: bool):
   """Gathers, differentiates and scatters one contact with scalar generated adjoints."""
@@ -539,31 +569,13 @@ def _contact_residual(cone_type: int, geom_friction_grad: bool, pair_friction_gr
     Z = wp.spatial_vector()
     d0 = body_dofadr[b0] + body_dofnum[b0] - 1
     d1 = body_dofadr[b1] + body_dofnum[b1] - 1
-    while d0 >= 0 or d1 >= 0:
-      if d0 == d1:  # reached the common ancestor chain -> all remaining dofs cancel
-        break
-      i = int(0)
-      side = float(0.0)
-      bb = int(0)
-      if d1 > d0:
-        i = d1
-        side = 1.0
-        bb = b1
-        d1 = dof_parentid[d1]
-      else:
-        i = d0
-        side = -1.0
-        bb = b0
-        d0 = dof_parentid[d0]
-      cdof = cdof_in[w, i]
-      a = wp.spatial_top(cdof)
-      lin = wp.spatial_bottom(cdof)
-      off = p - subtree_com_in[w, body_rootid[bb]]
-      jacp = lin + wp.cross(a, off)
-      h = wp.spatial_vector(side * a, side * jacp)  # top=angular, bottom=linear (cdof convention)
+    while wp.max(d0, d1) >= 0 and d0 != d1:  # dofs shared by both chains cancel
+      i, side, root, off, column = _contact_dof(body_rootid, subtree_com_in, cdof_in, w, p, b0, b1, d0, d1)
+      h = side * column  # top=angular, bottom=linear (cdof convention)
       V += h * qvel_in[w, i]
       A += h * qacc_in[w, i]
       Z += h * lam_in[w, i]
+      d0, d1 = constraint._dof_chain_advance(dof_parentid, d0, d1, 1)
 
     # Differentiate phi with Warp's generated adjoint.
     dt = opt_timestep[w % opt_timestep.shape[0]]
@@ -620,28 +632,10 @@ def _contact_residual(cone_type: int, geom_friction_grad: bool, pair_friction_gr
     cpos_acc = wp.vec3(0.0)
     d0 = body_dofadr[b0] + body_dofnum[b0] - 1
     d1 = body_dofadr[b1] + body_dofnum[b1] - 1
-    while d0 >= 0 or d1 >= 0:
-      if d0 == d1:
-        break
-      i = int(0)
-      side = float(0.0)
-      bb = int(0)
-      if d1 > d0:
-        i = d1
-        side = 1.0
-        bb = b1
-        d1 = dof_parentid[d1]
-      else:
-        i = d0
-        side = -1.0
-        bb = b0
-        d0 = dof_parentid[d0]
-      cdof = cdof_in[w, i]
-      a = wp.spatial_top(cdof)
-      lin = wp.spatial_bottom(cdof)
-      off = p - subtree_com_in[w, body_rootid[bb]]
-      jacp = lin + wp.cross(a, off)
-      h = wp.spatial_vector(side * a, side * jacp)
+    while wp.max(d0, d1) >= 0 and d0 != d1:
+      i, side, root, off, column = _contact_dof(body_rootid, subtree_com_in, cdof_in, w, p, b0, b1, d0, d1)
+      a = wp.spatial_top(column)
+      h = side * column
       # dphi/dqvel_i = h_i*Vbar
       wp.atomic_add(res_qvel_out[w], i, wp.dot(h, Vb))  # kernel_analyzer: ignore[atomic]
       G = side * (qvel_in[w, i] * Vb + qacc_in[w, i] * Ab + lam_in[w, i] * Zb)  # cotangent on raw jac column
@@ -650,7 +644,8 @@ def _contact_residual(cone_type: int, geom_friction_grad: bool, pair_friction_gr
       wp.atomic_add(res_cdof_out[w], i, wp.spatial_vector(Ga + wp.cross(off, Gl), Gl))  # kernel_analyzer: ignore[atomic]
       cpos_acc += wp.cross(Gl, a)  # d(off=p-com)/dp
       # doff/dcom = -doff/dp
-      wp.atomic_add(res_subtree_com_out[w], body_rootid[bb], wp.cross(a, Gl))  # kernel_analyzer: ignore[atomic]
+      wp.atomic_add(res_subtree_com_out[w], root, wp.cross(a, Gl))  # kernel_analyzer: ignore[atomic]
+      d0, d1 = constraint._dof_chain_advance(dof_parentid, d0, d1, 1)
     res_contact_pos_out[cid] += cpos_acc
 
   return kernel
