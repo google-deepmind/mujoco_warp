@@ -56,12 +56,6 @@ def _clone_nograd(d: Data) -> Data:
 
 # Elementwise (world, column) kernels.
 @wp.kernel
-def _neg_cols(src: wp.array2d[float], dst_out: wp.array2d[float]):
-  w, i = wp.tid()
-  dst_out[w, i] = -src[w, i]
-
-
-@wp.kernel
 def _sub_cols(a: wp.array2d[float], b: wp.array2d[float], out: wp.array2d[float]):
   w, i = wp.tid()
   out[w, i] = a[w, i] - b[w, i]

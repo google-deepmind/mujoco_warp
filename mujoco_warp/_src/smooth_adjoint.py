@@ -491,7 +491,6 @@ def _rne_vjp(nbody: int, with_mass: bool, mass_grad: bool, inertia_grad: bool):
     mass_w: wp.array2d[float],
     # Out:
     adj_qvel_out: wp.array2d[float],
-    adj_qacc_out: wp.array2d[float],
     adj_cdof_out: wp.array2d[wp.spatial_vector],
     adj_cdof_dot_out: wp.array2d[wp.spatial_vector],
     adj_cvel_out: wp.array2d[wp.spatial_vector],
@@ -629,19 +628,16 @@ def _rne_vjp(nbody: int, with_mass: bool, mass_grad: bool, inertia_grad: bool):
             acc_mass_force += mass_force_tile[b - body_start]
             acc_mass_ca_bar += mass_ca_bar_tile[b - body_start]
         qvel_bar = wp.dot(acc_ca_bar, cdof_dot_in[w, i])
-        qacc_bar = wp.dot(acc_ca_bar, cdof_in[w, i])
         cdof_dot_bar = qvel_in[w, i] * acc_ca_bar
         S_bar = lam[w, i] * acc_force + qacc_in[w, i] * acc_ca_bar
         if wp.static(with_mass):
           S_bar += -mass_y[w, i] * acc_mass_force + mass_w[w, i] * acc_mass_ca_bar
         if body_start == 0:
           adj_qvel_out[w, i] = qvel_bar
-          adj_qacc_out[w, i] = qacc_bar
           adj_cdof_dot_out[w, i] = cdof_dot_bar
           adj_cdof_out[w, i] = S_bar
         else:
           adj_qvel_out[w, i] += qvel_bar
-          adj_qacc_out[w, i] += qacc_bar
           adj_cdof_dot_out[w, i] += cdof_dot_bar
           adj_cdof_out[w, i] += S_bar
 
@@ -700,7 +696,6 @@ def rne_backward(
     ],
     outputs=[
       bc.smooth_adj_qvel,
-      bc.smooth_adj_qacc,
       bc.adj_cdof,
       bc.adj_cdof_dot,
       bc.adj_cvel,
