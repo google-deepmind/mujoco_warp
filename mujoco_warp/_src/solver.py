@@ -3091,6 +3091,8 @@ def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njma
         J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_pad), offset=(k, 0), bounds_check=False, storage="shared")
         # not a shared wp.func: Warp does not reserve shared memory for a tile returned by one
         state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
+        # same weights as the branch below, repeated here: loading them before J or after the
+        # rewrite is slower
         D_k = wp.tile_load(ctx_hessian_weight_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
         tid_tile = wp.tile_arange(TILE_SIZE_K, dtype=int)
         threshold_tile = wp.tile_ones(shape=TILE_SIZE_K, dtype=int) * (nefc - k)
@@ -3185,6 +3187,8 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
         J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_pad), offset=(k, 0), bounds_check=False, storage="shared")
         # not a shared wp.func: Warp does not reserve shared memory for a tile returned by one
         state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
+        # same weights as the branch below, repeated here: loading them before J or after the
+        # rewrite is slower
         D_k = wp.tile_load(ctx_hessian_weight_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
         tid_tile = wp.tile_arange(TILE_SIZE_K, dtype=int)
         threshold_tile = wp.tile_ones(shape=TILE_SIZE_K, dtype=int) * (nefc - k)
