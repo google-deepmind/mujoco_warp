@@ -757,20 +757,28 @@ def _kinematics_vjp(nbody: int):
   return kernel
 
 
+def _implicit_solve(m: Model) -> bool:
+  """Returns whether the integrator advances with Q^-1 M qacc for Q = M - dt * dforce/dqvel."""
+  if m.opt.integrator == IntegratorType.EULER:
+    return not (m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER))
+  if m.opt.integrator == IntegratorType.IMPLICITFAST:
+    flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
+    return (m.opt.disableflags & flags) != flags
+  return False
+
+
 @event_scope
 def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
   """Propagates state cotangents through the selected integrator."""
   Ma = d_out.efc.Ma
   nworld, nv = d_bwd.nworld, m.nv
   adj_qpos, adj_qvel, adj_qacc = bc.adj_qpos, bc.adj_qvel, bc.adj_qacc
-
-  # Match forward.implicit's IMPLICITFAST branch and forward.euler.
-  flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
-  implicitfast = m.opt.integrator == IntegratorType.IMPLICITFAST and (m.opt.disableflags & flags) != flags
-  eulerdamp = m.opt.integrator == IntegratorType.EULER and not (m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER))
+  implicit_solve = _implicit_solve(m)
+  implicitfast = implicit_solve and m.opt.integrator == IntegratorType.IMPLICITFAST
+  eulerdamp = implicit_solve and m.opt.integrator == IntegratorType.EULER
   qacc_advance = d_bwd.qacc
 
-  if implicitfast or eulerdamp:
+  if implicit_solve:
     wp.launch(
       forward._compute_damping_deriv,
       dim=(nworld, nv),
@@ -828,7 +836,7 @@ def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
     outputs=[adj_qpos, adj_qvel, adj_qacc],
   )
 
-  if implicitfast or eulerdamp:
+  if implicit_solve:
     smooth.solve_LD(m, d_bwd, qLD, qLDiagInv, bc.y_remap, adj_qacc)
     if implicitfast:
       wp.launch(
@@ -1041,17 +1049,14 @@ def smooth_qvel_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, adj_qvel
 def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos: wp.array, bc: BackwardContext):
   """Accumulates RNE, spring, and actuator qpos VJPs, with inertial and mocap gradients."""
   mocap_grad = d.mocap_pos.grad is not None or d.mocap_quat.grad is not None
-  flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
-  with_mass = (m.opt.integrator == IntegratorType.IMPLICITFAST and (m.opt.disableflags & flags) != flags) or (
-    m.opt.integrator == IntegratorType.EULER and not (m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER))
-  )
+  implicit_solve = _implicit_solve(m)
   passive_enabled = (m.opt.disableflags & (DisableBit.SPRING | DisableBit.DAMPER)) != (DisableBit.SPRING | DisableBit.DAMPER)
   residual = smooth_adjoint.rne_backward(
     m,
     d_bwd,
     lam,
-    bc.y_remap if with_mass else None,
-    bc.w_dir if with_mass else None,
+    bc.y_remap if implicit_solve else None,
+    bc.w_dir if implicit_solve else None,
     bc,
     xfrc_applied=d.xfrc_applied,
     body_gravcomp=m.body_gravcomp if passive_enabled else None,
