@@ -1268,17 +1268,16 @@ class GJKTest(parameterized.TestCase):
 
   def test_mesh_support(self):
     """Test support function hill climb for mesh geoms."""
-    # icosahedron: 5 neighbors per vertex
+    # capped square antiprism: vertices with 4 and 5 neighbors
     _, _, m, _ = test_data.fixture(
       xml="""
       <mujoco>
         <asset>
-          <mesh name="icosahedron" vertex="0 1 1.618  0 -1 1.618  0 1 -1.618  0 -1 -1.618
-                                           1 1.618 0  -1 1.618 0  1 -1.618 0  -1 -1.618 0
-                                           1.618 0 1  1.618 0 -1  -1.618 0 1  -1.618 0 -1"/>
+          <mesh name="antiprism" vertex="0 0 1  .9165 0 .4  0 .9165 .4  -.9165 0 .4  0 -.9165 .4
+                                         0 0 -1  .6481 .6481 -.4  -.6481 .6481 -.4  -.6481 -.6481 -.4  .6481 -.6481 -.4"/>
         </asset>
         <worldbody>
-          <geom type="mesh" mesh="icosahedron"/>
+          <geom type="mesh" mesh="antiprism"/>
         </worldbody>
       </mujoco>
       """
