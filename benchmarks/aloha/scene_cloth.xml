@@ -96,7 +96,8 @@
               radius="0.003" dim="2" material="cloth_mat" pos="0 0 0" mass=".1">
       <edge equality="true" solimp="0.9 0.95 0.001" solref="0.02 1"/>
       <contact selfcollide="auto" condim="3"/>
-      <elasticity young="3e3" poisson="0" thickness="1e-2" damping="1e-3" elastic2d="bend"/>
+      <!-- MuJoCo 4.0 made 2D bending 4/3 stiffer; young = 3/4 (1 - poisson) * 3e3 keeps the old stiffness -->
+      <elasticity young="2.25e3" poisson="0" thickness="1e-2" damping="1e-3" elastic2d="bend"/>
     </flexcomp>
   </worldbody>
 </mujoco>
