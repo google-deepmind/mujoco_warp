@@ -514,7 +514,16 @@ class IOTest(parameterized.TestCase):
     )
     self.assertEqual(m.nv_pad, expected)
 
-  @parameterized.parameters((15, 16), (16, 32), (31, 32), (32, 48))
+  def test_M_tile_pattern(self):
+    """Two 24-DOF chains: tile 1 holds DOFs of both, tile 2 only couples to the second chain."""
+    links = "".join('<body><joint axis="0 1 0"/><geom size=".1"/>' for _ in range(24)) + "</body>" * 24
+    mjm = mujoco.MjModel.from_xml_string(f"<mujoco><worldbody>{links}{links}</worldbody></mujoco>")
+    m = put_model(mjm)
+    np.testing.assert_array_equal(m.M_tile_colmask.numpy()[:3, 0], [0b0, 0b1, 0b10])
+    np.testing.assert_array_equal(m.M_tile_offdiag.numpy()[:3], [1, 1, 1])
+    self.assertFalse(m.M_tile_full)  # tile 2 never couples to tile 0
+
+  @parameterized.parameters((15, 16), (16, 16), (31, 32), (32, 32), (33, 48), (47, 48), (48, 48), (49, 64), (63, 64), (64, 80))
   def test_augmented_cholesky_nvmax_padding(self, nvmax, expected):
     self.assertEqual(io._nvmax_pad(nvmax), expected)
 
@@ -589,6 +598,104 @@ class IOTest(parameterized.TestCase):
       self.assertTrue((eid[a : a + n] == eid[a]).all())
       if a > 0:  # maximal: the preceding row belongs to a different instance
         self.assertTrue(etype[a - 1] != etype[a] or eid[a - 1] != eid[a])
+
+  def test_put_data_dense_mujoco_jacobian_sparse_blocks(self):
+    """MuJoCo's dense efc_J loads as sparse rows that share their JTDAJ block's support."""
+    # MuJoCo is dense below 60 DOFs, MJWarp sparse above 32; the spinning box has DOF friction rows
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body name="b0" pos="0 0 .049">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b1" pos="0 0 .148">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b2" pos="0 0 .247">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b3" pos="0 0 .346">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b4" pos="1 0 1">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b5" pos="1.2 0 1">
+            <joint type="free" frictionloss=".1"/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="b4" body2="b5"/>
+        </equality>
+        <keyframe>
+          <key qvel="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 2 3"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+    self.assertFalse(mujoco.mj_isSparse(mjm))
+    self.assertTrue(m.is_sparse)
+    self.assertIn(mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF, mjd.efc_type[: mjd.nefc])
+
+    rownnz, rowadr = d.efc.J_rownnz.numpy()[0], d.efc.J_rowadr.numpy()[0]
+    colind, J = d.efc.J_colind.numpy()[0, 0], d.efc.J.numpy()[0, 0]
+    for r in range(mjd.nefc):
+      row = np.zeros(mjm.nv)
+      row[colind[rowadr[r] : rowadr[r] + rownnz[r]]] = J[rowadr[r] : rowadr[r] + rownnz[r]]
+      np.testing.assert_allclose(row, mjd.efc_J.reshape((mjd.nefc, mjm.nv))[r], atol=1e-6)
+    nblock = d.efc.jtdaj_nblock.numpy()[0]
+    for a, n in zip(d.efc.jtdaj_adr.numpy()[0, :nblock], d.efc.jtdaj_nrow.numpy()[0, :nblock]):
+      for r in range(a + 1, a + n):
+        np.testing.assert_array_equal(colind[rowadr[r] : rowadr[r] + rownnz[r]], colind[rowadr[a] : rowadr[a] + rownnz[a]])
+
+    # solving the loaded state from a cold start reaches MuJoCo's solution
+    d.qacc.fill_(wp.inf)
+    d.qacc_warmstart.zero_()
+    mjwarp.solve(m, d)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-4, atol=1e-4)
+
+    with self.assertRaises(ValueError):
+      mjwarp.put_data(mjm, mjd, njmax_nnz=1)
+
+  @parameterized.parameters("auto", "sparse")
+  def test_put_data_flex_equality_blocks(self, jacobian):
+    """Each edge row of a flex equality loads as its own JTDAJ block."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option jacobian="{jacobian}"/>
+        <worldbody>
+          <flexcomp name="rope" type="grid" dim="1" count="14 1 1" spacing=".1 .1 .1" radius=".03" mass="1">
+            <edge equality="true"/>
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <pin id="0"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qvel_noise=0.5,
+    )
+    self.assertEqual(mujoco.mj_isSparse(mjm), jacobian == "sparse")
+    self.assertTrue(m.is_sparse)
+    self.assertGreater(mjd.nefc, 1)
+
+    nblock = d.efc.jtdaj_nblock.numpy()[0]
+    np.testing.assert_array_equal(d.efc.jtdaj_adr.numpy()[0, :nblock], np.arange(mjd.nefc))
+    np.testing.assert_array_equal(d.efc.jtdaj_nrow.numpy()[0, :nblock], 1)
+
+    d.qacc.fill_(wp.inf)
+    d.qacc_warmstart.zero_()
+    mjwarp.solve(m, d)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-4, atol=1e-4)
 
   @parameterized.parameters(types.Model, types.Data, types.RenderContext)
   def test_is_batched_metadata(self, dataclass_type):
@@ -3064,6 +3171,66 @@ class IOTest(parameterized.TestCase):
     with warnings.catch_warnings():
       warnings.simplefilter("error")
       mjwarp.put_model(mjm)
+
+  @parameterized.parameters(1, 2)
+  def test_make_put_data_sleep_arrays(self, nworld):
+    """Tests that make_data and put_data initialize all sleep arrays consistently."""
+    mjm, mjd, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <body mocap="true">
+            <geom size=".1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint type="slide"/>
+            <geom size=".1"/>
+          </body>
+          <body pos="2 0 0">
+            <joint type="slide"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # make_data initializes awake counts and indices without requiring a step
+    d_make = mjwarp.make_data(mjm, nworld=nworld)
+    for w in range(nworld):
+      self.assertEqual(d_make.ntree_awake.numpy()[w], 2)
+      self.assertEqual(d_make.nbody_awake.numpy()[w], 4)
+      self.assertEqual(d_make.nv_awake.numpy()[w], 2)
+      np.testing.assert_array_equal(d_make.body_awake_ind.numpy()[w], [0, 1, 2, 3])
+      np.testing.assert_array_equal(d_make.dof_awake_ind.numpy()[w], [0, 1])
+
+    # put_data derives body_awake, counts, and indices from tree_asleep
+    mjd.tree_asleep[:] = [0, -(1 + types.MJ_MINAWAKE)]
+    d_put = mjwarp.put_data(mjm, mjd, nworld=nworld)
+    for w in range(nworld):
+      self.assertEqual(d_put.ntree_awake.numpy()[w], 1)
+      self.assertEqual(d_put.nbody_awake.numpy()[w], 3)
+      self.assertEqual(d_put.nv_awake.numpy()[w], 1)
+      np.testing.assert_array_equal(
+        d_put.body_awake.numpy()[w],
+        [types.SleepState.STATIC, types.SleepState.AWAKE, types.SleepState.ASLEEP, types.SleepState.AWAKE],
+      )
+      np.testing.assert_array_equal(d_put.body_awake_ind.numpy()[w, :3], [0, 1, 3])
+      np.testing.assert_array_equal(d_put.dof_awake_ind.numpy()[w, :1], [1])
+
+    if nworld == 2:
+      qvel = d_put.qvel.numpy()
+      qvel[1, 0] = 1.0
+      d_put.qvel.assign(qvel)
+    mjwarp.step(m, d_put)
+    self.assertEqual(d_put.tree_awake.numpy()[0, 0], 0)
+    if nworld == 2:
+      self.assertEqual(d_put.tree_awake.numpy()[1, 0], 1)
+      self.assertFalse(np.allclose(d_put.qpos.numpy()[0], d_put.qpos.numpy()[1]))
 
 
 if __name__ == "__main__":

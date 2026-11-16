@@ -48,7 +48,7 @@ def _assert_eq(a, b, name, tol=_TOLERANCE * 20):
 
 def _set_inertia_scale(m, d, ctx):
   """Set the inverse trace of M, as init_context does, for tests which skip it."""
-  solver.launch_inertia_scale(m, d.M, ctx.inertia_scale)
+  solver.launch_inertia_scale(m, d.M, ctx.inertia_scale, d)
 
 
 def _noslip_model(mjm, noslip_iterations):
@@ -144,10 +144,6 @@ def _qcqp_kernel(
   d_in: wp.array[types.vec5],
   r_in: wp.array[float],
   # Out:
-  res2_out: wp.array[types.vec5],
-  active2_out: wp.array[int],
-  res3_out: wp.array[types.vec5],
-  active3_out: wp.array[int],
   res_out: wp.array[types.vec5],
   active_out: wp.array[int],
 ):
@@ -156,25 +152,22 @@ def _qcqp_kernel(
   b = b_in[tid]
   d = d_in[tid]
   r = r_in[tid]
+  res = types.vec5(0.0)
+  active = bool(False)
   if n == 2:
-    res2, active2 = solver._qcqp2(A, b, d, r)
-    res2_out[tid] = res2
-    active2_out[tid] = int(active2)
-  if n == 3:
-    res3, active3 = solver._qcqp3(A, b, d, r)
-    res3_out[tid] = res3
-    active3_out[tid] = int(active3)
-  res, active = solver._qcqp(A, b, d, r, n)
+    res, active = solver._qcqp2(A, b, d, r)
+  elif n == 3:
+    res, active = solver._qcqp3(A, b, d, r)
+  else:
+    res, active = solver._qcqp5(A, b, d, r)
   res_out[tid] = res
   active_out[tid] = int(active)
 
 
 def _elliptic_dense_hessian_reference(m, d, ctx):
   contact_dim = d.contact.dim.numpy()
-  contact_dist = d.contact.dist.numpy()
   contact_efc_address = d.contact.efc_address.numpy()
   contact_friction = d.contact.friction.numpy()
-  contact_includemargin = d.contact.includemargin.numpy()
   contact_worldid = d.contact.worldid.numpy()
   efc_D = d.efc.D.numpy()
   efc_J = d.efc.J.numpy()
@@ -184,8 +177,6 @@ def _elliptic_dense_hessian_reference(m, d, ctx):
   h = np.zeros((d.nworld, m.nv, m.nv), dtype=np.float64)
 
   for conid in range(d.nacon.numpy()[0]):
-    if contact_dist[conid] - contact_includemargin[conid] >= 0.0:
-      continue
     worldid = contact_worldid[conid]
     efcid0 = contact_efc_address[conid, 0]
     if efcid0 < 0 or efc_state[worldid, efcid0] != types.ConstraintState.CONE.value:
@@ -1245,7 +1236,7 @@ class SolverTest(parameterized.TestCase):
         _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
         _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
-  @absltest.skipIf(not wp.get_device().is_cuda, "CUDA graph capture requires CUDA")
+  @absltest.skipIf(not wp.get_device().is_cuda, "Side streams only fork during CUDA graph capture")
   def test_solve_graph_capture_sparse(self):
     """A captured sparse solve forks jv onto a second stream, joins it and matches eager."""
     _, _, m, d = test_data.fixture(
@@ -1380,74 +1371,149 @@ class SolverTest(parameterized.TestCase):
     self.assertNotEqual(solver._update_gradient_grad_tiled.module, shared_module)
     self.assertNotEqual(solver._solve_search_update_cg_tiled.module, shared_module)
 
-  def test_elliptic_dense_hessian(self):
-    """Structured dense cone contraction matches the reference Hessian."""
-    condims = (3, 4, 6)
-    bodies = "".join(
-      f'<body pos="{i * 0.25 - 0.25:.3f} 0 0.020">'
-      f'<freejoint/><geom type="box" size="0.04 0.05 0.03" mass="0.5" condim="{condim}"/></body>'
-      for i, condim in enumerate(condims)
+  @parameterized.parameters(1, 2)
+  def test_elliptic_dense_hessian(self, nworld):
+    """The elliptic term of the dense Hessian matches the reference cone curvature."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option cone="elliptic" jacobian="dense"/>
+        <worldbody>
+          <geom type="plane" size="5 5 .1" friction="1 0.01 0.001" condim="1"/>
+          <body pos="-0.25 0 0.02">
+            <freejoint/>
+            <geom type="box" size="0.04 0.05 0.03" mass="0.5" condim="3"/>
+          </body>
+          <body pos="0 0 0.02">
+            <freejoint/>
+            <geom type="box" size="0.04 0.05 0.03" mass="0.5" condim="4"/>
+          </body>
+          <body pos="0.25 0 0.02">
+            <freejoint/>
+            <geom type="box" size="0.04 0.05 0.03" mass="0.5" condim="6"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
     )
-    xml = f"""
-    <mujoco>
-      <option cone="elliptic" solver="Newton" jacobian="dense" iterations="20" ls_iterations="20"/>
-      <worldbody>
-        <geom type="plane" size="5 5 .1" friction="1 0.01 0.001" condim="1"/>
-        {bodies}
-      </worldbody>
-    </mujoco>
-    """
-    mjm, mjd, m, _ = test_data.fixture(xml=xml)
     self.assertFalse(m.is_sparse)
 
-    mjd.qvel[0::6] = 1.5
-    mujoco.mj_forward(mjm, mjd)
-    self.assertEqual(set(mjd.contact.dim[: mjd.ncon]), set(condims))
+    # slide the boxes so their contacts are in the cone state, differently per world
+    qvel = np.zeros((nworld, mjm.nv))
+    qvel[:, 0::6] = 1.5
+    if nworld == 2:
+      qvel[1, 1::6] = -0.8
+    d.qvel.assign(qvel)
+    mjw.forward(m, d)
+    self.assertEqual(set(d.contact.dim.numpy()[: d.nacon.numpy()[0]]), {3, 4, 6})
 
-    d = mjw.put_data(mjm, mjd)
     ctx = solver._create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
-    ctx.h.zero_()
     ctx.done.fill_(False)
 
-    if wp.get_device().is_cuda:
-      dim_block = (wp.get_device().sm_count * 6 * 256 + m.dof_tri_row.size - 1) // m.dof_tri_row.size
-      nblocks_perblock = (d.naconmax + dim_block - 1) // dim_block
-    else:
-      dim_block = 1
-      nblocks_perblock = d.naconmax
-    wp.launch(
-      solver._update_gradient_JTCJ_dense(0),
-      dim=(dim_block, m.dof_tri_row.size),
-      inputs=[
-        m.opt.impratio_invsqrt,
-        m.dof_tri_row,
-        m.dof_tri_col,
-        d.contact.dist,
-        d.contact.includemargin,
-        d.contact.friction,
-        d.contact.dim,
-        d.contact.efc_address,
-        d.contact.worldid,
-        d.efc.J,
-        d.efc.D,
-        d.efc.state,
-        d.naconmax,
-        d.nacon,
-        ctx.Jaref,
-        ctx.done,
-        nblocks_perblock,
-        dim_block,
-      ],
-      outputs=[ctx.h],
-    )
+    def dense_hessian(elliptic):
+      ctx.h.fill_(wp.inf)
+      wp.launch_tiled(
+        solver._update_gradient_JTDAJ_dense_tiled(
+          m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0], elliptic
+        ),
+        dim=d.nworld,
+        inputs=[
+          m.nv,
+          m.M_colind,
+          m.M_hinit_i,
+          d.nefc,
+          d.M,
+          d.efc.J,
+          d.efc.state,
+          ctx.hessian_weight,
+          ctx.done,
+          ctx.cone_coef,
+          ctx.cone_weight,
+          ctx.cone_base,
+        ],
+        outputs=[ctx.h],
+        block_dim=m.block_dim.update_gradient_JTDAJ_dense,
+      )
+      return np.triu(ctx.h.numpy()[:, : m.nv, : m.nv])
 
-    np.testing.assert_allclose(
-      ctx.h.numpy()[:, : m.nv, : m.nv],
-      _elliptic_dense_hessian_reference(m, d, ctx),
-      rtol=1e-5,
-      atol=1e-6,
+    # the elliptic variant adds exactly the cone curvature to M + J'DJ
+    cone = dense_hessian(True) - dense_hessian(False)
+    for worldid in range(nworld):
+      self.assertTrue(np.any(cone[worldid] != 0.0))
+    np.testing.assert_allclose(cone, _elliptic_dense_hessian_reference(m, d, ctx), rtol=1e-5, atol=1e-6)
+    if nworld == 2:
+      self.assertFalse(np.allclose(cone[0], cone[1]))
+
+  def test_elliptic_dense_njmax_below_chunk(self):
+    """Dense elliptic Newton matches MuJoCo with njmax below the Hessian row chunk size."""
+    mjm, mjd, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option cone="elliptic" jacobian="dense"/>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="-0.5 0 0.08">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+          <body pos="0 0 0.08">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+          <body pos="0.5 0 0.08">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
     )
+    mjd.qvel[0::6] = 5.0
+    mujoco.mj_forward(mjm, mjd)
+    d = mjw.put_data(mjm, mjd, njmax=13)
+    self.assertLess(d.njmax, types.TILE_SIZE_JTDAJ_DENSE)
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    nefc = d.nefc.numpy()[0]
+    self.assertTrue((d.efc.state.numpy()[0, :nefc] == types.ConstraintState.CONE).any())
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+
+  def test_elliptic_truncated_contact(self):
+    """Rows of an elliptic contact truncated by njmax get zero force and no curvature."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option cone="elliptic" jacobian="dense"/>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="0 0 0.02">
+            <freejoint/>
+            <geom type="box" size="0.04 0.05 0.03" mass="0.5"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    m = mjw.put_model(mjm)
+    m.opt.warn_overflow = 0
+    d = mjw.make_data(mjm, njmax=11)  # 4 contacts of condim 3
+    d.qvel.assign(np.array([[1.5, 0.0, 0.0, 0.0, 0.0, 0.0]]))
+
+    # efc.state and efc.force persist across steps
+    d.efc.state.fill_(types.ConstraintState.CONE)
+    d.efc.force.fill_(1.0e3)
+    mjw.forward(m, d)
+
+    self.assertGreater(d.nefc.numpy()[0], d.njmax)
+    efc_address = d.contact.efc_address.numpy()[: d.nacon.numpy()[0], :3]
+    truncated = efc_address[(efc_address < 0).any(axis=1)]
+    rows = truncated[truncated >= 0]
+    self.assertGreater(rows.size, 0)
+    np.testing.assert_array_equal(d.efc.state.numpy()[0, rows], types.ConstraintState.SATISFIED)
+    np.testing.assert_array_equal(d.efc.force.numpy()[0, rows], 0.0)
+    self.assertTrue(np.all(np.isfinite(d.qacc.numpy())))
 
   @parameterized.parameters("dense", "sparse")
   def test_elliptic_hessian_scale_invariance(self, jacobian):
@@ -1473,6 +1539,7 @@ class SolverTest(parameterized.TestCase):
 
     def _get_h(scale):
       ctx.Jaref = wp.array(jaref * scale, dtype=float, device=ctx.Jaref.device)
+      solver._update_constraint(m, d, ctx)  # the dense cone rows are built from Jaref here
       solver._update_gradient(m, d, ctx)
       return ctx.h.numpy()[:, : m.nv, : m.nv].copy()
 
@@ -1710,14 +1777,17 @@ class SolverTest(parameterized.TestCase):
       mujoco.mjtJacobian.mjJAC_SPARSE,
     ),
     nworld=(1, 2),
+    load=(False, True),
   )
-  def test_noslip(self, cone, condim, jacobian, nworld):
+  def test_noslip(self, cone, condim, jacobian, nworld, load):
     """Tests noslip solver against MuJoCo."""
+    # load: tilted gravity and a spinning sphere put force on every frictional row (condim 4, 6)
+    gravity, spin = ("3 2 -9.81", ".5") if load else ("3 0 -9.81", "0")
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
         <option noslip_iterations="3" noslip_tolerance="0" impratio="3"
-                gravity="3 0 -9.81"/>
+                gravity="{gravity}"/>
         <worldbody>
           <geom type="plane" size="5 5 .1" condim="{condim}" friction="1 .05 .01"/>
           <body pos="0 0 .099">
@@ -1734,7 +1804,7 @@ class SolverTest(parameterized.TestCase):
           </body>
         </worldbody>
         <keyframe>
-          <key qvel="0 0 0 0 0 0 2 0"/>
+          <key qvel="0 0 0 0 0 {spin} 2 0"/>
         </keyframe>
       </mujoco>
       """,
@@ -1742,7 +1812,9 @@ class SolverTest(parameterized.TestCase):
       overrides={"opt.jacobian": jacobian, "opt.cone": cone},
       nworld=nworld,
     )
-    mjds = _perturb_worlds(mjm, mjd, d, nworld, [0.3, -0.2, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5])
+    # with load, world 1 spins faster instead of sliding (sliding matches MuJoCo only to 1.5e-4)
+    dqvel = [0.0, 0.0, 0.0, 0.0, 0.0, 0.2, -1.0, 0.5] if load else [0.3, -0.2, 0.0, 0.0, 0.0, 0.5, -1.0, 0.5]
+    mjds = _perturb_worlds(mjm, mjd, d, nworld, dqvel)
 
     # main solver forces without noslip, used to check that noslip has an effect
     mjm_slip = _noslip_model(mjm, noslip_iterations=0)
@@ -2077,7 +2149,45 @@ class SolverTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
-  @parameterized.parameters(2, 3, 4, 5)
+  def test_noslip_cost_rounding(self):
+    """Tests that float32 rounding of the cost change does not stall noslip updates."""
+    nworld = 61
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option noslip_iterations="3" noslip_tolerance="0" impratio="3" gravity="3 2 -9.81"/>
+        <worldbody>
+          <geom type="plane" size="5 5 .1" condim="6" friction="1 .05 .01"/>
+          <body pos="0 0 .099">
+            <freejoint/>
+            <geom size=".1" condim="6" friction="1 .05 .01"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": ConeType.ELLIPTIC},
+      nworld=nworld,
+    )
+
+    # a stalled update depends on rounding, so sweep the spin about the contact normal
+    qvel = d.qvel.numpy()
+    mjds = []
+    for worldid in range(nworld):
+      mjd_world = copy.copy(mjd)
+      mjd_world.qvel[5] = 0.67 + 1.0e-3 * worldid
+      mujoco.mj_forward(mjm, mjd_world)
+      qvel[worldid] = mjd_world.qvel
+      mjds.append(mjd_world)
+    d.qvel.assign(qvel)
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    qacc = d.qacc.numpy()
+    for worldid, mjd_world in enumerate(mjds):
+      _assert_eq(qacc[worldid], mjd_world.qacc, f"qacc{worldid}", tol=_NOSLIP_TOLERANCE)
+
+  @parameterized.parameters(2, 3, 5)
   def test_qcqp(self, n):
     """Tests the QCQP solvers against a reference implementation of mju_QCQP."""
     rng = np.random.default_rng(n)
@@ -2112,38 +2222,26 @@ class SolverTest(parameterized.TestCase):
     b_in = wp.array(np.array(b), dtype=types.vec5)
     d_in = wp.array(np.array(d), dtype=types.vec5)
     r_in = wp.array(np.array(r), dtype=float)
-    res_out = [wp.zeros(ncase, dtype=types.vec5) for _ in range(3)]
-    active_out = [wp.full(ncase, -1, dtype=int) for _ in range(3)]
-    wp.launch(
-      _qcqp_kernel,
-      dim=ncase,
-      inputs=[n, A_in, b_in, d_in, r_in],
-      outputs=[res_out[0], active_out[0], res_out[1], active_out[1], res_out[2], active_out[2]],
-    )
+    res_out = wp.zeros(ncase, dtype=types.vec5)
+    active_out = wp.full(ncase, -1, dtype=int)
+    wp.launch(_qcqp_kernel, dim=ncase, inputs=[n, A_in, b_in, d_in, r_in], outputs=[res_out, active_out])
 
-    # mju_QCQP2 for n = 2, mju_QCQP3 for n = 3, mju_QCQP for all n
-    outputs = [(res_out[2], active_out[2])]
-    if n == 2:
-      outputs.append((res_out[0], active_out[0]))
-    if n == 3:
-      outputs.append((res_out[1], active_out[1]))
+    # mju_QCQP2 for n = 2, mju_QCQP3 for n = 3, mju_QCQP for n = 5
+    res = res_out.numpy()
+    active = active_out.numpy()
+    for case, (res_expected, active_expected) in enumerate(expected):
+      self.assertEqual(active[case], int(active_expected), f"active{case}")
+      _assert_eq(res[case, :n], res_expected, f"res{case}", tol=1e-3)
+      np.testing.assert_array_equal(res[case, n:], 0.0)
 
-    for res, active in outputs:
-      res = res.numpy()
-      active = active.numpy()
-      for case, (res_expected, active_expected) in enumerate(expected):
-        self.assertEqual(active[case], int(active_expected), f"active{case}")
-        _assert_eq(res[case, :n], res_expected, f"res{case}", tol=1e-3)
-        np.testing.assert_array_equal(res[case, n:], 0.0)
-
-        if case == 0:
-          np.testing.assert_array_equal(res[case], 0.0)
-        elif case % 2:
-          # solution on the constraint boundary
-          self.assertTrue(active[case])
-          _assert_eq(np.linalg.norm(res[case, :n] / d[case][:n]), r[case], f"norm{case}", tol=1e-3)
-        else:
-          self.assertFalse(active[case])
+      if case == 0:
+        np.testing.assert_array_equal(res[case], 0.0)
+      elif case % 2:
+        # solution on the constraint boundary
+        self.assertTrue(active[case])
+        _assert_eq(np.linalg.norm(res[case, :n] / d[case][:n]), r[case], f"norm{case}", tol=1e-3)
+      else:
+        self.assertFalse(active[case])
 
   @parameterized.parameters(0.0, 1.0)
   def test_incremental_vs_full_hessian(self, frictionloss):
@@ -3000,17 +3098,17 @@ class CompactSolverTest(parameterized.TestCase):
   """Tests for the compacted smooth and constrained solves (solver.py compact path)."""
 
   def test_smooth_solve_equivalence_all_active(self):
-    """With every tree active and nvmax=nv, compacted qacc_smooth matches baseline."""
+    """With every tree active under SLEEP, qacc_smooth matches baseline."""
     _, _, m, d = _put_compact(_COMPACT_ARM_XML, sparse=True)
     self.assertTrue(m.is_sparse)
     mjw.forward(m, d)
     baseline = d.qacc_smooth.numpy().copy()
 
+    m.opt.enableflags |= types.EnableBit.SLEEP
     d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
-    island.update_active_dofs(m, d)
-    self.assertEqual(d.ncdof.numpy()[0], m.nv)
+    d.qacc_smooth.fill_(wp.inf)
 
-    solver.smooth_solve_compact(m, d)
+    mjw.fwd_acceleration(m, d, factorize=True)
 
     np.testing.assert_allclose(d.qacc_smooth.numpy(), baseline, rtol=1e-4, atol=1e-5)
 
@@ -3021,34 +3119,45 @@ class CompactSolverTest(parameterized.TestCase):
     baseline = d.qacc_smooth.numpy().copy()
 
     # only the actuated arm tree (dofs 0-1) is active
+    m.opt.enableflags |= types.EnableBit.SLEEP
     d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
-    island.update_active_dofs(m, d)
-    self.assertEqual(d.ncdof.numpy()[0], 2)
+    d.qacc_smooth.fill_(wp.inf)
 
-    solver.smooth_solve_compact(m, d)
+    mjw.fwd_acceleration(m, d, factorize=True)
 
     out = d.qacc_smooth.numpy()
     np.testing.assert_allclose(out[0, :2], baseline[0, :2], rtol=1e-4, atol=1e-5)
     np.testing.assert_array_equal(out[0, 2:], np.zeros(m.nv - 2))
 
-  def test_constrained_solve_equivalence_all_active(self):
+  @parameterized.product(cone=("pyramidal", "elliptic"), jacobian=("sparse", "dense"))
+  def test_constrained_solve_equivalence_all_active(self, cone, jacobian):
     """With every tree active and nvmax=nv, the compacted Newton solve matches baseline qacc."""
-    for cone in ("pyramidal", "elliptic"):
-      with self.subTest(cone=cone):
-        xml = _COMPACT_CONTACT_XML.replace('iterations="20"', f'iterations="20" cone="{cone}"')
-        _, _, m, d = _put_compact(xml)
-        self.assertTrue(m.is_sparse)
-        mjw.forward(m, d)  # full baseline solve (also builds efc.J, M)
-        self.assertGreater(d.nacon.numpy()[0], 0)  # contacts exist
-        baseline_qacc = d.qacc.numpy().copy()
+    # elliptic: a single Newton step from the warmstart, so that qacc depends on the cone Hessian
+    iterations = 1 if cone == "elliptic" else 20
+    xml = _COMPACT_CONTACT_XML.replace('iterations="20"', f'iterations="{iterations}" cone="{cone}"')
+    xml = xml.replace('jacobian="sparse"', f'jacobian="{jacobian}"')
+    _, _, m, d = _put_compact(xml)
+    self.assertEqual(m.is_sparse, jacobian == "sparse")
+    # slide the spheres so that elliptic contacts are in the cone state
+    qvel = np.zeros((d.nworld, m.nv))
+    qvel[:, 1] = 5.0
+    qvel[:, 7] = -3.0
+    d.qvel.assign(qvel)
+    mjw.forward(m, d)  # full baseline solve (also builds efc.J, M)
+    self.assertGreater(d.nacon.numpy()[0], 0)  # contacts exist
+    if cone == "elliptic":
+      nefc = d.nefc.numpy()[0]
+      self.assertTrue((d.efc.state.numpy()[0, :nefc] == types.ConstraintState.CONE).any())
+    baseline_qacc = d.qacc.numpy().copy()
 
-        d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
-        island.update_active_dofs(m, d)
-        self.assertEqual(d.ncdof.numpy()[0], m.nv)
+    d.tree_awake = wp.array(np.ones((d.nworld, m.ntree), dtype=int), dtype=int)
+    island.update_active_dofs(m, d)
+    self.assertEqual(d.ncdof.numpy()[0], m.nv)
 
-        solver.solve_compact(m, d)
+    d.qacc.fill_(wp.inf)
+    solver.solve_compact(m, d)
 
-        np.testing.assert_allclose(d.qacc.numpy(), baseline_qacc, rtol=1e-3, atol=1e-4)
+    np.testing.assert_allclose(d.qacc.numpy(), baseline_qacc, rtol=1e-3, atol=1e-4)
 
   @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
   def test_compact_hessian_dof_friction(self, cone):
@@ -3102,7 +3211,7 @@ class CompactSolverTest(parameterized.TestCase):
 
     # the compact (m, d) that solve_compact passes to the solver
     nvp = d.nvmax_pad
-    m2 = dataclasses.replace(m, nv=nvp, nv_pad=nvp, is_sparse=False, dof_tri_row=d.cdof_tri_row, dof_tri_col=d.cdof_tri_col)
+    m2 = dataclasses.replace(m, nv=nvp, nv_pad=nvp, is_sparse=False)
     efc2 = dataclasses.replace(d.efc, J=d.cJ, Ma=d.cMa)
     d2 = dataclasses.replace(
       d,
@@ -3257,33 +3366,47 @@ class CompactSolverTest(parameterized.TestCase):
     np.testing.assert_allclose(d3.qacc.numpy()[0], mjd3.qacc, atol=1e-3, rtol=1e-2)
 
   @parameterized.parameters(
-    (1, "pyramidal"),
-    (2, "pyramidal"),
-    (2, "elliptic"),
+    (1, "pyramidal", "Euler"),
+    (2, "pyramidal", "Euler"),
+    (2, "elliptic", "Euler"),
+    (2, "pyramidal", "discrete"),
   )
-  def test_newton_sparse_tiles_blocked_cholesky(self, nworld, cone):
+  def test_newton_sparse_tiles_blocked_cholesky(self, nworld, cone, integrator):
     """Verifies Newton blocked Cholesky with sparse-tile and diagonal-tile awareness (nv > 96)."""
-    # 18 free spheres (nv = 108, ntiles = 7): first 3 spheres in ground contact + equality
-    # constraint, remaining 15 spheres in free fall (purely diagonal tiles).
-    # Parameterized over pyramidal (incremental skip_unchanged path) and elliptic (non-incremental
-    # inplace_cholesky path).
+    # 20 free spheres (nv = 120, ntiles = 8): first 3 spheres in ground contact + equality
+    # constraint, the others in free fall.
+    # Parameterized over pyramidal (incremental skip_unchanged path), elliptic (non-incremental
+    # inplace_cholesky path) and the discrete integrator (tile pattern scanned from H).
+    # Spheres 13 (tiles 4 and 5) and 19 (tile 7) have an offset center of mass, so M couples their
+    # DOFs. Spheres 5 and 6 (tiles 1 and 2) are within contact margin but apart, so their contact
+    # rows stay inactive.
     bodies_xml = []
-    for i in range(18):
+    for i in range(20):
       z = 0.015 if i < 3 else 0.5
+      geom_pos = "0.005 0 0" if i in (13, 19) else "0 0 0"
+      margin = 0.05 if i in (5, 6) else 0.0
       bodies_xml.append(
-        f'<body name="b{i}" pos="{i * 0.08} 0 {z}"><freejoint/><geom type="sphere" size="0.02" mass="0.1"/></body>'
+        f'<body name="b{i}" pos="{i * 0.08} 0 {z}"><freejoint/>'
+        f'<geom type="sphere" size="0.02" mass="0.1" pos="{geom_pos}" margin="{margin}"/><site name="s{i}"/></body>'
       )
     xml = f"""
     <mujoco>
-      <option integrator="Euler" solver="Newton" cone="{cone}" timestep="0.005" iterations="20" tolerance="1e-10">
+      <option integrator="{integrator}" solver="Newton" cone="{cone}" timestep="0.005" iterations="20" tolerance="1e-10">
         <flag warmstart="disable"/>
       </option>
       <worldbody>
         <geom type="plane" size="5 5 0.1"/>
         {"".join(bodies_xml)}
       </worldbody>
+      <tendon>
+        <spatial name="t9"><site site="s16"/><site site="s9"/></spatial>
+        <spatial name="t14"><site site="s16"/><site site="s14"/></spatial>
+      </tendon>
       <equality>
         <connect body1="b0" body2="b2" anchor="0 0 0"/>
+        <!-- tile 6 couples tiles 3 and 5, which fills in tile (3, 5) -->
+        <tendon tendon1="t9"/>
+        <tendon tendon1="t14"/>
       </equality>
     </mujoco>
     """
@@ -3293,10 +3416,10 @@ class CompactSolverTest(parameterized.TestCase):
     qpos_np = d.qpos.numpy().copy()
     qvel_np = d.qvel.numpy().copy()
     if nworld > 1:
-      # Perturb world 1 so sphere 8 (in tile 3) is also in ground contact, producing distinct
+      # Perturb world 1 so sphere 7 (in tile 2) is also in ground contact, producing distinct
       # per-world tile masks.
-      qpos_np[1, 8 * 7 + 2] = 0.012
-      qvel_np[1, 8 * 6 : 9 * 6] = np.array([-0.2, 0.15, -0.3, 0.4, -0.25, 0.1], dtype=np.float32)
+      qpos_np[1, 7 * 7 + 2] = 0.012
+      qvel_np[1, 7 * 6 : 8 * 6] = np.array([-0.2, 0.15, -0.3, 0.4, -0.25, 0.1], dtype=np.float32)
       d.qpos.assign(qpos_np)
       d.qvel.assign(qvel_np)
 
@@ -3305,7 +3428,8 @@ class CompactSolverTest(parameterized.TestCase):
     mjw.forward(m, d)
 
     ctx = solver._create_solver_context(m, d, inplace_cholesky=True)
-    self.assertIsNotNone(ctx.h_tile_nz)
+    structural = integrator != "discrete"
+    self.assertEqual(ctx.h_tile_nz is None, structural)
     self.assertIsNotNone(ctx.h_row_mask)
     self.assertIsNotNone(ctx.h_col_mask)
     self.assertIsNotNone(ctx.h_tile_is_diag)
@@ -3318,12 +3442,84 @@ class CompactSolverTest(parameterized.TestCase):
     if nworld > 1:
       self.assertFalse(np.array_equal(ctx.h_tile_is_diag.numpy()[0], ctx.h_tile_is_diag.numpy()[1]))
 
+    if structural:
+      # the structural tile pattern matches the one detected from the values of H
+      ctx_value = solver._create_solver_context(m, d)
+      ntiles = ctx.h_col_mask.shape[1]
+      ctx_value.h_tile_nz = wp.empty((nworld, ntiles, ntiles), dtype=int)
+      solver.init_context(m, d, ctx_value, grad=True)
+      for mask in ("h_row_mask", "h_col_mask", "h_tile_is_diag"):
+        np.testing.assert_array_equal(getattr(ctx, mask).numpy(), getattr(ctx_value, mask).numpy())
+
+      # the multi-word marking for more than 64 tiles matches the one-word marking
+      marks = []
+      for nwords in (1, 2):
+        col_mask = wp.zeros((nworld, ntiles, nwords), dtype=wp.uint64)
+        offdiag = wp.zeros((nworld, ntiles), dtype=int)
+        wp.launch(
+          solver._mark_h_tile_pattern_efc(nwords),
+          dim=(nworld, d.njmax),
+          inputs=[
+            d.nefc,
+            d.contact.dim,
+            d.contact.efc_address,
+            d.efc.id,
+            d.efc.J_rownnz,
+            d.efc.J_rowadr,
+            d.efc.J_colind,
+            d.efc.J,
+            d.efc.state,
+            ctx.done,
+            d.nefc,
+            d.nefc,
+          ],
+          outputs=[col_mask, offdiag],
+        )
+        marks.append((col_mask.numpy(), offdiag.numpy()))
+      np.testing.assert_array_equal(marks[0][0][..., 0], marks[1][0][..., 0])
+      np.testing.assert_array_equal(marks[1][0][..., 1], 0)
+      np.testing.assert_array_equal(marks[0][1], marks[1][1])
+
     for w in range(nworld):
       mjd.qpos[:] = qpos_np[w]
       mjd.qvel[:] = qvel_np[w]
       mujoco.mj_forward(mjm, mjd)
       np.testing.assert_allclose(d.qacc.numpy()[w], mjd.qacc, atol=1e-3, rtol=1e-3)
       np.testing.assert_allclose(d.qfrc_constraint.numpy()[w], mjd.qfrc_constraint, atol=1e-3, rtol=1e-3)
+
+  def test_newton_full_tile_pattern_blocked_cholesky(self):
+    """A single chain couples every tile through M, so no tile can be skipped."""
+    nlink = 100
+    chain = (
+      "".join(
+        f'<body pos="0 0 -0.1"><joint axis="0 1 0" range="-0.05 0.05" armature="1"/>'
+        f'<geom type="capsule" size="0.01" fromto="0 0 0 0 0 -0.1" mass="0.1"/>'
+        for _ in range(nlink)
+      )
+      + "</body>" * nlink
+    )
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option>
+          <flag warmstart="disable"/>
+        </option>
+        <worldbody>{chain}</worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.1,
+      nconmax=16,
+      njmax=256,
+    )
+    self.assertGreater(m.nv, solver._SPARSE_BLOCK_CHOLESKY_DIM)
+    self.assertTrue(m.M_tile_full)
+    self.assertIsNone(solver._create_solver_context(m, d).h_col_mask)
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+    mujoco.mj_forward(mjm, mjd)
+    self.assertGreater(mjd.nefc, 0)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, atol=1e-2, rtol=1e-3)
 
 
 if __name__ == "__main__":

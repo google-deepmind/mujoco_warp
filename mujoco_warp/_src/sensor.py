@@ -427,8 +427,10 @@ def _limit_pos(
 
   sensorid = sensor_limitpos_adr[limitposid]
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
-    efc_type = efc_type_in[worldid, efcid]
-    if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
+    limit_type = (
+      ConstraintType.LIMIT_JOINT if sensor_type[sensorid] == SensorType.JOINTLIMITPOS else ConstraintType.LIMIT_TENDON
+    )
+    if efc_type_in[worldid, efcid] == limit_type:
       val = efc_pos_in[worldid, efcid] - efc_margin_in[worldid, efcid]
       _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, sensordata_out[worldid])
 
@@ -1214,8 +1216,10 @@ def _limit_vel(
 
   sensorid = sensor_limitvel_adr[limitvelid]
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
-    efc_type = efc_type_in[worldid, efcid]
-    if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
+    limit_type = (
+      ConstraintType.LIMIT_JOINT if sensor_type[sensorid] == SensorType.JOINTLIMITVEL else ConstraintType.LIMIT_TENDON
+    )
+    if efc_type_in[worldid, efcid] == limit_type:
       _write_scalar(
         sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_vel_in[worldid, efcid], sensordata_out[worldid]
       )
@@ -1909,8 +1913,10 @@ def _limit_frc(
 
   sensorid = sensor_limitfrc_adr[limitfrcid]
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
-    efc_type = efc_type_in[worldid, efcid]
-    if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
+    limit_type = (
+      ConstraintType.LIMIT_JOINT if sensor_type[sensorid] == SensorType.JOINTLIMITFRC else ConstraintType.LIMIT_TENDON
+    )
+    if efc_type_in[worldid, efcid] == limit_type:
       _write_scalar(
         sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_force_in[worldid, efcid], sensordata_out[worldid]
       )

@@ -90,6 +90,7 @@ class BlockDim:
     solve_search_update_cg: solve search update CG block dimension (solver)
     solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
+    noslip_solve: noslip solve block dimension, one thread per world (solver)
     contact_jac_sparse: sparse contact Jacobian block dimension (constraint)
     eff_pcg: effective-metric PCG block dimension (derivative)
     render: render block dimension (render)
@@ -126,6 +127,7 @@ class BlockDim:
   solve_search_update_cg: int = 256
   solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
+  noslip_solve: int = 32
   # constraint
   contact_jac_sparse: int = 128
   # derivative
@@ -995,6 +997,10 @@ class mat66f(wp.types.matrix(shape=(6, 6), dtype=float)):
   pass
 
 
+class mat83f(wp.types.matrix(shape=(8, 3), dtype=float)):
+  pass
+
+
 class mat113f(wp.types.matrix(shape=(11, 3), dtype=float)):
   pass
 
@@ -1013,6 +1019,7 @@ mat53 = mat53f
 mat63 = mat63f
 mat55 = mat55f
 mat66 = mat66f
+mat83 = mat83f
 mat113 = mat113f
 
 
@@ -1668,8 +1675,6 @@ class Model:
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
     jnt_limited_ball_adr: limited/ball jntadr
     body_isdofancestor: precomputed mask of which DOFs affect each body
-    dof_tri_row: dof upper triangle row (used in solver)
-    dof_tri_col: dof upper triangle col (used in solver)
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]
     nxn_geom_pair_filtered: valid collision pair geom ids
                             [-1, ngeom - 1]
@@ -1737,6 +1742,10 @@ class Model:
     M_fullm_j: sparse mass matrix addressing
     M_elemid: (row, col) -> CSR madr addresses; -1 if not a chain ancestor
     M_hinit_i: row index of each CSR M entry; for densifying M into the dense Newton H (nC,)
+    M_tile_colmask: per Newton H tile, bitmask of the tiles above it coupled by M; read by the
+                    sparse-tile Newton Cholesky                  (nv_tile, nv_tile_word)
+    M_tile_offdiag: per Newton H tile, whether M couples DOFs within it (nv_tile,)
+    M_tile_full: M and its fill-in cover every tile of the Newton H, so no tile can be skipped
     qD_fullm_i: D-structure row indices for RNE derivatives
     qD_fullm_j: D-structure column indices for RNE derivatives
     M_mulm_rowadr: sparse matmul row pointers
@@ -2244,8 +2253,6 @@ class Model:
   jnt_limited_slide_hinge_adr: array("njnt_limited_slide_hinge", int)
   jnt_limited_ball_adr: array("njnt_limited_ball", int)
   body_isdofancestor: array("nbody", "nv_pad", int)
-  dof_tri_row: array("ndof_tri", int)
-  dof_tri_col: array("ndof_tri", int)
   nxn_geom_pair: array("nnxn_geom_pair", wp.vec2i)
   nxn_geom_pair_filtered: array("nnxn_geom_pair_filtered", wp.vec2i)
   nxn_pairid: array("nnxn_geom_pair", wp.vec2i)
@@ -2307,6 +2314,9 @@ class Model:
   M_fullm_j: array("nM_fullm", int)
   M_elemid: array("nv", "nv", int)  # (row, col) -> CSR madr address; -1 if col is not a chain ancestor of row
   M_hinit_i: array("nC", int)  # row index of each CSR M entry (for densifying M into the dense Newton H)
+  M_tile_colmask: array("nv_tile", "nv_tile_word", wp.uint64)  # per Newton H tile, bitmask of the tiles above it coupled by M
+  M_tile_offdiag: array("nv_tile", int)  # per Newton H tile, whether M couples DOFs within it
+  M_tile_full: bool  # M and its fill-in cover every tile of the Newton H, so no tile can be skipped
   qD_fullm_i: array("nqD_fullm", int)  # D-structure (full square) row indices for RNE derivatives
   qD_fullm_j: array("nqD_fullm", int)  # D-structure (full square) column indices for RNE derivatives
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
@@ -2543,7 +2553,8 @@ class Data:
     crb: com-based composite inertia and mass                   (nworld, nbody, 10)
     M: total inertia, CSR                                       (nworld, nC)
     qLD: per-block factor: packed dense region, then the nC     (nworld, qLD_block_total + nC)
-         L'*D*L region at offset qLD_block_total (nC=0 if no sparse block)
+         L'*D*L region at offset qLD_block_total (nC=0 if no sparse block);
+         forward stores dense blocks only for the CG solver
     qLDiagInv: reciprocal diagonal for compact and sparse blocks (nworld, nv)
     tree_awake: is tree awake; 0: asleep; 1: awake              (nworld, ntree)
     body_awake: body sleep state (SleepState)                   (nworld, nbody)
@@ -2606,12 +2617,7 @@ class Data:
     ncdof: number of active (compacted) DOFs per world          (nworld,)
     dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
     cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
-    cdof_tri_row: row index of compacted Hessian dof-pairs      (nvmax_pad_sq,)
-    cdof_tri_col: col index of compacted Hessian dof-pairs      (nvmax_pad_sq,)
     cM: compacted dense inertia                                 (nworld, nvmax_pad, nvmax_pad)
-    cqLD: compacted upper Cholesky factor                       (nworld, nvmax_pad, nvmax_pad)
-    crhs: compacted smooth-solve right-hand side                (nworld, nvmax_pad, 1)
-    cx: compacted smooth-solve solution                         (nworld, nvmax_pad, 1)
     cJ: compacted dense constraint Jacobian                     (nworld, njmax_pad, nvmax_pad)
     cMa: compacted M @ qacc workspace                           (nworld, nvmax_pad)
     cqfrc_smooth: compacted net unconstrained force             (nworld, nvmax_pad)
@@ -2783,12 +2789,7 @@ class Data:
   ncdof: array("nworld", int)
   dof_cdof: array("nworld", "nv", int)
   cdof_dof: array("nworld", "nvmax_pad", int)
-  cdof_tri_row: array("nvmax_pad_sq", int)
-  cdof_tri_col: array("nvmax_pad_sq", int)
   cM: array("nworld", "nvmax_pad", "nvmax_pad", float)
-  cqLD: array("nworld", "nvmax_pad", "nvmax_pad", float)
-  crhs: array("nworld", "nvmax_pad", 1, float)
-  cx: array("nworld", "nvmax_pad", 1, float)
   cJ: array("nworld", "njmax_pad", "nvmax_pad", float)
   cMa: array("nworld", "nvmax_pad", float)
   cqfrc_smooth: array("nworld", "nvmax_pad", float)
@@ -2893,11 +2894,47 @@ class SolverContext:
   flex_scratch: Optional[tuple] = None
   solve_ld_scratch: Optional[wp.array] = None
   tw_diag: Optional[wp.array] = None
+  # dense elliptic Newton: virtual Hessian rows of cone-state rows (solver._cone_virtual_row)
+  cone_coef: Optional[wp.array] = None
+  cone_weight: Optional[wp.array] = None
+  cone_base: Optional[wp.array] = None
+  # only allocated when the sparse-tile pattern is detected from the values of H
   h_tile_nz: Optional[wp.array3d[int]] = None
   h_row_mask: Optional[wp.array3d[wp.uint64]] = None
   h_col_mask: Optional[wp.array3d[wp.uint64]] = None
+  # holds whether each diagonal tile has off-diagonal entries until the symbolic factorization
   h_tile_is_diag: Optional[wp.array2d[int]] = None
   h_rhs_work: Optional[wp.array3d[float]] = None
+
+
+@dataclasses.dataclass
+class OptixScene:
+  """OptiX acceleration structures of all worlds and the compiled render pipeline.
+
+  Attributes:
+    mesh_traversable: triangle acceleration structure id per mesh
+    hfield_traversable: triangle acceleration structure id per heightfield
+    primitive_traversable: id of the unit-cube custom-primitive acceleration structure that
+                           instances of analytic geoms scale to their bounds (0 if unused)
+    instances: OptiX instance records (nworld, nenabled geom)
+    ias: instance acceleration structure over all worlds (warp_optix.Accel)
+    extent: half-size of the region each world's bounded geometry and rays occupy
+    planes: enabled plane geom ids, which cast_ray intersects without the IAS
+    grid: worlds per axis of the cubic world grid
+    write_instances: kernel writing `instances` from the current geom poses
+    pipeline: render pipeline (warp_optix.Pipeline), compiled with the render context
+  """
+
+  mesh_traversable: wp.array
+  hfield_traversable: wp.array
+  primitive_traversable: int
+  instances: wp.array2d
+  ias: object
+  extent: float
+  planes: tuple
+  grid: int
+  write_instances: wp.Kernel
+  pipeline: object = None
 
 
 @dataclasses.dataclass
@@ -2919,12 +2956,12 @@ class RenderContext:
     mesh_registry: mesh BVH id to warp mesh mapping
     mesh_bvh_id: mesh BVH ids
     mesh_bounds_size: mesh bounds size
+    mesh_bvh_rot: rotation from each mesh's BVH frame to its inertia frame
     mesh_texcoord: mesh texture coordinates
     mesh_texcoord_offsets: mesh texture coordinate offsets
     mesh_facetexcoord: mesh face texture coordinates
     mesh_facenormal: per-face indices into Model.mesh_normal
     samples_per_pixel: sub-pixel samples per axis; 1 disables supersampling
-    aa_accum: colour accumulator, unused when samples_per_pixel is 1
     textures: textures
     textures_registry: texture registry
     hfield_registry: hfield BVH id to warp mesh mapping
@@ -3014,6 +3051,11 @@ class RenderContext:
     splat_bvh_id: Splat BVH id
     splat_group_root: Per-world selected splat BVH root
     splat_count: Number of splats
+    has_reframed_meshes: True iff any mesh BVH uses its authored frame
+    any_rgb: True iff any active camera renders RGB
+    any_seg: True iff any active camera renders segmentation
+    backend: Ray-casting backend, "warp" or "optix"
+    optix: OptiX scene and pipeline when backend is "optix", else None
   """
 
   nrender: int
@@ -3037,12 +3079,12 @@ class RenderContext:
   mesh_registry: dict
   mesh_bvh_id: array("nmesh", wp.uint64)
   mesh_bounds_size: array("nmesh", wp.vec3)
+  mesh_bvh_rot: array("nmesh", wp.mat33)
   mesh_texcoord: array("*", wp.vec2)
   mesh_texcoord_offsets: array("nmesh", int)
   mesh_facetexcoord: array("nmeshface", wp.vec3i)
   mesh_facenormal: array("nmeshface", wp.vec3i)
   samples_per_pixel: int
-  aa_accum: array("*", wp.vec3)
   textures: array("*", wp.Texture2D)
   textures_registry: list[wp.Texture2D]
   hfield_registry: dict
@@ -3096,5 +3138,10 @@ class RenderContext:
   splat_bvh_id: wp.uint64
   splat_group_root: array("nworld", int)
   splat_count: int
+  has_reframed_meshes: bool = False
+  any_rgb: bool = False
+  any_seg: bool = False
   geom_ray_types: tuple = ()
+  backend: str = "warp"
+  optix: Optional[OptixScene] = None
   _megakernel: Optional[wp.Kernel] = None

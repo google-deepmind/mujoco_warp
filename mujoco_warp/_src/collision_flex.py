@@ -39,6 +39,7 @@ from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OverflowType
+from mujoco_warp._src.types import mat23
 from mujoco_warp._src.types import mat63
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.warp_util import cache_kernel
@@ -496,8 +497,8 @@ def _collide_geom_capsule_detect(
     return
 
   dists = wp.vec2(collision_primitive_core.MJ_MAXVAL, collision_primitive_core.MJ_MAXVAL)
-  poss = collision_primitive_core.mat23f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-  nrms = collision_primitive_core.mat23f(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+  poss = mat23(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+  nrms = mat23(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
   if gtype == int(GeomType.CAPSULE):
     g_radius = size_val[0]
