@@ -1748,8 +1748,8 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
   """Linesearch for constraint solver.
 
   When state changes are tracked, worlds with ctx.search_unchanged reuse last
-  iteration's mv/jv, so a fresh search requires clearing the flag (see the
-  invalidation in _solve and the writer in _update_gradient_zero_grad_dot).
+  iteration's mv/jv, so a fresh search requires clearing the flag (see
+  _update_gradient_zero_grad_dot).
 
   Args:
     m: Model
@@ -4850,11 +4850,6 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
   init_context(m, d, ctx, grad=False, compact=compact)
   _update_gradient(m, d, ctx, compact=compact)
 
-  if _use_incremental(m):
-    # A new solve computes a new search direction: invalidate the mv/jv reuse
-    # left over from the previous solve.
-    ctx.search_unchanged.zero_()
-
   nsolving = wp.full(shape=(1,), value=d.nworld, dtype=int)
 
   # CG search = -Mgrad
@@ -5570,6 +5565,10 @@ def _qcqp5(Ain: types.mat55, bin: types.vec5, d: types.vec5, r: float):
   return wp.cw_mul(res, d), la != 0.0
 
 
+# rounding a new force to float32 moves the cost by ~eps * |force * gradient|
+_NOSLIP_NOISE_EPS = 8.0 * 1.1920929e-07  # 8 * float32 eps
+
+
 @wp.func
 def _noslip_pyramidal(
   # Model:
@@ -5652,9 +5651,12 @@ def _noslip_pyramidal(
   # cost change, restore force if positive
   delta0 = force0 - oldforce0
   delta1 = force1 - oldforce1
-  change = 0.5 * (delta0 * (A00 * delta0 + A01 * delta1) + delta1 * (A01 * delta0 + A11 * delta1))
+  Adelta0 = A00 * delta0 + A01 * delta1
+  Adelta1 = A01 * delta0 + A11 * delta1
+  change = 0.5 * (delta0 * Adelta0 + delta1 * Adelta1)
   change += delta0 * res0 + delta1 * res1
-  if change > 1.0e-10:
+  noise = wp.abs(force0 * (res0 + Adelta0)) + wp.abs(force1 * (res1 + Adelta1))
+  if change > 1.0e-10 + _NOSLIP_NOISE_EPS * noise:
     return 0.0
 
   efc_force_out[worldid, efcid] = force0
@@ -5756,12 +5758,14 @@ def _noslip_elliptic(
   for k in range(n):
     delta[k] = force[k] - oldforce[k]
   change = float(0.0)
+  noise = float(0.0)
   for k in range(n):
     Adelta = float(0.0)
     for l in range(n):
       Adelta += Ac[k, l] * delta[l]
     change += 0.5 * delta[k] * Adelta + delta[k] * res[k]
-  if change > 1.0e-10:
+    noise += wp.abs(force[k] * (res[k] + Adelta))
+  if change > 1.0e-10 + _NOSLIP_NOISE_EPS * noise:
     return 0.0
 
   for k in range(n):
@@ -6267,6 +6271,7 @@ def noslip(m: types.Model, d: types.Data):
       inertia_scale,
     ],
     outputs=[d.solver_niter, d.qacc, d.efc.force],
+    block_dim=m.block_dim.noslip_solve,
   )
   wp.launch(
     _noslip_qacc_qfrc(m.is_sparse, sleep),

@@ -720,6 +720,16 @@ class RayTest(parameterized.TestCase):
     _assert_eq(dist_bvh.numpy(), dist.numpy(), "bvh dist")
     _assert_eq(normal_bvh.numpy()[:, :2], normal.numpy()[:, :2], "bvh normal")
 
+  def test_rays_rejects_optix_render_context(self):
+    mjm, _, m, d = test_data.fixture("ray.xml")
+    rc = mjw.create_render_context(mjm, backend="optix")
+    if rc.backend != "optix":
+      self.skipTest("OptiX is unavailable")
+    pnt = wp.array([wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.vec3(0.0, 0.0, -1.0)], dtype=wp.vec3).reshape((1, 1))
+    with self.assertRaisesRegex(ValueError, "backend='warp'"):
+      mjw.ray(m, d, pnt, vec, rc=rc)
+
   def test_ray_module_is_unique(self):
     """Ensure _ray does not share a module with _ray_bvh."""
     self.assertNotEqual(mjw._src.ray._ray.module, mjw._src.ray._ray_bvh.module)

@@ -28,6 +28,7 @@ from mujoco_warp._src import sensor
 from mujoco_warp._src import sleep
 from mujoco_warp._src import smooth
 from mujoco_warp._src import solver
+from mujoco_warp._src import sort
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.support import mat33_to_quat_polar
@@ -1688,7 +1689,7 @@ def euler(m: Model, d: Data):
       inputs=[m.opt.timestep, m.dof_treeid, m.M_rownnz, m.M_rowadr, d.tree_awake, damp_deriv],
       outputs=[M],
     )
-    smooth.factor_solve_i(m, d, M, qLD, qLDiagInv, qacc, d.efc.Ma)
+    smooth.factor_solve_i(m, d, M, qLD, qLDiagInv, qacc, d.efc.Ma, store_factor=False)
     _advance(m, d, qacc)
   else:
     _advance(m, d, d.qacc)
@@ -2747,7 +2748,7 @@ def implicit(m: Model, d: Data):
       outputs=[qDeriv],
     )
     qacc = wp.empty((d.nworld, m.nv), dtype=float)
-    smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma)
+    smooth.factor_solve_i(m, d, qDeriv, qLD, qLDiagInv, qacc, d.efc.Ma, store_factor=False)
     implicit_free_body(m, d, d.efc.Ma, qacc, solve=True)
     _advance(m, d, qacc)
   else:
@@ -2802,7 +2803,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   if m.opt.run_collision_detection:
     if sleep_enabled:
       ctx = collision_driver.prepare_collision_context(m, d)
-      collision_driver.collision(m, d, ctx=ctx)
+      collision_driver.collision(m, d, ctx=ctx, sort_contacts=False)
 
       ctx.woke.zero_()
       sleep.wake_collision(m, d, woke=ctx.woke)
@@ -2812,13 +2813,22 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
         def finish_wake():
           wp.copy(ctx.awake_prev, d.body_awake)
           sleep.update_sleep(m, d)
-          collision_driver.collision(m, d, ctx=ctx, awake_prev=ctx.awake_prev)
+          collision_driver.collision(m, d, ctx=ctx, awake_prev=ctx.awake_prev, sort_contacts=False)
 
         wp.capture_if(ctx.woke, on_true=finish_wake)
       else:
         collision_driver.copy_body_awake_if_woke(m, d, ctx.woke, ctx.awake_prev)
         sleep.update_sleep(m, d, woke=ctx.woke)
-        collision_driver.collision(m, d, ctx=ctx, awake_prev=ctx.awake_prev, woke=ctx.woke)
+        collision_driver.collision(m, d, ctx=ctx, awake_prev=ctx.awake_prev, woke=ctx.woke, sort_contacts=False)
+
+      # Sort once after both passes. The second pass only appends contacts, and sorting allocates
+      # scratch buffers, which CUDA conditional bodies do not support.
+      if (
+        d.naconmax > 0
+        and not (m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT))
+        and (m.opt.deterministic & DeterminismType.CONTACTS)
+      ):
+        sort.contacts(d)
     else:
       collision_driver.collision(m, d)
 
@@ -3616,7 +3626,9 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   if m.opt.integrator == IntegratorType.DISCRETE:
     derivative.eff_solve(m, d, d.qacc_smooth)
   elif factorize:
-    smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth)
+    # only the CG solver reads the factor (solve_m for Mgrad)
+    store_factor = m.opt.solver == SolverType.CG
+    smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth, store_factor=store_factor)
   else:
     smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
 

@@ -1236,7 +1236,7 @@ class SolverTest(parameterized.TestCase):
         _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
         _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
-  @absltest.skipIf(not wp.get_device().is_cuda, "CUDA graph capture requires CUDA")
+  @absltest.skipIf(not wp.get_device().is_cuda, "Side streams only fork during CUDA graph capture")
   def test_solve_graph_capture_sparse(self):
     """A captured sparse solve forks jv onto a second stream, joins it and matches eager."""
     _, _, m, d = test_data.fixture(
@@ -2135,6 +2135,44 @@ class SolverTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
+  def test_noslip_cost_rounding(self):
+    """Tests that float32 rounding of the cost change does not stall noslip updates."""
+    nworld = 61
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option noslip_iterations="3" noslip_tolerance="0" impratio="3" gravity="3 2 -9.81"/>
+        <worldbody>
+          <geom type="plane" size="5 5 .1" condim="6" friction="1 .05 .01"/>
+          <body pos="0 0 .099">
+            <freejoint/>
+            <geom size=".1" condim="6" friction="1 .05 .01"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": ConeType.ELLIPTIC},
+      nworld=nworld,
+    )
+
+    # a stalled update depends on rounding, so sweep the spin about the contact normal
+    qvel = d.qvel.numpy()
+    mjds = []
+    for worldid in range(nworld):
+      mjd_world = copy.copy(mjd)
+      mjd_world.qvel[5] = 0.67 + 1.0e-3 * worldid
+      mujoco.mj_forward(mjm, mjd_world)
+      qvel[worldid] = mjd_world.qvel
+      mjds.append(mjd_world)
+    d.qvel.assign(qvel)
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    qacc = d.qacc.numpy()
+    for worldid, mjd_world in enumerate(mjds):
+      _assert_eq(qacc[worldid], mjd_world.qacc, f"qacc{worldid}", tol=_NOSLIP_TOLERANCE)
 
   @parameterized.parameters(2, 3, 5)
   def test_qcqp(self, n):
