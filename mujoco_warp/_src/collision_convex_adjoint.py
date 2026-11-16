@@ -208,10 +208,10 @@ def _hfield_freeze(
   tolerance = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
   # Contacts retain the margin, but not the gap or explicit pair id.
   gap = geom_gap[worldid % geom_gap.shape[0], g1] + geom_gap[worldid % geom_gap.shape[0], g2]
+  # Match nxn_pairid in io.py, where the last explicit pair for a geom pair wins.
   for p in range(pair_geom1.shape[0]):
     if (pair_geom1[p] == g1 and pair_geom2[p] == g2) or (pair_geom1[p] == g2 and pair_geom2[p] == g1):
       gap = pair_gap[worldid % pair_gap.shape[0], p]
-      break
 
   # Bound the prism search for this retained contact.
   no_hf_collision, xmin, xmax, ymin, ymax, zmin, zmax = _hfield_filter(
