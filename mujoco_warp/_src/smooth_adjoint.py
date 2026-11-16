@@ -16,6 +16,7 @@
 
 import warp as wp
 
+from mujoco_warp._src import adjoint_util
 from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import smooth_kinematics_adjoint
@@ -458,7 +459,7 @@ def _rne_body_inputs(
 
 @cache_kernel
 def _rne_vjp(nbody: int, with_mass: bool, mass_grad: bool, inertia_grad: bool):
-  tile_size = min(smooth.WORLD_SUM_BLOCK, max(32, 1 << (nbody - 1).bit_length()))
+  tile_size = adjoint_util._body_tile_size(nbody, smooth.WORLD_SUM_BLOCK)
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -671,7 +672,7 @@ def rne_backward(
     bc.res_body_mass.zero_()
   if inertia_grad:
     bc.res_body_inertia.zero_()
-  block_dim = min(smooth.WORLD_SUM_BLOCK, max(32, 1 << (m.nbody - 1).bit_length()))
+  block_dim = adjoint_util._body_tile_size(m.nbody, smooth.WORLD_SUM_BLOCK)
   wp.launch_tiled(
     _rne_vjp(m.nbody, mass_y is not None, mass_grad, inertia_grad),
     dim=d.nworld,

@@ -643,7 +643,7 @@ def _body_wrench(
 @cache_kernel
 def _kinematics_vjp(nbody: int):
   """Projects joint and mocap subtree wrenches in bounded body chunks."""
-  tile_size = min(smooth.WORLD_SUM_CHUNK, max(32, 1 << (nbody - 1).bit_length()))
+  tile_size = adjoint_util._body_tile_size(nbody, smooth.WORLD_SUM_CHUNK)
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -1070,7 +1070,7 @@ def kinematics_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext)
   """Maps kinematic output gradients to qpos and mocap inputs."""
   mocap_grad = d_bwd.mocap_pos.grad is not None or d_bwd.mocap_quat.grad is not None
   ninput = m.njnt + (m.nmocap if mocap_grad else 0)
-  block_dim = min(smooth.WORLD_SUM_CHUNK, max(32, 1 << (m.nbody - 1).bit_length()))
+  block_dim = adjoint_util._body_tile_size(m.nbody, smooth.WORLD_SUM_CHUNK)
   wp.launch_tiled(
     _kinematics_vjp(m.nbody),
     dim=d_bwd.nworld,

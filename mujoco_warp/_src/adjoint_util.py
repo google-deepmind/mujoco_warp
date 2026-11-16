@@ -76,6 +76,11 @@ def _accum_cols(a: wp.array2d[float], out: wp.array2d[float]):
   out[w, i] = out[w, i] + a[w, i]
 
 
+def _body_tile_size(nbody: int, max_size: int) -> int:
+  """Returns the power-of-two body tile used by tiled tree reductions, from 32 to max_size."""
+  return min(max_size, max(32, 1 << (nbody - 1).bit_length()))
+
+
 # Safe sqrt keeps the standard forward value and suppresses the singular adjoint at zero.
 # This avoids 0 * inf when sqrt(0) is evaluated in an unselected wp.where operand.
 

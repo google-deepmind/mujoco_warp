@@ -203,7 +203,7 @@ def _dof_to_qpos(
 @cache_kernel
 def _kinematics_qpos_vjp(nbody: int, contact: bool):
   """Shares body wrenches across joint projections in bounded chunks."""
-  tile_size = min(smooth.WORLD_SUM_BLOCK, max(32, 1 << (nbody - 1).bit_length()))
+  tile_size = adjoint_util._body_tile_size(nbody, smooth.WORLD_SUM_BLOCK)
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -482,5 +482,5 @@ def kinematics_qpos_vjp(
       ceff,
     ],
     outputs=[adj_dof, adj_qpos],
-    block_dim=min(smooth.WORLD_SUM_BLOCK, max(32, 1 << (m.nbody - 1).bit_length())),
+    block_dim=adjoint_util._body_tile_size(m.nbody, smooth.WORLD_SUM_BLOCK),
   )
