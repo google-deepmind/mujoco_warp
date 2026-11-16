@@ -135,18 +135,18 @@ def _adj_quat_integrate(q: wp.quat, v: wp.vec3, dt: float, adj_ret: wp.quat):
   nu = wp.length(u)
   out = u / nu
   # final normalize
-  adj_u = (adj_ret - out * wp.dot(out, adj_ret)) / nu
+  u_bar = (adj_ret - out * wp.dot(out, adj_ret)) / nu
   # u = qn*r: transpose of quaternion left/right multiplication is multiplication by the conjugate
-  adj_qn = math.mul_quat(adj_u, math.quat_inv(r))
-  adj_r = math.mul_quat(math.quat_inv(qn), adj_u)
+  qn_bar = math.mul_quat(u_bar, math.quat_inv(r))
+  r_bar = math.mul_quat(math.quat_inv(qn), u_bar)
   # qn = normalize(q)
-  adj_q = (adj_qn - qn * wp.dot(qn, adj_qn)) / _wp_sqrt(nq2)
+  q_bar = (qn_bar - qn * wp.dot(qn, qn_bar)) / _wp_sqrt(nq2)
   # r's x-chain collapses to smooth even functions of x times v (no v/|v| left):
   # d(cos x)/dv = -sinc(x)*(dt/2)^2*v, d((dt/2)sinc(x))/dv = (dt/2)^3*(sinc'(x)/x)*v
-  adj_rv = wp.vec3(adj_r[1], adj_r[2], adj_r[3])
-  coef = half_dt * half_dt * (-adj_r[0] * _sinc(x) + half_dt * wp.dot(v, adj_rv) * _dsinc_x(x))
-  wp.adjoint[q] += adj_q
-  wp.adjoint[v] += s * adj_rv + coef * v
+  rv_bar = wp.vec3(r_bar[1], r_bar[2], r_bar[3])
+  coef = half_dt * half_dt * (-r_bar[0] * _sinc(x) + half_dt * wp.dot(v, rv_bar) * _dsinc_x(x))
+  wp.adjoint[q] += q_bar
+  wp.adjoint[v] += s * rv_bar + coef * v
   # NOTE: dt adjoint intentionally not propagated (opt_timestep is not a differentiated parameter)
 
 
@@ -173,9 +173,9 @@ def _adj_quat_to_vel(quat: wp.quat, adj_ret: wp.vec3):
       speed -= 2.0 * wp.pi
     scale = speed / sin_a_2
     dd = (2.0 * w / n2 - scale) / s2
-  adj_axis = scale * adj_ret + (ga * dd) * axis
+  axis_bar = scale * adj_ret + (ga * dd) * axis
   # d scale/d w = -2/n2 exactly, in both branches (the wrap shift is constant in w)
-  wp.adjoint[quat] += wp.quat(-2.0 * ga / n2, adj_axis[0], adj_axis[1], adj_axis[2])
+  wp.adjoint[quat] += wp.quat(-2.0 * ga / n2, axis_bar[0], axis_bar[1], axis_bar[2])
 
 
 @wp.func
@@ -199,26 +199,26 @@ def _jac_dof_pos(
 
 
 @wp.func
-def _adj_quat_rotation(rotation: wp.quat, adj_rotation: wp.quat) -> wp.vec3:
+def _adj_quat_rotation(rotation: wp.quat, rotation_bar: wp.quat) -> wp.vec3:
   """Maps a wxyz quaternion cotangent to its world angular tangent cotangent."""
-  angular_bar = math.mul_quat(adj_rotation, math.quat_inv(rotation))
+  angular_bar = math.mul_quat(rotation_bar, math.quat_inv(rotation))
   return 0.5 * wp.vec3(angular_bar[1], angular_bar[2], angular_bar[3])
 
 
 @wp.func
-def _adj_rotation(rotation: wp.mat33, adj_rotation: wp.mat33) -> wp.vec3:
+def _adj_rotation(rotation: wp.mat33, rotation_bar: wp.mat33) -> wp.vec3:
   """Maps a rotation-matrix cotangent to its angular tangent cotangent."""
   return (
     wp.cross(
       wp.vec3(rotation[0, 0], rotation[1, 0], rotation[2, 0]),
-      wp.vec3(adj_rotation[0, 0], adj_rotation[1, 0], adj_rotation[2, 0]),
+      wp.vec3(rotation_bar[0, 0], rotation_bar[1, 0], rotation_bar[2, 0]),
     )
     + wp.cross(
       wp.vec3(rotation[0, 1], rotation[1, 1], rotation[2, 1]),
-      wp.vec3(adj_rotation[0, 1], adj_rotation[1, 1], adj_rotation[2, 1]),
+      wp.vec3(rotation_bar[0, 1], rotation_bar[1, 1], rotation_bar[2, 1]),
     )
     + wp.cross(
       wp.vec3(rotation[0, 2], rotation[1, 2], rotation[2, 2]),
-      wp.vec3(adj_rotation[0, 2], adj_rotation[1, 2], adj_rotation[2, 2]),
+      wp.vec3(rotation_bar[0, 2], rotation_bar[1, 2], rotation_bar[2, 2]),
     )
   )

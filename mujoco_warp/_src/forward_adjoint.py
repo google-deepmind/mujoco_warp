@@ -613,13 +613,13 @@ def _implicit_free_body_backward(
   )
   # Bias is quadratic in velocity, so d(B(v)*a)/dv = B(a).
   lin_acc, rot_acc = math.free_bias_vel_blocks(mass, R, Iw, s, acceleration)
-  adj_velocity = dt * (mass * (wp.transpose(lin_acc) @ y_lin) - wp.transpose(rot_acc) @ y_rot)
+  velocity_bar = dt * (mass * (wp.transpose(lin_acc) @ y_lin) - wp.transpose(rot_acc) @ y_rot)
   # R, Iw and s rotate together for a rigid subtree. Only the linear block changes
   # in world coordinates; the angular block is invariant in the body's frame.
-  adj_rotation = wp.transpose(R) @ wp.cross(y_lin, -dt * mass * (lin @ acceleration))
+  rotation_bar = wp.transpose(R) @ wp.cross(y_lin, -dt * mass * (lin @ acceleration))
   for r in range(3):
-    adj_qvel_out[worldid, dofadr + 3 + r] += adj_velocity[r]
-    adj_dof_out[worldid, dofadr + 3 + r] += adj_rotation[r]
+    adj_qvel_out[worldid, dofadr + 3 + r] += velocity_bar[r]
+    adj_dof_out[worldid, dofadr + 3 + r] += rotation_bar[r]
 
 
 @wp.func

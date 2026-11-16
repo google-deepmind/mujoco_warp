@@ -3152,7 +3152,7 @@ class BackwardContext:
   """Reusable solver, replay data, and array workspace for a step backward.
 
   adj_* fields hold cotangents. res_* fields hold residual VJPs (dr/dx)^T lam, which enter input
-  gradients with a minus sign.
+  gradients with a minus sign. Cotangent arrays are named adj_x and local cotangent values x_bar.
 
   Attributes:
     solver_ctx: Newton workspace that factors H and solves H lam = adj_qacc

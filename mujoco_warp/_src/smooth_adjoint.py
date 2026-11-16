@@ -372,9 +372,9 @@ def _xfrc_kinematics_vjp(
   subtree_com = subtree_com_in[worldid, rootid]
   # The residual subtracts the generalized force produced by support._apply_ft.
   qfrc_bar = -lam[worldid, dofid]
-  adj_rot = wp.vec3()
-  adj_lin = wp.vec3()
-  adj_com = wp.vec3()
+  rot_bar = wp.vec3()
+  lin_bar = wp.vec3()
+  com_bar = wp.vec3()
   for bodyid in range(dofbodyid, dofbodyid + body_subtreenum[dofbodyid]):
     wrench = xfrc_applied_in[worldid, bodyid]
     if wrench == wp.spatial_vector():
@@ -382,13 +382,13 @@ def _xfrc_kinematics_vjp(
     force = wp.spatial_top(wrench)
     torque = wp.spatial_bottom(wrench)
     offset = xipos_in[worldid, bodyid] - subtree_com
-    adj_rot += qfrc_bar * (torque + wp.cross(offset, force))
-    adj_lin += qfrc_bar * force
-    adj_offset = qfrc_bar * wp.cross(force, rotational_cdof)
-    wp.atomic_add(adj_xipos_out, worldid, bodyid, adj_offset)  # kernel_analyzer: ignore[atomic]
-    adj_com -= adj_offset
-  wp.atomic_add(adj_subtree_com_out, worldid, rootid, adj_com)  # kernel_analyzer: ignore[atomic]
-  adj_cdof_out[worldid, dofid] += wp.spatial_vector(adj_rot, adj_lin)
+    rot_bar += qfrc_bar * (torque + wp.cross(offset, force))
+    lin_bar += qfrc_bar * force
+    offset_bar = qfrc_bar * wp.cross(force, rotational_cdof)
+    wp.atomic_add(adj_xipos_out, worldid, bodyid, offset_bar)  # kernel_analyzer: ignore[atomic]
+    com_bar -= offset_bar
+  wp.atomic_add(adj_subtree_com_out, worldid, rootid, com_bar)  # kernel_analyzer: ignore[atomic]
+  adj_cdof_out[worldid, dofid] += wp.spatial_vector(rot_bar, lin_bar)
 
 
 def xfrc_kinematics_backward(m: Model, d: Data, lam: wp.array2d, xfrc_applied: wp.array2d, bc: BackwardContext):
