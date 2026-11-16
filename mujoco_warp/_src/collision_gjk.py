@@ -42,6 +42,11 @@ MIN_DIST2 = 1e-10
 MIN_DIST3 = 1e-10
 MIN_DIST4 = 1e-17
 
+# hull neighbors that the hill climb of the mesh support function loads together
+_HULL_BATCH = 4
+_hull_ids = wp.types.vector(length=_HULL_BATCH, dtype=int)
+_hull_dists = wp.types.vector(length=_HULL_BATCH, dtype=float)
+
 # minimal tolerance for EPA
 MIN_EPATOL = 1e-7
 
@@ -184,17 +189,31 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       max_dist = wp.dot(local_dir, geom.vert[geom.vertadr + geom.graph[vert_globalid + imax]])
 
       # hillclimb until no change
+      last = geom.graph.shape[0] - 1
       while imax != prev:
         prev = imax
         i = geom.graph[vert_edgeadr + imax]
-        subidx = geom.graph[edge_localid + i]
-        while subidx >= 0:
-          idx = geom.graph[vert_globalid + subidx]
-          dist = wp.dot(local_dir, geom.vert[geom.vertadr + idx])
-          imax = wp.where(dist > max_dist, subidx, imax)
-          max_dist = wp.where(dist > max_dist, dist, max_dist)
-          i += 1
-          subidx = geom.graph[edge_localid + i]
+        more = int(1)
+        while more != 0:
+          # neighbors in batches (their list ends with -1): the loads of one neighbor depend on
+          # each other, those of different neighbors overlap
+          near = _hull_ids()
+          for k in range(_HULL_BATCH):
+            near[k] = geom.graph[wp.min(edge_localid + i + k, last)]
+          for k in range(_HULL_BATCH):
+            # what follows the end of the list belongs to other vertices
+            if near[k] < 0:
+              more = 0
+            if more == 0:
+              near[k] = -1
+          near_dist = _hull_dists()
+          for k in range(_HULL_BATCH):
+            near_dist[k] = wp.dot(local_dir, geom.vert[geom.vertadr + geom.graph[vert_globalid + wp.max(near[k], 0)]])
+          for k in range(_HULL_BATCH):
+            if near[k] >= 0 and near_dist[k] > max_dist:
+              imax = near[k]
+              max_dist = near_dist[k]
+          i += _HULL_BATCH
 
       sp.cached_index = imax
       sp.vertex_index = geom.graph[vert_globalid + imax]
