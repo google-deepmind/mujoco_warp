@@ -524,8 +524,10 @@ def _accum_input_adjoint(direct: wp.array2d[float], residual: wp.array2d[float],
 
 def _write_input_adjoints(d: Data, bc: BackwardContext):
   """Combines direct state adjoints with implicit residual VJPs."""
-  wp.launch(_accum_input_adjoint, dim=d.qpos.shape, inputs=[bc.adj_qpos, bc.res_qpos], outputs=[d.qpos.grad])
-  wp.launch(_accum_input_adjoint, dim=d.qvel.shape, inputs=[bc.adj_qvel, bc.res_qvel], outputs=[d.qvel.grad])
+  if d.qpos.grad is not None:
+    wp.launch(_accum_input_adjoint, dim=d.qpos.shape, inputs=[bc.adj_qpos, bc.res_qpos], outputs=[d.qpos.grad])
+  if d.qvel.grad is not None:
+    wp.launch(_accum_input_adjoint, dim=d.qvel.shape, inputs=[bc.adj_qvel, bc.res_qvel], outputs=[d.qvel.grad])
 
 
 @event_scope

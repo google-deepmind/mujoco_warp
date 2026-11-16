@@ -349,8 +349,8 @@ def _activation_vjp(
     actuator_ctrllimited[uid],
     opt_disableflags,
     force_seed,
-    adj_act[w, adr],
-    adj_act_dot[w, adr],
+    adj_act[w, adr] if adj_act else 0.0,
+    adj_act_dot[w, adr] if adj_act_dot else 0.0,
   )
   if adj_ctrl_out:
     adj_ctrl_out[w, uid] += gradients[0]
@@ -905,7 +905,8 @@ def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
     bc.y_remap.zero_()
     bc.w_dir.zero_()
 
-  wp.launch(adjoint_util._accum_cols, dim=(nworld, nv), inputs=[d_out.qacc.grad], outputs=[adj_qacc])
+  if d_out.qacc.grad is not None:
+    wp.launch(adjoint_util._accum_cols, dim=(nworld, nv), inputs=[d_out.qacc.grad], outputs=[adj_qacc])
   return adj_qpos, adj_qvel, adj_qacc
 
 
