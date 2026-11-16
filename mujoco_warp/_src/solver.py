@@ -163,7 +163,8 @@ def _create_solver_context(
     quad_changed_count=wp.empty((nworld,), dtype=int) if alloc_incremental else wp.empty((0,), dtype=int),
     state_changed_count=wp.empty((nworld,), dtype=int) if alloc_incremental else wp.empty((0,), dtype=int),
     quad_changed_delta=wp.empty((nworld, njmax), dtype=float) if alloc_incremental else wp.empty((nworld, 0), dtype=float),
-    hessian_weight=wp.empty((nworld, njmax), dtype=float) if alloc_h else wp.empty((nworld, 0), dtype=float),
+    # tile-loaded in whole chunks, like efc.D
+    hessian_weight=wp.empty((nworld, d.njmax_pad), dtype=float) if alloc_h else wp.empty((nworld, 0), dtype=float),
     solve_ld_scratch=wp.empty((nworld, nv_pad), dtype=float) if alloc_solve_ld_scratch else None,
     tw_diag=wp.empty((nworld, nv), dtype=float) if alloc_tw_diag else None,
     h_tile_nz=h_tile_nz,
