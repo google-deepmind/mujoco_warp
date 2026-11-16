@@ -479,7 +479,7 @@ def _rne_vjp(nbody: int, with_mass: bool, mass_grad: bool, inertia_grad: bool):
     mass_y: wp.array2d[float],
     mass_w: wp.array2d[float],
     # Out:
-    adj_qvel_out: wp.array2d[float],
+    res_qvel_out: wp.array2d[float],
     adj_cdof_out: wp.array2d[wp.spatial_vector],
     adj_cdof_dot_out: wp.array2d[wp.spatial_vector],
     adj_cvel_out: wp.array2d[wp.spatial_vector],
@@ -621,12 +621,11 @@ def _rne_vjp(nbody: int, with_mass: bool, mass_grad: bool, inertia_grad: bool):
         S_bar = lam[w, i] * acc_force + qacc_in[w, i] * acc_ca_bar
         if wp.static(with_mass):
           S_bar += -mass_y[w, i] * acc_mass_force + mass_w[w, i] * acc_mass_ca_bar
+        res_qvel_out[w, i] += qvel_bar
         if body_start == 0:
-          adj_qvel_out[w, i] = qvel_bar
           adj_cdof_dot_out[w, i] = cdof_dot_bar
           adj_cdof_out[w, i] = S_bar
         else:
-          adj_qvel_out[w, i] += qvel_bar
           adj_cdof_dot_out[w, i] += cdof_dot_bar
           adj_cdof_out[w, i] += S_bar
 
@@ -641,11 +640,12 @@ def rne_backward(
   mass_y: wp.array2d | None,
   mass_w: wp.array2d | None,
   res_qpos: wp.array2d,
+  res_qvel: wp.array2d,
   bc: BackwardContext,
   xfrc_applied: wp.array2d | None = None,
   body_gravcomp: wp.array2d | None = None,
 ):
-  """Adds the RNE qpos VJP with optional -mass_y.T @ M @ mass_w; leaves qvel cotangents in bc."""
+  """Adds the RNE qpos and qvel VJPs with optional -mass_y.T @ M @ mass_w."""
   bc.adj_subtree_com.zero_()
   mass_grad = m.body_mass.requires_grad
   inertia_grad = m.body_inertia.requires_grad
@@ -685,7 +685,7 @@ def rne_backward(
       mass_w,
     ],
     outputs=[
-      bc.smooth_adj_qvel,
+      res_qvel,
       bc.adj_cdof,
       bc.adj_cdof_dot,
       bc.adj_cvel,
@@ -697,7 +697,7 @@ def rne_backward(
       bc.res_body_inertia if inertia_grad else None,
     ],
   )
-  comvel_backward(m, d, bc.adj_cvel, bc.adj_cdof_dot, bc=bc)
+  comvel_backward(m, d, bc.adj_cvel, bc.adj_cdof_dot, res_qvel, bc=bc)
   if xfrc_applied is not None:
     xfrc_kinematics_backward(m, d, lam, xfrc_applied, bc)
   smooth_kinematics_adjoint.kinematics_qpos_vjp(
@@ -727,11 +727,11 @@ def _cv_scatter(
   j: int,
   t: wp.spatial_vector,
   # Out:
-  adj_qvel_out: wp.array2d[float],
+  res_qvel_out: wp.array2d[float],
   adj_cdof_out: wp.array2d[wp.spatial_vector],
 ):
-  """Scatters a running velocity cotangent t to dof j's qvel and cdof cotangents."""
-  adj_qvel_out[w, j] = adj_qvel_out[w, j] + wp.dot(cdof_in[w, j], t)
+  """Scatters a running velocity cotangent t to dof j's qvel residual and cdof cotangent."""
+  res_qvel_out[w, j] = res_qvel_out[w, j] + wp.dot(cdof_in[w, j], t)
   adj_cdof_out[w, j] = adj_cdof_out[w, j] + qvel_in[w, j] * t
 
 
@@ -745,11 +745,11 @@ def _cv_scatter3(
   dofid: int,
   t: wp.spatial_vector,
   # Out:
-  adj_qvel_out: wp.array2d[float],
+  res_qvel_out: wp.array2d[float],
   adj_cdof_out: wp.array2d[wp.spatial_vector],
 ):
   for axis in range(3):
-    _cv_scatter(qvel_in, cdof_in, w, dofid + 2 - axis, t, adj_qvel_out, adj_cdof_out)
+    _cv_scatter(qvel_in, cdof_in, w, dofid + 2 - axis, t, res_qvel_out, adj_cdof_out)
 
 
 @wp.func
@@ -846,7 +846,7 @@ def _comvel_vjp_samebody(
   k_in: wp.array2d[wp.spatial_vector],
   W_in: wp.array2d[wp.spatial_vector],
   # Out:
-  adj_qvel_out: wp.array2d[float],
+  res_qvel_out: wp.array2d[float],
   adj_cdof_out: wp.array2d[wp.spatial_vector],
 ):
   """Reverse-scans each body's joints, scattering each dof before adding its own h."""
@@ -859,20 +859,20 @@ def _comvel_vjp_samebody(
     jnttype = jnt_type[jntid]
     dofadr = jnt_dofadr[jntid]
     if jnttype == JointType.FREE:
-      _cv_scatter3(qvel_in, cdof_in, w, dofadr + 3, t, adj_qvel_out, adj_cdof_out)
+      _cv_scatter3(qvel_in, cdof_in, w, dofadr + 3, t, res_qvel_out, adj_cdof_out)
       for axis in range(3):
         i = dofadr + 5 - axis
         t += h_in[w, i]
         adj_cdof_out[w, i] += k_in[w, i]
-      _cv_scatter3(qvel_in, cdof_in, w, dofadr, t, adj_qvel_out, adj_cdof_out)
+      _cv_scatter3(qvel_in, cdof_in, w, dofadr, t, res_qvel_out, adj_cdof_out)
     elif jnttype == JointType.BALL:
-      _cv_scatter3(qvel_in, cdof_in, w, dofadr, t, adj_qvel_out, adj_cdof_out)
+      _cv_scatter3(qvel_in, cdof_in, w, dofadr, t, res_qvel_out, adj_cdof_out)
       for axis in range(3):
         i = dofadr + 2 - axis
         t += h_in[w, i]
         adj_cdof_out[w, i] += k_in[w, i]
     else:
-      _cv_scatter(qvel_in, cdof_in, w, dofadr, t, adj_qvel_out, adj_cdof_out)
+      _cv_scatter(qvel_in, cdof_in, w, dofadr, t, res_qvel_out, adj_cdof_out)
       t += h_in[w, dofadr]
       adj_cdof_out[w, dofadr] = adj_cdof_out[w, dofadr] + k_in[w, dofadr]
 
@@ -882,9 +882,10 @@ def comvel_backward(
   d: Data,
   adj_cvel: wp.array2d,
   adj_cdof_dot: wp.array2d,
+  res_qvel: wp.array2d,
   bc: BackwardContext | None = None,
 ):
-  """Accumulates the com-velocity reverse in the backward workspace."""
+  """Adds the com-velocity reverse to res_qvel and its cdof cotangent to the workspace."""
   standalone = bc is None
   if bc is None:
     from mujoco_warp._src import adjoint
@@ -894,7 +895,6 @@ def comvel_backward(
   adj_cdof = bc.smooth_cv_adj_cdof if standalone else bc.adj_cdof
   if standalone:
     adj_cdof.zero_()
-  bc.smooth_cv_adj_qvel.zero_()
   wp.launch(
     _comvel_vjp_local,
     dim=(nworld, nbody),
@@ -911,6 +911,6 @@ def comvel_backward(
     _comvel_vjp_samebody,
     dim=(nworld, nbody),
     inputs=[m.body_jntnum, m.body_jntadr, m.jnt_type, m.jnt_dofadr, d.qvel, d.cdof, bc.smooth_h, bc.smooth_k, bc.smooth_W],
-    outputs=[bc.smooth_cv_adj_qvel, adj_cdof],
+    outputs=[res_qvel, adj_cdof],
   )
-  return {"qvel": bc.smooth_cv_adj_qvel, "cdof": adj_cdof}
+  return {"qvel": res_qvel, "cdof": adj_cdof}

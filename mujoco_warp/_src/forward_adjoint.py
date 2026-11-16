@@ -1020,8 +1020,10 @@ def smooth_qvel_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, adj_qvel
 
 
 @event_scope
-def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos: wp.array, bc: BackwardContext):
-  """Accumulates RNE, spring, and actuator qpos VJPs, with inertial and mocap gradients."""
+def smooth_qpos_backward(
+  m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos: wp.array, res_qvel: wp.array, bc: BackwardContext
+):
+  """Accumulates RNE, spring, and actuator residual VJPs, with inertial and mocap gradients."""
   mocap_grad = d.mocap_pos.grad is not None or d.mocap_quat.grad is not None
   implicit_solve = _implicit_solve(m)
   passive_enabled = (m.opt.disableflags & (DisableBit.SPRING | DisableBit.DAMPER)) != (DisableBit.SPRING | DisableBit.DAMPER)
@@ -1032,6 +1034,7 @@ def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos
     bc.y_remap if implicit_solve else None,
     bc.w_dir if implicit_solve else None,
     res_qpos,
+    res_qvel,
     bc,
     xfrc_applied=d.xfrc_applied,
     body_gravcomp=m.body_gravcomp if passive_enabled else None,

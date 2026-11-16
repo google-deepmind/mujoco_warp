@@ -539,11 +539,7 @@ def forward_backward_ift(m: Model, d: Data, d_bwd: Data, adj_qacc: wp.array, bc:
     contact_constraint_backward(m, d, d_bwd, lam, bc.res_qpos, bc.res_qvel, bc)
     noncontact_constraint_backward(m, d, d_bwd, lam, bc.res_qpos, bc.res_qvel, solver_ctx.Jaref, bc)
   forward_adjoint.smooth_qvel_backward(m, d, d_bwd, lam, bc.adj_qvel, bc)
-  forward_adjoint.smooth_qpos_backward(m, d, d_bwd, lam, bc.res_qpos, bc)
-  # The position reverse also computes the RNE velocity cotangents. Consume them
-  # with the residual sign before parameter VJPs reuse the workspace.
-  for cotangent in (bc.smooth_adj_qvel, bc.smooth_cv_adj_qvel):
-    wp.launch(adjoint_util._accum_cols, dim=(d.nworld, m.nv), inputs=[cotangent], outputs=[bc.res_qvel])
+  forward_adjoint.smooth_qpos_backward(m, d, d_bwd, lam, bc.res_qpos, bc.res_qvel, bc)
   smooth_params_backward(m, d, d_bwd, lam, bc)
 
 
