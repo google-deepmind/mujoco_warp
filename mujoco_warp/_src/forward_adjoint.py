@@ -45,28 +45,32 @@ wp.set_module_options({"enable_backward": True})
 
 
 @wp.func
-def _advance_contract(position: float, velocity: float, acceleration: float, timestep: float, pos_bar: float, vel_bar: float):
-  next_vel = forward.next_velocity(timestep, velocity, acceleration, 1.0)
-  return pos_bar * forward.next_position(position, next_vel, timestep) + vel_bar * next_vel
-
-
-@wp.func
-def _advance_contract(
+def _next_velocity3(
+  # Model:
+  opt_timestep: wp.array[float],
+  # Data in:
+  qvel_in: wp.array2d[float],
+  qacc_in: wp.array2d[float],
   # In:
-  rotation: wp.quat,
-  velocity: wp.vec3,
-  acceleration: wp.vec3,
-  timestep: float,
-  quat_bar: wp.quat,
-  vel_bar: wp.vec3,
-):
-  next_vel = forward.next_velocity(timestep, velocity, acceleration, 1.0)
-  phi = wp.dot(quat_bar, math.quat_integrate(rotation, next_vel, timestep))
-  return phi + wp.dot(vel_bar, next_vel)
+  worldid: int,
+  dofadr: int,
+  # Data out:
+  qvel_out: wp.array2d[float],
+) -> wp.vec3:
+  """Writes and returns the next velocities of three consecutive dofs."""
+  vel = wp.vec3(
+    forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dofadr, 1.0),
+    forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dofadr + 1, 1.0),
+    forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dofadr + 2, 1.0),
+  )
+  qvel_out[worldid, dofadr] = vel[0]
+  qvel_out[worldid, dofadr + 1] = vel[1]
+  qvel_out[worldid, dofadr + 2] = vel[2]
+  return vel
 
 
-@wp.kernel(enable_backward=False)
-def _advance_state_vjp(
+@wp.kernel
+def _advance_state(
   # Model:
   opt_timestep: wp.array[float],
   jnt_type: wp.array[int],
@@ -76,54 +80,29 @@ def _advance_state_vjp(
   qpos_in: wp.array2d[float],
   qvel_in: wp.array2d[float],
   qacc_in: wp.array2d[float],
-  # In:
-  adj_qpos: wp.array2d[float],
-  adj_qvel: wp.array2d[float],
-  # Out:
-  adj_qpos_out: wp.array2d[float],
-  adj_qvel_out: wp.array2d[float],
-  adj_qacc_out: wp.array2d[float],
+  # Data out:
+  qpos_out: wp.array2d[float],
+  qvel_out: wp.array2d[float],
 ):
   worldid, jntid = wp.tid()
   dt = opt_timestep[worldid % opt_timestep.shape[0]]
   jnttype = jnt_type[jntid]
   qadr = jnt_qposadr[jntid]
   dadr = jnt_dofadr[jntid]
-  nlinear = 3 if jnttype == JointType.FREE else (0 if jnttype == JointType.BALL else 1)
-  for i in range(nlinear):
-    qid, vid = qadr + i, dadr + i
-    pos_bar = adj_qpos[worldid, qid] if adj_qpos else 0.0
-    vel_bar = adj_qvel[worldid, vid] if adj_qvel else 0.0
-    linear_grad = wp.grad(_advance_contract)(
-      qpos_in[worldid, qid], qvel_in[worldid, vid], qacc_in[worldid, vid], dt, pos_bar, vel_bar
-    )
-    adj_qpos_out[worldid, qid] = adj_qpos_out[worldid, qid] + linear_grad[0]
-    adj_qvel_out[worldid, vid] = adj_qvel_out[worldid, vid] + linear_grad[1]
-    adj_qacc_out[worldid, vid] = adj_qacc_out[worldid, vid] + linear_grad[2]
+  qvel_lin = wp.vec3(0.0, 0.0, 0.0)
+  qvel_ang = wp.vec3(0.0, 0.0, 0.0)
 
-  if jnttype == JointType.FREE or jnttype == JointType.BALL:
-    qadr += nlinear
-    dadr += nlinear
-    rotation = wp.quat(
-      qpos_in[worldid, qadr], qpos_in[worldid, qadr + 1], qpos_in[worldid, qadr + 2], qpos_in[worldid, qadr + 3]
-    )
-    velocity = wp.vec3(qvel_in[worldid, dadr], qvel_in[worldid, dadr + 1], qvel_in[worldid, dadr + 2])
-    acceleration = wp.vec3(qacc_in[worldid, dadr], qacc_in[worldid, dadr + 1], qacc_in[worldid, dadr + 2])
-    quat_bar = wp.quat()
-    angular_bar = wp.vec3()
-    if adj_qpos:
-      quat_bar = wp.quat(
-        adj_qpos[worldid, qadr], adj_qpos[worldid, qadr + 1], adj_qpos[worldid, qadr + 2], adj_qpos[worldid, qadr + 3]
-      )
-    if adj_qvel:
-      angular_bar = wp.vec3(adj_qvel[worldid, dadr], adj_qvel[worldid, dadr + 1], adj_qvel[worldid, dadr + 2])
-    rotation_grad = wp.grad(_advance_contract)(rotation, velocity, acceleration, dt, quat_bar, angular_bar)
-    pos_grad, vel_grad, acc_grad = rotation_grad[0], rotation_grad[1], rotation_grad[2]
-    for i in range(4):
-      adj_qpos_out[worldid, qadr + i] = adj_qpos_out[worldid, qadr + i] + pos_grad[i]
-    for i in range(3):
-      adj_qvel_out[worldid, dadr + i] = adj_qvel_out[worldid, dadr + i] + vel_grad[i]
-      adj_qacc_out[worldid, dadr + i] = adj_qacc_out[worldid, dadr + i] + acc_grad[i]
+  if jnttype == JointType.FREE:
+    qvel_lin = _next_velocity3(opt_timestep, qvel_in, qacc_in, worldid, dadr, qvel_out)
+    qvel_ang = _next_velocity3(opt_timestep, qvel_in, qacc_in, worldid, dadr + 3, qvel_out)
+  elif jnttype == JointType.BALL:
+    qvel_ang = _next_velocity3(opt_timestep, qvel_in, qacc_in, worldid, dadr, qvel_out)
+  else:
+    v = forward.next_velocity(opt_timestep, qvel_in, qacc_in, worldid, dadr, 1.0)
+    qvel_out[worldid, dadr] = v
+    qvel_lin = wp.vec3(v, 0.0, 0.0)
+
+  forward.next_position(qpos_in, jnttype, qadr, dt, worldid, qvel_lin, qvel_ang, qpos_out)
 
 
 @wp.kernel(enable_backward=False)
@@ -820,20 +799,14 @@ def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
     smooth.factor_solve_i(m, d_bwd, bc.qDeriv, qLD, qLDiagInv, qacc_advance, bc.Ma)
 
   wp.launch(
-    _advance_state_vjp,
+    _advance_state,
     dim=(nworld, m.njnt),
-    inputs=[
-      m.opt.timestep,
-      m.jnt_type,
-      m.jnt_qposadr,
-      m.jnt_dofadr,
-      d_bwd.qpos,
-      d_bwd.qvel,
-      qacc_advance,
-      d_out.qpos.grad,
-      d_out.qvel.grad,
-    ],
-    outputs=[adj_qpos, adj_qvel, adj_qacc],
+    inputs=[m.opt.timestep, m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d_bwd.qpos, d_bwd.qvel, qacc_advance],
+    # next_position writes through its output array during the reverse replay.
+    outputs=[bc.scratch.qpos, bc.scratch.qvel],
+    adj_inputs=[None, None, None, None, adj_qpos, adj_qvel, adj_qacc],
+    adj_outputs=[d_out.qpos.grad, d_out.qvel.grad],
+    adjoint=True,
   )
 
   if implicit_solve:
