@@ -42,9 +42,11 @@ def _kinematics_mocap_vjp(
   # Model:
   nv: int,
   ngeom: int,
+  nsite: int,
   body_rootid: wp.array[int],
   dof_bodyid: wp.array[int],
   geom_bodyid: wp.array[int],
+  site_bodyid: wp.array[int],
   body_subtreenum: wp.array[int],
   mocap_bodyid: wp.array[int],
   # Data in:
@@ -54,6 +56,7 @@ def _kinematics_mocap_vjp(
   ximat_in: wp.array2d[wp.mat33],
   geom_xpos_in: wp.array2d[wp.vec3],
   geom_xmat_in: wp.array2d[wp.mat33],
+  site_xpos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
   # In:
@@ -61,6 +64,7 @@ def _kinematics_mocap_vjp(
   adj_ximat: wp.array2d[wp.mat33],
   adj_geom_xpos: wp.array2d[wp.vec3],
   adj_geom_xmat: wp.array2d[wp.mat33],
+  adj_site_xpos: wp.array2d[wp.vec3],
   adj_subtree_com: wp.array2d[wp.vec3],
   adj_cdof: wp.array2d[wp.spatial_vector],
   scale: float,
@@ -89,6 +93,12 @@ def _kinematics_mocap_vjp(
         force += seed
         torque += wp.cross(geom_xpos_in[w, geom] - origin, seed)
         torque += adjoint_util._adj_rotation(geom_xmat_in[w, geom], adj_geom_xmat[w, geom])
+  if adj_site_xpos:
+    for site in range(nsite):
+      if body_rootid[site_bodyid[site]] == root:
+        seed = adj_site_xpos[w, site]
+        force += seed
+        torque += wp.cross(site_xpos_in[w, site] - origin, seed)
   if adj_cdof:
     for dof in range(nv):
       if body_rootid[dof_bodyid[dof]] == root:
@@ -99,17 +109,21 @@ def _kinematics_mocap_vjp(
   adj_mocap_quat_out[w, mocapid] += scale * _mocap_quat_vjp(mocap_quat_in[w, mocapid], torque)
 
 
-def kinematics_mocap_backward(m: Model, d_bwd: Data, bc: BackwardContext, *, contact: bool = False, scale: float = -1.0):
-  """Accumulates kinematic cotangents from contact and smooth dynamics into mocap inputs."""
+def kinematics_mocap_backward(
+  m: Model, d_bwd: Data, bc: BackwardContext, *, contact: bool = False, tendon: bool = False, scale: float = -1.0
+):
+  """Accumulates contact, tendon, and smooth kinematic cotangents into mocap inputs."""
   wp.launch(
     _kinematics_mocap_vjp,
     dim=(d_bwd.nworld, m.nmocap),
     inputs=[
       m.nv,
       m.ngeom,
+      m.nsite,
       m.body_rootid,
       m.dof_bodyid,
       m.geom_bodyid,
+      m.site_bodyid,
       m.body_subtreenum,
       m.mocap_bodyid,
       d_bwd.mocap_pos,
@@ -118,12 +132,14 @@ def kinematics_mocap_backward(m: Model, d_bwd: Data, bc: BackwardContext, *, con
       d_bwd.ximat,
       d_bwd.geom_xpos,
       d_bwd.geom_xmat,
+      d_bwd.site_xpos,
       d_bwd.subtree_com,
       d_bwd.cdof,
-      bc.adj_xipos if not contact else None,
-      bc.adj_ximat if not contact else None,
-      bc.res_geom_xpos if contact else None,
-      bc.res_geom_xmat if contact else None,
+      bc.adj_xipos if not (contact or tendon) else None,
+      bc.adj_ximat if not (contact or tendon) else None,
+      bc.res_geom_xpos if (contact or tendon) else None,
+      bc.res_geom_xmat if (contact or tendon) else None,
+      bc.res_site_xpos if tendon else None,
       bc.adj_subtree_com,
       bc.adj_cdof,
       scale,

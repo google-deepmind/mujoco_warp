@@ -24,13 +24,15 @@ from mujoco_warp._src import math
 from mujoco_warp._src import smooth
 from mujoco_warp._src import smooth_kinematics_adjoint
 from mujoco_warp._src import support
+from mujoco_warp._src import tendon_adjoint
 from mujoco_warp._src.types import BackwardContext
-from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import GainType
+from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import vec10
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
@@ -124,49 +126,85 @@ def _actuator_moment_dots(
 @wp.kernel(enable_backward=False)
 def _actuator_qpos_vjp(
   # Model:
+  opt_timestep: wp.array[float],
+  opt_disableflags: int,
   jnt_actfrclimited: wp.array[bool],
   jnt_actfrcrange: wp.array2d[wp.vec2],
   dof_jntid: wp.array[int],
+  actuator_trntype: wp.array[int],
+  actuator_dyntype: wp.array[int],
   actuator_gaintype: wp.array[int],
   actuator_biastype: wp.array[int],
+  actuator_actadr: wp.array[int],
+  actuator_dynprm: wp.array2d[vec10],
   actuator_gainprm: wp.array2d[vec10],
   actuator_biasprm: wp.array2d[vec10],
+  actuator_actlimited: wp.array[bool],
+  actuator_actrange: wp.array2d[wp.vec2],
+  actuator_actearly: wp.array[bool],
   actuator_forcelimited: wp.array[bool],
   actuator_forcerange: wp.array2d[wp.vec2],
   actuator_ctrllimited: wp.array[bool],
   actuator_ctrlrange: wp.array2d[wp.vec2],
+  actuator_acc0: wp.array2d[float],
+  actuator_lengthrange: wp.array2d[wp.vec2],
+  M_elemid: wp.array2d[int],
   # Data in:
+  act_in: wp.array2d[float],
   ctrl_in: wp.array2d[float],
+  act_dot_in: wp.array2d[float],
+  actuator_length_in: wp.array2d[float],
   moment_rownnz_in: wp.array2d[int],
   moment_rowadr_in: wp.array2d[int],
   moment_colind_in: wp.array2d[int],
   actuator_moment_in: wp.array2d[float],
+  actuator_velocity_in: wp.array2d[float],
   actuator_force_in: wp.array2d[float],
   qfrc_actuator_in: wp.array2d[float],
   # In:
   lam: wp.array2d[float],
-  dsbl_clampctrl: int,
+  qacc_advance: wp.array2d[float],
+  y_remap: wp.array2d[float],
+  implicitfast: bool,
   # Out:
   res_dof_out: wp.array2d[float],
 ):
   w, actid = wp.tid()
-  dfdl = float(0.0)
-  if actuator_gaintype[actid] == GainType.AFFINE:
-    ctrl = ctrl_in[w % ctrl_in.shape[0], actid]
-    if actuator_ctrllimited[actid] and dsbl_clampctrl == 0:
-      ctrlrange = actuator_ctrlrange[w % actuator_ctrlrange.shape[0], actid]
-      ctrl = wp.clamp(ctrl, ctrlrange[0], ctrlrange[1])
-    dfdl += actuator_gainprm[w % actuator_gainprm.shape[0], actid][1] * ctrl
-  if actuator_biastype[actid] == BiasType.AFFINE:
-    dfdl += actuator_biasprm[w % actuator_biasprm.shape[0], actid][1]
-  if dfdl == 0.0:
-    return
-
+  if actuator_trntype[actid] == TrnType.TENDON:
+    return  # Handled in tendon_adjoint.tendon_qpos_vjp alongside ten_J cotangents.
   if actuator_forcelimited[actid]:
     forcerange = actuator_forcerange[w % actuator_forcerange.shape[0], actid]
     force = actuator_force_in[w, actid]
     if force <= forcerange[0] or force >= forcerange[1]:
       return
+
+  ctrl_act = tendon_adjoint._actuator_ctrl_act(
+    opt_timestep,
+    opt_disableflags,
+    actuator_dyntype,
+    actuator_actadr,
+    actuator_dynprm,
+    actuator_actlimited,
+    actuator_actrange,
+    actuator_actearly,
+    actuator_ctrllimited,
+    actuator_ctrlrange,
+    act_in,
+    ctrl_in,
+    act_dot_in,
+    w,
+    actid,
+  )
+  gaintype = actuator_gaintype[actid]
+  gainprm = actuator_gainprm[w % actuator_gainprm.shape[0], actid]
+  biasprm = actuator_biasprm[w % actuator_biasprm.shape[0], actid]
+  acc0 = actuator_acc0[w % actuator_acc0.shape[0], actid]
+  lengthrange = actuator_lengthrange[w % actuator_lengthrange.shape[0], actid]
+  length = actuator_length_in[w, actid]
+  velocity = actuator_velocity_in[w, actid]
+  _, _, dfdl, _ = tendon_adjoint._actuator_gain_and_derivs(
+    gaintype, actuator_biastype[actid], gainprm, biasprm, acc0, lengthrange, length, velocity, ctrl_act
+  )
 
   rowadr = moment_rowadr_in[w, actid]
   rownnz = moment_rownnz_in[w, actid]
@@ -183,6 +221,13 @@ def _actuator_qpos_vjp(
     rownnz,
   )
   scale = -moment_lam * dfdl
+  if implicitfast and gaintype == GainType.MUSCLE and ctrl_act != 0.0:
+    mg_dlen, _ = tendon_adjoint._muscle_gain_vel_deriv_grads(length, velocity, lengthrange, acc0, gainprm)
+    if mg_dlen != 0.0:
+      B_u = tendon_adjoint._moment_in_tree_bilinear(
+        M_elemid, moment_colind_in, actuator_moment_in, y_remap, qacc_advance, w, rowadr, rownnz
+      )
+      scale -= opt_timestep[w % opt_timestep.shape[0]] * ctrl_act * mg_dlen * B_u
   if scale == 0.0:
     return
   for i in range(rownnz):
@@ -194,7 +239,7 @@ def _actuator_qpos_vjp(
 
 @event_scope
 def actuator_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | None = None):
-  """Returns the affine joint-actuator position VJP."""
+  """Returns the joint-actuator position VJP."""
   if bc is None:
     from mujoco_warp._src import adjoint
 
@@ -204,32 +249,52 @@ def actuator_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | 
   if not m.nu or int(m.opt.disableflags) & DisableBit.ACTUATION:
     return smooth_res_qpos
 
+  flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
+  implicitfast = m.opt.integrator == IntegratorType.IMPLICITFAST and (m.opt.disableflags & flags) != flags
   smooth_res_dof = bc.smooth_res_dof
   smooth_res_dof.zero_()
   wp.launch(
     _actuator_qpos_vjp,
     dim=(d.nworld, m.nu),
     inputs=[
+      m.opt.timestep,
+      m.opt.disableflags,
       m.jnt_actfrclimited,
       m.jnt_actfrcrange,
       m.dof_jntid,
+      m.actuator_trntype,
+      m.actuator_dyntype,
       m.actuator_gaintype,
       m.actuator_biastype,
+      m.actuator_actadr,
+      m.actuator_dynprm,
       m.actuator_gainprm,
       m.actuator_biasprm,
+      m.actuator_actlimited,
+      m.actuator_actrange,
+      m.actuator_actearly,
       m.actuator_forcelimited,
       m.actuator_forcerange,
       m.actuator_ctrllimited,
       m.actuator_ctrlrange,
+      m.actuator_acc0,
+      m.actuator_lengthrange,
+      m.M_elemid,
+      d.act,
       d.ctrl,
+      d.act_dot,
+      d.actuator_length,
       d.moment_rownnz,
       d.moment_rowadr,
       d.moment_colind,
       d.actuator_moment,
+      d.actuator_velocity,
       d.actuator_force,
       d.qfrc_actuator,
       lam,
-      int(m.opt.disableflags) & DisableBit.CLAMPCTRL,
+      bc.qacc_advance,
+      bc.y_remap,
+      implicitfast,
     ],
     outputs=[smooth_res_dof],
   )
