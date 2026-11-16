@@ -3440,6 +3440,7 @@ def _mark_h_tile_pattern_efc(nwords: int, skip_unchanged: bool = False, skip_nof
     efc_J_in: wp.array3d[float],
     efc_state_in: wp.array2d[int],
     # In:
+    ctx_hessian_weight_in: wp.array2d[float],
     ctx_done_in: wp.array[bool],
     quad_changed_count_in: wp.array[int],
     state_changed_count_in: wp.array[int],
@@ -3461,9 +3462,11 @@ def _mark_h_tile_pattern_efc(nwords: int, skip_unchanged: bool = False, skip_nof
       if quad_changed_count_in[worldid] == 0:
         return
 
+    # a sliding friction row has a weight after a band jump
     state = efc_state_in[worldid, efcid]
-    if state != types.ConstraintState.QUADRATIC.value and state != types.ConstraintState.CONE.value:
-      return
+    if state != types.ConstraintState.CONE.value:
+      if ctx_hessian_weight_in[worldid, efcid] == 0.0:
+        return
 
     # A cone block couples the columns of all its rows, which follow the head row with the same
     # support, so the head row marks the columns nonzero in any of them.
@@ -3979,6 +3982,7 @@ def _cholesky_factorize_solve(
           d.efc.J_colind,
           d.efc.J,
           d.efc.state,
+          ctx.hessian_weight,
           ctx.done,
           quad_changed,
           state_changed,

@@ -2380,6 +2380,50 @@ class SolverTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.all(can_stop[1]))
 
+  def test_friction_band_jump_tile_pattern(self):
+    """The structural H tile pattern includes a friction row with a band-jump weight."""
+    # 110 slide joints (nv > 96, diagonal M); the tendon couples tiles 0 and 3
+    bodies = "".join(f'<body pos="{i} 0 0"><joint name="j{i}" type="slide"/><geom size=".05"/></body>' for i in range(110))
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          {bodies}
+        </worldbody>
+        <tendon>
+          <fixed frictionloss="2">
+            <joint joint="j0" coef="1"/>
+            <joint joint="j50" coef="-0.5"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """
+    )
+    ctx = solver._create_solver_context(m, d)
+    self.assertIsNotNone(ctx.h_col_mask)
+    self.assertIsNone(ctx.h_tile_nz)
+    solver.init_context(m, d, ctx, grad=False)
+
+    # the tendon friction row jumps across its band
+    row = np.flatnonzero(d.efc.type.numpy()[0] == types.ConstraintType.FRICTION_TENDON)[0]
+    D = d.efc.D.numpy()[0, row]
+    state = d.efc.state.numpy()
+    state[0, row] = types.ConstraintState.LINEARNEG.value
+    d.efc.state.assign(state)
+    Jaref = ctx.Jaref.numpy()
+    Jaref[0, row] = 2.0 * d.efc.frictionloss.numpy()[0, row] / D
+    ctx.Jaref.assign(Jaref)
+    solver._update_constraint(m, d, ctx, band_jump=True)
+    self.assertNotIn(ctx.hessian_weight.numpy()[0, row], (0.0, D))
+
+    ctx.done.fill_(False)
+    solver._update_gradient(m, d, ctx)
+    h = np.triu(ctx.h.numpy()[0, : m.nv, : m.nv])
+    h += np.triu(h, 1).T
+    self.assertNotEqual(h[0, 50], 0.0)
+    _assert_eq(ctx.search.numpy()[0], -np.linalg.solve(h, ctx.grad.numpy()[0, : m.nv]), "search")
+
   @parameterized.parameters(1, 2)
   def test_dense_hessian_incremental_strided(self, nworld):
     """Strided dense incremental H update matches exact rank-1 updates."""
@@ -3479,6 +3523,7 @@ class CompactSolverTest(parameterized.TestCase):
             d.efc.J_colind,
             d.efc.J,
             d.efc.state,
+            ctx.hessian_weight,
             ctx.done,
             d.nefc,
             d.nefc,
