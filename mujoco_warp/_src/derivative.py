@@ -3752,11 +3752,11 @@ def _eff_chol_solve(check_skip: bool):
       ra1 = efm_L_rowadr[r0 + 1]
       ra2 = efm_L_rowadr[r0 + 2]
       x2 = chol_scratch_out[worldid, r0 + 2] / efm_L_val_in[worldid, ra2 + nob + 2]
-      x1 = (chol_scratch_out[worldid, r0 + 1] - efm_L_val_in[worldid, ra2 + nob + 1] * x2) / efm_L_val_in[worldid, ra1 + nob + 1]
+      x1 = (chol_scratch_out[worldid, r0 + 1] - efm_L_val_in[worldid, ra2 + nob + 1] * x2) / efm_L_val_in[
+        worldid, ra1 + nob + 1
+      ]
       x0 = (
-        chol_scratch_out[worldid, r0]
-        - efm_L_val_in[worldid, ra2 + nob] * x2
-        - efm_L_val_in[worldid, ra1 + nob] * x1
+        chol_scratch_out[worldid, r0] - efm_L_val_in[worldid, ra2 + nob] * x2 - efm_L_val_in[worldid, ra1 + nob] * x1
       ) / efm_L_val_in[worldid, ra0 + nob]
       chol_scratch_out[worldid, r0] = x0
       chol_scratch_out[worldid, r0 + 1] = x1
@@ -3764,9 +3764,7 @@ def _eff_chol_solve(check_skip: bool):
       for j in range(0, nob, 3):
         c = efm_L_colind[ra0 + j]
         chol_scratch_out[worldid, c] -= (
-          efm_L_val_in[worldid, ra0 + j] * x0
-          + efm_L_val_in[worldid, ra1 + j] * x1
-          + efm_L_val_in[worldid, ra2 + j] * x2
+          efm_L_val_in[worldid, ra0 + j] * x0 + efm_L_val_in[worldid, ra1 + j] * x1 + efm_L_val_in[worldid, ra2 + j] * x2
         )
         chol_scratch_out[worldid, c + 1] -= (
           efm_L_val_in[worldid, ra0 + j + 1] * x0
@@ -3809,9 +3807,9 @@ def _eff_chol_solve(check_skip: bool):
           + efm_L_val_in[worldid, ra2 + j + 2] * y2
         )
       x0 = (chol_scratch_out[worldid, r0] - s0) / efm_L_val_in[worldid, ra0 + nob]
-      x1 = (
-        chol_scratch_out[worldid, r0 + 1] - s1 - efm_L_val_in[worldid, ra1 + nob] * x0
-      ) / efm_L_val_in[worldid, ra1 + nob + 1]
+      x1 = (chol_scratch_out[worldid, r0 + 1] - s1 - efm_L_val_in[worldid, ra1 + nob] * x0) / efm_L_val_in[
+        worldid, ra1 + nob + 1
+      ]
       x2 = (
         chol_scratch_out[worldid, r0 + 2]
         - s2

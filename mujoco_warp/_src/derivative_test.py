@@ -4159,9 +4159,6 @@ class DerivativeTest(parameterized.TestCase):
   @parameterized.parameters(1, 2)
   def test_eff_chol_1d_rod_exact(self, nworld):
     """Tests sparse 3x3-blocked reverse Cholesky preconditioner and exact fast path on 1D rods."""
-    if types.ROD_HINGE_SIZE != 10:
-      self.skipTest("Requires 1D flex rod torsion support in MuJoCo")
-
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -4228,7 +4225,6 @@ class DerivativeTest(parameterized.TestCase):
       self.assertFalse(np.allclose(qacc_smooth[0], qacc_smooth[1]))
       self.assertFalse(np.allclose(qacc[0], qacc[1]))
 
-  @absltest.skipIf(types.ROD_HINGE_SIZE != 10, "Requires 1D flex rod torsion support in MuJoCo")
   @parameterized.parameters(1, 2)
   def test_eff_chol_1d_rod_ring_only(self, nworld):
     """Tests 3*nefmdof == nv fast path on a closed 1D rod ring without twist joints."""
@@ -4275,10 +4271,9 @@ class DerivativeTest(parameterized.TestCase):
       self.assertFalse(np.allclose(qacc_smooth[0], qacc_smooth[1]))
       self.assertFalse(np.allclose(qacc[0], qacc[1]))
 
-  @absltest.skipIf(types.ROD_HINGE_SIZE != 10, "Requires 1D flex rod torsion support in MuJoCo")
   @parameterized.product(nworld=(1, 2), disable_spring=(False, True))
   def test_eff_chol_1d_rod_twist_only(self, nworld, disable_spring):
-    """Tests efm_all_covered_or_twist path on a pure open 1D rod with twist (including disabled springs + zero damping)."""
+    """Tests efm_all_covered_or_twist path on a pure open 1D rod with twist."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -4325,10 +4320,9 @@ class DerivativeTest(parameterized.TestCase):
       self.assertFalse(np.allclose(qacc_smooth[0], qacc_smooth[1]))
       self.assertFalse(np.allclose(qacc[0], qacc[1]))
 
-  @absltest.skipIf(types.ROD_HINGE_SIZE != 10, "Requires 1D flex rod torsion support in MuJoCo")
   @parameterized.parameters(1, 2)
   def test_eff_chol_1d_rod_articulated_child(self, nworld):
-    """Tests PCG fallback (efm_prec_exact == False) when a 1D rod vertex has an articulated child joint."""
+    """Tests PCG fallback (efm_prec_exact == False) on a 1D rod vertex with an articulated child."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
