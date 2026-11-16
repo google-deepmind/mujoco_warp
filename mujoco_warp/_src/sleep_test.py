@@ -36,6 +36,37 @@ wp.set_module_options({"enable_backward": False})
 
 
 class SleepTest(parameterized.TestCase):
+  @parameterized.parameters("pyramidal", "elliptic")
+  def test_compact_solve_unconstrained_zeros_qfrc_constraint(self, cone):
+    """An unconstrained sparse compact solve zeroes the constraint force."""
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option jacobian="sparse" cone="{cone}">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="0 0 .1">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+          <body pos="1 0 .1">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    self.assertEqual(mjd.nefc, 0)
+    d.cqfrc_constraint.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjwarp.solve(m, d)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(d.qfrc_constraint.numpy()[0], 0.0, atol=1e-5)
+
   @parameterized.parameters(1, 2)
   def test_sleep_initiation(self, nworld):
     """Verify that a stationary body on a flat plane goes to sleep."""
@@ -788,8 +819,8 @@ class SleepTest(parameterized.TestCase):
     for w in range(nworld):
       self.assertEqual(d.tree_awake.numpy()[w, 0], 1, f"Tree 0 in world {w} should have woken up because of non-zero velocity")
 
-  @parameterized.parameters(1, 2)
-  def test_sleep_rerun_collision(self, nworld):
+  @parameterized.product(nworld=(1, 2), deterministic=(False, True))
+  def test_sleep_rerun_collision(self, nworld, deterministic):
     """Verify that newly awakened bodies detect collisions in the same step."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -811,6 +842,7 @@ class SleepTest(parameterized.TestCase):
       </mujoco>
       """,
       nworld=nworld,
+      overrides={"opt.deterministic": types.DeterminismType.ALL if deterministic else types.DeterminismType.NONE},
     )
 
     # Put box (tree 0) to sleep manually
@@ -831,7 +863,9 @@ class SleepTest(parameterized.TestCase):
     d.qvel = wp.array(qvel, dtype=float)
 
     # Run a single simulation step
-    mjwarp.step(m, d)
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m, d)
+    wp.capture_launch(capture.graph)
 
     # Box should be awake
     for w in range(nworld):
@@ -841,6 +875,10 @@ class SleepTest(parameterized.TestCase):
     # + 1 sphere-box contact)
     nacon = d.nacon.numpy()[0]
     self.assertEqual(nacon, 5 * nworld, f"Expected {5 * nworld} active contacts across all worlds, but got {nacon}")
+
+    if deterministic:
+      expected = np.tile([[0, 1]] * 4 + [[2, 1]], (nworld, 1))
+      np.testing.assert_array_equal(d.contact.geom.numpy()[:nacon], expected)
 
   @parameterized.parameters(1, 2)
   def test_sleep_policy_auto_never(self, nworld):
