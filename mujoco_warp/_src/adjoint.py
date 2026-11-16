@@ -14,7 +14,7 @@
 # ==============================================================================
 """Analytic backward for step() via hybrid analytic differentiability.
 
-This modules uses implicit differentiation, auto-differentiation, and custom analytic
+This module uses implicit differentiation, auto-differentiation, and custom analytic
 derivatives to compute analytic gradients. For the stationarity residual r(qacc, theta) = 0,
 reverse mode solves H * lam = adj_qacc and accumulates adj_theta = -(dr/dtheta)^T * lam.
 """
@@ -260,7 +260,7 @@ def _assert_step_supported(m: Model):
     raise NotImplementedError("adjoint.step_backward does not support surface velocity")
   if not m.opt.run_collision_detection:
     raise NotImplementedError("adjoint.step_backward does not support caller-supplied contacts (run_collision_detection=False)")
-  if m.opt.enableflags & EnableBit.SLEEP and not (m.opt.disableflags & DisableBit.ISLAND):
+  if (m.opt.enableflags & EnableBit.SLEEP) and not (m.opt.disableflags & DisableBit.ISLAND):
     raise NotImplementedError("adjoint.step_backward does not support sleep")
   if m.eq_connect_adr.size or m.eq_wld_adr.size or m.ntendon or m.nflex:
     raise NotImplementedError("adjoint.step_backward does not support connect/weld equality, tendon, or flex constraint rows")

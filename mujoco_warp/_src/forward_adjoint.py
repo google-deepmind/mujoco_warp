@@ -84,6 +84,7 @@ def _advance_state(
   qpos_out: wp.array2d[float],
   qvel_out: wp.array2d[float],
 ):
+  """Replays forward state integration; launched with adjoint=True for its VJP."""
   worldid, jntid = wp.tid()
   dt = opt_timestep[worldid % opt_timestep.shape[0]]
   jnttype = jnt_type[jntid]
@@ -544,7 +545,7 @@ def _implicit_free_body_backward(
   adj_qvel_out: wp.array2d[float],
   adj_dof_out: wp.array2d[float],
 ):
-  """Transpose the free-body solve and contract its gyroscopic state derivatives."""
+  """Transposes the free-body solve and contracts its gyroscopic state derivatives."""
   worldid, freeid = wp.tid()
   bodyid = body_freeadr[freeid]
   dofadr = body_dofadr[bodyid]
@@ -692,9 +693,9 @@ def _kinematics_vjp(nbody: int):
           torque += wp.spatial_top(shifted)
         if inputid < njnt:
           qposadr = jnt_qposadr[inputid]
-          jnt_type_ = jnt_type[inputid]
-          if jnt_type_ == JointType.FREE or jnt_type_ == JointType.BALL:
-            if jnt_type_ == JointType.FREE:
+          jnttype = jnt_type[inputid]
+          if jnttype == JointType.FREE or jnttype == JointType.BALL:
+            if jnttype == JointType.FREE:
               for i in range(3):
                 value = force[i]
                 if body_start > 0:
@@ -716,7 +717,7 @@ def _kinematics_vjp(nbody: int):
               adj_qpos_out[worldid, qposadr + i] = value
           else:
             value = wp.dot(xaxis_in[worldid, inputid], torque)
-            if jnt_type_ == JointType.SLIDE:
+            if jnttype == JointType.SLIDE:
               value = wp.dot(xaxis_in[worldid, inputid], force)
             if body_start > 0:
               value += adj_qpos_out[worldid, qposadr]
@@ -887,7 +888,7 @@ def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
 def smooth_qvel_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, adj_qvel: wp.array, bc: BackwardContext):
   """Accumulates smooth-force VJPs for qvel, controls, activations, and applied forces."""
   nworld = d.nworld
-  # bc.qLU holds the force derivative; smooth_qpos_backward handles the RNE velocity terms.
+  # bc.qLU holds M - dt * dforce/dqvel; smooth_qpos_backward handles the RNE velocity terms.
   wp.launch(
     _smooth_qvel_vjp,
     dim=(nworld, m.nD),

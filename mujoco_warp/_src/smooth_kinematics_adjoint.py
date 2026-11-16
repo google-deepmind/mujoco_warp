@@ -160,8 +160,8 @@ def _build_ceff(
     for index in range(nv):
       i = nv - 1 - index
       if body_rootid[dof_bodyid[i]] == b:
-        adj = adj_cdof[w, i]
-        origin += wp.cross(wp.spatial_top(cdof_in[w, i]), wp.spatial_bottom(adj))
+        cdof_bar = adj_cdof[w, i]
+        origin += wp.cross(wp.spatial_top(cdof_in[w, i]), wp.spatial_bottom(cdof_bar))
   ceff_out[w, b] = adj_subtree_com[w, b] - origin
 
 
@@ -179,11 +179,11 @@ def _dof_to_qpos(
   adj_qpos_out: wp.array2d[float],
 ):
   w, j = wp.tid()
-  jt = jnt_type[j]
+  jnttype = jnt_type[j]
   qadr = jnt_qposadr[j]
   dadr = jnt_dofadr[j]
-  if jt == JointType.FREE or jt == JointType.BALL:
-    if jt == JointType.FREE:
+  if jnttype == JointType.FREE or jnttype == JointType.BALL:
+    if jnttype == JointType.FREE:
       adj_qpos_out[w, qadr + 0] += adj_dof[w, dadr + 0]
       adj_qpos_out[w, qadr + 1] += adj_dof[w, dadr + 1]
       adj_qpos_out[w, qadr + 2] += adj_dof[w, dadr + 2]
@@ -330,13 +330,13 @@ def _kinematics_qpos_vjp(nbody: int, contact: bool):
       for joint in range(lane, njnt, wp.block_dim()):
         body = jnt_bodyid[joint]
         dadr = jnt_dofadr[joint]
-        kind = jnt_type[joint]
+        jnttype = jnt_type[joint]
         pose_sum, motion_sum, com_sum = wp.spatial_vector(), wp.spatial_vector(), wp.spatial_vector()
         root_pose_sum, root_motion_sum, root_com_sum = wp.vec3(), wp.vec3(), wp.vec3()
         end = wp.min(body + body_subtreenum[body], body_start + wp.static(tile_size))
         for child in range(wp.max(body, body_start), end):
           index = child - body_start
-          if kind == JointType.FREE:
+          if jnttype == JointType.FREE:
             root_pose_sum += root_poses[index]
             root_motion_sum += root_motions[index]
             root_com_sum += root_coms[index]
@@ -347,25 +347,25 @@ def _kinematics_qpos_vjp(nbody: int, contact: bool):
             com_sum += coms[index]
             if child > body:
               motion_sum += motions[index]
-        if kind != JointType.FREE and body >= body_start and body < body_start + wp.static(tile_size):
+        if jnttype != JointType.FREE and body >= body_start and body < body_start + wp.static(tile_size):
           first = body_dofadr[body]
           for dof in range(first, first + body_dofnum[body]):
             other_joint = dof_jntid[dof]
             if jnt_type[other_joint] == JointType.FREE and dof - jnt_dofadr[other_joint] < 3:
               continue
-            coupled = other_joint == joint and (kind == JointType.FREE or kind == JointType.BALL)
+            coupled = other_joint == joint and (jnttype == JointType.FREE or jnttype == JointType.BALL)
             if dadr < dof or coupled:
               motion_sum += math.motion_cross_force(cdof_in[w, dof], adj_cdof[w, dof])
-        if kind == JointType.FREE:
+        if jnttype == JointType.FREE:
           dadr += 3
-        count = 3 if kind == JointType.FREE or kind == JointType.BALL else 1
+        count = 3 if jnttype == JointType.FREE or jnttype == JointType.BALL else 1
         for axis in range(count):
-          if kind == JointType.FREE:
+          if jnttype == JointType.FREE:
             value = root_pose_sum[axis] + root_motion_sum[axis] + root_com_sum[axis]
           else:
             s = cdof_in[w, dadr + axis]
             pose_value = wp.dot(wp.spatial_top(s), wp.spatial_top(pose_sum))
-            if kind == JointType.SLIDE:
+            if jnttype == JointType.SLIDE:
               pose_value = wp.dot(wp.spatial_bottom(s), wp.spatial_bottom(pose_sum))
             value = pose_value + wp.dot(s, motion_sum) + wp.dot(s, com_sum)
           if body_start > 0:
@@ -376,10 +376,10 @@ def _kinematics_qpos_vjp(nbody: int, contact: bool):
         wp.tile_assign(positions, positions)
 
     for joint in range(lane, njnt, wp.block_dim()):
-      kind = jnt_type[joint]
+      jnttype = jnt_type[joint]
       qadr = jnt_qposadr[joint]
       dadr = jnt_dofadr[joint]
-      if kind == JointType.FREE:
+      if jnttype == JointType.FREE:
         body = jnt_bodyid[joint]
         translation, translation_error = wp.vec3(), wp.vec3()
         mass_sum, mass_error = float(0.0), float(0.0)
@@ -411,7 +411,7 @@ def _kinematics_qpos_vjp(nbody: int, contact: bool):
           adj_qpos_out[w, qadr + axis] += translation[axis]
         qadr += 3
         dadr += 3
-      if kind == JointType.FREE or kind == JointType.BALL:
+      if jnttype == JointType.FREE or jnttype == JointType.BALL:
         q = wp.quat(qpos_in[w, qadr], qpos_in[w, qadr + 1], qpos_in[w, qadr + 2], qpos_in[w, qadr + 3])
         tangent = wp.vec3(adj_dof_out[w, dadr], adj_dof_out[w, dadr + 1], adj_dof_out[w, dadr + 2])
         quat_grad = _joint_quat_vjp(q, tangent)

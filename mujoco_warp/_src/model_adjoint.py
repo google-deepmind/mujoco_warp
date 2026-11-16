@@ -183,15 +183,12 @@ def geom_friction_vjp(
   # In:
   geom: wp.vec2i,
   worldid: int,
-  res_contact_friction: vec5,
+  friction_bar: vec5,
 ) -> tuple[wp.vec3, wp.vec3]:
+  """Returns both geoms' friction gradients for a contact friction cotangent, with the IFT sign."""
   geom1 = geom[0]
   geom2 = geom[1]
-  res_geom_friction = wp.vec3(
-    res_contact_friction[0] + res_contact_friction[1],
-    res_contact_friction[2],
-    res_contact_friction[3] + res_contact_friction[4],
-  )
+  geom_friction_bar = wp.vec3(friction_bar[0] + friction_bar[1], friction_bar[2], friction_bar[3] + friction_bar[4])
   model_worldid = worldid % geom_friction.shape[0]
   priority1 = geom_priority[geom1]
   priority2 = geom_priority[geom2]
@@ -202,10 +199,10 @@ def geom_friction_vjp(
   for i in range(3):
     if priority1 > priority2 or (priority1 == priority2 and friction1[i] >= friction2[i]):
       if friction1[i] > MJ_MINMU:
-        grad1[i] = res_geom_friction[i]
+        grad1[i] = geom_friction_bar[i]
     else:
       if friction2[i] > MJ_MINMU:
-        grad2[i] = res_geom_friction[i]
+        grad2[i] = geom_friction_bar[i]
   return -grad1, -grad2
 
 
@@ -252,7 +249,7 @@ def _inertial_contract(
 
 
 @cache_kernel
-def _free_gyro_vjp(mass_grad: bool, inertia_grad: bool, ipos_grad: bool, iquat_grad: bool):
+def _free_gyro_vjp(body_mass_grad: bool, body_inertia_grad: bool, body_ipos_grad: bool, body_iquat_grad: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -275,10 +272,10 @@ def _free_gyro_vjp(mass_grad: bool, inertia_grad: bool, ipos_grad: bool, iquat_g
     acceleration: wp.array2d[float],
     y: wp.array2d[float],
     # Out:
-    mass_out: wp.array2d[float],
-    inertia_out: wp.array2d[wp.vec3],
-    ipos_out: wp.array2d[wp.vec3],
-    iquat_out: wp.array2d[wp.quat],
+    body_mass_grad_out: wp.array2d[float],
+    body_inertia_grad_out: wp.array2d[wp.vec3],
+    body_ipos_grad_out: wp.array2d[wp.vec3],
+    body_iquat_grad_out: wp.array2d[wp.quat],
   ):
     w, freeid = wp.tid()
     root = body_freeadr[freeid]
@@ -330,14 +327,14 @@ def _free_gyro_vjp(mass_grad: bool, inertia_grad: bool, ipos_grad: bool, iquat_g
         com_bar,
       )
       # A = M + dt*D + G: the direct solve contributes -y.T @ dG @ acceleration.
-      if wp.static(mass_grad):
-        wp.atomic_sub(mass_out, w % mass_out.shape[0], b, values[0])  # kernel_analyzer: ignore[atomic]
-      if wp.static(inertia_grad):
-        wp.atomic_sub(inertia_out, w % inertia_out.shape[0], b, values[1])  # kernel_analyzer: ignore[atomic]
-      if wp.static(ipos_grad):
-        wp.atomic_sub(ipos_out, w % ipos_out.shape[0], b, values[2])  # kernel_analyzer: ignore[atomic]
-      if wp.static(iquat_grad):
-        wp.atomic_sub(iquat_out, w % iquat_out.shape[0], b, values[3])  # kernel_analyzer: ignore[atomic]
+      if wp.static(body_mass_grad):
+        wp.atomic_sub(body_mass_grad_out, w % body_mass.shape[0], b, values[0])  # kernel_analyzer: ignore[atomic]
+      if wp.static(body_inertia_grad):
+        wp.atomic_sub(body_inertia_grad_out, w % body_inertia.shape[0], b, values[1])  # kernel_analyzer: ignore[atomic]
+      if wp.static(body_ipos_grad):
+        wp.atomic_sub(body_ipos_grad_out, w % body_ipos.shape[0], b, values[2])  # kernel_analyzer: ignore[atomic]
+      if wp.static(body_iquat_grad):
+        wp.atomic_sub(body_iquat_grad_out, w % body_iquat.shape[0], b, values[3])  # kernel_analyzer: ignore[atomic]
 
   return kernel
 
@@ -381,11 +378,11 @@ def _smooth_param_contract(
   acceleration: float,
   lam: float,
   y: float,
-  w: float,
+  w_dir: float,
   damper_enabled: bool,
 ):
   """Contracts the smooth force and direct integration terms for one DOF."""
-  phi = armature * (lam * acceleration - y * w)
+  phi = armature * (lam * acceleration - y * w_dir)
   if damper_enabled:
     phi += damping * lam * velocity
   return phi
@@ -403,13 +400,13 @@ def _smooth_param_vjp(
   # In:
   lam: wp.array2d[float],
   y: wp.array2d[float],
-  w: wp.array2d[float],
+  w_dir: wp.array2d[float],
   # Out:
   dof_armature_grad_out: wp.array2d[float],
   dof_damping_grad_out: wp.array2d[float],
 ):
   worldid, dofid = wp.tid()
-  # y and w are zero without an implicit integration solve.
+  # y and w_dir are zero without an implicit integration solve.
   derivatives = wp.grad(_smooth_param_contract)(
     dof_armature[worldid % dof_armature.shape[0], dofid],
     dof_damping[worldid % dof_damping.shape[0], dofid],
@@ -417,7 +414,7 @@ def _smooth_param_vjp(
     qacc_in[worldid, dofid],
     lam[worldid, dofid],
     y[worldid, dofid],
-    w[worldid, dofid],
+    w_dir[worldid, dofid],
     (opt_disableflags & DisableBit.DAMPER) == 0,
   )
   # Parameter writeback subtracts the residual cotangent.
