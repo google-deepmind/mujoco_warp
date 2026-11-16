@@ -201,8 +201,8 @@ def _jac_dof_pos(
 @wp.func
 def _adj_quat_rotation(rotation: wp.quat, adj_rotation: wp.quat) -> wp.vec3:
   """Maps a wxyz quaternion cotangent to its world angular tangent cotangent."""
-  seed = math.mul_quat(adj_rotation, math.quat_inv(rotation))
-  return 0.5 * wp.vec3(seed[1], seed[2], seed[3])
+  angular_bar = math.mul_quat(adj_rotation, math.quat_inv(rotation))
+  return 0.5 * wp.vec3(angular_bar[1], angular_bar[2], angular_bar[3])
 
 
 @wp.func

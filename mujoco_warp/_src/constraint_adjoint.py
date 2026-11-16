@@ -80,16 +80,16 @@ def _constraint_contract(
 
 
 @wp.func
-def _joint_jacobian_contract(x: float, data: vec12, seed: float):
+def _joint_jacobian_contract(x: float, data: vec12, jacobian_bar: float):
   _, slope = constraint._joint_polynomial(data, x)
-  return -seed * slope
+  return -jacobian_bar * slope
 
 
 @wp.func
-def _ball_jacobian_contract(delta: wp.vec3, quat: wp.quat, seed: wp.vec3):
+def _ball_jacobian_contract(delta: wp.vec3, quat: wp.quat, axis_bar: wp.vec3):
   rotated = math.quat_integrate(quat, delta, 1.0)
   axis, _ = constraint._ball_axis_angle(rotated)
-  return -wp.dot(axis, seed)
+  return -wp.dot(axis, axis_bar)
 
 
 @cache_kernel
@@ -257,19 +257,19 @@ def _constraint_residual(is_sparse: bool, param_grad: bool):
     elif jnt_type[jointid] != JointType.BALL:
       return
     qadr, dadr = jnt_qposadr[jointid], jnt_dofadr[jointid]
-    acceleration_seed = efc_D_in[w, row] * Z
+    acceleration_bar = efc_D_in[w, row] * Z
     if ty == ConstraintType.EQUALITY:
-      seed = Zb * lam_in[w, dadr] + Vb * qvel_in[w, dadr] + acceleration_seed * qacc_in[w, dadr]
+      jacobian_bar = Zb * lam_in[w, dadr] + Vb * qvel_in[w, dadr] + acceleration_bar * qacc_in[w, dadr]
       x = qpos_in[w, qadr] - qpos0[w % qpos0.shape[0], qadr]
-      jacobian_grad = wp.grad(_joint_jacobian_contract)(x, eq_data[w % eq_data.shape[0], cid], seed)[0]
+      jacobian_grad = wp.grad(_joint_jacobian_contract)(x, eq_data[w % eq_data.shape[0], cid], jacobian_bar)[0]
       wp.atomic_add(res_dof_out, w, dadr, jacobian_grad)  # kernel_analyzer: ignore[atomic]
     else:
-      axis_seed = wp.vec3()
+      axis_bar = wp.vec3()
       for i in range(3):
         dof = dadr + i
-        axis_seed[i] = Zb * lam_in[w, dof] + Vb * qvel_in[w, dof] + acceleration_seed * qacc_in[w, dof]
+        axis_bar[i] = Zb * lam_in[w, dof] + Vb * qvel_in[w, dof] + acceleration_bar * qacc_in[w, dof]
       quat = wp.quat(qpos_in[w, qadr], qpos_in[w, qadr + 1], qpos_in[w, qadr + 2], qpos_in[w, qadr + 3])
-      rotation_grad = wp.grad(_ball_jacobian_contract)(wp.vec3(), quat, axis_seed)[0]
+      rotation_grad = wp.grad(_ball_jacobian_contract)(wp.vec3(), quat, axis_bar)[0]
       for i in range(3):
         wp.atomic_add(res_dof_out, w, dadr + i, rotation_grad[i])  # kernel_analyzer: ignore[atomic]
 
@@ -530,7 +530,7 @@ def _contact_residual(cone_type: int, geom_friction_grad: bool, pair_friction_gr
       if active_edges == 0:
         return
 
-    # Gather spatial velocity (V), acceleration (A), and seed (Z) at the contact point.
+    # Gather spatial velocity (V), acceleration (A), and cotangent (Z) at the contact point.
     b0 = body_weldid[geom_bodyid[geom[0]]]
     b1 = body_weldid[geom_bodyid[geom[1]]]
     p = contact_pos_in[cid]

@@ -451,13 +451,13 @@ def _narrowphase_contract(
   slot: int,
   point: wp.vec3,
   feature: wp.vec4i,
-  pos_seed: wp.vec3,
-  dist_seed: float,
-  frame_seed: wp.mat33,
+  pos_bar: wp.vec3,
+  dist_bar: float,
+  frame_bar: wp.mat33,
 ):
   dist, pos, frame = _narrowphase(pos0, quat0, pos1, quat1, size0, size1, type0, type1, slot, point, feature)
-  phi = wp.dot(pos, pos_seed) + dist * dist_seed
-  return phi + wp.ddot(frame, frame_seed)
+  phi = wp.dot(pos, pos_bar) + dist * dist_bar
+  return phi + wp.ddot(frame, frame_bar)
 
 
 @wp.kernel(enable_backward=False)
@@ -530,7 +530,7 @@ def _gather_efc_to_contact(
   # In:
   res_efc_pos: wp.array2d[float],  # dr/defc_pos * lam (per world, per efc row)
   # Out:
-  adj_dist_out: wp.array[float],  # per-contact seed for dist_out.grad (defc_pos/ddist = 1)
+  adj_dist_out: wp.array[float],  # per-contact cotangent for dist_out.grad (defc_pos/ddist = 1)
 ):
   cid = wp.tid()
   if cid >= nacon_in[0]:

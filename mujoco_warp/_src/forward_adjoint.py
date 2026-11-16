@@ -45,9 +45,9 @@ wp.set_module_options({"enable_backward": True})
 
 
 @wp.func
-def _advance_contract(position: float, velocity: float, acceleration: float, timestep: float, pos_seed: float, vel_seed: float):
+def _advance_contract(position: float, velocity: float, acceleration: float, timestep: float, pos_bar: float, vel_bar: float):
   next_vel = forward.next_velocity(timestep, velocity, acceleration, 1.0)
-  return pos_seed * forward.next_position(position, next_vel, timestep) + vel_seed * next_vel
+  return pos_bar * forward.next_position(position, next_vel, timestep) + vel_bar * next_vel
 
 
 @wp.func
@@ -57,12 +57,12 @@ def _advance_contract(
   velocity: wp.vec3,
   acceleration: wp.vec3,
   timestep: float,
-  quat_seed: wp.quat,
-  vel_seed: wp.vec3,
+  quat_bar: wp.quat,
+  vel_bar: wp.vec3,
 ):
   next_vel = forward.next_velocity(timestep, velocity, acceleration, 1.0)
-  phi = wp.dot(quat_seed, math.quat_integrate(rotation, next_vel, timestep))
-  return phi + wp.dot(vel_seed, next_vel)
+  phi = wp.dot(quat_bar, math.quat_integrate(rotation, next_vel, timestep))
+  return phi + wp.dot(vel_bar, next_vel)
 
 
 @wp.kernel(enable_backward=False)
@@ -92,10 +92,10 @@ def _advance_state_vjp(
   nlinear = 3 if jnttype == JointType.FREE else (0 if jnttype == JointType.BALL else 1)
   for i in range(nlinear):
     qid, vid = qadr + i, dadr + i
-    pos_seed = adj_qpos[worldid, qid] if adj_qpos else 0.0
-    vel_seed = adj_qvel[worldid, vid] if adj_qvel else 0.0
+    pos_bar = adj_qpos[worldid, qid] if adj_qpos else 0.0
+    vel_bar = adj_qvel[worldid, vid] if adj_qvel else 0.0
     linear_grad = wp.grad(_advance_contract)(
-      qpos_in[worldid, qid], qvel_in[worldid, vid], qacc_in[worldid, vid], dt, pos_seed, vel_seed
+      qpos_in[worldid, qid], qvel_in[worldid, vid], qacc_in[worldid, vid], dt, pos_bar, vel_bar
     )
     adj_qpos_out[worldid, qid] = adj_qpos_out[worldid, qid] + linear_grad[0]
     adj_qvel_out[worldid, vid] = adj_qvel_out[worldid, vid] + linear_grad[1]
@@ -109,15 +109,15 @@ def _advance_state_vjp(
     )
     velocity = wp.vec3(qvel_in[worldid, dadr], qvel_in[worldid, dadr + 1], qvel_in[worldid, dadr + 2])
     acceleration = wp.vec3(qacc_in[worldid, dadr], qacc_in[worldid, dadr + 1], qacc_in[worldid, dadr + 2])
-    quat_seed = wp.quat()
-    angular_seed = wp.vec3()
+    quat_bar = wp.quat()
+    angular_bar = wp.vec3()
     if adj_qpos:
-      quat_seed = wp.quat(
+      quat_bar = wp.quat(
         adj_qpos[worldid, qadr], adj_qpos[worldid, qadr + 1], adj_qpos[worldid, qadr + 2], adj_qpos[worldid, qadr + 3]
       )
     if adj_qvel:
-      angular_seed = wp.vec3(adj_qvel[worldid, dadr], adj_qvel[worldid, dadr + 1], adj_qvel[worldid, dadr + 2])
-    rotation_grad = wp.grad(_advance_contract)(rotation, velocity, acceleration, dt, quat_seed, angular_seed)
+      angular_bar = wp.vec3(adj_qvel[worldid, dadr], adj_qvel[worldid, dadr + 1], adj_qvel[worldid, dadr + 2])
+    rotation_grad = wp.grad(_advance_contract)(rotation, velocity, acceleration, dt, quat_bar, angular_bar)
     pos_grad, vel_grad, acc_grad = rotation_grad[0], rotation_grad[1], rotation_grad[2]
     for i in range(4):
       adj_qpos_out[worldid, qadr + i] = adj_qpos_out[worldid, qadr + i] + pos_grad[i]
@@ -257,9 +257,9 @@ def _activation_contract(
   ctrlrange: wp.vec2,
   ctrllimited: bool,
   flags: int,
-  force_seed: float,
-  state_seed: float,
-  rate_seed: float,
+  force_bar: float,
+  state_bar: float,
+  rate_bar: float,
 ):
   if ctrllimited and not (flags & DisableBit.CLAMPCTRL):
     # Match the stateless path's inward derivative at either control bound.
@@ -272,7 +272,7 @@ def _activation_contract(
     rate = forward._scalar_act_dot(dyntype, dynprm, control, activation)
   next_activation = support.next_act(timestep, dyntype, dynprm, actrange, activation, rate, 1.0, actlimited)
   force_activation = next_activation if actearly else activation
-  return force_seed * force_activation + state_seed * next_activation + rate_seed * rate
+  return force_bar * force_activation + state_bar * next_activation + rate_bar * rate
 
 
 @wp.kernel(enable_backward=False)
@@ -315,14 +315,14 @@ def _activation_vjp(
   adr = actuator_actadr[uid]
   if adr < 0:
     return
-  force_seed = float(0.0)
+  force_bar = float(0.0)
   force_active = not (opt_disableflags & DisableBit.ACTUATION)
   if actuator_forcelimited[uid]:
     bounds = actuator_forcerange[w % actuator_forcerange.shape[0], uid]
     force = actuator_force_in[w, uid]
     force_active = force_active and force > bounds[0] and force < bounds[1]
   if force_active:
-    moment_seed, _ = smooth_adjoint._actuator_moment_dots(
+    moment_bar, _ = smooth_adjoint._actuator_moment_dots(
       jnt_actfrclimited,
       jnt_actfrcrange,
       dof_jntid,
@@ -334,7 +334,7 @@ def _activation_vjp(
       moment_rowadr_in[w, uid],
       moment_rownnz_in[w, uid],
     )
-    force_seed = actuator_gainprm[w % actuator_gainprm.shape[0], uid][0] * moment_seed
+    force_bar = actuator_gainprm[w % actuator_gainprm.shape[0], uid][0] * moment_bar
   # Force limits suppress force derivatives, but never the activation update itself.
   gradients = wp.grad(_activation_contract)(
     ctrl_in[w, uid],
@@ -348,7 +348,7 @@ def _activation_vjp(
     actuator_ctrlrange[w % actuator_ctrlrange.shape[0], uid],
     actuator_ctrllimited[uid],
     opt_disableflags,
-    force_seed,
+    force_bar,
     adj_act[w, adr] if adj_act else 0.0,
     adj_act_dot[w, adr] if adj_act_dot else 0.0,
   )
@@ -485,10 +485,10 @@ def _xfrc_applied_vjp(
 
 
 @wp.func
-def _damping_contract(velocity: float, damping: float, poly: wp.vec2, dt: float, acceleration: float, seed: float):
+def _damping_contract(velocity: float, damping: float, poly: wp.vec2, dt: float, acceleration: float, solve_bar: float):
   """Contracts the velocity-dependent integration matrix with its solve cotangent."""
   phi = dt * util_misc._poly_force_deriv(damping, poly, velocity, 1) * acceleration
-  return seed * phi
+  return solve_bar * phi
 
 
 @wp.kernel(enable_backward=False)
@@ -599,10 +599,10 @@ def _implicit_free_body_backward(
   factor, pivot, ok = math.lu_factor_6x6(wp.transpose(A))
   if not ok:
     return
-  seed = vec6(0.0)
+  qacc_bar = vec6(0.0)
   for r in range(6):
-    seed[r] = adj_qacc[worldid, dofadr + r]
-  y = math.lu_solve_6x6(factor, pivot, seed)
+    qacc_bar[r] = adj_qacc[worldid, dofadr + r]
+  y = math.lu_solve_6x6(factor, pivot, qacc_bar)
   for r in range(6):
     y_out[worldid, dofadr + r] = y[r]
 
@@ -689,9 +689,9 @@ def _kinematics_vjp(nbody: int):
           if adj_site_xpos:
             for siteid in range(nsite):
               if site_bodyid[siteid] == body:
-                seed = adj_site_xpos[worldid, siteid]
+                pos_bar = adj_site_xpos[worldid, siteid]
                 offset = math.rot_vec_quat(site_pos[site_worldid, siteid], rotation)
-                wrench += smooth.transform_force(seed, wp.vec3(), -offset)
+                wrench += smooth.transform_force(pos_bar, wp.vec3(), -offset)
         wp.tile_assign(positions, wp.tile(position, preserve_type=True), offset=(start,))
         wp.tile_assign(wrenches, wp.tile(wrench, preserve_type=True), offset=(start,))
 
@@ -877,7 +877,7 @@ def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
 
     if not (m.opt.disableflags & DisableBit.DAMPER):
       # Q = M + dt*D, where D = -d(force_damper)/dv. Its VJP affects velocity and,
-      # when optimized, damping itself. Use a negative seed because qacc = Q^-1 Ma.
+      # when optimized, damping itself. Use a negative cotangent because qacc = Q^-1 Ma.
       wp.launch(
         _damping_vjp,
         dim=(nworld, nv),

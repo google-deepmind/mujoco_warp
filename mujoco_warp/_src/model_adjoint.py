@@ -88,9 +88,9 @@ def _accum_constraint_params(
 
 
 @wp.func
-def _inertial_frame_contract(ipos: wp.vec3, iquat: wp.quat, rotation: wp.quat, pos_seed: wp.vec3, quat_seed: wp.quat):
-  phi = wp.dot(math.rot_vec_quat(ipos, rotation), pos_seed)
-  return phi + wp.dot(math.mul_quat(rotation, iquat), quat_seed)
+def _inertial_frame_contract(ipos: wp.vec3, iquat: wp.quat, rotation: wp.quat, pos_bar: wp.vec3, quat_bar: wp.quat):
+  phi = wp.dot(math.rot_vec_quat(ipos, rotation), pos_bar)
+  return phi + wp.dot(math.mul_quat(rotation, iquat), quat_bar)
 
 
 @cache_kernel
@@ -221,12 +221,12 @@ def _free_gyro_contract(
   offset: wp.vec3,
   velocity: wp.vec3,
   acceleration: wp.vec3,
-  linear_seed: wp.vec3,
-  angular_seed: wp.vec3,
+  linear_bar: wp.vec3,
+  angular_bar: wp.vec3,
   timestep: float,
 ):
   lin, rot = math.free_bias_vel_blocks(mass, rotation, inertia, offset, velocity)
-  return timestep * (wp.dot(angular_seed, rot @ acceleration) - mass * wp.dot(linear_seed, lin @ acceleration))
+  return timestep * (wp.dot(angular_bar, rot @ acceleration) - mass * wp.dot(linear_bar, lin @ acceleration))
 
 
 @wp.func
@@ -241,14 +241,14 @@ def _inertial_contract(
   com: wp.vec3,
   com_mass: float,
   is_root: bool,
-  inertia_seed: vec10,
-  com_seed: wp.vec3,
+  cinert_bar: vec10,
+  com_bar: wp.vec3,
 ):
   world_pos = position + math.rot_vec_quat(ipos, orientation)
   world_mat = math.quat_to_mat(math.mul_quat(orientation, iquat))
-  phi = wp.dot(smooth.inert_com(mass, inertia, world_mat, world_pos - com), inertia_seed)
+  phi = wp.dot(smooth.inert_com(mass, inertia, world_mat, world_pos - com), cinert_bar)
   weight = mass / com_mass if com_mass >= MJ_MINVAL else float(is_root)
-  return phi + weight * wp.dot(com_seed, world_pos)
+  return phi + weight * wp.dot(com_bar, world_pos)
 
 
 @cache_kernel
@@ -298,7 +298,7 @@ def _free_gyro_vjp(mass_grad: bool, inertia_grad: bool, ipos_grad: bool, iquat_g
       opt_timestep[w % opt_timestep.shape[0]],
     )
     ibar = gradients[1]
-    inertia_seed = vec10(
+    cinert_bar = vec10(
       ibar[0, 0],
       ibar[1, 1],
       ibar[2, 2],
@@ -311,7 +311,7 @@ def _free_gyro_vjp(mass_grad: bool, inertia_grad: bool, ipos_grad: bool, iquat_g
       gradients[0],
     )
     # Moving the COM also translates every body's parallel-axis inertia.
-    com_seed = gradients[3] + (ibar + wp.transpose(ibar) - 2.0 * wp.trace(ibar) * wp.identity(n=3, dtype=float)) @ wp.vec3(
+    com_bar = gradients[3] + (ibar + wp.transpose(ibar) - 2.0 * wp.trace(ibar) * wp.identity(n=3, dtype=float)) @ wp.vec3(
       ci[6], ci[7], ci[8]
     )
     com_mass = body_subtreemass[w % body_subtreemass.shape[0], root]
@@ -326,8 +326,8 @@ def _free_gyro_vjp(mass_grad: bool, inertia_grad: bool, ipos_grad: bool, iquat_g
         com,
         com_mass,
         b == root,
-        inertia_seed,
-        com_seed,
+        cinert_bar,
+        com_bar,
       )
       # A = M + dt*D + G: the direct solve contributes -y.T @ dG @ acceleration.
       if wp.static(mass_grad):

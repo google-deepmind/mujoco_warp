@@ -37,21 +37,21 @@ wp.set_module_options({"enable_backward": True})
 
 
 @wp.func
-def _spring_contract(stiffness: float, poly: wp.vec2, displacement: float, seed: float):
+def _spring_contract(stiffness: float, poly: wp.vec2, displacement: float, force_bar: float):
   force = -displacement * util_misc._poly_force(stiffness, poly, displacement, 0)
-  return seed * force
+  return force_bar * force
 
 
 @wp.func
-def _spring_contract(stiffness: float, poly: wp.vec2, displacement: wp.vec3, seed: wp.vec3):
+def _spring_contract(stiffness: float, poly: wp.vec2, displacement: wp.vec3, force_bar: wp.vec3):
   k = util_misc._poly_force(stiffness, poly, wp.length(displacement), 0)
-  return wp.dot(seed, -k * displacement)
+  return wp.dot(force_bar, -k * displacement)
 
 
 @wp.func
-def _spring_contract(stiffness: float, poly: wp.vec2, rotation: wp.quat, reference: wp.quat, seed: wp.vec3):
+def _spring_contract(stiffness: float, poly: wp.vec2, rotation: wp.quat, reference: wp.quat, force_bar: wp.vec3):
   displacement = math.quat_sub(wp.normalize(rotation), reference)
-  return _spring_contract(stiffness, poly, displacement, seed)
+  return _spring_contract(stiffness, poly, displacement, force_bar)
 
 
 @wp.kernel(enable_backward=False)
@@ -107,8 +107,8 @@ def _spring_qpos_vjp(
       ref_pos = wp.vec3(
         qpos_spring[spring_worldid, qposid], qpos_spring[spring_worldid, qposid + 1], qpos_spring[spring_worldid, qposid + 2]
       )
-      seed = wp.vec3(lam[worldid, dofid], lam[worldid, dofid + 1], lam[worldid, dofid + 2])
-      linear_grad = wp.grad(_spring_contract)(stiffness, poly, pos - ref_pos, seed)
+      force_bar = wp.vec3(lam[worldid, dofid], lam[worldid, dofid + 1], lam[worldid, dofid + 2])
+      linear_grad = wp.grad(_spring_contract)(stiffness, poly, pos - ref_pos, force_bar)
       stiffness_grad += linear_grad[0]
       poly_grad += linear_grad[1]
       pos_grad = linear_grad[2]
@@ -127,8 +127,8 @@ def _spring_qpos_vjp(
       qpos_spring[spring_worldid, qposid + 2],
       qpos_spring[spring_worldid, qposid + 3],
     )
-    seed = wp.vec3(lam[worldid, dofid], lam[worldid, dofid + 1], lam[worldid, dofid + 2])
-    rotation_grad = wp.grad(_spring_contract)(stiffness, poly, rot, ref_rot, seed)
+    force_bar = wp.vec3(lam[worldid, dofid], lam[worldid, dofid + 1], lam[worldid, dofid + 2])
+    rotation_grad = wp.grad(_spring_contract)(stiffness, poly, rot, ref_rot, force_bar)
     stiffness_grad += rotation_grad[0]
     poly_grad += rotation_grad[1]
     rot_grad, ref_rot_grad = rotation_grad[2], rotation_grad[3]
@@ -371,7 +371,7 @@ def _xfrc_kinematics_vjp(
   rootid = body_rootid[dofbodyid]
   subtree_com = subtree_com_in[worldid, rootid]
   # The residual subtracts the generalized force produced by support._apply_ft.
-  seed = -lam[worldid, dofid]
+  qfrc_bar = -lam[worldid, dofid]
   adj_rot = wp.vec3()
   adj_lin = wp.vec3()
   adj_com = wp.vec3()
@@ -382,9 +382,9 @@ def _xfrc_kinematics_vjp(
     force = wp.spatial_top(wrench)
     torque = wp.spatial_bottom(wrench)
     offset = xipos_in[worldid, bodyid] - subtree_com
-    adj_rot += seed * (torque + wp.cross(offset, force))
-    adj_lin += seed * force
-    adj_offset = seed * wp.cross(force, rotational_cdof)
+    adj_rot += qfrc_bar * (torque + wp.cross(offset, force))
+    adj_lin += qfrc_bar * force
+    adj_offset = qfrc_bar * wp.cross(force, rotational_cdof)
     wp.atomic_add(adj_xipos_out, worldid, bodyid, adj_offset)  # kernel_analyzer: ignore[atomic]
     adj_com -= adj_offset
   wp.atomic_add(adj_subtree_com_out, worldid, rootid, adj_com)  # kernel_analyzer: ignore[atomic]
@@ -402,8 +402,8 @@ def xfrc_kinematics_backward(m: Model, d: Data, lam: wp.array2d, xfrc_applied: w
 
 
 @wp.func
-def _rne_force_contract(ci: vec10, cv: wp.spatial_vector, ca: wp.spatial_vector, seed: wp.spatial_vector):
-  return wp.dot(smooth.rne_body_force(ci, cv, ca), seed)
+def _rne_force_contract(ci: vec10, cv: wp.spatial_vector, ca: wp.spatial_vector, force_bar: wp.spatial_vector):
+  return wp.dot(smooth.rne_body_force(ci, cv, ca), force_bar)
 
 
 @wp.func
@@ -413,15 +413,15 @@ def _rne_contract(
   cv: wp.spatial_vector,
   ca: wp.spatial_vector,
   mass_ca: wp.spatial_vector,
-  seed: wp.spatial_vector,
-  mass_seed: wp.spatial_vector,
+  force_bar: wp.spatial_vector,
+  mass_force_bar: wp.spatial_vector,
 ):
-  return wp.dot(smooth.rne_body_force(ci, cv, ca), seed) + wp.dot(math.inert_vec(ci, mass_ca), mass_seed)
+  return wp.dot(smooth.rne_body_force(ci, cv, ca), force_bar) + wp.dot(math.inert_vec(ci, mass_ca), mass_force_bar)
 
 
 @wp.func
-def _cinert_contract(mass: float, inertia: wp.vec3, orientation: wp.quat, offset: wp.vec3, seed: vec10):
-  return wp.dot(smooth.inert_com(mass, inertia, math.quat_to_mat(orientation), offset), seed)
+def _cinert_contract(mass: float, inertia: wp.vec3, orientation: wp.quat, offset: wp.vec3, cinert_bar: vec10):
+  return wp.dot(smooth.inert_com(mass, inertia, math.quat_to_mat(orientation), offset), cinert_bar)
 
 
 @wp.func
@@ -443,17 +443,17 @@ def _rne_body_inputs(
   bodyid: int,
 ):
   """Sums DOF contributions to body acceleration and force cotangents, including the mass term."""
-  ca, seed = wp.spatial_vector(), wp.spatial_vector()
-  mass_ca, mass_seed = wp.spatial_vector(), wp.spatial_vector()
+  ca, force_bar = wp.spatial_vector(), wp.spatial_vector()
+  mass_ca, mass_force_bar = wp.spatial_vector(), wp.spatial_vector()
   start = body_dofadr[bodyid]
   for i in range(start, start + body_dofnum[bodyid]):
     S = cdof_in[worldid, i]
     ca += cdof_dot_in[worldid, i] * qvel_in[worldid, i] + S * qacc_in[worldid, i]
-    seed += lam[worldid, i] * S
+    force_bar += lam[worldid, i] * S
     if with_mass:
       mass_ca += mass_w[worldid, i] * S
-      mass_seed -= mass_y[worldid, i] * S
-  return ca, seed, mass_ca, mass_seed
+      mass_force_bar -= mass_y[worldid, i] * S
+  return ca, force_bar, mass_ca, mass_force_bar
 
 
 @cache_kernel
@@ -503,12 +503,12 @@ def _rne_vjp(nbody: int, with_mass: bool, mass_grad: bool, inertia_grad: bool):
   ):
     w, lane = wp.tid()
     ca_local = wp.tile_empty(shape=(wp.static(tile_size),), dtype=wp.spatial_vector, storage="shared")
-    seed_local = wp.tile_empty(shape=(wp.static(tile_size),), dtype=wp.spatial_vector, storage="shared")
+    force_bar_local = wp.tile_empty(shape=(wp.static(tile_size),), dtype=wp.spatial_vector, storage="shared")
     force_tile = wp.tile_empty(shape=(wp.static(tile_size),), dtype=wp.spatial_vector, storage="shared")
     ca_bar_tile = wp.tile_empty(shape=(wp.static(tile_size),), dtype=wp.spatial_vector, storage="shared")
     if wp.static(with_mass):
       mass_ca_local = wp.tile_empty(shape=(wp.static(tile_size),), dtype=wp.spatial_vector, storage="shared")
-      mass_seed_local = wp.tile_empty(shape=(wp.static(tile_size),), dtype=wp.spatial_vector, storage="shared")
+      mass_force_bar_local = wp.tile_empty(shape=(wp.static(tile_size),), dtype=wp.spatial_vector, storage="shared")
       mass_force_tile = wp.tile_empty(shape=(wp.static(tile_size),), dtype=wp.spatial_vector, storage="shared")
       mass_ca_bar_tile = wp.tile_empty(shape=(wp.static(tile_size),), dtype=wp.spatial_vector, storage="shared")
 
@@ -516,10 +516,10 @@ def _rne_vjp(nbody: int, with_mass: bool, mass_grad: bool, inertia_grad: bool):
       # Explicit tile shapes also work with the CPU backend's single lane.
       for start in range(0, wp.static(tile_size), wp.block_dim()):
         body = body_start + start + lane
-        local_ca, local_seed = wp.spatial_vector(), wp.spatial_vector()
-        local_mass_ca, local_mass_seed = wp.spatial_vector(), wp.spatial_vector()
+        local_ca, local_force_bar = wp.spatial_vector(), wp.spatial_vector()
+        local_mass_ca, local_mass_force_bar = wp.spatial_vector(), wp.spatial_vector()
         if body > 0 and body < wp.static(nbody):
-          local_ca, local_seed, local_mass_ca, local_mass_seed = _rne_body_inputs(
+          local_ca, local_force_bar, local_mass_ca, local_mass_force_bar = _rne_body_inputs(
             body_dofnum,
             body_dofadr,
             qvel_in,
@@ -534,28 +534,28 @@ def _rne_vjp(nbody: int, with_mass: bool, mass_grad: bool, inertia_grad: bool):
             body,
           )
         wp.tile_assign(ca_local, wp.tile(local_ca, preserve_type=True), offset=(start,))
-        wp.tile_assign(seed_local, wp.tile(local_seed, preserve_type=True), offset=(start,))
+        wp.tile_assign(force_bar_local, wp.tile(local_force_bar, preserve_type=True), offset=(start,))
         if wp.static(with_mass):
           wp.tile_assign(mass_ca_local, wp.tile(local_mass_ca, preserve_type=True), offset=(start,))
-          wp.tile_assign(mass_seed_local, wp.tile(local_mass_seed, preserve_type=True), offset=(start,))
+          wp.tile_assign(mass_force_bar_local, wp.tile(local_mass_force_bar, preserve_type=True), offset=(start,))
 
       for start in range(0, wp.static(tile_size), wp.block_dim()):
         body = body_start + start + lane
         force, mass_force = wp.spatial_vector(), wp.spatial_vector()
         ca_bar, mass_ca_bar = wp.spatial_vector(), wp.spatial_vector()
         if body > 0 and body < wp.static(nbody):
-          ca, seed = wp.spatial_vector(), wp.spatial_vector()
-          mass_ca, mass_seed = wp.spatial_vector(), wp.spatial_vector()
+          ca, force_bar = wp.spatial_vector(), wp.spatial_vector()
+          mass_ca, mass_force_bar = wp.spatial_vector(), wp.spatial_vector()
           b = body
           while b > 0:
             if b >= body_start:
               ca += ca_local[b - body_start]
-              seed += seed_local[b - body_start]
+              force_bar += force_bar_local[b - body_start]
               if wp.static(with_mass):
                 mass_ca += mass_ca_local[b - body_start]
-                mass_seed += mass_seed_local[b - body_start]
+                mass_force_bar += mass_force_bar_local[b - body_start]
             else:
-              local_ca, local_seed, local_mass_ca, local_mass_seed = _rne_body_inputs(
+              local_ca, local_force_bar, local_mass_ca, local_mass_force_bar = _rne_body_inputs(
                 body_dofnum,
                 body_dofadr,
                 qvel_in,
@@ -570,10 +570,10 @@ def _rne_vjp(nbody: int, with_mass: bool, mass_grad: bool, inertia_grad: bool):
                 b,
               )
               ca += local_ca
-              seed += local_seed
+              force_bar += local_force_bar
               if wp.static(with_mass):
                 mass_ca += local_mass_ca
-                mass_seed += local_mass_seed
+                mass_force_bar += local_mass_force_bar
             b = body_parentid[b]
           if gravity_enabled:
             gravity = opt_gravity[w % opt_gravity.shape[0]]
@@ -584,10 +584,10 @@ def _rne_vjp(nbody: int, with_mass: bool, mass_grad: bool, inertia_grad: bool):
           cv = cvel_in[w, body]
           if wp.static(with_mass):
             ci_bar, cv_bar, ca_bar, mass_ca_bar, force, mass_force = wp.grad(_rne_contract)(
-              ci, cv, ca, mass_ca, seed, mass_seed
+              ci, cv, ca, mass_ca, force_bar, mass_force_bar
             )
           else:
-            ci_bar, cv_bar, ca_bar, force = wp.grad(_rne_force_contract)(ci, cv, ca, seed)
+            ci_bar, cv_bar, ca_bar, force = wp.grad(_rne_force_contract)(ci, cv, ca, force_bar)
           adj_cinert_out[w, body] = ci_bar
           adj_cvel_out[w, body] = cv_bar
           root = body_rootid[body]

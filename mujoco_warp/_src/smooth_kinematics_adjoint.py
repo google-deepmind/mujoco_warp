@@ -82,27 +82,27 @@ def _kinematics_mocap_vjp(
   force, torque = wp.vec3(), wp.vec3()
   for body in range(root, root + body_subtreenum[root]):
     if adj_xipos:
-      seed = adj_xipos[w, body]
-      force += seed
-      torque += wp.cross(xipos_in[w, body] - origin, seed)
+      pos_bar = adj_xipos[w, body]
+      force += pos_bar
+      torque += wp.cross(xipos_in[w, body] - origin, pos_bar)
       torque += adjoint_util._adj_quat_rotation(xiquat_in[w, body], adj_xiquat[w, body])
     if adj_subtree_com:
-      seed = adj_subtree_com[w, body]
-      force += seed
-      torque += wp.cross(subtree_com_in[w, body] - origin, seed)
+      pos_bar = adj_subtree_com[w, body]
+      force += pos_bar
+      torque += wp.cross(subtree_com_in[w, body] - origin, pos_bar)
   if adj_geom_xpos:
     for geom in range(ngeom):
       if body_rootid[geom_bodyid[geom]] == root:
-        seed = adj_geom_xpos[w, geom]
-        force += seed
-        torque += wp.cross(geom_xpos_in[w, geom] - origin, seed)
+        pos_bar = adj_geom_xpos[w, geom]
+        force += pos_bar
+        torque += wp.cross(geom_xpos_in[w, geom] - origin, pos_bar)
         torque += adjoint_util._adj_quat_rotation(geom_xquat_in[w, geom], adj_geom_xquat[w, geom])
   if adj_cdof:
     for dof in range(nv):
       if body_rootid[dof_bodyid[dof]] == root:
-        value, dof_seed = cdof_in[w, dof], adj_cdof[w, dof]
-        torque += wp.cross(wp.spatial_top(value), wp.spatial_top(dof_seed))
-        torque += wp.cross(wp.spatial_bottom(value), wp.spatial_bottom(dof_seed))
+        value, cdof_bar = cdof_in[w, dof], adj_cdof[w, dof]
+        torque += wp.cross(wp.spatial_top(value), wp.spatial_top(cdof_bar))
+        torque += wp.cross(wp.spatial_bottom(value), wp.spatial_bottom(cdof_bar))
   adj_mocap_pos_out[w, mocapid] += scale * force
   adj_mocap_quat_out[w, mocapid] += scale * _mocap_quat_vjp(mocap_quat_in[w, mocapid], torque)
 
@@ -274,11 +274,11 @@ def _kinematics_qpos_vjp(nbody: int, contact: bool):
             count = body_geomnum[body]
           for item in range(first, first + count):
             force = adj_pos[w, item]
-            rotation_seed = adj_quat[w, item]
-            if force == wp.vec3() and rotation_seed == wp.quat():
+            quat_bar = adj_quat[w, item]
+            if force == wp.vec3() and quat_bar == wp.quat():
               continue
             point = pose_xpos_in[w, item]
-            torque = adjoint_util._adj_quat_rotation(pose_xquat_in[w, item], rotation_seed)
+            torque = adjoint_util._adj_quat_rotation(pose_xquat_in[w, item], quat_bar)
             pose += smooth.transform_force(force, torque, position - point)
             if free_root:
               local_point = wp.vec3()

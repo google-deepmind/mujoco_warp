@@ -672,7 +672,7 @@ def _accum_kinematics_adjoints(
 
 
 def _write_kinematics_adjoints(d: Data, bc: BackwardContext):
-  """Accumulates FK input gradients and consumes its overwritten output seeds."""
+  """Accumulates FK input gradients and consumes its overwritten output cotangents."""
   grads = [
     d.qpos.grad,
     d.mocap_pos.grad,
