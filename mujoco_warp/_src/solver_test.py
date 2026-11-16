@@ -1392,6 +1392,10 @@ class SolverTest(parameterized.TestCase):
             <freejoint/>
             <geom type="box" size="0.04 0.05 0.03" mass="0.5" condim="6"/>
           </body>
+          <body pos="0 0.5 0.5">
+            <joint type="slide" axis="1 0 0" frictionloss="0.3"/>
+            <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
+          </body>
         </worldbody>
       </mujoco>
       """,
@@ -1401,7 +1405,7 @@ class SolverTest(parameterized.TestCase):
 
     # slide the boxes so their contacts are in the cone state, differently per world
     qvel = np.zeros((nworld, mjm.nv))
-    qvel[:, 0::6] = 1.5
+    qvel[:, 0::6] = 1.5  # dof 18 slides the friction joint
     if nworld == 2:
       qvel[1, 1::6] = -0.8
     d.qvel.assign(qvel)
@@ -1411,6 +1415,12 @@ class SolverTest(parameterized.TestCase):
     ctx = solver._create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
     ctx.done.fill_(False)
+
+    # a sliding friction row with a band-jump weight
+    np.testing.assert_array_equal(d.efc.state.numpy()[:, 0], types.ConstraintState.LINEARPOS.value)
+    weight = ctx.hessian_weight.numpy()
+    weight[:, 0] = 0.5 * d.efc.D.numpy()[:, 0]
+    ctx.hessian_weight.assign(weight)
 
     def dense_hessian(elliptic):
       ctx.h.fill_(wp.inf)
@@ -1438,7 +1448,7 @@ class SolverTest(parameterized.TestCase):
       )
       return np.triu(ctx.h.numpy()[:, : m.nv, : m.nv])
 
-    # the elliptic variant adds exactly the cone curvature to M + J'DJ
+    # the elliptic variant adds exactly the cone curvature to M + J'WJ
     cone = dense_hessian(True) - dense_hessian(False)
     for worldid in range(nworld):
       self.assertTrue(np.any(cone[worldid] != 0.0))
