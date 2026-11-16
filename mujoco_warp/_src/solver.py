@@ -5286,7 +5286,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
     d = dataclasses.replace(d, qfrc_smooth=_get_qfrc_smooth_eff(m, d, ctx))
 
     # effective-metric scratch for the solver iterations, which may run inside wp.capture_while
-    if passive.flex_passive_contact(m) and ctx.efm_con is None:
+    if passive.flex_passive_contact(m):
       ctx.efm_con = derivative.build_efm_contact(m, d)
     if m.nflex and m.nflexvert and ctx.flex_scratch is None:
       ctx.flex_scratch = passive.flex_stretch_scratch(m, d)

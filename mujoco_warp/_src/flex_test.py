@@ -3174,6 +3174,7 @@ class FlexCollisionTest(parameterized.TestCase):
     cand_pos = ws.pos.numpy()[:ncand]
     cand_dist = ws.dist.numpy()[:ncand]
     cand_elem = ws.elem.numpy()[:ncand]
+    cand_vert = ws.vert.numpy()[:ncand]
     num_groups = int(ws.flex_num_groups.numpy()[0])
     group_starts = ws.flex_group_start_indices.numpy()[:num_groups]
 
@@ -3186,15 +3187,23 @@ class FlexCollisionTest(parameterized.TestCase):
         return e1_c < e1_s
       if e2_c != e2_s:
         return e2_c < e2_s
+      v1_c, v2_c = cand_vert[curr]
+      v1_s, v2_s = cand_vert[sel]
+      if v1_c != v1_s:
+        return v1_c < v1_s
+      if v2_c != v2_s:
+        return v2_c < v2_s
       return curr < sel
 
     self.assertGreater(num_groups, 0)
+    checked_fps = False
     for g in range(num_groups):
       g_start = group_starts[g]
       g_end = group_starts[g + 1] if g + 1 < num_groups else ncand
       group_cands = [sort_val[si] for si in range(g_start, g_end) if cand_active_sorted[si] == 1]
       if len(group_cands) <= types.MJ_MAXCONPAIR:
         continue
+      checked_fps = True
 
       best_seed = -1
       min_d = 1e10
@@ -3238,6 +3247,76 @@ class FlexCollisionTest(parameterized.TestCase):
       warp_selected = sorted([c_idx for c_idx in group_cands if cand_active[c_idx] == 1])
       np_selected = sorted(selected)
       self.assertEqual(warp_selected, np_selected)
+    self.assertTrue(checked_fps)
+
+  @parameterized.parameters(1, 2)
+  def test_flex_3d_plane_fps_deterministic_tie_break(self, nworld):
+    """Test that 3D plane-flex FPS breaks equal-distance ties by cand_vert."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <flexcomp name="solid" count="8 8 2" spacing=".05 .05 .05" pos="0 0 .025" radius=".02" dim="3" mass=".5">
+            <contact selfcollide="none"/>
+            <elasticity young="1e4"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=1500,
+    )
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2::3] -= 0.002
+      d.qpos.assign(qpos)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    collision_flex.flex_broadphase_aabb(m, d)
+
+    ws = collision_flex._allocate_flex_workspace(m, d)
+    ws.ncand.zero_()
+    ws.flex_num_groups.zero_()
+    collision_flex._detect_plane_flex_candidates(m, d, ws)
+    ncand = int(ws.ncand.numpy()[0])
+    self.assertEqual(ncand, 64 * nworld)
+    self.assertTrue(np.all(ws.elem.numpy()[:ncand] == -1))
+
+    # Run FPS on original candidate slot order
+    d.nacon.zero_()
+    d.contact.dist.fill_(wp.inf)
+    d.contact.vert.fill_(-1)
+    d.contact.worldid.fill_(-1)
+    collision_flex._filter_and_write_contacts(m, d, ws, enable_fps=True)
+    nacon_fwd = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon_fwd, types.MJ_MAXCONPAIR * nworld)
+    world_fwd = d.contact.worldid.numpy()[:nacon_fwd].copy()
+    vert_fwd = d.contact.vert.numpy()[:nacon_fwd, 1].copy()
+    dist_fwd = d.contact.dist.numpy()[:nacon_fwd].copy()
+
+    # Reverse candidate slot indices to simulate arbitrary atomic_add scheduling
+    for arr in (ws.dist, ws.pos, ws.nrm, ws.geom, ws.flex, ws.elem, ws.vert, ws.worldid):
+      buf = arr.numpy().copy()
+      buf[:ncand] = buf[:ncand][::-1]
+      arr.assign(buf)
+
+    ws.flex_num_groups.zero_()
+    d.nacon.zero_()
+    d.contact.dist.fill_(wp.inf)
+    d.contact.vert.fill_(-1)
+    d.contact.worldid.fill_(-1)
+    collision_flex._filter_and_write_contacts(m, d, ws, enable_fps=True)
+    nacon_rev = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon_rev, types.MJ_MAXCONPAIR * nworld)
+    world_rev = d.contact.worldid.numpy()[:nacon_rev]
+    vert_rev = d.contact.vert.numpy()[:nacon_rev, 1]
+
+    for w in range(nworld):
+      self.assertEqual(sorted(vert_fwd[world_fwd == w]), sorted(vert_rev[world_rev == w]))
+    if nworld == 2:
+      self.assertFalse(np.allclose(sorted(dist_fwd[world_fwd == 0]), sorted(dist_fwd[world_fwd == 1])))
 
   @parameterized.parameters(1, 2)
   def test_mixed_flex_broadphase_and_narrowphase(self, nworld):
@@ -5198,6 +5277,106 @@ class FlexContactParityTest(parameterized.TestCase):
       self._assert_contact_parity(w_contacts, m_contacts, atol=1e-4)
       np.testing.assert_allclose(qfrc_passive[w], mjds[w].qfrc_passive, atol=1e-3, rtol=1e-3)
       np.testing.assert_allclose(qacc[w], mjds[w].qacc, atol=1e-2, rtol=1e-2)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_passive[0], qfrc_passive[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_passive_flex_flex_no_fps_truncation_parity(self, nworld):
+    """Test that passive flex-flex collisions exceeding MJ_MAXCONPAIR are not truncated by FPS."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" ccd_tolerance="1e-8"/>
+        <worldbody>
+          <flexcomp name="c0" count="4 4 1" spacing="0.05 0.05 0.05" radius="0.01" mass="0.016">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="10" damping="0.01"/>
+          </flexcomp>
+          <flexcomp name="c1" count="4 4 1" spacing="0.05 0.05 0.05" pos="0.02 0.01 0.017" euler="8 -6 0" radius="0.01" mass="0.016">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="10" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, mjm.nq // 2 + 2] -= 0.001
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+
+    d.nacon.fill_(-1)
+    d.qfrc_passive.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mjw.forward(m, d)
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      self.assertGreater(mjds[w].ncon, types.MJ_MAXCONPAIR)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, sum(mjd_w.ncon for mjd_w in mjds))
+    qfrc_passive = d.qfrc_passive.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(qfrc_passive[w], mjds[w].qfrc_passive, atol=1.0, rtol=2e-2)
+      np.testing.assert_allclose(qacc[w], mjds[w].qacc, atol=20.0, rtol=2e-2)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_passive[0], qfrc_passive[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_passive_flex_3d_geom_no_fps_truncation_parity(self, nworld):
+    """Test that passive 3D flex-geom collisions exceeding MJ_MAXCONPAIR skip FPS truncation."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG"/>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <flexcomp name="solid" count="8 8 2" spacing="0.05 0.05 0.05" pos="0 0 0.025" radius="0.02" dim="3" mass="0.5">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="1e4" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=1500,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 2::3] -= 0.002
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+
+    d.nacon.fill_(-1)
+    d.qfrc_passive.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mjw.forward(m, d)
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      self.assertGreater(mjds[w].ncon, types.MJ_MAXCONPAIR)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, sum(mjd_w.ncon for mjd_w in mjds))
+    qfrc_passive = d.qfrc_passive.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(qfrc_passive[w], mjds[w].qfrc_passive, atol=1e-2, rtol=1e-3)
+      np.testing.assert_allclose(qacc[w], mjds[w].qacc, atol=20.0, rtol=2e-2)
 
     if nworld == 2:
       self.assertFalse(np.allclose(qfrc_passive[0], qfrc_passive[1]))

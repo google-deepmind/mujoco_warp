@@ -4084,13 +4084,13 @@ class DerivativeTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
-  @parameterized.parameters(1, 2)
-  def test_eff_solve_pcg_overflow(self, nworld):
-    """Verifies eff_solve sets OverflowType.ITERATIONS when PCG does not converge."""
+  @parameterized.product(nworld=(1, 2), iterations=(0, 1))
+  def test_eff_solve_pcg_overflow(self, nworld, iterations):
+    """Verifies eff_solve sets OverflowType.ITERATIONS only when PCG runs and does not converge."""
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
-        <option gravity="0 0 0" integrator="discrete" solver="CG" iterations="1" tolerance="1e-10"/>
+        <option gravity="0 0 0" integrator="discrete" solver="CG" tolerance="1e-10"/>
         <worldbody>
           <flexcomp name="cloth" count="3 3 1" spacing="0.05 0.05 1" radius="0.005" mass="0.09">
             <contact contype="0" conaffinity="0" selfcollide="none"/>
@@ -4101,6 +4101,7 @@ class DerivativeTest(parameterized.TestCase):
       """,
       qpos_noise=0.01,
       nworld=nworld,
+      overrides={"opt.iterations": iterations},
     )
     mjw.fwd_position(m, d)
     mjw.fwd_velocity(m, d)
@@ -4113,7 +4114,10 @@ class DerivativeTest(parameterized.TestCase):
     derivative.eff_solve(m, d, d.qacc_smooth, qfrc=wp.array(qfrc, dtype=float))
 
     overflow = d.overflow.numpy()
-    self.assertTrue(bool(int(overflow[0]) & int(types.OverflowType.ITERATIONS)))
+    if iterations == 0:
+      self.assertEqual(int(overflow[0]), 0)
+    else:
+      self.assertTrue(bool(int(overflow[0]) & int(types.OverflowType.ITERATIONS)))
     if nworld == 2:
       self.assertEqual(int(overflow[1]), 0)
 

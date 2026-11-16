@@ -2757,8 +2757,9 @@ def _compare_candidate(
 
 
 # Note: MuJoCo Warp uses proximity deduplication (1 mm threshold) only for 1D and 2D
-# flex-geom collisions. 3D flex-geom, flex self-collision, and flex-flex collisions
-# apply proximity deduplication before Farthest Point Sampling (FPS) limited to MJ_MAXCONPAIR.
+# flex-geom collisions and ContactType.PASSIVE flex pairs. Non-passive 3D flex-geom,
+# flex self-collision, and flex-flex collisions apply proximity deduplication before
+# Farthest Point Sampling (FPS) limited to MJ_MAXCONPAIR.
 # TODO(thowell): Figure out an FPS version that utilizes a configurable mj_maxconpair.
 @cache_kernel
 def _filter_flex_candidates_sorted(has_passive_flex: bool):
@@ -3154,20 +3155,24 @@ def _tie_break_fps(
   curr_idx: int,
   sel_idx: int,
   cand_elem: wp.array[wp.vec2i],
+  cand_vert: wp.array[wp.vec2i],
 ):
   if sel_idx < 0:
     return True
 
-  elem1_curr = cand_elem[curr_idx][0]
-  elem2_curr = cand_elem[curr_idx][1]
+  elem_curr = cand_elem[curr_idx]
+  elem_sel = cand_elem[sel_idx]
+  if elem_curr[0] != elem_sel[0]:
+    return elem_curr[0] < elem_sel[0]
+  if elem_curr[1] != elem_sel[1]:
+    return elem_curr[1] < elem_sel[1]
 
-  elem1_sel = cand_elem[sel_idx][0]
-  elem2_sel = cand_elem[sel_idx][1]
-
-  if elem1_curr != elem1_sel:
-    return elem1_curr < elem1_sel
-  if elem2_curr != elem2_sel:
-    return elem2_curr < elem2_sel
+  vert_curr = cand_vert[curr_idx]
+  vert_sel = cand_vert[sel_idx]
+  if vert_curr[0] != vert_sel[0]:
+    return vert_curr[0] < vert_sel[0]
+  if vert_curr[1] != vert_sel[1]:
+    return vert_curr[1] < vert_sel[1]
   return curr_idx < sel_idx
 
 
@@ -3180,15 +3185,17 @@ class _FpsPick:
   dist: float
   cidx: int
   elem: wp.vec2i
+  vert: wp.vec2i
 
 
 @wp.func
-def _fps_pick(dist: float, cidx: int, cand_elem: wp.array[wp.vec2i]) -> _FpsPick:
+def _fps_pick(dist: float, cidx: int, cand_elem: wp.array[wp.vec2i], cand_vert: wp.array[wp.vec2i]) -> _FpsPick:
   pick = _FpsPick()
   pick.dist = dist
   pick.cidx = cidx
   if cidx >= 0:
     pick.elem = cand_elem[cidx]
+    pick.vert = cand_vert[cidx]
   return pick
 
 
@@ -3211,158 +3218,191 @@ def _fps_pick_max(a: _FpsPick, b: _FpsPick) -> _FpsPick:
     if a.elem[1] < b.elem[1]:
       return a
     return b
+  if a.vert[0] != b.vert[0]:
+    if a.vert[0] < b.vert[0]:
+      return a
+    return b
+  if a.vert[1] != b.vert[1]:
+    if a.vert[1] < b.vert[1]:
+      return a
+    return b
   if a.cidx < b.cidx:
     return a
   return b
 
 
-@wp.kernel(module="unique", enable_backward=False)
-def _parallel_fps(
-  # Model:
-  flex_dim: wp.array[int],
-  # In:
-  flex_group_start_indices_in: wp.array[int],
-  flex_num_groups_in: wp.array[int],
-  ncand: wp.array[int],
-  cand_active_sorted: wp.array[int],
-  sort_val: wp.array[int],
-  cand_dist: wp.array[float],
-  cand_pos: wp.array[wp.vec3],
-  cand_geom: wp.array[wp.vec2i],
-  cand_flex: wp.array[wp.vec2i],
-  cand_elem: wp.array[wp.vec2i],
-  # Out:
-  fps_min_dist_out: wp.array[float],
-  cand_active_out: wp.array[int],
-):
-  """Runs all FPS rounds for one candidate group per block.
+@cache_kernel
+def _parallel_fps(has_passive_flex: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    opt_integrator: int,
+    body_weldid: wp.array[int],
+    geom_bodyid: wp.array[int],
+    flex_passive: wp.array[int],
+    flex_dim: wp.array[int],
+    flex_interp: wp.array[int],
+    flex_rigid: wp.array[bool],
+    # In:
+    flex_group_start_indices_in: wp.array[int],
+    flex_num_groups_in: wp.array[int],
+    ncand: wp.array[int],
+    cand_active_sorted: wp.array[int],
+    sort_val: wp.array[int],
+    cand_dist: wp.array[float],
+    cand_pos: wp.array[wp.vec3],
+    cand_geom: wp.array[wp.vec2i],
+    cand_flex: wp.array[wp.vec2i],
+    cand_elem: wp.array[wp.vec2i],
+    cand_vert: wp.array[wp.vec2i],
+    # Out:
+    fps_min_dist_out: wp.array[float],
+    cand_active_out: wp.array[int],
+  ):
+    """Runs all FPS rounds for one candidate group per block.
 
-  The first _FPS_SLOTS candidates per thread keep their position and min distance in
-  registers; the rest fall back to global memory. Selected candidates are marked with
-  a negative min distance.
-  """
-  g, tid = wp.tid()
-  if g >= flex_num_groups_in[0] or ncand[0] <= MJ_MAXCONPAIR:
-    return
+    The first _FPS_SLOTS candidates per thread keep their position and min distance in
+    registers; the rest fall back to global memory. Selected candidates are marked with
+    a negative min distance.
+    """
+    g, tid = wp.tid()
+    if g >= flex_num_groups_in[0] or ncand[0] <= MJ_MAXCONPAIR:
+      return
 
-  ncand_limit = wp.min(ncand[0], cand_active_sorted.shape[0])
-  g_start = flex_group_start_indices_in[g]
-  if g_start < 0 or g_start >= ncand_limit:
-    return
+    ncand_limit = wp.min(ncand[0], cand_active_sorted.shape[0])
+    g_start = flex_group_start_indices_in[g]
+    if g_start < 0 or g_start >= ncand_limit:
+      return
 
-  # skip FPS capping for 1D and 2D flex-geom groups
-  first_cand = sort_val[g_start]
-  if cand_geom[first_cand][0] >= 0 and flex_dim[cand_flex[first_cand][1]] < 3:
-    return
+    # skip FPS capping for 1D/2D flex-geom groups and passive flex groups
+    first_cand = sort_val[g_start]
+    if cand_geom[first_cand][0] >= 0 and flex_dim[cand_flex[first_cand][1]] < 3:
+      return
+    if wp.static(has_passive_flex):
+      if _is_passive_flex_cand(
+        opt_integrator,
+        body_weldid,
+        geom_bodyid,
+        flex_passive,
+        flex_dim,
+        flex_interp,
+        flex_rigid,
+        cand_geom,
+        cand_flex,
+        first_cand,
+      ):
+        return
 
-  g_end = ncand_limit
-  if g < flex_num_groups_in[0] - 1:
-    g_end = wp.min(ncand_limit, flex_group_start_indices_in[g + 1])
+    g_end = ncand_limit
+    if g < flex_num_groups_in[0] - 1:
+      g_end = wp.min(ncand_limit, flex_group_start_indices_in[g + 1])
 
-  nthread = wp.block_dim()
+    nthread = wp.block_dim()
 
-  # load candidates and find the seed (smallest contact distance)
-  slot_cidx = _fps_veci(-1)
-  slot_md = _fps_vecf(wp.inf)
-  slot_x = _fps_vecf(0.0)
-  slot_y = _fps_vecf(0.0)
-  slot_z = _fps_vecf(0.0)
-  local_active = int(0)
-  min_d = float(1e10)
-  seed = int(-1)
-  for j in range(wp.static(_FPS_SLOTS)):
-    si = g_start + tid + j * nthread
-    if si < g_end:
+    # load candidates and find the seed (smallest contact distance)
+    slot_cidx = _fps_veci(-1)
+    slot_md = _fps_vecf(wp.inf)
+    slot_x = _fps_vecf(0.0)
+    slot_y = _fps_vecf(0.0)
+    slot_z = _fps_vecf(0.0)
+    local_active = int(0)
+    min_d = float(1e10)
+    seed = int(-1)
+    for j in range(wp.static(_FPS_SLOTS)):
+      si = g_start + tid + j * nthread
+      if si < g_end:
+        if cand_active_sorted[si] == 1:
+          c_idx = sort_val[si]
+          slot_cidx[j] = c_idx
+          p = cand_pos[c_idx]
+          slot_x[j] = p[0]
+          slot_y[j] = p[1]
+          slot_z[j] = p[2]
+          local_active += 1
+          d_val = cand_dist[c_idx]
+          if d_val < min_d:
+            min_d = d_val
+            seed = c_idx
+          elif d_val == min_d:
+            if _tie_break_fps(c_idx, seed, cand_elem, cand_vert):
+              seed = c_idx
+
+    overflow_start = g_start + tid + wp.static(_FPS_SLOTS) * nthread
+    for si in range(overflow_start, g_end, nthread):
       if cand_active_sorted[si] == 1:
         c_idx = sort_val[si]
-        slot_cidx[j] = c_idx
-        p = cand_pos[c_idx]
-        slot_x[j] = p[0]
-        slot_y[j] = p[1]
-        slot_z[j] = p[2]
+        fps_min_dist_out[c_idx] = wp.inf
         local_active += 1
         d_val = cand_dist[c_idx]
         if d_val < min_d:
           min_d = d_val
           seed = c_idx
         elif d_val == min_d:
-          if _tie_break_fps(c_idx, seed, cand_elem):
+          if _tie_break_fps(c_idx, seed, cand_elem, cand_vert):
             seed = c_idx
 
-  overflow_start = g_start + tid + wp.static(_FPS_SLOTS) * nthread
-  for si in range(overflow_start, g_end, nthread):
-    if cand_active_sorted[si] == 1:
-      c_idx = sort_val[si]
-      fps_min_dist_out[c_idx] = wp.inf
-      local_active += 1
-      d_val = cand_dist[c_idx]
-      if d_val < min_d:
-        min_d = d_val
-        seed = c_idx
-      elif d_val == min_d:
-        if _tie_break_fps(c_idx, seed, cand_elem):
-          seed = c_idx
+    if wp.tile_sum(wp.tile(local_active))[0] <= MJ_MAXCONPAIR:
+      return
 
-  if wp.tile_sum(wp.tile(local_active))[0] <= MJ_MAXCONPAIR:
-    return
+    # negating the distance turns the min search into a max with the same tie-break
+    sel = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(-min_d, seed, cand_elem, cand_vert)))[0].cidx
 
-  # negating the distance turns the min search into a max with the same tie-break
-  sel = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(-min_d, seed, cand_elem)))[0].cidx
-
-  for _ in range(MJ_MAXCONPAIR - 1):
-    sel_p = cand_pos[sel]
-    max_d = float(-1e10)
-    best = int(-1)
-    for j in range(wp.static(_FPS_SLOTS)):
-      c_idx = slot_cidx[j]
-      if c_idx >= 0:
-        md = slot_md[j]
-        if c_idx == sel:
-          slot_md[j] = -1.0
-        elif md > 0.0:
-          md = wp.min(md, wp.length(wp.vec3(slot_x[j], slot_y[j], slot_z[j]) - sel_p))
-          slot_md[j] = md
-          if md > max_d:
-            max_d = md
-            best = c_idx
-          elif md == max_d:
-            if _tie_break_fps(c_idx, best, cand_elem):
-              best = c_idx
-
-    for si in range(overflow_start, g_end, nthread):
-      if cand_active_sorted[si] == 1:
-        c_idx = sort_val[si]
-        if c_idx == sel:
-          fps_min_dist_out[c_idx] = -1.0
-        else:
-          md = fps_min_dist_out[c_idx]
-          if md > 0.0:
-            d = wp.length(cand_pos[c_idx] - sel_p)
-            if d < md:
-              md = d
-              fps_min_dist_out[c_idx] = md
+    for _ in range(MJ_MAXCONPAIR - 1):
+      sel_p = cand_pos[sel]
+      max_d = float(-1e10)
+      best = int(-1)
+      for j in range(wp.static(_FPS_SLOTS)):
+        c_idx = slot_cidx[j]
+        if c_idx >= 0:
+          md = slot_md[j]
+          if c_idx == sel:
+            slot_md[j] = -1.0
+          elif md > 0.0:
+            md = wp.min(md, wp.length(wp.vec3(slot_x[j], slot_y[j], slot_z[j]) - sel_p))
+            slot_md[j] = md
             if md > max_d:
               max_d = md
               best = c_idx
             elif md == max_d:
-              if _tie_break_fps(c_idx, best, cand_elem):
+              if _tie_break_fps(c_idx, best, cand_elem, cand_vert):
                 best = c_idx
 
-    pick = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(max_d, best, cand_elem)))[0]
-    if pick.cidx < 0 or pick.dist <= 0.0:
-      sel = -1
-      break
-    sel = pick.cidx
+      for si in range(overflow_start, g_end, nthread):
+        if cand_active_sorted[si] == 1:
+          c_idx = sort_val[si]
+          if c_idx == sel:
+            fps_min_dist_out[c_idx] = -1.0
+          else:
+            md = fps_min_dist_out[c_idx]
+            if md > 0.0:
+              d = wp.length(cand_pos[c_idx] - sel_p)
+              if d < md:
+                md = d
+                fps_min_dist_out[c_idx] = md
+              if md > max_d:
+                max_d = md
+                best = c_idx
+              elif md == max_d:
+                if _tie_break_fps(c_idx, best, cand_elem, cand_vert):
+                  best = c_idx
 
-  for j in range(wp.static(_FPS_SLOTS)):
-    c_idx = slot_cidx[j]
-    if c_idx >= 0:
-      cand_active_out[c_idx] = wp.where(slot_md[j] < 0.0 or c_idx == sel, 1, 0)
+      pick = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(max_d, best, cand_elem, cand_vert)))[0]
+      if pick.cidx < 0 or pick.dist <= 0.0:
+        sel = -1
+        break
+      sel = pick.cidx
 
-  for si in range(overflow_start, g_end, nthread):
-    if cand_active_sorted[si] == 1:
-      c_idx = sort_val[si]
-      cand_active_out[c_idx] = wp.where(fps_min_dist_out[c_idx] < 0.0 or c_idx == sel, 1, 0)
+    for j in range(wp.static(_FPS_SLOTS)):
+      c_idx = slot_cidx[j]
+      if c_idx >= 0:
+        cand_active_out[c_idx] = wp.where(slot_md[j] < 0.0 or c_idx == sel, 1, 0)
+
+    for si in range(overflow_start, g_end, nthread):
+      if cand_active_sorted[si] == 1:
+        c_idx = sort_val[si]
+        cand_active_out[c_idx] = wp.where(fps_min_dist_out[c_idx] < 0.0 or c_idx == sel, 1, 0)
+
+  return kernel
 
 
 def flex_broadphase_aabb(m: Model, d: Data):
@@ -3493,13 +3533,19 @@ def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
   )
 
 
-def _run_filter_flex_fps(m: Model, ws: FlexWorkspace):
+def _run_filter_flex_fps(m: Model, ws: FlexWorkspace, has_passive_flex: bool):
   """Applies Far Point Sampling to limit contact points per group to MJ_MAXCONPAIR in parallel."""
   wp.launch_tiled(
-    _parallel_fps,
+    _parallel_fps(has_passive_flex),
     dim=ws.flex_group_start_indices.shape[0],
     inputs=[
+      m.opt.integrator,
+      m.body_weldid,
+      m.geom_bodyid,
+      m.flex_passive,
       m.flex_dim,
+      m.flex_interp,
+      m.flex_rigid,
       ws.flex_group_start_indices,
       ws.flex_num_groups,
       ws.ncand,
@@ -3510,6 +3556,7 @@ def _run_filter_flex_fps(m: Model, ws: FlexWorkspace):
       ws.geom,
       ws.flex,
       ws.elem,
+      ws.vert,
     ],
     outputs=[
       ws.flex_fps_min_dist,
@@ -3609,7 +3656,7 @@ def _filter_and_write_contacts(
       ],
     )
 
-    _run_filter_flex_fps(m, ws)
+    _run_filter_flex_fps(m, ws, has_passive_flex)
 
   wp.launch(
     _write_filtered_contacts(int(m.opt.warn_overflow), has_passive_flex),

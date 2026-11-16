@@ -3528,6 +3528,69 @@ class CompactSolverTest(parameterized.TestCase):
     self.assertTrue(np.any(ctx3.tw_diag.numpy()[0] < d3.qHDiagInv.numpy()[0] - 1e-6))
     np.testing.assert_allclose(d3.qacc.numpy()[0], mjd3.qacc, atol=1e-3, rtol=1e-2)
 
+  @parameterized.product(nworld=(1, 2), solver_type=(SolverType.CG, SolverType.NEWTON))
+  def test_discrete_solve_reused_context_refreshes_efm_con(self, nworld, solver_type):
+    """Verifies solver._solve rebuilds ctx.efm_con when a SolverContext is reused across steps."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" timestep="0.005" tolerance="1e-10">
+          <flag warmstart="disable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="1 1 0.1"/>
+          <flexcomp name="cloth" count="2 2 1" spacing="0.05 0.05 0.05" pos="0 0 0.2" radius="0.01" mass="0.2">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="1e3" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+        <equality>
+          <connect body1="cloth_0" anchor="0 0 0.2"/>
+        </equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+      overrides={"opt.solver": solver_type},
+    )
+
+    # First solve with cloth above the floor (zero passive contacts)
+    mjw.fwd_position(m, d, factorize=False)
+    mjw.fwd_velocity(m, d)
+    mjw.fwd_actuation(m, d)
+    mjw.fwd_acceleration(m, d, factorize=True)
+    self.assertEqual(int(d.nacon.numpy()[0]), 0)
+    ctx = solver.create_solver_context(m, d, inplace_cholesky=True)
+    d.qacc.fill_(wp.inf)
+    solver._solve(m, d, ctx)
+    qacc_no_contact = d.qacc.numpy().copy()
+
+    # Move cloth into floor contact and reuse the same SolverContext
+    qpos = d.qpos.numpy().copy()
+    qpos[0, 2::3] = -0.195
+    if nworld == 2:
+      qpos[1, 2::3] = -0.198
+    d.qpos.assign(qpos)
+
+    mjw.fwd_position(m, d, factorize=False)
+    mjw.fwd_velocity(m, d)
+    mjw.fwd_actuation(m, d)
+    mjw.fwd_acceleration(m, d, factorize=True)
+    self.assertGreater(int(d.nacon.numpy()[0]), 0)
+
+    d.qacc.fill_(wp.inf)
+    solver._solve(m, d, ctx)
+    qacc_reused = d.qacc.numpy().copy()
+
+    # Fresh solver.solve on the same state must match the reused context solve
+    d.qacc.fill_(wp.inf)
+    solver.solve(m, d)
+    qacc_fresh = d.qacc.numpy().copy()
+
+    np.testing.assert_allclose(qacc_reused, qacc_fresh, atol=1e-6, rtol=1e-6)
+    self.assertFalse(np.allclose(qacc_reused[0], qacc_no_contact[0]))
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc_reused[0], qacc_reused[1]))
+
   @parameterized.parameters(
     (1, "pyramidal", "Euler"),
     (2, "pyramidal", "Euler"),

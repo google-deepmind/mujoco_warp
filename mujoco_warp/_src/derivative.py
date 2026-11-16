@@ -5772,9 +5772,9 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
       for _ in range(max_it):
         _pcg_iteration()
 
-  wp.launch(
-    _pcg_check_convergence_warning(int(m.opt.warn_overflow)),
-    dim=d.nworld,
-    inputs=[efm_done],
-    outputs=[d.overflow],
-  )
+    wp.launch(
+      _pcg_check_convergence_warning(int(m.opt.warn_overflow)),
+      dim=d.nworld,
+      inputs=[efm_done],
+      outputs=[d.overflow],
+    )
