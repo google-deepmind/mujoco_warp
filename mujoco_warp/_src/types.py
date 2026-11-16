@@ -1675,8 +1675,6 @@ class Model:
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
     jnt_limited_ball_adr: limited/ball jntadr
     body_isdofancestor: precomputed mask of which DOFs affect each body
-    dof_tri_row: dof upper triangle row (used in solver)
-    dof_tri_col: dof upper triangle col (used in solver)
     nxn_geom_pair: collision pair geom ids [-2, ngeom-1]
     nxn_geom_pair_filtered: valid collision pair geom ids
                             [-1, ngeom - 1]
@@ -1744,6 +1742,10 @@ class Model:
     M_fullm_j: sparse mass matrix addressing
     M_elemid: (row, col) -> CSR madr addresses; -1 if not a chain ancestor
     M_hinit_i: row index of each CSR M entry; for densifying M into the dense Newton H (nC,)
+    M_tile_colmask: per Newton H tile, bitmask of the tiles above it coupled by M; read by the
+                    sparse-tile Newton Cholesky                  (nv_tile, nv_tile_word)
+    M_tile_offdiag: per Newton H tile, whether M couples DOFs within it (nv_tile,)
+    M_tile_full: M and its fill-in cover every tile of the Newton H, so no tile can be skipped
     qD_fullm_i: D-structure row indices for RNE derivatives
     qD_fullm_j: D-structure column indices for RNE derivatives
     M_mulm_rowadr: sparse matmul row pointers
@@ -2251,8 +2253,6 @@ class Model:
   jnt_limited_slide_hinge_adr: array("njnt_limited_slide_hinge", int)
   jnt_limited_ball_adr: array("njnt_limited_ball", int)
   body_isdofancestor: array("nbody", "nv_pad", int)
-  dof_tri_row: array("ndof_tri", int)
-  dof_tri_col: array("ndof_tri", int)
   nxn_geom_pair: array("nnxn_geom_pair", wp.vec2i)
   nxn_geom_pair_filtered: array("nnxn_geom_pair_filtered", wp.vec2i)
   nxn_pairid: array("nnxn_geom_pair", wp.vec2i)
@@ -2314,6 +2314,9 @@ class Model:
   M_fullm_j: array("nM_fullm", int)
   M_elemid: array("nv", "nv", int)  # (row, col) -> CSR madr address; -1 if col is not a chain ancestor of row
   M_hinit_i: array("nC", int)  # row index of each CSR M entry (for densifying M into the dense Newton H)
+  M_tile_colmask: array("nv_tile", "nv_tile_word", wp.uint64)  # per Newton H tile, bitmask of the tiles above it coupled by M
+  M_tile_offdiag: array("nv_tile", int)  # per Newton H tile, whether M couples DOFs within it
+  M_tile_full: bool  # M and its fill-in cover every tile of the Newton H, so no tile can be skipped
   qD_fullm_i: array("nqD_fullm", int)  # D-structure (full square) row indices for RNE derivatives
   qD_fullm_j: array("nqD_fullm", int)  # D-structure (full square) column indices for RNE derivatives
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
@@ -2550,7 +2553,8 @@ class Data:
     crb: com-based composite inertia and mass                   (nworld, nbody, 10)
     M: total inertia, CSR                                       (nworld, nC)
     qLD: per-block factor: packed dense region, then the nC     (nworld, qLD_block_total + nC)
-         L'*D*L region at offset qLD_block_total (nC=0 if no sparse block)
+         L'*D*L region at offset qLD_block_total (nC=0 if no sparse block);
+         forward stores dense blocks only for the CG solver
     qLDiagInv: reciprocal diagonal for compact and sparse blocks (nworld, nv)
     tree_awake: is tree awake; 0: asleep; 1: awake              (nworld, ntree)
     body_awake: body sleep state (SleepState)                   (nworld, nbody)
@@ -2613,8 +2617,6 @@ class Data:
     ncdof: number of active (compacted) DOFs per world          (nworld,)
     dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
     cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
-    cdof_tri_row: row index of compacted Hessian dof-pairs      (ncdof_tri,)
-    cdof_tri_col: col index of compacted Hessian dof-pairs      (ncdof_tri,)
     cM: compacted dense inertia                                 (nworld, nvmax_pad, nvmax_pad)
     cJ: compacted dense constraint Jacobian                     (nworld, njmax_pad, nvmax_pad)
     cMa: compacted M @ qacc workspace                           (nworld, nvmax_pad)
@@ -2787,8 +2789,6 @@ class Data:
   ncdof: array("nworld", int)
   dof_cdof: array("nworld", "nv", int)
   cdof_dof: array("nworld", "nvmax_pad", int)
-  cdof_tri_row: array("ncdof_tri", int)
-  cdof_tri_col: array("ncdof_tri", int)
   cM: array("nworld", "nvmax_pad", "nvmax_pad", float)
   cJ: array("nworld", "njmax_pad", "nvmax_pad", float)
   cMa: array("nworld", "nvmax_pad", float)
@@ -2890,9 +2890,15 @@ class SolverContext:
   flex_scratch: Optional[tuple] = None
   solve_ld_scratch: Optional[wp.array] = None
   tw_diag: Optional[wp.array] = None
+  # dense elliptic Newton: virtual Hessian rows of cone-state rows (solver._cone_virtual_row)
+  cone_coef: Optional[wp.array] = None
+  cone_weight: Optional[wp.array] = None
+  cone_base: Optional[wp.array] = None
+  # only allocated when the sparse-tile pattern is detected from the values of H
   h_tile_nz: Optional[wp.array3d[int]] = None
   h_row_mask: Optional[wp.array3d[wp.uint64]] = None
   h_col_mask: Optional[wp.array3d[wp.uint64]] = None
+  # holds whether each diagonal tile has off-diagonal entries until the symbolic factorization
   h_tile_is_diag: Optional[wp.array2d[int]] = None
   h_rhs_work: Optional[wp.array3d[float]] = None
 
