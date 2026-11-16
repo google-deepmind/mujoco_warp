@@ -1266,6 +1266,54 @@ class GJKTest(parameterized.TestCase):
     # dir = (0, 1, eps): expect prism[5] + margin offset
     np.testing.assert_allclose(result[3], prism[5], rtol=1e-5)
 
+  def test_mesh_support(self):
+    """Test support function hill climb for mesh geoms."""
+    # icosahedron: 5 neighbors per vertex
+    _, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="icosahedron" vertex="0 1 1.618  0 -1 1.618  0 1 -1.618  0 -1 -1.618
+                                           1 1.618 0  -1 1.618 0  1 -1.618 0  -1 -1.618 0
+                                           1.618 0 1  1.618 0 -1  -1.618 0 1  -1.618 0 -1"/>
+        </asset>
+        <worldbody>
+          <geom type="mesh" mesh="icosahedron"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def _support_kernel(
+      mesh_vertnum: wp.array[int],
+      mesh_vert: wp.array[wp.vec3],
+      mesh_graph: wp.array[int],
+      vertex_index_out: wp.array2d[int],
+    ):
+      vertid, index = wp.tid()
+      geom = Geom()
+      geom.pos = wp.vec3(0.0)
+      geom.rot = wp.identity(n=3, dtype=float)
+      geom.vertadr = 0
+      geom.vertnum = mesh_vertnum[0]
+      geom.vert = mesh_vert
+      geom.graphadr = 0
+      geom.graph = mesh_graph
+      geom.index = index - 1  # -1: no warm start
+      sp = support(geom, GeomType.MESH, wp.normalize(mesh_vert[vertid]))
+      vertex_index_out[vertid, index] = sp.vertex_index
+
+    nvert = m.mesh_vert.shape[0]
+    vertex_index = wp.empty((nvert, nvert + 1), dtype=int)
+    wp.launch(
+      _support_kernel,
+      dim=vertex_index.shape,
+      inputs=[m.mesh_vertnum, m.mesh_vert, m.mesh_graph],
+      outputs=[vertex_index],
+    )
+    np.testing.assert_array_equal(vertex_index.numpy(), np.tile(np.arange(nvert)[:, None], (1, nvert + 1)))
+
   def test_flex_support_margin_inflation(self):
     """Test support function inflation by margin for flex simplex elements."""
     radius = 0.05
