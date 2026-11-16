@@ -801,37 +801,38 @@ def _island_count_dofs(
     wp.atomic_add(island_nv_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
 
 
-@wp.kernel
-def _island_scan_sizes(
-  # Data in:
-  nisland_in: wp.array[int],
-  island_nv_in: wp.array2d[int],
-  # Data out:
-  nidof_out: wp.array[int],
-  island_idofadr_out: wp.array2d[int],
-  island_nefc_out: wp.array2d[int],
-  island_iefcadr_out: wp.array2d[int],
-):
-  worldid = wp.tid()
+# Islands per tile of the island size scans: any number of trees is scanned in chunks.
+_SCAN_CHUNK = 1024
 
-  nisland = nisland_in[worldid]
-  if nisland == 0:
-    nidof_out[worldid] = 0
-    return
 
-  # Scan DOFs and Constraints
-  island_idofadr_out[worldid, 0] = 0
-  island_iefcadr_out[worldid, 0] = 0
-  for i in range(1, nisland):
-    island_idofadr_out[worldid, i] = island_idofadr_out[worldid, i - 1] + island_nv_in[worldid, i - 1]
-    island_iefcadr_out[worldid, i] = island_iefcadr_out[worldid, i - 1] + island_nefc_out[worldid, i - 1]
+@cache_kernel
+def _island_scan_sizes(chunk: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    island_nv_in: wp.array2d[int],
+    island_nefc_in: wp.array2d[int],
+    # Data out:
+    nidof_out: wp.array[int],
+    island_idofadr_out: wp.array2d[int],
+    island_iefcadr_out: wp.array2d[int],
+  ):
+    """Block-wide exclusive scans of island sizes (entries past nisland are zero)."""
+    worldid = wp.tid()
+    nv_adr = int(0)
+    nefc_adr = int(0)
+    for base in range(0, island_nv_in.shape[1], chunk):
+      nv_tile = wp.tile_load(island_nv_in[worldid], shape=chunk, offset=base)
+      nefc_tile = wp.tile_load(island_nefc_in[worldid], shape=chunk, offset=base)
+      nv_scan = wp.tile_map(wp.add, wp.tile_scan_exclusive(nv_tile), wp.tile_full(chunk, nv_adr, dtype=int))
+      nefc_scan = wp.tile_map(wp.add, wp.tile_scan_exclusive(nefc_tile), wp.tile_full(chunk, nefc_adr, dtype=int))
+      wp.tile_store(island_idofadr_out[worldid], nv_scan, offset=base)
+      wp.tile_store(island_iefcadr_out[worldid], nefc_scan, offset=base)
+      nv_adr += wp.tile_sum(nv_tile)[0]
+      nefc_adr += wp.tile_sum(nefc_tile)[0]
+    nidof_out[worldid] = nv_adr
 
-  nidof = island_idofadr_out[worldid, nisland - 1] + island_nv_in[worldid, nisland - 1]
-  nidof_out[worldid] = nidof
-
-  # Reset for recount ( island_nv is final after _island_count_dofs and stays put )
-  for i in range(nisland):
-    island_nefc_out[worldid, i] = 0
+  return kernel
 
 
 @wp.kernel
@@ -881,64 +882,64 @@ def _island_map_dofs(
 
 
 @wp.kernel
-def _island_map_constraints(
+def _island_chunk_offsets(
   # Data in:
   nefc_in: wp.array[int],
   nisland_in: wp.array[int],
-  efc_type_in: wp.array2d[int],
-  efc_island_in: wp.array2d[int],
-  island_ne_in: wp.array2d[int],
-  island_nf_in: wp.array2d[int],
-  island_iefcadr_in: wp.array2d[int],
-  # In:
   njmax_in: int,
+  # In:
+  chunk_size: int,
+  # Out:
+  chunk_adr_out: wp.array3d[int],
+):
+  """Turn per-chunk row counts of an island into its rows' offsets from island_iefcadr."""
+  worldid, islandid = wp.tid()
+  if islandid >= nisland_in[worldid]:
+    return
+
+  nchunk = (wp.min(njmax_in, nefc_in[worldid]) + chunk_size - 1) // chunk_size
+  adr = int(0)
+  for chunk in range(nchunk):
+    count = chunk_adr_out[worldid, chunk, islandid]
+    chunk_adr_out[worldid, chunk, islandid] = adr
+    adr += count
+
+
+@wp.kernel
+def _island_map_constraints(
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_island_in: wp.array2d[int],
+  island_iefcadr_in: wp.array2d[int],
+  njmax_in: int,
+  # In:
+  chunk_size: int,
+  chunk_adr_in: wp.array3d[int],
   # Data out:
-  island_nefc_out: wp.array2d[int],
   map_efc2iefc_out: wp.array2d[int],
   map_iefc2efc_out: wp.array2d[int],
   # Out:
   iefc_islandid_out: wp.array2d[int],
 ):
-  """Map constraints in ascending EFC order within each MuJoCo category.
-
-  One thread owns one island and keeps its three category counters in registers, so the
-  ascending scan stays serial per island (and therefore reproducible) while different
-  islands and worlds advance in parallel.
-  """
-  worldid, islandid = wp.tid()
-  if islandid >= nisland_in[worldid]:
+  """Stable counting sort of rows by island: each island keeps MuJoCo's row layout."""
+  worldid, efcid = wp.tid()
+  if efcid >= wp.min(njmax_in, nefc_in[worldid]):
     return
 
-  iefcadr = island_iefcadr_in[worldid, islandid]
-  fadr = iefcadr + island_ne_in[worldid, islandid]
-  oadr = fadr + island_nf_in[worldid, islandid]
-  ne_mapped = int(0)
-  nf_mapped = int(0)
-  nother_mapped = int(0)
+  islandid = efc_island_in[worldid, efcid]
+  if islandid < 0:
+    return
 
-  nefc = wp.min(njmax_in, nefc_in[worldid])
-  for efcid in range(nefc):
-    if efc_island_in[worldid, efcid] == islandid:
-      efc_type = efc_type_in[worldid, efcid]
+  chunk = efcid // chunk_size
+  rank = int(0)
+  for prev in range(chunk * chunk_size, efcid):
+    if efc_island_in[worldid, prev] == islandid:
+      rank += 1
 
-      # 1. Determine absolute index ic based on category
-      if efc_type == ConstraintType.EQUALITY:
-        ic = iefcadr + ne_mapped
-        ne_mapped += 1
-      elif efc_type == ConstraintType.FRICTION_DOF or efc_type == ConstraintType.FRICTION_TENDON:
-        ic = fadr + nf_mapped
-        nf_mapped += 1
-      else:
-        ic = oadr + nother_mapped
-        nother_mapped += 1
-
-      # 2. Store mappings
-      map_efc2iefc_out[worldid, efcid] = ic
-      map_iefc2efc_out[worldid, ic] = efcid
-      iefc_islandid_out[worldid, ic] = islandid
-
-  # 3. Reconstruct d.island_nefc from the three category counts
-  island_nefc_out[worldid, islandid] = ne_mapped + nf_mapped + nother_mapped
+  ic = island_iefcadr_in[worldid, islandid] + chunk_adr_in[worldid, chunk, islandid] + rank
+  map_efc2iefc_out[worldid, efcid] = ic
+  map_iefc2efc_out[worldid, ic] = efcid
+  iefc_islandid_out[worldid, ic] = islandid
 
 
 @wp.kernel
@@ -990,13 +991,17 @@ def _island_count_constraints(
   efc_J_in: wp.array3d[float],
   tree_island_in: wp.array2d[int],
   njmax_in: int,
+  # In:
+  chunk_size: int,
   # Data out:
   efc_island_out: wp.array2d[int],
   island_nefc_out: wp.array2d[int],
   island_ne_out: wp.array2d[int],
   island_nf_out: wp.array2d[int],
+  # Out:
+  chunk_adr_out: wp.array3d[int],
 ):
-  """Compute the first non-negative tree for each constraint and count constraints per island."""
+  """Compute the first non-negative tree for each constraint; count rows per island and chunk."""
   worldid, efcid = wp.tid()
 
   if efcid >= wp.min(njmax_in, nefc_in[worldid]):
@@ -1131,6 +1136,7 @@ def _island_count_constraints(
 
   if island_id >= 0:
     wp.atomic_add(island_nefc_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
+    wp.atomic_add(chunk_adr_out, worldid, efcid // chunk_size, island_id, 1)  # kernel_analyzer: ignore[atomic]
 
     if efc_type == ConstraintType.EQUALITY:
       wp.atomic_add(island_ne_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
@@ -1196,6 +1202,10 @@ def _init_efc_arrays(
   iefc_islandid_out[worldid, efcid] = -1
 
 
+# Constraint rows per chunk of the island counting sort: a row scans at most this many predecessors.
+_MAP_CHUNK = 64
+
+
 @event_scope
 def compute_island_mapping(m: types.Model, d: types.Data):
   """Compute DOF/constraint island mappings after island discovery.
@@ -1253,7 +1263,9 @@ def compute_island_mapping(m: types.Model, d: types.Data):
     outputs=[d.dof_island, d.island_nv],
   )
 
-  # Count Constraints per island
+  # Count Constraints per island, and per (chunk, island) for the counting sort
+  nchunk = max(1, -(-d.njmax // _MAP_CHUNK))
+  chunk_adr = wp.zeros((d.nworld, nchunk, m.ntree), dtype=int)
   wp.launch(
     _island_count_constraints,
     dim=(d.nworld, d.njmax),
@@ -1303,16 +1315,18 @@ def compute_island_mapping(m: types.Model, d: types.Data):
       d.efc.J,
       d.tree_island,
       d.njmax,
+      _MAP_CHUNK,
     ],
-    outputs=[d.efc.island, d.island_nefc, d.island_ne, d.island_nf],
+    outputs=[d.efc.island, d.island_nefc, d.island_ne, d.island_nf, chunk_adr],
   )
 
-  # 3. Scan sizes and reset counters for mapping
-  wp.launch(
-    _island_scan_sizes,
+  # 3. Scan sizes
+  wp.launch_tiled(
+    _island_scan_sizes(min(m.ntree, _SCAN_CHUNK)),
     dim=d.nworld,
-    inputs=[d.nisland, d.island_nv],
-    outputs=[d.nidof, d.island_idofadr, d.island_nefc, d.island_iefcadr],
+    inputs=[d.island_nv, d.island_nefc],
+    outputs=[d.nidof, d.island_idofadr, d.island_iefcadr],
+    block_dim=types.BlockDim.island_scan_sizes,
   )
 
   # 4. Map DOFs
@@ -1325,10 +1339,16 @@ def compute_island_mapping(m: types.Model, d: types.Data):
 
   # 5. Map Constraints
   wp.launch(
-    _island_map_constraints,
+    _island_chunk_offsets,
     dim=(d.nworld, m.ntree),
-    inputs=[d.nefc, d.nisland, d.efc.type, d.efc.island, d.island_ne, d.island_nf, d.island_iefcadr, d.njmax],
-    outputs=[d.island_nefc, d.map_efc2iefc, d.map_iefc2efc, d.efc_islandid],
+    inputs=[d.nefc, d.nisland, d.njmax, _MAP_CHUNK],
+    outputs=[chunk_adr],
+  )
+  wp.launch(
+    _island_map_constraints,
+    dim=(d.nworld, d.njmax),
+    inputs=[d.nefc, d.efc.island, d.island_iefcadr, d.njmax, _MAP_CHUNK, chunk_adr],
+    outputs=[d.map_efc2iefc, d.map_iefc2efc, d.efc_islandid],
   )
 
 

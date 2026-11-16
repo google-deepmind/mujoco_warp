@@ -15,6 +15,8 @@
 
 """Tests for island discovery."""
 
+from unittest import mock
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -514,6 +516,50 @@ class IslandMappingTest(absltest.TestCase):
       ("map_iefc2efc", d.map_iefc2efc.numpy()[:, : mjd.nefc], mjd.map_iefc2efc[: mjd.nefc]),
     ):
       np.testing.assert_array_equal(got, np.tile(want, (d.nworld, 1)), err_msg=name)
+
+  def test_constraint_mapping_spans_chunks(self):
+    """Rows of many islands across several sort and scan chunks keep MuJoCo's per-island layout."""
+    self.enterContext(mock.patch.object(island, "_SCAN_CHUNK", 8))
+    nbody = 24
+    bodies = "".join(
+      f'<body name="b{i}" pos="{i * 0.5} 0 .09"><joint type="free" frictionloss=".01"/><geom size=".1"/></body>'
+      for i in range(nbody)
+    )
+    welds = "".join(f'<weld body1="b{i}" body2="b{i + 1}"/>' for i in range(0, 12, 2))
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody><geom type="plane" size="20 20 .1"/>{bodies}</worldbody>
+        <equality>{welds}</equality>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+    mjwarp.fwd_position(m, d)
+    island.island(m, d)
+    island.compute_island_mapping(m, d)
+
+    nefc = int(d.nefc.numpy()[0])
+    nisland = int(d.nisland.numpy()[0])
+    self.assertGreater(nefc, 4 * island._MAP_CHUNK)
+    self.assertEqual(nisland, nbody - 6)
+
+    friction = (types.ConstraintType.FRICTION_DOF, types.ConstraintType.FRICTION_TENDON)
+    for w in range(d.nworld):
+      efc_island = d.efc.island.numpy()[w, :nefc]
+      efc_type = d.efc.type.numpy()[w, :nefc]
+      order, adr = [], []
+      for i in range(nisland):
+        rows = np.flatnonzero(efc_island == i)
+        adr.append(len(order))
+        order += [r for r in rows if efc_type[r] == types.ConstraintType.EQUALITY]
+        order += [r for r in rows if efc_type[r] in friction]
+        order += [r for r in rows if efc_type[r] != types.ConstraintType.EQUALITY and efc_type[r] not in friction]
+
+      np.testing.assert_array_equal(d.island_iefcadr.numpy()[w, :nisland], adr)
+      np.testing.assert_array_equal(d.map_iefc2efc.numpy()[w, : len(order)], order)
+      np.testing.assert_array_equal(d.map_efc2iefc.numpy()[w, order], np.arange(len(order)))
+      np.testing.assert_array_equal(d.efc_islandid.numpy()[w, : len(order)], efc_island[order])
 
 
 if __name__ == "__main__":
