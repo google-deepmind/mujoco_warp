@@ -5456,18 +5456,22 @@ def _noslip_minv_jt(is_sparse: bool, sleep: bool):
             continue
         noslip_Y_out[worldid, efcid, k] = efc_J_in[worldid, efcid, k]
 
-    # solve per kinematic tree with its block of qLD, inactive (sleeping) trees keep Y = 0
+    # solve per kinematic tree with its block of qLD, skipping trees where the row is zero
     y = noslip_Y_out[worldid, efcid]
     L = qLD_in[worldid]
     start = int(0)
     while start < nv:
       end = start + tree_dofnum[dof_treeid[start]]
-      factor_adr = qLD_block_adr[start]
-      if wp.static(SLEEP):
-        if dof_cdof_in[worldid, start] < 0:
-          start = end
-          continue
+      nonzero = bool(False)
+      for i in range(start, end):
+        if y[i] != 0.0:
+          nonzero = True
+          break
+      if not nonzero:
+        start = end
+        continue
 
+      factor_adr = qLD_block_adr[start]
       if factor_adr == types.Q_LD_BLOCK_COMPACT:
         # diagonal block: M = D
         for i in range(start, end):
