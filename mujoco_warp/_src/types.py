@@ -2896,7 +2896,6 @@ class SolverContext:
   tw_diag: Optional[wp.array] = None
   # dense elliptic Newton: virtual Hessian rows of cone-state rows (solver._cone_virtual_row)
   cone_coef: Optional[wp.array] = None
-  cone_weight: Optional[wp.array] = None
   cone_base: Optional[wp.array] = None
   # only allocated when the sparse-tile pattern is detected from the values of H
   h_tile_nz: Optional[wp.array3d[int]] = None

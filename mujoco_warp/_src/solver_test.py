@@ -1440,7 +1440,6 @@ class SolverTest(parameterized.TestCase):
           ctx.hessian_weight,
           ctx.done,
           ctx.cone_coef,
-          ctx.cone_weight,
           ctx.cone_base,
         ],
         outputs=[ctx.h],
@@ -1448,8 +1447,11 @@ class SolverTest(parameterized.TestCase):
       )
       return np.triu(ctx.h.numpy()[:, : m.nv, : m.nv])
 
-    # the elliptic variant adds exactly the cone curvature to M + J'WJ
-    cone = dense_hessian(True) - dense_hessian(False)
+    # the virtual rows of the cone-state rows add exactly the cone curvature to M + J'WJ
+    h = dense_hessian(True)
+    weight[d.efc.state.numpy() == types.ConstraintState.CONE.value] = 0.0
+    ctx.hessian_weight.assign(weight)
+    cone = h - dense_hessian(False)
     for worldid in range(nworld):
       self.assertTrue(np.any(cone[worldid] != 0.0))
     np.testing.assert_allclose(cone, _elliptic_dense_hessian_reference(m, d, ctx), rtol=1e-5, atol=1e-6)

@@ -174,8 +174,6 @@ def _create_solver_context(
     h_rhs_work=h_rhs_work,
     inertia_scale=wp.empty((nworld,), dtype=float),
     cone_coef=wp.empty((nworld, njmax), dtype=types.vec6) if alloc_cone_rows else None,
-    # tile-loaded in whole chunks, like efc.D
-    cone_weight=wp.empty((nworld, d.njmax_pad), dtype=float) if alloc_cone_rows else None,
     cone_base=wp.empty((nworld, njmax), dtype=int) if alloc_cone_rows else None,
   )
 
@@ -2022,7 +2020,6 @@ def _update_constraint_efc(
     quad_changed_delta_out: wp.array2d[float],
     ctx_hessian_weight_out: wp.array2d[float],
     ctx_cone_coef_out: wp.array2d[types.vec6],
-    ctx_cone_weight_out: wp.array2d[float],
     ctx_cone_base_out: wp.array2d[int],
   ):
     worldid, efcid = wp.tid()
@@ -2132,16 +2129,16 @@ def _update_constraint_efc(
     efc_force_out[worldid, efcid] = res[0]
     efc_state_out[worldid, efcid] = new_state
 
-    if wp.static(CONE_ROWS):
-      if new_state == types.ConstraintState.CONE.value:
-        coef, cone_weight = _cone_virtual_row(efcid - efcid0, dim, mu, D0, jaref0, u, TT, friction)
-        ctx_cone_coef_out[worldid, efcid] = coef
-        ctx_cone_weight_out[worldid, efcid] = cone_weight
-        ctx_cone_base_out[worldid, efcid] = efcid0
-
     if wp.static(HESSIAN):
-      # D while quadratic; f / |x| for one iteration after a band jump that friction can stop
+      # D while quadratic; f / |x| for one iteration after a band jump that friction can stop; the
+      # weight of its virtual row for a cone-state row of the dense Hessian
       weight = wp.where(new_state == types.ConstraintState.QUADRATIC.value, efc_D, 0.0)
+      if wp.static(CONE_ROWS):
+        if new_state == types.ConstraintState.CONE.value:
+          coef, cone_weight = _cone_virtual_row(efcid - efcid0, dim, mu, D0, jaref0, u, TT, friction)
+          ctx_cone_coef_out[worldid, efcid] = coef
+          ctx_cone_base_out[worldid, efcid] = efcid0
+          weight = cone_weight
       if wp.static(BAND_JUMP):
         if is_friction:
           lneg = types.ConstraintState.LINEARNEG.value
@@ -2479,7 +2476,6 @@ def _update_efc_force(
       ctx.quad_changed_delta,
       ctx.hessian_weight,
       ctx.cone_coef if cone_rows else None,
-      ctx.cone_weight if cone_rows else None,
       ctx.cone_base if cone_rows else None,
     ],
   )
@@ -2933,14 +2929,6 @@ def _add_rod_twist_metric_dense(
 
 
 @wp.func
-def _active_check(tid: int, threshold: int) -> float:
-  if tid >= threshold:
-    return 0.0
-  else:
-    return 1.0
-
-
-@wp.func
 def _active_weight(weight: float, tid: int, threshold: int) -> float:
   if tid >= threshold:
     return 0.0
@@ -3014,18 +3002,9 @@ def _cone_virtual_row(
 
 
 @wp.func
-def _row_weight(weight: float, state: int, cone_weight: float, active: float) -> float:
-  # rows past nefc have stale states and unwritten weights
-  if active == 0.0:
-    return 0.0
-  if state == types.ConstraintState.CONE.value:
-    return cone_weight
-  return weight
-
-
-@wp.func
-def _is_cone(state: int, active: float) -> int:
-  return wp.where(active != 0.0 and state == types.ConstraintState.CONE.value, 1, 0)
+def _is_cone(state: int, tid: int, threshold: int) -> int:
+  # rows past nefc have stale states
+  return wp.where((tid < threshold) and (state == types.ConstraintState.CONE.value), 1, 0)
 
 
 @wp.func
@@ -3094,7 +3073,6 @@ def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njma
     ctx_hessian_weight_in: wp.array2d[float],
     ctx_done_in: wp.array[bool],
     ctx_cone_coef_in: wp.array2d[types.vec6],
-    ctx_cone_weight_in: wp.array2d[float],
     ctx_cone_base_in: wp.array2d[int],
     # Out:
     ctx_h_out: wp.array3d[float],
@@ -3116,15 +3094,12 @@ def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njma
 
       if wp.static(ELLIPTIC):
         J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_pad), offset=(k, 0), bounds_check=False, storage="shared")
-        # not a shared wp.func: Warp does not reserve shared memory for a tile returned by one
         state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
         D_k = wp.tile_load(ctx_hessian_weight_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
-        cone_weight = wp.tile_load(ctx_cone_weight_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
-        active = wp.tile_map(
-          _active_check, wp.tile_arange(TILE_SIZE_K, dtype=int), wp.tile_ones(shape=TILE_SIZE_K, dtype=int) * (nefc - k)
-        )
-        D_k = wp.tile_map(_row_weight, D_k, state, cone_weight, active)
-        if wp.tile_reduce(wp.add, wp.tile_map(_is_cone, state, active))[0] > 0:
+        tid_tile = wp.tile_arange(TILE_SIZE_K, dtype=int)
+        threshold_tile = wp.tile_ones(shape=TILE_SIZE_K, dtype=int) * (nefc - k)
+        D_k = wp.tile_map(_active_weight, D_k, tid_tile, threshold_tile)
+        if wp.tile_reduce(wp.add, wp.tile_map(_is_cone, state, tid_tile, threshold_tile))[0] > 0:
           _rewrite_cone_rows(
             efc_J_in, efc_state_in, ctx_cone_coef_in, ctx_cone_base_in, worldid, rank, lanes, nefc, k, TILE_SIZE_K, nv_pad, J_kj
           )
@@ -3172,7 +3147,6 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
     ctx_hessian_weight_in: wp.array2d[float],
     ctx_done_in: wp.array[bool],
     ctx_cone_coef_in: wp.array2d[types.vec6],
-    ctx_cone_weight_in: wp.array2d[float],
     ctx_cone_base_in: wp.array2d[int],
     # Out:
     ctx_h_out: wp.array3d[float],
@@ -3213,15 +3187,12 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
 
       if wp.static(ELLIPTIC):
         J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_pad), offset=(k, 0), bounds_check=False, storage="shared")
-        # not a shared wp.func: Warp does not reserve shared memory for a tile returned by one
         state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
         D_k = wp.tile_load(ctx_hessian_weight_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
-        cone_weight = wp.tile_load(ctx_cone_weight_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
-        active = wp.tile_map(
-          _active_check, wp.tile_arange(TILE_SIZE_K, dtype=int), wp.tile_ones(shape=TILE_SIZE_K, dtype=int) * (nefc - k)
-        )
-        D_k = wp.tile_map(_row_weight, D_k, state, cone_weight, active)
-        if wp.tile_reduce(wp.add, wp.tile_map(_is_cone, state, active))[0] > 0:
+        tid_tile = wp.tile_arange(TILE_SIZE_K, dtype=int)
+        threshold_tile = wp.tile_ones(shape=TILE_SIZE_K, dtype=int) * (nefc - k)
+        D_k = wp.tile_map(_active_weight, D_k, tid_tile, threshold_tile)
+        if wp.tile_reduce(wp.add, wp.tile_map(_is_cone, state, tid_tile, threshold_tile))[0] > 0:
           _rewrite_cone_rows(
             efc_J_in, efc_state_in, ctx_cone_coef_in, ctx_cone_base_in, worldid, rank, lanes, nefc, k, TILE_SIZE_K, nv_pad, J_kj
           )
@@ -4468,7 +4439,6 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
             ctx.hessian_weight,
             ctx.done,
             ctx.cone_coef,
-            ctx.cone_weight,
             ctx.cone_base,
           ],
           outputs=[ctx.h],
@@ -4489,7 +4459,6 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
             ctx.hessian_weight,
             ctx.done,
             ctx.cone_coef,
-            ctx.cone_weight,
             ctx.cone_base,
           ],
           outputs=[ctx.h],
