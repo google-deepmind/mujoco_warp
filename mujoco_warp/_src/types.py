@@ -3106,7 +3106,26 @@ class RenderContext:
 
 @dataclasses.dataclass
 class CollisionConvexBackwardContext:
-  """Reusable convex collision feature-recovery and replay workspace."""
+  """Reusable heightfield contact feature-recovery and replay workspace.
+
+  Attributes:
+    case: packed replay tag, GJK dimension, and sign bits           (naconmax,)
+    prism: heightfield simplex points or frozen witnesses, as rows  (naconmax, 3, 3)
+    top: top vertices of the contact's heightfield prism, as rows   (naconmax, 3, 3)
+    feature: convex geom simplex features, then a mixed-face vertex (naconmax, 4)
+    direction: convex geom support directions per simplex vertex    (naconmax, 3, 3)
+    reference: separation, penetration, or side-case witness vector (naconmax, 3)
+    epa_vert: vertices in EPA polytope                              (nprobe, nepavert, 3)
+    epa_vert_index: vertex indices in EPA polytope                  (nprobe, nepavert)
+    epa_face: faces of polytope represented by three indices        (nprobe, nepaface)
+    epa_pr: projection of origin on polytope faces                  (nprobe, nepaface, 3)
+    epa_norm2: epa_pr * epa_pr                                      (nprobe, nepaface)
+    epa_horizon: index pair (i j) of edges on horizon               (nprobe, MJ_MAX_EPAHORIZON)
+    probe_count: number of claimed scratch rows                     (1,)
+    overflow: overflow bitmask (OverflowType)                       (nworld,)
+    gjk_iterations: GJK iteration limit, from opt.ccd_iterations
+    epa_iterations: EPA iteration limit, from opt.ccd_iterations
+  """
 
   # Frozen per-contact features.
   case: wp.array[int]
@@ -3130,7 +3149,72 @@ class CollisionConvexBackwardContext:
 
 @dataclasses.dataclass
 class BackwardContext:
-  """Reusable solver, replay data, and array workspace for a step backward."""
+  """Reusable solver, replay data, and array workspace for a step backward.
+
+  adj_* fields hold cotangents. res_* fields hold residual VJPs (dr/dx)^T lam, which enter input
+  gradients with a minus sign.
+
+  Attributes:
+    solver_ctx: Newton workspace that factors H and solves H lam = adj_qacc
+    scratch: private Data for replayed kinematics and backward intermediates
+    adj_qpos: qpos cotangent from integration and kinematics               (nworld, nq)
+    adj_qvel: qvel cotangent from integration and smooth forces            (nworld, nv)
+    adj_qacc: cotangent of the acceleration that advances the state        (nworld, nv)
+    adj_mocap_pos: mocap_pos cotangent                                     (nworld, nmocap, 3)
+    adj_mocap_quat: mocap_quat cotangent                                   (nworld, nmocap, 4)
+    res_qpos: qpos residual VJP                                            (nworld, nq)
+    res_qvel: qvel residual VJP                                            (nworld, nv)
+    adj_efc_pos: efc.pos cotangent from the contact residual               (nworld, njmax)
+    adj_contact_pos: contact.pos cotangent from the contact residual       (naconmax, 3)
+    adj_contact_frame: contact.frame cotangent from the contact residual   (naconmax, 3, 3)
+    adj_xipos: xipos cotangent                                             (nworld, nbody, 3)
+    adj_xiquat: xiquat cotangent                                           (nworld, nbody, 4)
+    adj_subtree_com: subtree_com cotangent                                 (nworld, nbody, 3)
+    adj_cinert: cinert cotangent                                           (nworld, nbody, 10)
+    adj_cvel: cvel cotangent                                               (nworld, nbody, 6)
+    adj_cdof: cdof cotangent                                               (nworld, nv, 6)
+    adj_cdof_dot: cdof_dot cotangent                                       (nworld, nv, 6)
+    qDeriv: M - dt * dqfrc_smooth/dqvel, then the integrator matrix Q      (nworld, nC)
+    qLD: factor of Q                                                       (nworld, qld_total)
+    qLDiagInv: reciprocal diagonal of the Q factor                         (nworld, nv)
+    qacc_advance: Q^-1 M qacc, the acceleration that advances the state    (nworld, nv)
+    y_remap: Q^-1 adj_qacc                                                 (nworld, nv)
+    adj_qacc_root: M y_remap, the constraint solver qacc cotangent         (nworld, nv)
+    w_dir: qacc - qacc_advance                                             (nworld, nv)
+    damp_deriv: velocity derivative of dof and actuator damping            (nworld, nv)
+    Ma: M qacc, the Euler damping solve right-hand side                    (nworld, nv)
+    contact_point: plane-mesh contact vertex in mesh coordinates           (naconmax, 3)
+    contact_feature: capsule-box and box-box witness feature ids           (naconmax, 4)
+    contact_adj_dist: contact.dist cotangent from its normal efc row       (naconmax,)
+    res_geom_xpos: geom_xpos contact residual VJP                          (nworld, ngeom, 3)
+    res_geom_xquat: geom_xquat contact residual VJP                        (nworld, ngeom, 4)
+    contact_res_dof: contact residual VJP in dof space                     (nworld, nv)
+    contact_ceff: root COM cotangent for the contact kinematics VJP        (nworld, nbody, 3)
+    res_dof: non-contact constraint residual VJP in dof space              (nworld, nv)
+    qLU: M - dt * dqfrc_smooth/dqvel in D layout, for the qvel VJP         (nworld, nD)
+    adj_dof: implicitfast free-body qpos cotangent in dof space            (nworld, nv)
+    res_dof_frictionloss: dof_frictionloss residual VJP                    (*, nv)
+    res_dof_solref: dof_solref residual VJP                                (*, nv, mjNREF)
+    res_dof_solimp: dof_solimp residual VJP                                (*, nv, mjNIMP)
+    res_eq_solref: eq_solref residual VJP                                  (*, neq, mjNREF)
+    res_eq_solimp: eq_solimp residual VJP                                  (*, neq, mjNIMP)
+    res_jnt_solref: jnt_solref residual VJP                                (*, njnt, mjNREF)
+    res_jnt_solimp: jnt_solimp residual VJP                                (*, njnt, mjNIMP)
+    smooth_res_qpos: smooth-force qpos residual VJP                        (nworld, nq)
+    smooth_res_dof: smooth-force residual VJP in dof space                 (nworld, nv)
+    smooth_adj_qvel: RNE qvel cotangent                                    (nworld, nv)
+    smooth_adj_qacc: RNE qacc cotangent, written but not read              (nworld, nv)
+    smooth_cv_adj_qvel: com-velocity reverse qvel cotangent                (nworld, nv)
+    smooth_cv_adj_cdof: standalone com-velocity reverse cdof cotangent     (nworld, nv, 6)
+    smooth_h: com-velocity reverse cotangent of a dof's pre-joint velocity (nworld, nv, 6)
+    smooth_k: com-velocity reverse direct cdof cotangent                   (nworld, nv, 6)
+    smooth_H: per-body sum of smooth_h                                     (nworld, nbody, 6)
+    smooth_W: subtree sum of cvel cotangents plus descendant smooth_H      (nworld, nbody, 6)
+    smooth_ceff: root COM cotangent for the smooth kinematics VJP          (nworld, nbody, 3)
+    res_body_mass: body_mass residual VJP                                  (*, nbody)
+    res_body_inertia: body_inertia residual VJP                            (*, nbody, 3)
+    collision_convex_ctx: heightfield contact replay workspace, or None
+  """
 
   solver_ctx: SolverContext
   scratch: Data
