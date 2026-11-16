@@ -231,8 +231,8 @@ def _actuator_qpos_vjp(
   w, actid = wp.tid()
   dfdl = float(0.0)
   if actuator_gaintype[actid] == GainType.AFFINE:
-    ctrl = ctrl_in[w % ctrl_in.shape[0], actid]
-    if actuator_ctrllimited[actid] and dsbl_clampctrl == 0:
+    ctrl = ctrl_in[w, actid]
+    if actuator_ctrllimited[actid] and not dsbl_clampctrl:
       ctrlrange = actuator_ctrlrange[w % actuator_ctrlrange.shape[0], actid]
       ctrl = wp.clamp(ctrl, ctrlrange[0], ctrlrange[1])
     dfdl += actuator_gainprm[w % actuator_gainprm.shape[0], actid][1] * ctrl
