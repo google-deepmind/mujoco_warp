@@ -2326,7 +2326,7 @@ def _update_gradient_h_incremental(
 
   Each world's threads stride over its unique (i, j) elements, so a world without
   changes costs a few warps instead of one thread per element. For each changed
-  constraint, adds or subtracts D * J[i] * J[j].
+  constraint, adds its weight delta times J[i] * J[j].
   """
   worldid, threadid = wp.tid()
 
@@ -3094,6 +3094,7 @@ def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njma
 
       if wp.static(ELLIPTIC):
         J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_pad), offset=(k, 0), bounds_check=False, storage="shared")
+        # not a shared wp.func: Warp does not reserve shared memory for a tile returned by one
         state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
         D_k = wp.tile_load(ctx_hessian_weight_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
         tid_tile = wp.tile_arange(TILE_SIZE_K, dtype=int)
@@ -3187,6 +3188,7 @@ def _update_gradient_JTDAJ_dense_tiled(nv_pad: int, tile_size: int, njmax: int, 
 
       if wp.static(ELLIPTIC):
         J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_pad), offset=(k, 0), bounds_check=False, storage="shared")
+        # not a shared wp.func: Warp does not reserve shared memory for a tile returned by one
         state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
         D_k = wp.tile_load(ctx_hessian_weight_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
         tid_tile = wp.tile_arange(TILE_SIZE_K, dtype=int)
@@ -4546,7 +4548,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
 
 
 def _update_h_incremental(m: types.Model, d: types.Data, ctx: SolverContext):
-  """Update upper triangle of H with delta from constraints that changed QUADRATIC state."""
+  """Update upper triangle of H with the delta from constraints whose Hessian weight changed."""
   det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
   sc = _sparse_compact(ctx)
   if m.is_sparse or sc:
@@ -4605,7 +4607,7 @@ def _update_gradient_incremental(
   """Incremental gradient update: update H for changed constraints + re-factorize.
 
   Skips the full J^T*D*J rebuild by applying only the delta from constraints
-  that changed QUADRATIC state, then re-factorizes and solves. If h_stream is given,
+  whose Hessian weight changed, then re-factorizes and solves. If h_stream is given,
   the caller already launched _update_h_incremental on it.
   """
   changed = ctx.state_changed_count if stable_fast else d.nefc
