@@ -24,6 +24,34 @@ def solve_search_sums(grad: float, solution: float):
 
 
 @lru_cache(maxsize=None)
+def create_newton_tile_func(tile_size: int):
+  """Newton direction from H factored as one tile: search = -H^-1 grad, and solve_search_sums.
+
+  H is the tile at row row0 of h; grad and search are at offset (the store drops the entries past
+  search's end).
+  """
+
+  @wp.func
+  def newton_tile(
+    # In:
+    h: wp.array2d[float],
+    row0: int,
+    grad: wp.array[float],
+    offset: int,
+    # Out:
+    search_out: wp.array[float],
+  ) -> wp.vec2:
+    mat_tile = wp.tile_load(h, shape=(tile_size, tile_size), offset=(row0, 0))
+    wp.tile_cholesky_inplace(mat_tile, fill_mode="upper")
+    input_tile = wp.tile_load(grad, shape=tile_size, offset=offset)
+    output_tile = wp.tile_cholesky_solve(mat_tile, input_tile, fill_mode="upper")
+    wp.tile_store(search_out, wp.tile_map(wp.mul, output_tile, -1.0), offset=offset)
+    return wp.tile_reduce(wp.add, wp.tile_map(solve_search_sums, input_tile, output_tile))[0]
+
+  return newton_tile
+
+
+@lru_cache(maxsize=None)
 def _create_newton_decrement_func(matrix_size_static: int, vector_size_static: int):
   @wp.func
   def newton_decrement_func(
