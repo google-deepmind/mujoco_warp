@@ -195,17 +195,12 @@ def _assert_model_supported(m: Model):
   """Rejects unsupported model capabilities and requested parameter gradients."""
   reasons, limitations = _model_supported(m)
   if reasons:
-    raise NotImplementedError(
-      "smooth_adjoint analytic reverse does not support: "
-      + "; ".join(reasons)
-      + ". Implement the leaf/topology VJP (the FD oracle lives in adjoint_test_util). "
-      "There is no silent FD fallback."
-    )
+    raise NotImplementedError("adjoint.step_backward does not support: " + "; ".join(reasons))
   # Gradient requests can change; cached parameter-layout limitations do not.
   unsupported = sorted(name for name in limitations if getattr(m, name).requires_grad)
   if unsupported:
     raise NotImplementedError(
-      "smooth_adjoint analytic reverse does not support: "
+      "adjoint.step_backward does not support: "
       + "; ".join(f"{name} gradients with a compiled free-body mass layout missing couplings" for name in unsupported)
     )
 

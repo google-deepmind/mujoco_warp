@@ -554,24 +554,7 @@ def contact_qpos_vjp(
   res_qpos: wp.array2d[float],
   bc: BackwardContext | None = None,
 ):
-  """Accumulates the contact residual's dqpos into res_qpos from the exposed input-adjoints.
-
-  Primitive and heightfield narrowphase replays produce geometry-pose cotangents,
-  which the kinematics VJP projects into joint coordinates.
-  Box-box requires the primitive collider (nativeccd disabled).
-
-  Args:
-    m: The model.
-    d_out: The step-output data holding the frozen contacts and kinematics.
-    qpos_in: Input/linearization qpos (d.qpos), not the integrated d_out.qpos.
-    res_contact_pos: dr/dcontact_pos * lam, per-contact vec3.
-    res_contact_frame: dr/dcontact_frame * lam, per-contact mat33.
-    res_efc_pos: dr/defc_pos * lam, (nworld, njmax).
-    res_subtree_com: dr/dsubtree_com * lam, (nworld, nbody).
-    res_cdof: dr/dcdof * lam, (nworld, nv).
-    res_qpos: Accumulated output; the caller's writeback applies the IFT minus.
-    bc: Reusable backward workspace.
-  """
+  """Accumulates contact residual VJPs (res_* = dr/dx^T lam) into res_qpos via geometry poses."""
   if bc is None:
     from mujoco_warp._src import adjoint
 

@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Adjoints for convex collision detection.
-
-A non-differentiable pass recovers the active collision features from the retained contacts. A
-small differentiable replay then maps contact cotangents to geometry poses. The forward pass does
-not need to retain any additional state. Heightfield contacts are currently integrated; the
-feature-recovery and replay helpers also provide scaffolding for general GJK/EPA adjoints.
-"""
+"""Heightfield contact adjoints: recover contact features, then replay them differentiably."""
 
 import warp as wp
 
@@ -62,15 +56,23 @@ _CASE_DIM_SHIFT = wp.constant(3)
 _CASE_SIGN_SHIFT = wp.constant(5)
 _CASE_NEG_BIT = wp.constant(1 << 11)
 
+# Geometry types with heightfield contact replay.
+_CONVEX_TYPES = (
+  GeomType.SPHERE,
+  GeomType.CAPSULE,
+  GeomType.ELLIPSOID,
+  GeomType.CYLINDER,
+  GeomType.BOX,
+  GeomType.MESH,
+)
+
 
 def create_collision_convex_backward_context(
   m: Model, d: Data, nprobe: int | None = None
 ) -> CollisionConvexBackwardContext | None:
-  """Creates reusable convex collision feature-recovery and replay scratch."""
-  if not any(
-    m.geom_pair_type_count[upper_trid_index(len(GeomType), GeomType.HFIELD.value, geom_type.value)]
-    for geom_type in _CONVEX_TYPES
-  ):
+  """Creates heightfield feature-recovery and replay scratch, or None without such pairs."""
+  pair_counts = m.geom_pair_type_count
+  if not any(pair_counts[upper_trid_index(len(GeomType), GeomType.HFIELD.value, t.value)] for t in _CONVEX_TYPES):
     return None
   naconmax = d.contact.pos.shape[0]
   gjk_iterations = int(m.opt.ccd_iterations)
@@ -732,16 +734,6 @@ def _hfield_replay(
   frame_out[cid] = make_frame(geom1_mat @ normal)
 
 
-_CONVEX_TYPES = (
-  GeomType.SPHERE,
-  GeomType.CAPSULE,
-  GeomType.ELLIPSOID,
-  GeomType.CYLINDER,
-  GeomType.BOX,
-  GeomType.MESH,
-)
-
-
 @event_scope
 def hfield_contact_pose_vjp(
   m: Model,
@@ -754,11 +746,6 @@ def hfield_contact_pose_vjp(
   res_geom_xquat: wp.array,
 ):
   """Accumulates height field contact cotangents into geometry pose cotangents."""
-  ngeomtype = len(GeomType)
-  pair_counts = m.geom_pair_type_count
-  if not any(pair_counts[upper_trid_index(ngeomtype, GeomType.HFIELD.value, t.value)] for t in _CONVEX_TYPES):
-    return
-
   naconmax = d_out.contact.pos.shape[0]
   ctx.probe_count.zero_()
   ctx.overflow.zero_()

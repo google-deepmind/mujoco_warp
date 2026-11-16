@@ -66,7 +66,7 @@ def _constraint_contract(
     if state == ConstraintState.LINEARNEG:
       return -Z * frictionloss
     if state == ConstraintState.LINEARPOS:
-      return -Z * (-frictionloss)
+      return Z * frictionloss
   kbi = constraint._contact_kbimp(disableflags, timestep, solref, solimp, pos, False)
   k = 0.0 if constraint_type == ConstraintType.FRICTION_DOF else kbi[0]
   b, imp = kbi[1], kbi[2]
@@ -76,8 +76,7 @@ def _constraint_contract(
   F_state = -D * jaref
   F_state0 = -D_ref * Jaref_ref
   f = force + (F_state - F_state0)
-  phi = -Z * f
-  return phi
+  return -Z * f
 
 
 @wp.func

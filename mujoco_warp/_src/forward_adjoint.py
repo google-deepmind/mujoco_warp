@@ -903,9 +903,9 @@ def advance_backward(m: Model, d_out: Data, d_bwd: Data, bc: BackwardContext):
 
 @event_scope
 def smooth_qvel_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, adj_qvel: wp.array, bc: BackwardContext):
-  """Accumulates non-bias force VJPs using the prepared force matrix in bc.qLU."""
+  """Accumulates smooth-force VJPs for qvel, controls, activations, and applied forces."""
   nworld = d.nworld
-  # RNE qvel VJP is handled elsewhere via smooth_qpos_backward, avoiding the full Jacobian.
+  # bc.qLU holds the force derivative; smooth_qpos_backward handles the RNE velocity terms.
   wp.launch(
     _smooth_qvel_vjp,
     dim=(nworld, m.nD),
@@ -1039,7 +1039,7 @@ def smooth_qvel_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, adj_qvel
 
 @event_scope
 def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos: wp.array, bc: BackwardContext):
-  """Shares the smooth position reverse with inertial parameters, including direct mass terms."""
+  """Accumulates RNE, spring, and actuator qpos VJPs, with inertial and mocap gradients."""
   mocap_grad = d.mocap_pos.grad is not None or d.mocap_quat.grad is not None
   flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
   with_mass = (m.opt.integrator == IntegratorType.IMPLICITFAST and (m.opt.disableflags & flags) != flags) or (

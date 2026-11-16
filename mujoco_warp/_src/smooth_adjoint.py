@@ -421,8 +421,7 @@ def _rne_contract(
 
 @wp.func
 def _cinert_contract(mass: float, inertia: wp.vec3, orientation: wp.quat, offset: wp.vec3, seed: vec10):
-  phi = wp.dot(smooth.inert_com(mass, inertia, math.quat_to_mat(orientation), offset), seed)
-  return phi
+  return wp.dot(smooth.inert_com(mass, inertia, math.quat_to_mat(orientation), offset), seed)
 
 
 @wp.func
@@ -660,11 +659,7 @@ def rne_backward(
   xfrc_applied: wp.array2d | None = None,
   body_gravcomp: wp.array2d | None = None,
 ):
-  """Returns the RNE position VJP and leaves velocity cotangents in bc.
-
-  Includes -mass_y.T @ M(q) @ mass_w when supplied. Applied forces and passive gravity
-  compensation contribute to the same residual. Intermediates are recomputed from input kinematics.
-  """
+  """Returns the RNE qpos VJP with optional -mass_y.T @ M @ mass_w; leaves qvel cotangents in bc."""
   bc.adj_subtree_com.zero_()
   mass_grad = m.body_mass.requires_grad
   inertia_grad = m.body_inertia.requires_grad
@@ -739,7 +734,6 @@ def rne_backward(
 # Reverse com_vel into qvel and cdof without materializing its Jacobian.
 
 
-# same-body scatter of a running prefix cotangent t: nubar_j += S_j*t, Sbar_j += nu_j*t
 @wp.func
 def _cv_scatter(
   # Data in:
@@ -753,6 +747,7 @@ def _cv_scatter(
   adj_qvel_out: wp.array2d[float],
   adj_cdof_out: wp.array2d[wp.spatial_vector],
 ):
+  """Scatters a running velocity cotangent t to dof j's qvel and cdof cotangents."""
   adj_qvel_out[w, j] = adj_qvel_out[w, j] + wp.dot(cdof_in[w, j], t)
   adj_cdof_out[w, j] = adj_cdof_out[w, j] + qvel_in[w, j] * t
 
@@ -787,13 +782,13 @@ def _comvel_rot3_vjp(
   h_out: wp.array2d[wp.spatial_vector],
   k_out: wp.array2d[wp.spatial_vector],
 ) -> wp.spatial_vector:
-  hsum = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+  hsum = wp.spatial_vector()
   for axis in range(3):
     i = dofid + axis
     g = adj_cdof_dot[w, i]
     h = math.motion_cross_force(cdof_in[w, i], g)
     h_out[w, i] = h
-    k_out[w, i] = (-1.0) * math.motion_cross_force(velocity, g)
+    k_out[w, i] = -math.motion_cross_force(velocity, g)
     hsum += h
   return hsum
 
@@ -811,50 +806,48 @@ def _comvel_vjp_local(
   cdof_in: wp.array2d[wp.spatial_vector],
   cvel_in: wp.array2d[wp.spatial_vector],
   # In:
-  adj_cdof_dot: wp.array2d[wp.spatial_vector],  # G seed
+  adj_cdof_dot: wp.array2d[wp.spatial_vector],
   # Out:
-  h_out: wp.array2d[wp.spatial_vector],  # per dof: cotangent on the snapshot velocity
-  k_out: wp.array2d[wp.spatial_vector],  # per dof: direct cotangent on cdof_in
-  H_out: wp.array2d[wp.spatial_vector],  # per body: sum h on this body
+  h_out: wp.array2d[wp.spatial_vector],
+  k_out: wp.array2d[wp.spatial_vector],
+  H_out: wp.array2d[wp.spatial_vector],
 ):
+  """Computes per-dof pre-joint velocity (h) and cdof (k) cotangents, and per-body sums of h (H)."""
   w, b = wp.tid()
-  zero = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-  if b == 0:  # world body: no joints / snapshot
-    H_out[w, 0] = zero
+  if b == 0:  # The world body has no joints.
+    H_out[w, 0] = wp.spatial_vector()
     return
-  Hb = zero
-  u = cvel_in[w, body_parentid[b]]  # parent snapshot (cvel_in[0]=0 for a tree root)
+  Hb = wp.spatial_vector()
+  u = cvel_in[w, body_parentid[b]]  # Velocity before the body's first joint; zero for a tree root.
   jntadr = body_jntadr[b]
-  jntnum = body_jntnum[b]
-  for jj in range(jntnum):
-    jt = jnt_type[jntadr + jj]
-    d = jnt_dofadr[jntadr + jj]
-    if jt == JointType.FREE:
+  for j in range(body_jntnum[b]):
+    jnttype = jnt_type[jntadr + j]
+    dofadr = jnt_dofadr[jntadr + j]
+    if jnttype == JointType.FREE:
       for axis in range(3):
-        i = d + axis
+        i = dofadr + axis
         u += cdof_in[w, i] * qvel_in[w, i]
-        h_out[w, i] = zero
-        k_out[w, i] = zero
-      Hb += _comvel_rot3_vjp(cdof_in, adj_cdof_dot, w, d + 3, u, h_out, k_out)
+        h_out[w, i] = wp.spatial_vector()
+        k_out[w, i] = wp.spatial_vector()
+      Hb += _comvel_rot3_vjp(cdof_in, adj_cdof_dot, w, dofadr + 3, u, h_out, k_out)
       for axis in range(3):
-        i = d + 3 + axis
+        i = dofadr + 3 + axis
         u += cdof_in[w, i] * qvel_in[w, i]
-    elif jt == JointType.BALL:
-      Hb += _comvel_rot3_vjp(cdof_in, adj_cdof_dot, w, d, u, h_out, k_out)
+    elif jnttype == JointType.BALL:
+      Hb += _comvel_rot3_vjp(cdof_in, adj_cdof_dot, w, dofadr, u, h_out, k_out)
       for axis in range(3):
-        i = d + axis
+        i = dofadr + axis
         u += cdof_in[w, i] * qvel_in[w, i]
     else:
-      g0 = adj_cdof_dot[w, d]
-      h0 = math.motion_cross_force(cdof_in[w, d], g0)
-      h_out[w, d] = h0
-      k_out[w, d] = (-1.0) * math.motion_cross_force(u, g0)
-      u = u + cdof_in[w, d] * qvel_in[w, d]
-      Hb = Hb + h0
+      g0 = adj_cdof_dot[w, dofadr]
+      h0 = math.motion_cross_force(cdof_in[w, dofadr], g0)
+      h_out[w, dofadr] = h0
+      k_out[w, dofadr] = -math.motion_cross_force(u, g0)
+      u += cdof_in[w, dofadr] * qvel_in[w, dofadr]
+      Hb += h0
   H_out[w, b] = Hb
 
 
-# CV2: same-body reverse suffix scan; scatter precedes T+=h so no axis sees its own snapshot
 @wp.kernel(enable_backward=False)
 def _comvel_vjp_samebody(
   # Model:
@@ -870,34 +863,35 @@ def _comvel_vjp_samebody(
   k_in: wp.array2d[wp.spatial_vector],
   W_in: wp.array2d[wp.spatial_vector],
   # Out:
-  adj_qvel_out: wp.array2d[float],  # (+=): same-body T_j part
-  adj_cdof_out: wp.array2d[wp.spatial_vector],  # (+=): same-body T_j part + direct k_j
+  adj_qvel_out: wp.array2d[float],
+  adj_cdof_out: wp.array2d[wp.spatial_vector],
 ):
+  """Reverse-scans each body's joints, scattering each dof before adding its own h."""
   w, b = wp.tid()
   t = W_in[w, b]
   jntadr = body_jntadr[b]
   jntnum = body_jntnum[b]
-  for jr in range(jntnum):
-    jj = jntnum - 1 - jr  # reverse joint order
-    jt = jnt_type[jntadr + jj]
-    d = jnt_dofadr[jntadr + jj]
-    if jt == JointType.FREE:
-      _cv_scatter3(qvel_in, cdof_in, w, d + 3, t, adj_qvel_out, adj_cdof_out)
+  for j in range(jntnum):
+    jntid = jntadr + jntnum - 1 - j  # Reverse joint order.
+    jnttype = jnt_type[jntid]
+    dofadr = jnt_dofadr[jntid]
+    if jnttype == JointType.FREE:
+      _cv_scatter3(qvel_in, cdof_in, w, dofadr + 3, t, adj_qvel_out, adj_cdof_out)
       for axis in range(3):
-        i = d + 5 - axis
+        i = dofadr + 5 - axis
         t += h_in[w, i]
         adj_cdof_out[w, i] += k_in[w, i]
-      _cv_scatter3(qvel_in, cdof_in, w, d, t, adj_qvel_out, adj_cdof_out)
-    elif jt == JointType.BALL:
-      _cv_scatter3(qvel_in, cdof_in, w, d, t, adj_qvel_out, adj_cdof_out)
+      _cv_scatter3(qvel_in, cdof_in, w, dofadr, t, adj_qvel_out, adj_cdof_out)
+    elif jnttype == JointType.BALL:
+      _cv_scatter3(qvel_in, cdof_in, w, dofadr, t, adj_qvel_out, adj_cdof_out)
       for axis in range(3):
-        i = d + 2 - axis
+        i = dofadr + 2 - axis
         t += h_in[w, i]
         adj_cdof_out[w, i] += k_in[w, i]
     else:
-      _cv_scatter(qvel_in, cdof_in, w, d, t, adj_qvel_out, adj_cdof_out)
-      t = t + h_in[w, d]
-      adj_cdof_out[w, d] = adj_cdof_out[w, d] + k_in[w, d]
+      _cv_scatter(qvel_in, cdof_in, w, dofadr, t, adj_qvel_out, adj_cdof_out)
+      t += h_in[w, dofadr]
+      adj_cdof_out[w, dofadr] = adj_cdof_out[w, dofadr] + k_in[w, dofadr]
 
 
 def comvel_backward(
