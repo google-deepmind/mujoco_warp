@@ -1025,23 +1025,22 @@ def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos
   mocap_grad = d.mocap_pos.grad is not None or d.mocap_quat.grad is not None
   implicit_solve = _implicit_solve(m)
   passive_enabled = (m.opt.disableflags & (DisableBit.SPRING | DisableBit.DAMPER)) != (DisableBit.SPRING | DisableBit.DAMPER)
-  residual = smooth_adjoint.rne_backward(
+  smooth_adjoint.rne_backward(
     m,
     d_bwd,
     lam,
     bc.y_remap if implicit_solve else None,
     bc.w_dir if implicit_solve else None,
+    res_qpos,
     bc,
     xfrc_applied=d.xfrc_applied,
     body_gravcomp=m.body_gravcomp if passive_enabled else None,
   )
-  wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
   if mocap_grad:
     smooth_kinematics_adjoint.kinematics_mocap_backward(m, d_bwd, bc)
   model_adjoint.inertia_vjp(m, d_bwd, bc)
-  for vjp in (smooth_adjoint.spring_qpos_vjp, smooth_adjoint.actuator_qpos_vjp):
-    residual = vjp(m, d_bwd, lam, bc=bc)
-    wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
+  smooth_adjoint.spring_qpos_vjp(m, d_bwd, lam, res_qpos)
+  smooth_adjoint.actuator_qpos_vjp(m, d_bwd, lam, res_qpos, bc)
 
 
 @event_scope

@@ -80,24 +80,21 @@ def _spring_qpos_vjp(
   dofid = jnt_dofadr[jntid]
   stiffness = jnt_stiffness[worldid % jnt_stiffness.shape[0], jntid]
   poly = jnt_stiffnesspoly[worldid % jnt_stiffnesspoly.shape[0], jntid]
-  nq = 7 if jnttype == JointType.FREE else (4 if jnttype == JointType.BALL else 1)
   # Zero coefficients still have derivatives when fitting springs.
   has_stiffness = stiffness != 0.0 or poly[0] != 0.0 or poly[1] != 0.0
   if (opt_disableflags & DisableBit.SPRING) or (
     not has_stiffness and not jnt_stiffness_grad_out and not jnt_stiffnesspoly_grad_out
   ):
-    for i in range(nq):
-      res_qpos_out[worldid, qposid + i] = 0.0
     return
 
   spring_worldid = worldid % qpos_spring.shape[0]
-  # Model gradients use the force sign; qpos returns the negative-force residual VJP.
+  # Model gradients use the force sign; qpos accumulates the negative-force residual VJP.
   if jnttype == JointType.HINGE or jnttype == JointType.SLIDE:
     scalar_grad = wp.grad(_spring_contract)(
       stiffness, poly, qpos_in[worldid, qposid] - qpos_spring[spring_worldid, qposid], lam[worldid, dofid]
     )
     stiffness_grad, poly_grad = scalar_grad[0], scalar_grad[1]
-    res_qpos_out[worldid, qposid] = -scalar_grad[2]
+    res_qpos_out[worldid, qposid] -= scalar_grad[2]
     if qpos_spring_grad_out:
       wp.atomic_sub(qpos_spring_grad_out, spring_worldid, qposid, scalar_grad[2])  # kernel_analyzer: ignore[atomic]
   else:
@@ -113,7 +110,7 @@ def _spring_qpos_vjp(
       poly_grad += linear_grad[1]
       pos_grad = linear_grad[2]
       for i in range(3):
-        res_qpos_out[worldid, qposid + i] = -pos_grad[i]
+        res_qpos_out[worldid, qposid + i] -= pos_grad[i]
         if qpos_spring_grad_out:
           wp.atomic_sub(qpos_spring_grad_out, spring_worldid, qposid + i, pos_grad[i])  # kernel_analyzer: ignore[atomic]
       qposid += 3
@@ -133,7 +130,7 @@ def _spring_qpos_vjp(
     poly_grad += rotation_grad[1]
     rot_grad, ref_rot_grad = rotation_grad[2], rotation_grad[3]
     for i in range(4):
-      res_qpos_out[worldid, qposid + i] = -rot_grad[i]
+      res_qpos_out[worldid, qposid + i] -= rot_grad[i]
       if qpos_spring_grad_out:
         wp.atomic_add(qpos_spring_grad_out, spring_worldid, qposid + i, ref_rot_grad[i])  # kernel_analyzer: ignore[atomic]
   if jnt_stiffness_grad_out:
@@ -147,12 +144,8 @@ def _spring_qpos_vjp(
 
 
 @event_scope
-def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | None = None):
-  """Returns d(lam.T @ -qfrc_spring)/dqpos and accumulates spring parameter gradients."""
-  if bc is None:
-    from mujoco_warp._src import adjoint
-
-    bc = adjoint.create_backward_context(m, d)
+def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d, res_qpos: wp.array2d):
+  """Adds d(lam.T @ -qfrc_spring)/dqpos to res_qpos and accumulates spring parameter gradients."""
   wp.launch(
     _spring_qpos_vjp,
     dim=(d.nworld, m.njnt),
@@ -167,9 +160,8 @@ def spring_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | No
       d.qpos,
       lam,
     ],
-    outputs=[m.qpos_spring.grad, m.jnt_stiffness.grad, m.jnt_stiffnesspoly.grad, bc.smooth_res_qpos],
+    outputs=[m.qpos_spring.grad, m.jnt_stiffness.grad, m.jnt_stiffnesspoly.grad, res_qpos],
   )
-  return bc.smooth_res_qpos
 
 
 @wp.func
@@ -280,16 +272,14 @@ def _actuator_qpos_vjp(
 
 
 @event_scope
-def actuator_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | None = None):
-  """Returns the affine joint-actuator position VJP."""
+def actuator_qpos_vjp(m: Model, d: Data, lam: wp.array2d, res_qpos: wp.array2d, bc: BackwardContext | None = None):
+  """Adds the affine joint-actuator position VJP to res_qpos."""
+  if not m.nu or int(m.opt.disableflags) & DisableBit.ACTUATION:
+    return
   if bc is None:
     from mujoco_warp._src import adjoint
 
     bc = adjoint.create_backward_context(m, d)
-  smooth_res_qpos = bc.smooth_res_qpos
-  smooth_res_qpos.zero_()
-  if not m.nu or int(m.opt.disableflags) & DisableBit.ACTUATION:
-    return smooth_res_qpos
 
   smooth_res_dof = bc.smooth_res_dof
   smooth_res_dof.zero_()
@@ -324,9 +314,8 @@ def actuator_qpos_vjp(m: Model, d: Data, lam: wp.array2d, bc: BackwardContext | 
     smooth_kinematics_adjoint._dof_to_qpos,
     dim=(d.nworld, m.njnt),
     inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d.qpos, smooth_res_dof],
-    outputs=[smooth_res_qpos],
+    outputs=[res_qpos],
   )
-  return smooth_res_qpos
 
 
 # The body's own H is added by the same-body reverse; only descendants contribute here.
@@ -651,11 +640,12 @@ def rne_backward(
   lam: wp.array2d,
   mass_y: wp.array2d | None,
   mass_w: wp.array2d | None,
+  res_qpos: wp.array2d,
   bc: BackwardContext,
   xfrc_applied: wp.array2d | None = None,
   body_gravcomp: wp.array2d | None = None,
 ):
-  """Returns the RNE qpos VJP with optional -mass_y.T @ M @ mass_w; leaves qvel cotangents in bc."""
+  """Adds the RNE qpos VJP with optional -mass_y.T @ M @ mass_w; leaves qvel cotangents in bc."""
   bc.adj_subtree_com.zero_()
   mass_grad = m.body_mass.requires_grad
   inertia_grad = m.body_inertia.requires_grad
@@ -710,7 +700,6 @@ def rne_backward(
   comvel_backward(m, d, bc.adj_cvel, bc.adj_cdof_dot, bc=bc)
   if xfrc_applied is not None:
     xfrc_kinematics_backward(m, d, lam, xfrc_applied, bc)
-  bc.smooth_res_qpos.zero_()
   smooth_kinematics_adjoint.kinematics_qpos_vjp(
     m,
     d,
@@ -721,9 +710,8 @@ def rne_backward(
     bc.adj_subtree_com,
     bc.smooth_ceff,
     bc.smooth_res_dof,
-    bc.smooth_res_qpos,
+    res_qpos,
   )
-  return bc.smooth_res_qpos
 
 
 # Reverse com_vel into qvel and cdof without materializing its Jacobian.

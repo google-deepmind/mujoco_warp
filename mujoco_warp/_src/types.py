@@ -3200,7 +3200,6 @@ class BackwardContext:
     res_eq_solimp: eq_solimp residual VJP                                  (*, neq, mjNIMP)
     res_jnt_solref: jnt_solref residual VJP                                (*, njnt, mjNREF)
     res_jnt_solimp: jnt_solimp residual VJP                                (*, njnt, mjNIMP)
-    smooth_res_qpos: smooth-force qpos residual VJP                        (nworld, nq)
     smooth_res_dof: smooth-force residual VJP in dof space                 (nworld, nv)
     smooth_adj_qvel: RNE qvel cotangent                                    (nworld, nv)
     smooth_cv_adj_qvel: com-velocity reverse qvel cotangent                (nworld, nv)
@@ -3260,7 +3259,6 @@ class BackwardContext:
   res_eq_solimp: wp.array
   res_jnt_solref: wp.array
   res_jnt_solimp: wp.array
-  smooth_res_qpos: array("nworld", "nq", float)
   smooth_res_dof: array("nworld", "nv", float)
   smooth_adj_qvel: array("nworld", "nv", float)
   smooth_cv_adj_qvel: array("nworld", "nv", float)
