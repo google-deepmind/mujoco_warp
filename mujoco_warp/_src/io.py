@@ -125,24 +125,56 @@ def _create_constraint(
   return types.Constraint(**efc_kwargs)
 
 
-def _jtdaj_groups(mjd: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
+def _jtdaj_groups(mjm: mujoco.MjModel, mjd: mujoco.MjData, dof_friction: bool = False) -> tuple[np.ndarray, np.ndarray]:
   """Group loaded efc rows into JTDAJ blocks: maximal runs sharing (efc_type, efc_id).
 
   MuJoCo lays each constraint's rows out contiguously, so this reproduces the block list
   make_constraint builds in-kernel. Returns block start rows (adr) and lengths (nrow).
-  DOF friction rows get no block, matching make_constraint.
+  The edge rows of a flex equality share an efc_id but are each their own block.
+  DOF friction rows get no block, matching make_constraint, unless dof_friction.
   """
   nefc = mjd.nefc
   if nefc == 0:
     return np.zeros(0, dtype=int), np.zeros(0, dtype=int)
   etype = mjd.efc_type[:nefc]
   eid = mjd.efc_id[:nefc]
+  is_eq = etype == mujoco.mjtConstraint.mjCNSTR_EQUALITY
+  is_flex_eq = np.zeros(nefc, dtype=bool)
+  is_flex_eq[is_eq] = mjm.eq_type[eid[is_eq]] == mujoco.mjtEq.mjEQ_FLEX
   boundary = np.ones(nefc, dtype=bool)
-  boundary[1:] = (etype[1:] != etype[:-1]) | (eid[1:] != eid[:-1])
+  boundary[1:] = (etype[1:] != etype[:-1]) | (eid[1:] != eid[:-1]) | is_flex_eq[1:]
   adr = np.flatnonzero(boundary)
   nrow = np.diff(np.append(adr, nefc))
+  if dof_friction:
+    return adr, nrow
   keep = etype[adr] != mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
   return adr[keep], nrow[keep]
+
+
+def _dense_J_supports(mjm: mujoco.MjModel, mjd: mujoco.MjData):
+  """Each block's rows and the union of their nonzero columns, DOF friction rows included."""
+  dense_J = mjd.efc_J.reshape((mjd.nefc, -1))
+  for start, nrow in zip(*_jtdaj_groups(mjm, mjd, dof_friction=True)):
+    yield start, nrow, np.flatnonzero(np.any(dense_J[start : start + nrow] != 0.0, axis=0))
+
+
+def _dense_J_to_sparse(
+  mjd: mujoco.MjData, supports: list, rownnz: np.ndarray, rowadr: np.ndarray, colind: np.ndarray, J: np.ndarray
+):
+  """Sparse rows of MuJoCo's dense efc_J; the rows of each JTDAJ block share one support.
+
+  The sparse JTDAJ reads every row of a block at the support of its first row, so zeros within
+  the block's support are kept (mju_dense2sparse would drop them per row).
+  """
+  dense_J = mjd.efc_J.reshape((mjd.nefc, -1))
+  adr = 0
+  for start, nrow, cols in supports:
+    for row in range(start, start + nrow):
+      rownnz[row] = cols.size
+      rowadr[row] = adr
+      colind[adr : adr + cols.size] = cols
+      J[adr : adr + cols.size] = dense_J[row, cols]
+      adr += cols.size
 
 
 def _flex_has_stiffness(mjm: mujoco.MjModel, f: int) -> bool:
@@ -2625,11 +2657,16 @@ def put_data(
   qld_total = lay["total"] + (mjm.nC if lay["has_sparse"] else 0)
   sizes["qld_total"] = qld_total
 
+  # MuJoCo's dense efc_J loads as sparse rows that keep their block's union support
+  supports = list(_dense_J_supports(mjm, mjd)) if is_sparse(mjm) and not mujoco.mj_isSparse(mjm) and mjd.nefc else []
+  supports_nnz = sum(nrow * cols.size for _, nrow, cols in supports)
   if njmax_nnz is None:
     if is_sparse(mjm):
-      njmax_nnz = _default_njmax_nnz(mjm, nconmax, njmax)
+      njmax_nnz = max(_default_njmax_nnz(mjm, nconmax, njmax), supports_nnz)
     else:
       njmax_nnz = njmax * mjm.nv
+  elif njmax_nnz < supports_nnz:
+    raise ValueError(f"njmax_nnz {njmax_nnz} is below the {supports_nnz} Jacobian entries of the loaded constraints")
 
   # Capture sleep state before mj_kinematics, which resets tree_asleep as a side effect.
   tree_asleep_init = mjd.tree_asleep.copy()
@@ -2692,7 +2729,7 @@ def put_data(
   # make_constraint builds the block list in-kernel; put_data does not run it, so build it here
   # -- otherwise solving a put_data state would assemble an empty J^T D J.
   if is_sparse(mjm) and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
-    jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjd)
+    jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjm, mjd)
     nblock = jtdaj_adr.shape[0]
     adr_row = np.zeros(njmax, dtype=int)
     nrow_row = np.zeros(njmax, dtype=int)
@@ -2715,10 +2752,7 @@ def put_data(
         J_colind[:nnz] = mjd.efc_J_colind[:nnz]
         J[:nnz] = mjd.efc_J[:nnz]
       else:
-        dense_J = mjd.efc_J.reshape((-1, mjm.nv))[: mjd.nefc]
-        mujoco.mju_dense2sparse(
-          J[: mjd.nefc * mjm.nv], dense_J, J_rownnz[: mjd.nefc], J_rowadr[: mjd.nefc], J_colind[: mjd.nefc * mjm.nv]
-        )
+        _dense_J_to_sparse(mjd, supports, J_rownnz, J_rowadr, J_colind, J)
 
     efc.J_rownnz = wp.array(np.tile(J_rownnz, (nworld, 1)), dtype=int)
     efc.J_rowadr = wp.array(np.tile(J_rowadr, (nworld, 1)), dtype=int)

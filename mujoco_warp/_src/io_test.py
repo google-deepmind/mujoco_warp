@@ -590,6 +590,104 @@ class IOTest(parameterized.TestCase):
       if a > 0:  # maximal: the preceding row belongs to a different instance
         self.assertTrue(etype[a - 1] != etype[a] or eid[a - 1] != eid[a])
 
+  def test_put_data_dense_mujoco_jacobian_sparse_blocks(self):
+    """MuJoCo's dense efc_J loads as sparse rows that share their JTDAJ block's support."""
+    # MuJoCo is dense below 60 DOFs, MJWarp sparse above 32; the spinning box has DOF friction rows
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body name="b0" pos="0 0 .049">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b1" pos="0 0 .148">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b2" pos="0 0 .247">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b3" pos="0 0 .346">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b4" pos="1 0 1">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b5" pos="1.2 0 1">
+            <joint type="free" frictionloss=".1"/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="b4" body2="b5"/>
+        </equality>
+        <keyframe>
+          <key qvel="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 2 3"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+    self.assertFalse(mujoco.mj_isSparse(mjm))
+    self.assertTrue(m.is_sparse)
+    self.assertIn(mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF, mjd.efc_type[: mjd.nefc])
+
+    rownnz, rowadr = d.efc.J_rownnz.numpy()[0], d.efc.J_rowadr.numpy()[0]
+    colind, J = d.efc.J_colind.numpy()[0, 0], d.efc.J.numpy()[0, 0]
+    for r in range(mjd.nefc):
+      row = np.zeros(mjm.nv)
+      row[colind[rowadr[r] : rowadr[r] + rownnz[r]]] = J[rowadr[r] : rowadr[r] + rownnz[r]]
+      np.testing.assert_allclose(row, mjd.efc_J.reshape((mjd.nefc, mjm.nv))[r], atol=1e-6)
+    nblock = d.efc.jtdaj_nblock.numpy()[0]
+    for a, n in zip(d.efc.jtdaj_adr.numpy()[0, :nblock], d.efc.jtdaj_nrow.numpy()[0, :nblock]):
+      for r in range(a + 1, a + n):
+        np.testing.assert_array_equal(colind[rowadr[r] : rowadr[r] + rownnz[r]], colind[rowadr[a] : rowadr[a] + rownnz[a]])
+
+    # solving the loaded state from a cold start reaches MuJoCo's solution
+    d.qacc.fill_(wp.inf)
+    d.qacc_warmstart.zero_()
+    mjwarp.solve(m, d)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-4, atol=1e-4)
+
+    with self.assertRaises(ValueError):
+      mjwarp.put_data(mjm, mjd, njmax_nnz=1)
+
+  @parameterized.parameters("auto", "sparse")
+  def test_put_data_flex_equality_blocks(self, jacobian):
+    """Each edge row of a flex equality loads as its own JTDAJ block."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option jacobian="{jacobian}"/>
+        <worldbody>
+          <flexcomp name="rope" type="grid" dim="1" count="14 1 1" spacing=".1 .1 .1" radius=".03" mass="1">
+            <edge equality="true"/>
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <pin id="0"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qvel_noise=0.5,
+    )
+    self.assertEqual(mujoco.mj_isSparse(mjm), jacobian == "sparse")
+    self.assertTrue(m.is_sparse)
+    self.assertGreater(mjd.nefc, 1)
+
+    nblock = d.efc.jtdaj_nblock.numpy()[0]
+    np.testing.assert_array_equal(d.efc.jtdaj_adr.numpy()[0, :nblock], np.arange(mjd.nefc))
+    np.testing.assert_array_equal(d.efc.jtdaj_nrow.numpy()[0, :nblock], 1)
+
+    d.qacc.fill_(wp.inf)
+    d.qacc_warmstart.zero_()
+    mjwarp.solve(m, d)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-4, atol=1e-4)
+
   @parameterized.parameters(types.Model, types.Data, types.RenderContext)
   def test_is_batched_metadata(self, dataclass_type):
     """Verify that all fields specified with 'nworld' or '*' are marked with _is_batched=True."""
