@@ -1453,9 +1453,18 @@ class SolverTest(parameterized.TestCase):
         <option cone="elliptic" jacobian="dense"/>
         <worldbody>
           <geom type="plane" size="5 5 .1"/>
-          <body pos="-0.5 0 0.08"><freejoint/><geom size=".1"/></body>
-          <body pos="0 0 0.08"><freejoint/><geom size=".1"/></body>
-          <body pos="0.5 0 0.08"><freejoint/><geom size=".1"/></body>
+          <body pos="-0.5 0 0.08">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+          <body pos="0 0 0.08">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+          <body pos="0.5 0 0.08">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
         </worldbody>
       </mujoco>
       """
@@ -1479,7 +1488,10 @@ class SolverTest(parameterized.TestCase):
         <option cone="elliptic" jacobian="dense"/>
         <worldbody>
           <geom type="plane" size="5 5 .1"/>
-          <body pos="0 0 0.02"><freejoint/><geom type="box" size="0.04 0.05 0.03" mass="0.5"/></body>
+          <body pos="0 0 0.02">
+            <freejoint/>
+            <geom type="box" size="0.04 0.05 0.03" mass="0.5"/>
+          </body>
         </worldbody>
       </mujoco>
     """)
