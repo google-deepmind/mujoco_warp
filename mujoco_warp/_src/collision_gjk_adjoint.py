@@ -36,11 +36,6 @@ _TAG_EPA = wp.constant(3)
 
 
 @wp.func
-def _mat33_rows(a: wp.vec3, b: wp.vec3, c: wp.vec3) -> wp.mat33:
-  return wp.mat33(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2])
-
-
-@wp.func
 def _mat43_rows(a: wp.vec3, b: wp.vec3, c: wp.vec3) -> mat43:
   return mat43(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2], 0.0, 0.0, 0.0)
 
@@ -350,7 +345,7 @@ def _replay_gjk_feature(
   if distance < 1.0e-12:
     return 0, 0.0, zero, zero, zero
   full_margin = radius + 0.5 * margin
-  point2 = point2 - full_margin * (-delta / distance)
+  point2 = point2 + full_margin * (delta / distance)
   dist = distance - full_margin
   # The inflated witnesses coincide at contact onset. Their subtraction loses
   # the normal in float32 and introduces a spurious 1 / abs(dist) in its VJP.
