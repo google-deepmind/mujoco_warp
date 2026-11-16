@@ -2052,7 +2052,8 @@ def _update_constraint_efc(
 
     is_equality = efcid < ne
     is_friction = (not is_equality) and (efcid < ne + nf)
-    is_elliptic = efc_type_in[worldid, efcid] == types.ConstraintType.CONTACT_ELLIPTIC
+    efc_type = efc_type_in[worldid, efcid]
+    is_elliptic = efc_type == types.ConstraintType.CONTACT_ELLIPTIC
 
     frictionloss = efc_frictionloss_in[worldid, efcid] if is_friction else 0.0
 
@@ -2145,12 +2146,12 @@ def _update_constraint_efc(
         if is_friction:
           lneg = types.ConstraintState.LINEARNEG.value
           lpos = types.ConstraintState.LINEARPOS.value
-          sliding_old = old_state == lneg or old_state == lpos
-          sliding_new = new_state == lneg or new_state == lpos
-          if sliding_old and sliding_new and old_state != new_state:
+          sliding_old = (old_state == lneg) or (old_state == lpos)
+          sliding_new = (new_state == lneg) or (new_state == lpos)
+          if sliding_old and sliding_new and (old_state != new_state):
             x = wp.abs(Jaref)
             objid = efc_id_in[worldid, efcid]
-            if efc_type_in[worldid, efcid] == types.ConstraintType.FRICTION_DOF:
+            if efc_type == types.ConstraintType.FRICTION_DOF:
               invweight = dof_invweight0[worldid % dof_invweight0.shape[0], objid]
             else:
               invweight = tendon_invweight0[worldid % tendon_invweight0.shape[0], objid]
@@ -2170,7 +2171,7 @@ def _update_constraint_efc(
           ctx_hessian_weight_out[worldid, efcid] = weight
         # LINEARNEG <-> LINEARPOS friction transitions change the force without
         # changing the weight; the fast path must still see them.
-        if old_state != new_state or old_weight != weight:
+        if (old_state != new_state) or (old_weight != weight):
           wp.atomic_add(state_changed_count_out, worldid, 1)
       else:
         ctx_hessian_weight_out[worldid, efcid] = weight
