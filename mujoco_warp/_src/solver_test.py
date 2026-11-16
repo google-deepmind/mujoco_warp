@@ -328,6 +328,12 @@ def _eval_elliptic_delta(
   )
 
 
+def _rows_by_constraint(d):
+  """Row order by (type, id), stable: comparable across world and island row orders."""
+  nefc = d.nefc.numpy()[0]
+  return np.lexsort((np.arange(nefc), d.efc.id.numpy()[0, :nefc], d.efc.type.numpy()[0, :nefc]))
+
+
 class SolverTest(parameterized.TestCase):
   def test_newton_decrement_termination(self):
     """Newton stops when only its local model predicts convergence."""
@@ -1546,6 +1552,82 @@ class SolverTest(parameterized.TestCase):
       return ctx.h.numpy()[:, : m.nv, : m.nv].copy()
 
     np.testing.assert_allclose(_get_h(1e-8), _get_h(1.0), rtol=1e-5, atol=1e-6)
+
+  @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
+  def test_island_solve(self, cone):
+    """The island solver matches the world solver and MuJoCo on islands of every kind."""
+    # unconstrained bodies (fly), single-body islands, a stack, a stack over two tiles per side, a
+    # welded pair in the air and a 2-DOF arm with friction loss, its first hinge past its limit
+    mjm, mjd, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="10 10 .1"/>
+          <body name="arm" pos="7 0 1">
+            <joint type="hinge" axis="0 1 0" range="-.5 -.1" frictionloss=".5"/>
+            <geom type="capsule" fromto="0 0 0 .3 0 0" size=".02"/>
+            <body pos=".3 0 0">
+              <joint type="hinge" axis="0 1 0" frictionloss=".2"/>
+              <geom type="capsule" fromto="0 0 0 .3 0 0" size=".02"/>
+            </body>
+          </body>
+          <body name="fly0" pos="0 0 2"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
+          <body name="fly1" pos="1 0 2"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
+          <body name="fly2" pos="0 1 2"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
+          <body name="fly3" pos="1 1 2"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
+          <replicate count="3" offset="1 0 0"><body name="s" pos="2 0 .049"><freejoint/><geom type="box" size=".05 .05 .05"/></body></replicate>
+          <replicate count="3" offset="0 0 .099"><body name="k" pos="5 0 .049"><freejoint/><geom type="box" size=".05 .05 .05"/></body></replicate>
+          <replicate count="6" offset="0 0 .099"><body name="b" pos="8 0 .049"><freejoint/><geom type="box" size=".05 .05 .05"/></body></replicate>
+          <body name="w0" pos="6 0 1"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
+          <body name="w1" pos="6.2 0 1"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
+        </worldbody>
+        <equality><weld body1="w0" body2="w1"/></equality>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+    )
+    self.assertTrue(m.is_sparse)
+    # w1 spins relative to w0, so the weld loads every DOF of the last tree
+    mjd.qvel[-3:] = (1.0, 2.0, 3.0)
+    mujoco.mj_forward(mjm, mjd)
+    d = mjw.put_data(mjm, mjd)
+
+    def run(island_solve):
+      m.opt.island_solve = island_solve
+      # island solve builds its rows in island order
+      mjw.make_constraint(m, d)
+      # the fixture warmstarts at the solution; start elsewhere so the solver has to iterate
+      d.qacc_warmstart.zero_()
+      d.qacc.fill_(wp.inf)
+      d.qfrc_constraint.fill_(wp.inf)
+      mjw.solve(m, d)
+      force = d.efc.force.numpy()[0, : mjd.nefc][_rows_by_constraint(d)]
+      return d.qacc.numpy()[0].copy(), d.qfrc_constraint.numpy()[0].copy(), force
+
+    qacc0, qfrc0, force0 = run(False)
+    qacc1, qfrc1, force1 = run(True)
+    self.assertTrue(island.island_rows(m))
+    self.assertGreater(np.abs(qacc0[-3:]).min(), 1.0)
+
+    free = np.arange(2, 26)  # fly0..3
+    np.testing.assert_array_equal(qacc1[free], d.qacc_smooth.numpy()[0, free])
+    np.testing.assert_array_equal(qfrc1[free], 0.0)
+
+    np.testing.assert_allclose(qacc1, qacc0, rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(qfrc1, qfrc0, rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(force1, force0, rtol=1e-4, atol=1e-4)
+    _assert_eq(qacc1, mjd.qacc, "qacc")
+
+    # a short rollout stays close to the monolithic solve (catches plumbing errors such as frozen
+    # DOFs; the stacks are left out: their aligned box contacts flicker with rounding)
+    qpos = []
+    for island_solve in (False, True):
+      m.opt.island_solve = island_solve
+      d2 = mjw.put_data(mjm, mjd)
+      for _ in range(30):
+        mjw.step(m, d2)
+      qpos.append(np.delete(d2.qpos.numpy()[0], np.arange(51, 114)))  # k0..k2, b0..b5
+    np.testing.assert_allclose(qpos[1], qpos[0], atol=5e-3)
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 25, 5),

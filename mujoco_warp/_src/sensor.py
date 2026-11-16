@@ -405,9 +405,7 @@ def _limit_pos(
   sensor_cutoff: wp.array[float],
   sensor_limitpos_adr: wp.array[int],
   # Data in:
-  ne_in: wp.array[int],
-  nf_in: wp.array[int],
-  nl_in: wp.array[int],
+  nefc_in: wp.array[int],
   efc_type_in: wp.array2d[int],
   efc_id_in: wp.array2d[int],
   efc_pos_in: wp.array2d[float],
@@ -417,12 +415,8 @@ def _limit_pos(
 ):
   worldid, efcid, limitposid = wp.tid()
 
-  ne = ne_in[worldid]
-  nf = nf_in[worldid]
-  nl = nl_in[worldid]
-
-  # skip if not limit
-  if efcid < ne + nf or efcid >= ne + nf + nl:
+  # limit rows are found by type: island solve orders rows by island, not by type
+  if efcid >= nefc_in[worldid]:
     return
 
   sensorid = sensor_limitpos_adr[limitposid]
@@ -1099,9 +1093,7 @@ def sensor_pos(m: Model, d: Data):
       m.sensor_adr,
       m.sensor_cutoff,
       m.sensor_limitpos_adr,
-      d.ne,
-      d.nf,
-      d.nl,
+      d.nefc,
       d.efc.type,
       d.efc.id,
       d.efc.pos,
@@ -1195,9 +1187,7 @@ def _limit_vel(
   sensor_cutoff: wp.array[float],
   sensor_limitvel_adr: wp.array[int],
   # Data in:
-  ne_in: wp.array[int],
-  nf_in: wp.array[int],
-  nl_in: wp.array[int],
+  nefc_in: wp.array[int],
   efc_type_in: wp.array2d[int],
   efc_id_in: wp.array2d[int],
   efc_vel_in: wp.array2d[float],
@@ -1206,12 +1196,8 @@ def _limit_vel(
 ):
   worldid, efcid, limitvelid = wp.tid()
 
-  ne = ne_in[worldid]
-  nf = nf_in[worldid]
-  nl = nl_in[worldid]
-
-  # skip if not limit
-  if efcid < ne + nf or efcid >= ne + nf + nl:
+  # limit rows are found by type: island solve orders rows by island, not by type
+  if efcid >= nefc_in[worldid]:
     return
 
   sensorid = sensor_limitvel_adr[limitvelid]
@@ -1649,9 +1635,7 @@ def sensor_vel(m: Model, d: Data):
       m.sensor_adr,
       m.sensor_cutoff,
       m.sensor_limitvel_adr,
-      d.ne,
-      d.nf,
-      d.nl,
+      d.nefc,
       d.efc.type,
       d.efc.id,
       d.efc.vel,
@@ -1892,9 +1876,7 @@ def _limit_frc(
   sensor_cutoff: wp.array[float],
   sensor_limitfrc_adr: wp.array[int],
   # Data in:
-  ne_in: wp.array[int],
-  nf_in: wp.array[int],
-  nl_in: wp.array[int],
+  nefc_in: wp.array[int],
   efc_type_in: wp.array2d[int],
   efc_id_in: wp.array2d[int],
   efc_force_in: wp.array2d[float],
@@ -1903,12 +1885,8 @@ def _limit_frc(
 ):
   worldid, efcid, limitfrcid = wp.tid()
 
-  ne = ne_in[worldid]
-  nf = nf_in[worldid]
-  nl = nl_in[worldid]
-
-  # skip if not limit
-  if efcid < ne + nf or efcid >= ne + nf + nl:
+  # limit rows are found by type: island solve orders rows by island, not by type
+  if efcid >= nefc_in[worldid]:
     return
 
   sensorid = sensor_limitfrc_adr[limitfrcid]
@@ -3092,9 +3070,7 @@ def sensor_acc(m: Model, d: Data, skip_rne_postconstraint: bool = False):
       m.sensor_adr,
       m.sensor_cutoff,
       m.sensor_limitfrc_adr,
-      d.ne,
-      d.nf,
-      d.nl,
+      d.nefc,
       d.efc.type,
       d.efc.id,
       d.efc.force,

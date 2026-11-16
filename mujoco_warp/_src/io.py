@@ -740,6 +740,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   opt.deterministic = int(types.DeterminismType.NONE)
   opt.run_rne_postconstraint = False
   opt.run_qacc_smooth = True
+  opt.island_solve = False
   contact_sensor_maxmatch_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "contact_sensor_maxmatch")
   if contact_sensor_maxmatch_id > -1:
     opt.contact_sensor_maxmatch = mjm.numeric_data[mjm.numeric_adr[contact_sensor_maxmatch_id]]
@@ -759,6 +760,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.opt = opt
   m.callback = types.Callback()
 
+  m.island_tree_nv = _island_tree_nv(mjm.tree_dofnum)
   m.nv_pad = _get_padded_sizes(mjm, 0)[1]
   m.nacttrnbody = (mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY).sum()
   m.nsensortaxel = mjm.mesh_vertnum[mjm.sensor_objid[mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE]].sum()
@@ -1955,6 +1957,12 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   return m
 
 
+def _island_tree_nv(tree_dofnum) -> int:
+  """Padded size of the largest tree of 17 to 32 DOFs; 16 if there is none."""
+  sizes = [int(n) for n in tree_dofnum if 16 < n <= 32]
+  return (max(sizes) + 3) // 4 * 4 if sizes else 16
+
+
 def _get_padded_sizes(mjm: mujoco.MjModel, njmax: int):
   def round_up(x, multiple):
     return ((x + multiple - 1) // multiple) * multiple
@@ -3118,6 +3126,19 @@ def put_data(
   return d
 
 
+def _island_dense_rows(efc_J: np.ndarray, d: types.Data, groups, worldid: int):
+  """Fill the rows of island groups with dense rows (see island.DENSE_NV)."""
+  group_dense, J = groups.group_dense.numpy()[worldid], groups.J.numpy()[worldid]
+  group_nv, group_idofadr = groups.group_nv.numpy()[worldid], groups.group_idofadr.numpy()[worldid]
+  idof2dof = d.map_idof2dof.numpy()[worldid]
+  for g in range(groups.ngroup.numpy()[worldid]):
+    width, _, nrow, rowadr = group_dense[g]
+    if width == 0:
+      continue
+    n = group_nv[g]
+    efc_J[rowadr : rowadr + nrow, idof2dof[group_idofadr[g] : group_idofadr[g] + n]] = J[rowadr : rowadr + nrow, :n]
+
+
 def get_data_into(
   result: mujoco.MjData,
   mjm: mujoco.MjModel,
@@ -3165,9 +3186,11 @@ def get_data_into(
   # efc indexing
   # mujoco expects contiguous efc ordering for contacts
   # this ordering is not guaranteed with mujoco warp, we enforce order here
+  # non-contact rows by type (island solve orders rows by island, not by type)
+  efc_type = d.efc.type.numpy()[world_id, :nefc]
+  efc_idx_efl = np.flatnonzero(efc_type < int(types.ConstraintType.CONTACT_FRICTIONLESS))
+  efc_idx_efl = efc_idx_efl[np.argsort(efc_type[efc_idx_efl], kind="stable")]
   if ncon > 0:
-    efc_idx_efl = np.arange(ne + nf + nl)
-
     contact_dim = d.contact.dim.numpy()[ncon_filter]
     contact_efc_address = d.contact.efc_address.numpy()[ncon_filter]
 
@@ -3189,7 +3212,7 @@ def get_data_into(
     efc_idx = np.concatenate((efc_idx_efl, *efc_idx_c)) if efc_idx_c else efc_idx_efl
     contact_efc_address_ordered = np.array(contact_efc_address_ordered)
   else:
-    efc_idx = np.array(np.arange(nefc))
+    efc_idx = efc_idx_efl
     contact_efc_address_ordered = np.empty(0)
 
   efc_idx = efc_idx[:nefc]  # dont emit indices for overflow constraints
@@ -3325,6 +3348,10 @@ def get_data_into(
         d.efc.J_rowadr.numpy()[world_id, :nefc],
         d.efc.J_colind.numpy()[world_id, 0],
       )
+      # groups with dense rows (see island.DENSE_NV) keep them only there, in group-local columns
+      groups = d.__dict__.get("_island_groups")
+      if groups is not None and d.__dict__.get("_island_rows"):
+        _island_dense_rows(efc_J, d, groups, world_id)
     else:
       efc_J = d.efc.J.numpy()[world_id, :nefc, : mjm.nv]
 
@@ -4021,6 +4048,7 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     "opt.run_collision_detection",
     "opt.run_rne_postconstraint",
     "opt.run_qacc_smooth",
+    "opt.island_solve",
   }
   mj_only_fields = {"opt.jacobian", "vis.quality.offsamples"}
 

@@ -5165,10 +5165,23 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
     _update_gradient(m, d, ctx, compact=compact)
 
 
+def _island_solver():
+  # imported lazily: island_solver builds on this module
+  from mujoco_warp._src import island_solver
+
+  return island_solver
+
+
 @event_scope
 def solve(m: types.Model, d: types.Data):
   if m.nv == 0:
     d.solver_niter.fill_(0)
+    return
+
+  # the island solver where make_constraint wrote island rows (see island.island_rows); sleeping
+  # islands are skipped, and make_constraint found the islands sleep() reads
+  if d.njmax > 0 and island.rows_in_island_order(d):
+    _island_solver().solve(m, d)
     return
 
   enable_sleep = bool(m.opt.enableflags & types.EnableBit.SLEEP)

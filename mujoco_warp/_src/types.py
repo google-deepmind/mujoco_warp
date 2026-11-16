@@ -1084,6 +1084,12 @@ class Option:
       CG, disabled warmstart, noslip, or zero njmax or iterations
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
+    island_solve: solve each constraint island as its own Newton problem (island_solver). Pays off
+                  for many independent bodies; a few interacting robots of up to 48 DOFs are often
+                  faster as one problem (the world solver factors them as one tile). The world
+                  solver takes models of a single tree, up to 32 DOFs or over 1024 trees, and,
+                  with a warning, models with CG, a dense Jacobian, flex, the discrete
+                  integrator, body transmissions, noslip or opt.deterministic
     warn_overflow: overflow warning bitmask (OverflowType)
     deterministic: determinism bitmask (DeterminismType)
   """
@@ -1119,6 +1125,7 @@ class Option:
   run_rne_postconstraint: bool
   run_qacc_smooth: bool
   contact_sensor_maxmatch: int
+  island_solve: bool
   warn_overflow: int
   deterministic: int
 
@@ -1637,6 +1644,8 @@ class Model:
     callback: custom physics callbacks
     nbranch: number of branches (leaf-to-root paths)
     nv_pad: number of degrees of freedom + padding
+    island_tree_nv: width of the island solver's dense rows: the largest tree of 17 to 32 DOFs,
+                    padded to 4; 16 if there is none
     nacttrnbody: number of actuators with body transmission
     nsensorcollision: number of unique collisions for
                       geom distance sensors
@@ -2235,6 +2244,7 @@ class Model:
   callback: Callback
   nbranch: int
   nv_pad: int
+  island_tree_nv: int
   nacttrnbody: int
   nsensorcollision: int
   nsensortaxel: int
