@@ -1405,7 +1405,8 @@ class SolverTest(parameterized.TestCase):
 
     # slide the boxes so their contacts are in the cone state, differently per world
     qvel = np.zeros((nworld, mjm.nv))
-    qvel[:, 0::6] = 1.5  # dof 18 slides the friction joint
+    qvel[:, 0:18:6] = 1.5
+    qvel[:, 18] = 1.5  # the friction joint slides
     if nworld == 2:
       qvel[1, 1::6] = -0.8
     d.qvel.assign(qvel)
@@ -2290,7 +2291,8 @@ class SolverTest(parameterized.TestCase):
           solver._linesearch(m, d, ctx)
           if track:
             ctx.quad_changed_count.zero_()
-          solver._update_constraint(m, d, ctx, track_changes=track, band_jump=True)
+          solver._update_efc_force(m, d, ctx, track_changes=track, band_jump=True)
+          solver._update_qfrc_constraint(m, d, ctx)
           weight, D = ctx.hessian_weight.numpy(), d.efc.D.numpy()
           rows = np.arange(weight.shape[1]) < d.nefc.numpy()[:, None]
           band_jumps |= bool(np.any(rows & (weight != 0.0) & (weight != D)))
@@ -2376,7 +2378,7 @@ class SolverTest(parameterized.TestCase):
       Jaref[:, rows] = jaref
       ctx.Jaref.assign(Jaref)
       ctx.hessian_weight.fill_(wp.inf)
-      solver._update_constraint(m, d, ctx, band_jump=True)
+      solver._update_efc_force(m, d, ctx, band_jump=True)
       _assert_eq(ctx.hessian_weight.numpy()[:, rows], np.broadcast_to(weight, D.shape), "hessian_weight")
 
     if nworld == 2:
@@ -2416,7 +2418,7 @@ class SolverTest(parameterized.TestCase):
     Jaref = ctx.Jaref.numpy()
     Jaref[0, row] = 2.0 * d.efc.frictionloss.numpy()[0, row] / D
     ctx.Jaref.assign(Jaref)
-    solver._update_constraint(m, d, ctx, band_jump=True)
+    solver._update_efc_force(m, d, ctx, band_jump=True)
     self.assertNotIn(ctx.hessian_weight.numpy()[0, row], (0.0, D))
 
     ctx.done.fill_(False)

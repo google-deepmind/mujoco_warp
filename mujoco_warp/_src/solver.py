@@ -65,8 +65,6 @@ def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
     quad_changed_count=wp.empty((0,), dtype=int),
     state_changed_count=wp.empty((0,), dtype=int),
     ls_exhausted=wp.empty((0,), dtype=bool),
-    quad_changed_delta=wp.empty((nworld, 0), dtype=float),
-    hessian_weight=wp.empty((nworld, 0), dtype=float),
   )
 
 
@@ -2153,7 +2151,7 @@ def _update_constraint_efc(
             else:
               invweight = tendon_invweight0[worldid % tendon_invweight0.shape[0], objid]
             if x <= frictionloss * invweight:
-              weight = wp.min(efc_D, frictionloss / x)
+              weight = frictionloss / x
 
       if wp.static(TRACK_CHANGES):
         # only a friction row can carry a band-jump weight from the previous iteration
@@ -2172,9 +2170,6 @@ def _update_constraint_efc(
           wp.atomic_add(state_changed_count_out, worldid, 1)
       else:
         ctx_hessian_weight_out[worldid, efcid] = weight
-    elif wp.static(TRACK_CHANGES):
-      if old_state != new_state:
-        wp.atomic_add(state_changed_count_out, worldid, 1)
 
   return kernel
 
@@ -2421,10 +2416,9 @@ def _update_constraint(
   ctx: SolverContext | InverseContext,
   track_changes: bool = False,
   stable_fast: bool = False,
-  band_jump: bool = False,
 ):
   """Update constraint arrays after each solve iteration."""
-  _update_efc_force(m, d, ctx, track_changes, band_jump)
+  _update_efc_force(m, d, ctx, track_changes)
   _update_qfrc_constraint(m, d, ctx, stable_fast)
 
 
@@ -2456,11 +2450,12 @@ def _update_efc_force(
     ctx.done,
   ]
 
+  hessian = isinstance(ctx, SolverContext) and ctx.hessian_weight.shape[1] > 0
   cone_rows = isinstance(ctx, SolverContext) and ctx.cone_coef is not None
   wp.launch(
     _update_constraint_efc(
       track_changes,
-      ctx.hessian_weight.shape[1] > 0,
+      hessian,
       band_jump,
       cone_rows,
       bool(m.opt.deterministic & types.DeterminismType.ATOMICS),
@@ -2473,8 +2468,8 @@ def _update_efc_force(
       ctx.quad_changed_ids,
       ctx.quad_changed_count,
       ctx.state_changed_count,
-      ctx.quad_changed_delta,
-      ctx.hessian_weight,
+      ctx.quad_changed_delta if track_changes else None,
+      ctx.hessian_weight if hessian else None,
       ctx.cone_coef if cone_rows else None,
       ctx.cone_base if cone_rows else None,
     ],
