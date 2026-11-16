@@ -182,7 +182,7 @@ class OverflowType(enum.IntFlag):
     CCD: CCD overflow / flex CCD overflow
     HFIELD: height field collision overflow
     CONTACT_MATCH: contact match sensor overflow
-    NVMAX: nvmax overflow (islands)
+    NVMAX: unused (nvmax is deprecated)
     EPA_HORIZON: EPA horizon buffer overflow
     ITERATIONS: solver iteration limit reached
     LS_ITERATIONS: linesearch iteration limit reached
@@ -2665,25 +2665,12 @@ class Data:
     map_iefc2efc: island-local EFC -> global EFC                (nworld, njmax)
     dof_islandid: island ID per island-DOF                      (nworld, nv)
     efc_islandid: island ID per island-EFC                      (nworld, njmax)
-    ncdof: number of active (compacted) DOFs per world          (nworld,)
-    dof_cdof: global DOF -> compacted DOF; -1 if inactive       (nworld, nv)
-    cdof_dof: compacted DOF -> global DOF; -1 if unused         (nworld, nvmax_pad)
-    cM: compacted dense inertia                                 (nworld, nvmax_pad, nvmax_pad)
-    cJ: compacted dense constraint Jacobian                     (nworld, njmax_pad, nvmax_pad)
-    cMa: compacted M @ qacc workspace                           (nworld, nvmax_pad)
-    cqfrc_smooth: compacted net unconstrained force             (nworld, nvmax_pad)
-    cqacc_smooth: compacted unconstrained acceleration          (nworld, nvmax_pad)
-    cqacc_warmstart: compacted warmstart acceleration           (nworld, nvmax_pad)
-    cqacc: compacted acceleration (solve output)                (nworld, nvmax_pad)
-    cqfrc_constraint: compacted constraint force                (nworld, nvmax_pad)
 
   warp only fields:
     nworld: number of worlds
     naconmax: maximum number of contacts (shared across all worlds)
     naccdmax: maximum number of contacts for CCD (all worlds)
     njmax: maximum number of constraints per world
-    nvmax: capacity for compacted active DOFs per world
-    nvmax_pad: nvmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ_DENSE
     njmax_pad: njmax rounded up to the nearest multiple of TILE_SIZE_JTDAJ
     njmax_nnz: number of non-zeros in constraint Jacobian
     nacon: number of detected contacts (across all worlds)      (1,)
@@ -2838,25 +2825,12 @@ class Data:
   map_iefc2efc: array("nworld", "njmax", int)
   dof_islandid: array("nworld", "nv", int)
   efc_islandid: array("nworld", "njmax", int)
-  ncdof: array("nworld", int)
-  dof_cdof: array("nworld", "nv", int)
-  cdof_dof: array("nworld", "nvmax_pad", int)
-  cM: array("nworld", "nvmax_pad", "nvmax_pad", float)
-  cJ: array("nworld", "njmax_pad", "nvmax_pad", float)
-  cMa: array("nworld", "nvmax_pad", float)
-  cqfrc_smooth: array("nworld", "nvmax_pad", float)
-  cqacc_smooth: array("nworld", "nvmax_pad", float)
-  cqacc_warmstart: array("nworld", "nvmax_pad", float)
-  cqacc: array("nworld", "nvmax_pad", float)
-  cqfrc_constraint: array("nworld", "nvmax_pad", float)
 
   # warp only fields:
   nworld: int
   naconmax: int
   naccdmax: int
   njmax: int
-  nvmax: int
-  nvmax_pad: int
   njmax_pad: int
   njmax_nnz: int
   nacon: array(1, int)
@@ -2895,9 +2869,6 @@ class InverseContext:
   quad_changed_count: wp.array[int]
   state_changed_count: wp.array[int]
   ls_exhausted: wp.array[bool]
-  # the full-coordinate Data, set by solve_compact (None natively)
-  compact_m_full: Optional["Model"] = None
-  compact_d_full: Optional["Data"] = None
   # discrete integrator effective-metric scratch (see SolverContext)
   efm_con: Optional[tuple] = None
   flex_scratch: Optional[tuple] = None
@@ -2933,9 +2904,6 @@ class SolverContext:
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
   inertia_scale: wp.array[float]
-  # the full-coordinate Data, set by solve_compact (None natively)
-  compact_m_full: Optional["Model"] = None
-  compact_d_full: Optional["Data"] = None
   # discrete integrator effective-metric scratch built before the solver loop, which may run
   # inside wp.capture_while where memory cannot be allocated (None otherwise)
   efm_con: Optional[tuple] = None

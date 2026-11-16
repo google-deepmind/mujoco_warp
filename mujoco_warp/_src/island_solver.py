@@ -1525,7 +1525,7 @@ def _evaluate(m: types.Model, d: types.Data, ctx: IslandContext, g: island.Group
     # one thread, as in _update_gradient)
     threads_per_group = 1 if elliptic and wp.get_device().is_cpu else _JTDAJ_THREADS_PER_GROUP
     block_dim = threads_per_group if elliptic else m.block_dim.update_gradient_JTDAJ_sparse
-    kernel = _JTDACJ_sparse(False, m.opt.cone, max(3, int(m.nmaxcondim)) if elliptic else 3, block_dim, _TILE)
+    kernel = _JTDACJ_sparse(m.opt.cone, max(3, int(m.nmaxcondim)) if elliptic else 3, block_dim, _TILE)
     groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax, kernel)
     wp.launch(
       kernel,

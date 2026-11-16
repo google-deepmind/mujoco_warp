@@ -683,9 +683,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if mjm.nv > nv_max and mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
     raise ValueError(f"Dense is unsupported for nv > {nv_max} (nv = {mjm.nv}).")
 
-  # sleeping is supported via a dof-compaction approach.  awake dofs are compacted into dense
-  # nvmax-sized arrays.  nvmax is chosen to fit the worst-case active dof set. sleeping is only
-  # supported for Newton solver and requires nv <= nvmax.
+  # sleeping models solve their awake islands with the Newton solver
   if (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP) and mjm.opt.solver != mujoco.mjtSolver.mjSOL_NEWTON:
     raise ValueError(f"sleeping requires the Newton solver (got solver={types.SolverType(mjm.opt.solver).name})")
 
@@ -1980,11 +1978,11 @@ def _get_padded_sizes(mjm: mujoco.MjModel, njmax: int):
   return njmax_padded, nv_padded
 
 
-def _nvmax_pad(nvmax: int) -> int:
-  """Reserve an augmented column for blocked Cholesky and round up to dense tile size."""
-  t = types.TILE_SIZE_JTDAJ_DENSE
-  n = max(nvmax, 1)
-  return ((n + t - 1) // t) * t if n <= types.H_ONE_TILE_MAX else ((n + t) // t) * t
+def _deprecate_nvmax(nvmax: Optional[int]):
+  if nvmax is not None:
+    warnings.warn(
+      "nvmax is deprecated and unused: sleeping models solve their awake islands.", DeprecationWarning, stacklevel=3
+    )
 
 
 def _default_nconmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> int:
@@ -2462,53 +2460,6 @@ def _allocate_island_arrays(
   d.efc_islandid = wp.array(efc_islandid, dtype=int)
 
 
-_COMPACT_DATA_FIELDS: tuple[str, ...] = (
-  "cM",
-  "cJ",
-  "cMa",
-  "cqfrc_smooth",
-  "cqacc_smooth",
-  "cqacc_warmstart",
-  "cqacc",
-  "cqfrc_constraint",
-)
-
-
-def _allocate_compact_arrays(
-  mjm: mujoco.MjModel,
-  d: types.Data,
-  nworld: int,
-  nvmax_pad: int,
-  njmax_pad: int,
-  compact: bool,
-):
-  """Allocate workspace for the compacted dense factor/solve (when nvmax is requested).
-
-  Mirrors the island-local ``i*`` Data fields with a ``c*`` (compact) prefix. The workspace
-  shadows are sized by nvmax_pad so the blocked Cholesky never reads out of bounds on its
-  partial tile. When the user does not request compaction (nvmax is None) everything is
-  allocated empty.
-
-  TODO(team): once the compact path replaces the island solver, the whole forward
-  pipeline can run in compacted space and ``d.M`` / ``d.qacc`` etc. become nvmax-sized
-  directly, collapsing these ``c*`` shadows into the primary Data fields.
-  """
-  nw = nworld if compact else 0
-  nvp = nvmax_pad if compact else 0
-  njp = njmax_pad if compact else 0
-
-  alloc_dense_compact = compact and not is_sparse(mjm)
-
-  d.cM = wp.empty((nw, nvp, nvp), dtype=float) if alloc_dense_compact else wp.empty((0, 0, 0), dtype=float)
-  d.cJ = wp.empty((nw, njp, nvp), dtype=float) if alloc_dense_compact else wp.empty((0, 0, 0), dtype=float)
-  d.cMa = wp.empty((nw, nvp), dtype=float)
-  d.cqfrc_smooth = wp.empty((nw, nvp), dtype=float)
-  d.cqacc_smooth = wp.empty((nw, nvp), dtype=float)
-  d.cqacc_warmstart = wp.empty((nw, nvp), dtype=float)
-  d.cqacc = wp.empty((nw, nvp), dtype=float)
-  d.cqfrc_constraint = wp.empty((nw, nvp), dtype=float)
-
-
 def _sleep_arrays(mjm: mujoco.MjModel, tree_asleep: np.ndarray, nworld: int) -> dict[str, wp.array]:
   """Computes initial sleeping Data arrays from 1D tree_asleep (matching mj_updateSleep)."""
   tree_asleep_1d = np.asarray(tree_asleep, dtype=np.int32)
@@ -2598,7 +2549,7 @@ def make_data(
     njmax_nnz: Number of non-zeros in constraint Jacobian (sparse). Defaults to njmax * nv.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
     naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
-    nvmax: Capacity for compacted active DOFs per world. Defaults to nv.
+    nvmax: Deprecated and unused.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -2610,20 +2561,13 @@ def make_data(
   if njmax is None:
     njmax = _default_njmax(mjm)
 
-  sleep_enabled = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
-  compact_alloc = sleep_enabled or (nvmax is not None)
-
-  if nvmax is None:
-    nvmax = mjm.nv
+  _deprecate_nvmax(nvmax)
 
   if nconmax < 0:
     raise ValueError("nconmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
-
-  if nvmax < 0 or nvmax > mjm.nv:
-    raise ValueError(f"nvmax ({nvmax}) must be in [0, nv ({mjm.nv})]")
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
@@ -2646,8 +2590,6 @@ def make_data(
     elif nccdmax > nconmax:
       raise ValueError(f"nccdmax ({nccdmax}) must be <= nconmax ({nconmax})")
 
-  nv_compact = nvmax < mjm.nv
-
   sizes = dict(
     {"*": 1},
     **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int},
@@ -2661,8 +2603,6 @@ def make_data(
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
-  sizes["nvmax"] = nvmax
-  sizes["nvmax_pad"] = _nvmax_pad(nvmax)
   sizes["nflexintcell"] = _get_nflexintcell(mjm)
   sizes["nflexface"] = _get_nflexface(mjm)
   sizes["nflexrodhinge"], sizes["nflexrodedge"] = _get_nflexrod_counts(mjm)
@@ -2724,8 +2664,6 @@ def make_data(
     "naconmax": naconmax,
     "naccdmax": naccdmax,
     "njmax": njmax,
-    "nvmax": nvmax,
-    "nvmax_pad": sizes["nvmax_pad"],
     "njmax_pad": sizes["njmax_pad"],
     "njmax_nnz": njmax_nnz,
     # world body
@@ -2771,8 +2709,6 @@ def make_data(
     "map_iefc2efc": None,
     "dof_islandid": None,
     "efc_islandid": None,
-    # compact arrays (populated by _allocate_compact_arrays; skip eager allocation)
-    **{name: None for name in _COMPACT_DATA_FIELDS},
     **_sleep_arrays(mjm, np.full(mjm.ntree, -(1 + types.MJ_MINAWAKE), dtype=np.int32), nworld),
   }
   for f in dataclasses.fields(types.Data):
@@ -2783,10 +2719,6 @@ def make_data(
   d = types.Data(**d_kwargs)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, mjd)
-  _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_alloc)
-  d.ncdof.zero_()
-  d.dof_cdof.fill_(-1)
-  d.cdof_dof.fill_(-1)
 
   warp_util.mark_batched(d)
   return d
@@ -2818,7 +2750,7 @@ def put_data(
     njmax_nnz: Number of non-zeros in constraint Jacobian (sparse). Defaults to njmax * nv.
     naconmax: Number of contacts to allocate for all worlds. Overrides nconmax.
     naccdmax: Maximum number of CCD contacts. Defaults to naconmax.
-    nvmax: Capacity for compacted active DOFs per world. Defaults to nv.
+    nvmax: Deprecated and unused.
 
   Returns:
     The data object containing the current state and output arrays (device).
@@ -2833,20 +2765,13 @@ def put_data(
   if njmax is None:
     njmax = _default_njmax(mjm, mjd)
 
-  sleep_enabled = bool(mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_SLEEP)
-  compact_alloc = sleep_enabled or (nvmax is not None)
-
-  if nvmax is None:
-    nvmax = mjm.nv
+  _deprecate_nvmax(nvmax)
 
   if nconmax < 0:
     raise ValueError("nconmax must be >= 0")
 
   if njmax < 0:
     raise ValueError("njmax must be >= 0")
-
-  if nvmax < 0 or nvmax > mjm.nv:
-    raise ValueError(f"nvmax ({nvmax}) must be in [0, nv ({mjm.nv})]")
 
   if nworld < 1:
     raise ValueError(f"nworld must be >= 1")
@@ -2879,8 +2804,6 @@ def put_data(
   if mjd.nefc > njmax:
     raise ValueError(f"njmax overflow (njmax must be >= {mjd.nefc})")
 
-  nv_compact = nvmax < mjm.nv
-
   sizes = dict(
     {"*": 1},
     **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int},
@@ -2894,8 +2817,6 @@ def put_data(
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
   sizes["njmax"] = njmax
-  sizes["nvmax"] = nvmax
-  sizes["nvmax_pad"] = _nvmax_pad(nvmax)
   sizes["nflexface"] = _get_nflexface(mjm)
   sizes["nflexrodhinge"], sizes["nflexrodedge"] = _get_nflexrod_counts(mjm)
   efm_d = _get_efm_data(mjm)
@@ -3030,8 +2951,6 @@ def put_data(
     "naconmax": naconmax,
     "naccdmax": naccdmax,
     "njmax": njmax,
-    "nvmax": nvmax,
-    "nvmax_pad": sizes["nvmax_pad"],
     "njmax_pad": sizes["njmax_pad"],
     "njmax_nnz": njmax_nnz,
     # fields set after initialization:
@@ -3056,8 +2975,6 @@ def put_data(
     "map_iefc2efc": None,
     "dof_islandid": None,
     "efc_islandid": None,
-    # compact arrays (populated by _allocate_compact_arrays; skip eager allocation)
-    **{name: None for name in _COMPACT_DATA_FIELDS},
     **_sleep_arrays(mjm, tree_asleep_init, nworld),
     # plastic
     "plastic": (
@@ -3116,10 +3033,6 @@ def put_data(
   d.qLD = wp.array(np.full((nworld, qld_total), qLD), dtype=float)
 
   _allocate_island_arrays(mjm, d, nworld, njmax, mjd)
-  _allocate_compact_arrays(mjm, d, nworld, sizes["nvmax_pad"], sizes["njmax_pad"], compact_alloc)
-  d.ncdof.zero_()
-  d.dof_cdof.fill_(-1)
-  d.cdof_dof.fill_(-1)
   d.nacon = wp.array([mjd.ncon * nworld], dtype=int)
 
   warp_util.mark_batched(d)

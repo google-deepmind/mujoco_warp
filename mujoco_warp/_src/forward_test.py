@@ -1438,7 +1438,7 @@ class ForwardTest(parameterized.TestCase):
       qacc.append(mjd.qacc.copy())
     d.qpos.assign(qpos.astype(np.float32))
     d.qacc_warmstart.zero_()
-    d_ref = mjw.put_data(mjm, mjd, nworld=2, nvmax=mjm.nv)
+    d_ref = mjw.put_data(mjm, mjd, nworld=2)
     wp.copy(d_ref.qpos, d.qpos)
     d_ref.qacc_warmstart.zero_()
 

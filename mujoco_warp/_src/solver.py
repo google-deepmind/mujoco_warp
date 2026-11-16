@@ -15,7 +15,7 @@
 
 import dataclasses
 from math import ceil
-from typing import Any
+from typing import Any, Optional
 
 import warp as wp
 
@@ -72,7 +72,6 @@ def _create_solver_context(
   m: types.Model,
   d: types.Data,
   inplace_cholesky: bool = False,
-  dense_hessian: bool = True,
 ) -> SolverContext:
   """Create a SolverContext with allocated workspace arrays.
 
@@ -81,7 +80,6 @@ def _create_solver_context(
     d: Data.
     inplace_cholesky: If True, alias hfactor to h for non-incremental Newton
       solves where blocked Cholesky overwrites h in-place each iteration.
-    dense_hessian: False for the compact solve of a sparse model (sparse Hessian kernels).
 
   Returns:
     SolverContext with allocated arrays.
@@ -96,7 +94,7 @@ def _create_solver_context(
   alloc_sparse_tiles = alloc_h and nv > _SPARSE_BLOCK_CHOLESKY_DIM and not m.M_tile_full
   alloc_mgrad = m.opt.solver == types.SolverType.CG
   alloc_incremental = _use_incremental(m)
-  alloc_cone_rows = alloc_h and m.opt.cone == types.ConeType.ELLIPTIC and not m.is_sparse and dense_hessian
+  alloc_cone_rows = alloc_h and m.opt.cone == types.ConeType.ELLIPTIC and not m.is_sparse
   alloc_solve_ld_scratch = (
     alloc_mgrad and d.qLD.shape[1] > m.qLD_block_total and bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
   )
@@ -112,7 +110,7 @@ def _create_solver_context(
     # Non-incremental Newton rebuilds the upper triangle of h every iteration,
     # and blocked Cholesky loads each upper-triangular tile before storing U.
     if inplace_cholesky and not alloc_incremental:
-      if not alloc_sparse_tiles and nv_pad <= nv and not (0 < d.nvmax < nv_pad):
+      if not alloc_sparse_tiles and nv_pad <= nv:
         raise ValueError(f"inplace_cholesky requires an augmented padding column (nv={nv}, nv_pad={nv_pad})")
       hfactor = h
     else:
@@ -200,35 +198,28 @@ def _diag_adr(rowadr: int, rownnz: int) -> int:
   return rowadr + rownnz - 1
 
 
-@cache_kernel
-def _inertia_scale(enable_sleep: bool = False):
-  @wp.kernel(module="unique", enable_backward=False)
-  def kernel(
-    # Model:
-    nv: int,
-    M_rownnz: wp.array[int],
-    M_rowadr: wp.array[int],
-    # Data in:
-    M_in: wp.array2d[float],
-    ncdof_in: wp.array[int],
-    cdof_dof_in: wp.array2d[int],
-    # Out:
-    inertia_scale_out: wp.array[float],
-  ):
-    """Inverse trace of the active inertia matrix, which scales the termination criteria."""
-    worldid = wp.tid()
-    trace = float(0.0)
-    if wp.static(enable_sleep):
-      ncdof = ncdof_in[worldid]
-      for c in range(ncdof):
-        dof = cdof_dof_in[worldid, c]
-        trace += M_in[worldid, M_rowadr[dof] + M_rownnz[dof] - 1]
-    else:
-      for i in range(nv):
-        trace += M_in[worldid, M_rowadr[i] + M_rownnz[i] - 1]
-    inertia_scale_out[worldid] = 1.0 / wp.max(types.MJ_MINVAL, trace)
-
-  return kernel
+@wp.kernel
+def _inertia_scale(
+  # Model:
+  nv: int,
+  dof_treeid: wp.array[int],
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  # Data in:
+  M_in: wp.array2d[float],
+  tree_awake_in: wp.array2d[int],
+  # Out:
+  inertia_scale_out: wp.array[float],
+):
+  """Inverse trace of M (of its awake DOFs if tree_awake_in), which scales the termination."""
+  worldid = wp.tid()
+  trace = float(0.0)
+  for i in range(nv):
+    if tree_awake_in:
+      if tree_awake_in[worldid, dof_treeid[i]] == 0:
+        continue
+    trace += M_in[worldid, M_rowadr[i] + M_rownnz[i] - 1]
+  inertia_scale_out[worldid] = 1.0 / wp.max(types.MJ_MINVAL, trace)
 
 
 @wp.kernel(module="unique", enable_backward=False)
@@ -257,9 +248,11 @@ def _inertia_scale_tiled(
     inertia_scale_out[worldid] = 1.0 / wp.max(types.MJ_MINVAL, trace)
 
 
-def launch_inertia_scale(m: types.Model, M: wp.array2d[float], inertia_scale: wp.array[float], d: types.Data | None = None):
-  enable_sleep = bool(m.opt.enableflags & types.EnableBit.SLEEP) and d is not None
-  if not enable_sleep and m.nv > smooth.WORLD_SUM_BLOCK:
+def launch_inertia_scale(
+  m: types.Model, M: wp.array2d[float], inertia_scale: wp.array[float], tree_awake: Optional[wp.array] = None
+):
+  """tree_awake: the trace of the awake DOFs only (a solve that holds the sleeping ones)."""
+  if tree_awake is None and m.nv > smooth.WORLD_SUM_BLOCK:
     wp.launch_tiled(
       _inertia_scale_tiled,
       dim=M.shape[0],
@@ -268,12 +261,10 @@ def launch_inertia_scale(m: types.Model, M: wp.array2d[float], inertia_scale: wp
       block_dim=smooth.WORLD_SUM_BLOCK,
     )
   else:
-    ncdof = d.ncdof if d is not None else wp.empty(0, dtype=int, device=M.device)
-    cdof_dof = d.cdof_dof if d is not None else wp.empty((0, 0), dtype=int, device=M.device)
     wp.launch(
-      _inertia_scale(enable_sleep),
+      _inertia_scale,
       dim=M.shape[0],
-      inputs=[m.nv, m.M_rownnz, m.M_rowadr, M, ncdof, cdof_dof],
+      inputs=[m.nv, m.dof_treeid, m.M_rownnz, m.M_rowadr, M, tree_awake],
       outputs=[inertia_scale],
     )
 
@@ -1796,8 +1787,7 @@ def _linesearch_zero_jv(
 
 
 @cache_kernel
-def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool, deterministic: bool = False):
-  COMPACT = compact
+def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -1810,7 +1800,6 @@ def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, 
     efc_J_rowadr_in: wp.array2d[int],
     efc_J_colind_in: wp.array3d[int],
     efc_J_in: wp.array3d[float],
-    dof_cdof_in: wp.array2d[int],
     # In:
     ctx_search_in: wp.array2d[float],
     skip_in: wp.array[bool],
@@ -1835,10 +1824,6 @@ def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, 
         for k in range(rownnz):
           sparseid = rowadr + k
           colind = efc_J_colind_in[worldid, 0, sparseid]
-          if wp.static(COMPACT):
-            colind = dof_cdof_in[worldid, colind]
-            if colind < 0:
-              continue
           jv_out += efc_J_in[worldid, 0, sparseid] * ctx_search_in[worldid, colind]
       else:
         for i in range(wp.static(min(dofs_per_thread, nv))):
@@ -1854,10 +1839,6 @@ def _linesearch_jv_fused_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, 
           for k in range(rownnz):
             sparseid = rowadr + k
             colind = efc_J_colind_in[worldid, 0, sparseid]
-            if wp.static(COMPACT):
-              colind = dof_cdof_in[worldid, colind]
-              if colind < 0:
-                continue
             jv_out += efc_J_in[worldid, 0, sparseid] * ctx_search_in[worldid, colind]
           ctx_jv_out[worldid, efcid] = jv_out
       else:
@@ -1890,17 +1871,13 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
 
   # Fuse jv computation in-kernel for small nv (iterative only, dense only)
   # Sparse mode requires pre-computed jv since in-kernel uses dense indexing
-  # the sparse-compact J path reads the full model's sparse J structures;
-  # dense full models keep the gathered dense cJ path
-  sc = _sparse_compact(ctx)
-  fuse_jv = m.nv <= 50 and not m.is_sparse and not sc
+  fuse_jv = m.nv <= 50 and not m.is_sparse
 
   # jv = J @ search (when not fused into iterative kernel), independent of mv below
   jv_stream = None if fuse_jv else side_stream(d.qacc.device)
   if not fuse_jv:
     with wp.ScopedStream(jv_stream):
-      dj = ctx.compact_d_full if sc else d
-      if sc or m.is_sparse:
+      if m.is_sparse:
         # Sparse J has few nonzeros per row, one thread handles them all.
         dofs_per_thread = m.nv
         threads_per_efc = 1
@@ -1918,15 +1895,15 @@ def _linesearch(m: types.Model, d: types.Data, ctx: SolverContext):
 
       wp.launch(
         _linesearch_jv_fused_kernel(
-          sc or m.is_sparse, m.nv, dofs_per_thread, sc, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+          m.is_sparse, m.nv, dofs_per_thread, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
         ),
         dim=(d.nworld, d.njmax, threads_per_efc),
-        inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, dj.dof_cdof, ctx.search, skip],
+        inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, ctx.search, skip],
         outputs=[ctx.jv],
       )
 
   # mv = M @ search (common to both parallel and iterative)
-  _mul_m_compact_aware(m, d, ctx, ctx.mv, ctx.search, skip)
+  _mul_m(m, d, ctx, ctx.mv, ctx.search, skip)
   if jv_stream is not None:
     wp.wait_stream(jv_stream)
 
@@ -1984,8 +1961,7 @@ def _solve_init_efc(
 
 
 @cache_kernel
-def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, compact: bool, deterministic: bool = False):
-  COMPACT = compact
+def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2000,7 +1976,6 @@ def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, com
     efc_J_colind_in: wp.array3d[int],
     efc_J_in: wp.array3d[float],
     efc_aref_in: wp.array2d[float],
-    dof_cdof_in: wp.array2d[int],
     # Out:
     ctx_Jaref_out: wp.array2d[float],
   ):
@@ -2016,10 +1991,6 @@ def _solve_init_jaref_kernel(is_sparse: bool, nv: int, dofs_per_thread: int, com
       for i in range(rownnz):
         sparseid = rowadr + i
         colind = efc_J_colind_in[worldid, 0, sparseid]
-        if wp.static(COMPACT):
-          colind = dof_cdof_in[worldid, colind]
-          if colind < 0:
-            continue
         jaref += efc_J_in[worldid, 0, sparseid] * qacc_in[worldid, colind]
       ctx_Jaref_out[worldid, efcid] = jaref - efc_aref_in[worldid, efcid]
     else:
@@ -2271,8 +2242,7 @@ def _zero_qfrc_constraint_sparse(
 
 
 @cache_kernel
-def _update_constraint_init_qfrc_constraint_sparse(compact: bool, nv: int, deterministic: bool = False):
-  COMPACT = compact
+def _update_constraint_init_qfrc_constraint_sparse(nv: int, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2287,7 +2257,6 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool, nv: int, deter
     efc_J_colind_in: wp.array3d[int],
     efc_J_in: wp.array3d[float],
     efc_force_in: wp.array2d[float],
-    dof_cdof_in: wp.array2d[int],
     # In:
     state_changed_count_in: wp.array[int],
     ctx_done_in: wp.array[bool],
@@ -2314,10 +2283,6 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool, nv: int, deter
     for i in range(rownnz):
       sparseid = rowadr + i
       colind = efc_J_colind_in[worldid, 0, sparseid]
-      if wp.static(COMPACT):
-        colind = dof_cdof_in[worldid, colind]
-        if colind < 0:
-          continue
       efc_J = efc_J_in[worldid, 0, sparseid]
       wp.atomic_add(qfrc_constraint_out[worldid], colind, efc_J * force)
 
@@ -2432,8 +2397,7 @@ def _update_gradient_h_incremental(
 
 
 @cache_kernel
-def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, deterministic: bool = False):
-  COMPACT = compact
+def _update_gradient_h_incremental_sparse(max_records: int = 0, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2448,7 +2412,6 @@ def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, d
     efc_J_in: wp.array3d[float],
     efc_D_in: wp.array2d[float],
     efc_state_in: wp.array2d[int],
-    dof_cdof_in: wp.array2d[int],
     # In:
     quad_changed_ids_in: wp.array2d[int],
     quad_changed_count_in: wp.array[int],
@@ -2487,11 +2450,6 @@ def _update_gradient_h_incremental_sparse(compact: bool, max_records: int = 0, d
         if h != 0.0:
           colindi = efc_J_colind_in[worldid, 0, rowadr + ii]
           colindj = efc_J_colind_in[worldid, 0, rowadr + jj]
-          if wp.static(COMPACT):
-            colindi = dof_cdof_in[worldid, colindi]
-            colindj = dof_cdof_in[worldid, colindj]
-            if colindi < 0 or colindj < 0:
-              continue
           wp.atomic_add(ctx_h_out[worldid, wp.min(colindi, colindj)], wp.max(colindi, colindj), h)
 
   return kernel
@@ -2552,9 +2510,7 @@ def _update_qfrc_constraint(m: types.Model, d: types.Data, ctx: SolverContext | 
   # qfrc_constraint = efc_J.T @ efc_force. Fast-path worlds with no state flips
   # skip the rebuild; the public value is recovered after the solve.
   changed = ctx.state_changed_count if stable_fast else d.nefc
-  sc = _sparse_compact(ctx)
-  if m.is_sparse or sc:
-    dj = ctx.compact_d_full if sc else d
+  if m.is_sparse:
     wp.launch(
       _zero_qfrc_constraint_sparse,
       dim=(d.nworld, m.nv),
@@ -2563,9 +2519,9 @@ def _update_qfrc_constraint(m: types.Model, d: types.Data, ctx: SolverContext | 
     )
     det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
     wp.launch(
-      _update_constraint_init_qfrc_constraint_sparse(sc, m.nv if det_atomics else 0, det_atomics),
+      _update_constraint_init_qfrc_constraint_sparse(m.nv if det_atomics else 0, det_atomics),
       dim=(d.nworld, d.njmax),
-      inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.force, dj.dof_cdof, changed, ctx.done],
+      inputs=[d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.force, changed, ctx.done],
       outputs=[d.qfrc_constraint],
     )
   else:
@@ -2575,7 +2531,7 @@ def _update_qfrc_constraint(m: types.Model, d: types.Data, ctx: SolverContext | 
       inputs=[d.nefc, d.efc.J, d.efc.force, d.njmax, changed, ctx.done],
       outputs=[d.qfrc_constraint],
     )
-  if m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP):
+  if _hold_sleeping(m, d):
     wp.launch(
       derivative._zero_sleeping_dofs,
       dim=(d.nworld, m.nv),
@@ -2709,9 +2665,7 @@ _INIT_H_SECTOR = 8
 
 
 @cache_kernel
-def _update_gradient_init_h_sparse(compact: bool):
-  COMPACT = compact
-
+def _update_gradient_init_h_sparse():
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -2723,7 +2677,6 @@ def _update_gradient_init_h_sparse(compact: bool):
     efc_D_in: wp.array2d[float],
     efc_state_in: wp.array2d[int],
     dof_frictionadr_in: wp.array2d[int],
-    cdof_dof_in: wp.array2d[int],
     # In:
     ctx_done_in: wp.array[bool],
     # Out:
@@ -2740,18 +2693,11 @@ def _update_gradient_init_h_sparse(compact: bool):
     sector = wp.static(_INIT_H_SECTOR)
     row_end = (i + 1) * n
 
-    # cdof_dof is increasing with a -1 tail, so a padded row only meets padded columns
-    if wp.static(COMPACT):
-      dof_i = cdof_dof_in[worldid, i]
-      # the last row's sectors end with the block: min keeps this read in bounds
-      dof_next = cdof_dof_in[worldid, wp.min(i + 1, n - 1)]
-      padded_i = dof_i < 0
-      padded_next = dof_next < 0
-    else:
-      dof_i = i
-      dof_next = i + 1
-      padded_i = i >= nv
-      padded_next = i + 1 >= nv
+    # a padded row only meets padded columns
+    dof_i = i
+    dof_next = i + 1
+    padded_i = i >= nv
+    padded_next = i + 1 >= nv
 
     # the sectors starting in row i, from the one holding its diagonal (the block starts on a
     # sector, n being a multiple of 4)
@@ -2768,12 +2714,8 @@ def _update_gradient_init_h_sparse(compact: bool):
       if c >= r:
         dof_r = wp.where(next_row, dof_next, dof_i)
         padded_row = wp.where(next_row, padded_next, padded_i)
-        if wp.static(COMPACT):
-          dof_c = cdof_dof_in[worldid, c]
-          padded = dof_c < 0
-        else:
-          dof_c = c
-          padded = c >= nv
+        dof_c = c
+        padded = c >= nv
         if padded_row:
           # identity on padded dofs keeps the factorization well conditioned
           h = wp.where(r == c, 1.0, 0.0)
@@ -3134,90 +3076,6 @@ def _rewrite_cone_rows(
         if (coef[dim] != 0.0) and (row >= 0) and (row < nefc_world):
           value += coef[dim] * efc_J_in[worldid, row, dofid]
     wp.tile_scatter_masked(J_kj, erow, dofid, value, enable)
-
-
-@cache_kernel
-def _update_gradient_JTDAJ_dense_tiled_compact(nv_pad: int, tile_size: int, njmax: int, elliptic: bool = False):
-  """Compact-path variant of _update_gradient_JTDAJ_dense_tiled.
-
-  Takes M_in as a dense 3D array (nworld, nv_pad, nv_pad) -- the compacted active-DOF
-  inertia block cM -- instead of a 2D CSR array.  Cholesky reads fill_mode="upper";
-  cM is full-symmetric so the tile_load covers both triangles and the upper triangle
-  of the result is correct.
-  """
-  if njmax < tile_size:
-    tile_size = njmax
-
-  TILE_SIZE_K = tile_size
-  ELLIPTIC = elliptic
-
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"enable_mathdx_gemm": False})
-  def kernel(
-    # Data in:
-    nefc_in: wp.array[int],
-    M_in: wp.array3d[float],  # kernel_analyzer: ignore; compact dense inertia (nworld, nv_pad, nv_pad)
-    efc_J_in: wp.array3d[float],
-    efc_D_in: wp.array2d[float],
-    efc_state_in: wp.array2d[int],
-    # In:
-    ctx_done_in: wp.array[bool],
-    ctx_cone_coef_in: wp.array2d[types.vec6],
-    ctx_cone_weight_in: wp.array2d[float],
-    ctx_cone_base_in: wp.array2d[int],
-    # Out:
-    ctx_h_out: wp.array3d[float],
-  ):
-    worldid, rank = wp.tid()
-
-    if ctx_done_in[worldid]:
-      return
-
-    nefc = wp.min(nefc_in[worldid], njmax)
-
-    # Load full symmetric compact inertia tile (Cholesky only reads upper triangle).
-    sum_val = wp.tile_load(M_in[worldid], shape=(wp.static(nv_pad), wp.static(nv_pad)), bounds_check=True)
-    lanes = wp.block_dim()
-
-    for k in range(0, njmax, TILE_SIZE_K):
-      if k >= nefc:
-        break
-
-      if wp.static(ELLIPTIC):
-        J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_pad), offset=(k, 0), bounds_check=False, storage="shared")
-        # not a shared wp.func: Warp does not reserve shared memory for a tile returned by one
-        state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
-        D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
-        cone_weight = wp.tile_load(ctx_cone_weight_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
-        active = wp.tile_map(
-          _active_check, wp.tile_arange(TILE_SIZE_K, dtype=int), wp.tile_ones(shape=TILE_SIZE_K, dtype=int) * (nefc - k)
-        )
-        D_k = wp.tile_map(_row_weight, D_k, state, cone_weight, active)
-        if wp.tile_reduce(wp.add, wp.tile_map(_is_cone, state, active))[0] > 0:
-          _rewrite_cone_rows(
-            efc_J_in, efc_state_in, ctx_cone_coef_in, ctx_cone_base_in, worldid, rank, lanes, nefc, k, TILE_SIZE_K, nv_pad, J_kj
-          )
-      else:
-        J_kj = wp.tile_load(efc_J_in[worldid], shape=(TILE_SIZE_K, nv_pad), offset=(k, 0), bounds_check=False)
-
-        D_k = wp.tile_load(efc_D_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
-        state = wp.tile_load(efc_state_in[worldid], shape=TILE_SIZE_K, offset=k, bounds_check=False)
-
-        D_k = wp.tile_map(_state_check, D_k, state)
-
-        # force unused elements to be zero
-        tid_tile = wp.tile_arange(TILE_SIZE_K, dtype=int)
-        threshold_tile = wp.tile_ones(shape=TILE_SIZE_K, dtype=int) * (nefc - k)
-
-        active_tile = wp.tile_map(_active_check, tid_tile, threshold_tile)
-        D_k = wp.tile_map(wp.mul, active_tile, D_k)
-
-      J_ki = wp.tile_map(wp.mul, wp.tile_transpose(J_kj), wp.tile_broadcast(D_k, shape=(nv_pad, TILE_SIZE_K)))
-
-      sum_val += wp.tile_matmul(J_ki, J_kj)
-
-    wp.tile_store(ctx_h_out[worldid], sum_val, bounds_check=False)
-
-  return kernel
 
 
 @cache_kernel
@@ -3858,13 +3716,9 @@ def _update_gradient_cholesky_blocked_sparse_tiles_skip_unchanged(
 
 
 @cache_kernel
-def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, vector_size: int, compact: bool = False):
-  COMPACT = compact
-
+def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, vector_size: int):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
-    # Data in:
-    ncdof_in: wp.array[int],
     # In:
     ctx_done_in: wp.array[bool],
     ctx_grad_in: wp.array3d[float],
@@ -3885,15 +3739,11 @@ def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, vector_s
     # static input is needed to specify the tile sizes for the compiler
     # runtime input is needed for the loop bounds, otherwise warp will unroll
     # unconditionally leading to shared memory capacity issues.
-    active_size = matrix_size
-    if wp.static(COMPACT):
-      ncdof = ncdof_in[worldid]
-      active_size = wp.min(matrix_size, ((ncdof + TILE_SIZE) // TILE_SIZE) * TILE_SIZE)
 
     sums = wp.static(create_blocked_cholesky_augmented_factorize_solve_newton_func(TILE_SIZE, matrix_size, vector_size))(
       ctx_h_in[worldid],
       ctx_grad_in[worldid],
-      active_size,
+      matrix_size,
       ctx_hfactor[worldid],
       ctx_search_out[worldid],
     )
@@ -3905,16 +3755,13 @@ def _update_gradient_cholesky_blocked(tile_size: int, matrix_size: int, vector_s
 
 @cache_kernel
 def _update_gradient_cholesky_blocked_skip_unchanged(
-  tile_size: int, matrix_size: int, vector_size: int, skip_noflip: bool = False, compact: bool = False
+  tile_size: int, matrix_size: int, vector_size: int, skip_noflip: bool = False
 ):
   """Blocked Cholesky that skips factorization when no constraints changed."""
   SKIP_NOFLIP = skip_noflip
-  COMPACT = compact
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False, module_options={"enable_mathdx_gemm": False})
   def kernel(
-    # Data in:
-    ncdof_in: wp.array[int],
     # In:
     ctx_done_in: wp.array[bool],
     ctx_grad_in: wp.array3d[float],
@@ -3939,16 +3786,11 @@ def _update_gradient_cholesky_blocked_skip_unchanged(
       if state_changed_count_in[worldid] == 0:
         return
 
-    active_size = matrix_size
-    if wp.static(COMPACT):
-      ncdof = ncdof_in[worldid]
-      active_size = wp.min(matrix_size, ((ncdof + TILE_SIZE) // TILE_SIZE) * TILE_SIZE)
-
     if quad_changed_count_in[worldid] > 0:
       sums = wp.static(create_blocked_cholesky_augmented_factorize_solve_newton_func(TILE_SIZE, matrix_size, vector_size))(
         ctx_h_in[worldid],
         ctx_grad_in[worldid],
-        active_size,
+        matrix_size,
         ctx_hfactor[worldid],
         ctx_search_out[worldid],
       )
@@ -3956,7 +3798,7 @@ def _update_gradient_cholesky_blocked_skip_unchanged(
       sums = wp.static(create_blocked_cholesky_solve_newton_func(TILE_SIZE, matrix_size, vector_size))(
         ctx_hfactor[worldid],
         ctx_grad_in[worldid],
-        active_size,
+        matrix_size,
         ctx_search_out[worldid],
       )
 
@@ -3967,12 +3809,7 @@ def _update_gradient_cholesky_blocked_skip_unchanged(
 
 
 def _cholesky_factorize_solve(
-  m: types.Model,
-  d: types.Data,
-  ctx: SolverContext,
-  skip_unchanged: bool = False,
-  skip_noflip: bool = False,
-  compact: bool = False,
+  m: types.Model, d: types.Data, ctx: SolverContext, skip_unchanged: bool = False, skip_noflip: bool = False
 ):
   """Cholesky factorize ctx.h and form the Newton search direction.
 
@@ -3992,10 +3829,9 @@ def _cholesky_factorize_solve(
       if ctx.hfactor.ptr == ctx.h.ptr:
         raise ValueError("skip_unchanged requires separate h and hfactor buffers")
       wp.launch_tiled(
-        _update_gradient_cholesky_blocked_skip_unchanged(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, m.nv, skip_noflip, compact),
+        _update_gradient_cholesky_blocked_skip_unchanged(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, m.nv, skip_noflip),
         dim=d.nworld,
         inputs=[
-          d.ncdof,
           ctx.done,
           ctx.grad.reshape(shape=(d.nworld, ctx.grad.shape[1], 1)),
           ctx.h,
@@ -4012,9 +3848,9 @@ def _cholesky_factorize_solve(
       )
     else:
       wp.launch_tiled(
-        _update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, m.nv, compact),
+        _update_gradient_cholesky_blocked(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, m.nv),
         dim=d.nworld,
-        inputs=[d.ncdof, ctx.done, ctx.grad.reshape(shape=(d.nworld, ctx.grad.shape[1], 1)), ctx.h, ctx.hfactor],
+        inputs=[ctx.done, ctx.grad.reshape(shape=(d.nworld, ctx.grad.shape[1], 1)), ctx.h, ctx.hfactor],
         outputs=[
           ctx.search.reshape(shape=(d.nworld, m.nv, 1)),
           ctx.search_dot,
@@ -4161,7 +3997,6 @@ def _island_pool_add(
 
 @cache_kernel
 def _JTDACJ_sparse(
-  compact: bool,
   cone_type: types.ConeType,
   max_condim: int,
   block_dim: int = types.BlockDim.update_gradient_JTDAJ_sparse,
@@ -4170,7 +4005,6 @@ def _JTDACJ_sparse(
   deterministic: bool = False,
 ):
   # pool: the tile size of the island tile pool H is stored in (0: a dense H per world)
-  COMPACT = compact
   POOL = pool
   ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   MAX_CONDIM = max_condim
@@ -4339,8 +4173,8 @@ def _JTDACJ_sparse(
     efc_J_in: wp.array3d[float],
     efc_D_in: wp.array2d[float],
     efc_state_in: wp.array2d[int],
-    dof_cdof_in: wp.array2d[int],
     # In:
+    pool_row_in: wp.array2d[int],
     ctx_h_dof_local_in: wp.array2d[int],
     ctx_Jaref_in: wp.array2d[float],
     ctx_done_in: wp.array[bool],
@@ -4431,19 +4265,14 @@ def _JTDACJ_sparse(
               hval += j_row * efc_D_in[worldid, member_row] * j_col
         if hval != 0.0:
           if wp.static(POOL):
-            row_a = dof_cdof_in[worldid, dof_row]
-            row_b = dof_cdof_in[worldid, dof_col]
+            row_a = pool_row_in[worldid, dof_row]
+            row_b = pool_row_in[worldid, dof_col]
             if row_a < 0 or row_b < 0:
               continue
             la = ctx_h_dof_local_in[worldid, dof_row]
             lb = ctx_h_dof_local_in[worldid, dof_col]
             _island_pool_add(worldid, row_a, la, row_b, lb, hval, wp.static(POOL), h_out)
             continue
-          if wp.static(COMPACT):
-            dof_row = dof_cdof_in[worldid, dof_row]
-            dof_col = dof_cdof_in[worldid, dof_col]
-            if dof_row < 0 or dof_col < 0:
-              continue
           wp.atomic_add(h_out[worldid, wp.min(dof_row, dof_col)], wp.max(dof_row, dof_col), hval)
 
   return kernel
@@ -4456,7 +4285,7 @@ def _jtdaj_groups_per_world(nworld: int, max_groups: int, kernel: wp.Kernel, min
   return max(min_groups, min(max_groups, _JTDAJ_OVERSUBSCRIBE_WAVES * device_warps // nworld))
 
 
-def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
+def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext):
   # grad = Ma - qfrc_smooth - qfrc_constraint
   if m.opt.solver == types.SolverType.CG:
     wp.launch_tiled(
@@ -4498,23 +4327,19 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       smooth.solve_m(m, d, ctx.Mgrad, ctx.grad, x_scratch=ctx.solve_ld_scratch)
   elif m.opt.solver == types.SolverType.NEWTON:
     # h = M + (efc_J.T * efc_D * active) @ efc_J
-    sc = _sparse_compact(ctx)
-    if m.is_sparse or sc:
-      mj = ctx.compact_m_full if sc else m
-      dj = ctx.compact_d_full if sc else d
-      m_mat = dj.qH if is_discrete else dj.M
+    if m.is_sparse:
+      m_mat = d.qH if is_discrete else d.M
       wp.launch(
-        _update_gradient_init_h_sparse(sc),
+        _update_gradient_init_h_sparse(),
         dim=(d.nworld, m.nv_pad, _INIT_H_SECTOR),
         inputs=[
-          mj.nv,
-          mj.M_elemid,
+          m.nv,
+          m.M_elemid,
           d.nf,
           m_mat,
           d.efc.D,
           d.efc.state,
           d.dof_frictionadr,
-          dj.cdof_dof,
           ctx.done,
         ],
         outputs=[ctx.h],
@@ -4525,28 +4350,28 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
         max_condim = int(m.nmaxcondim)
       elliptic = m.opt.cone == types.ConeType.ELLIPTIC
       threads_per_group = 1 if elliptic and wp.get_device().is_cpu else _JTDAJ_THREADS_PER_GROUP
-      block_dim = threads_per_group if elliptic else mj.block_dim.update_gradient_JTDAJ_sparse
-      jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim)
+      block_dim = threads_per_group if elliptic else m.block_dim.update_gradient_JTDAJ_sparse
+      jtdaj_kernel = _JTDACJ_sparse(m.opt.cone, max_condim, block_dim)
       groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax, jtdaj_kernel)
       if bool(m.opt.deterministic & types.DeterminismType.ATOMICS):
-        entries_per_lane = ceil((mj.nv * (mj.nv + 1) // 2) / threads_per_group)
+        entries_per_lane = ceil((m.nv * (m.nv + 1) // 2) / threads_per_group)
         max_records = ceil(d.njmax / groups_per_world) * entries_per_lane
-        jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, 0, max_records, True)
+        jtdaj_kernel = _JTDACJ_sparse(m.opt.cone, max_condim, block_dim, 0, max_records, True)
       jtdaj_inputs = [
         m.opt.impratio_invsqrt,
         d.contact.friction,
         d.contact.dim,
         d.efc.id,
-        dj.efc.jtdaj_adr,
-        dj.efc.jtdaj_nrow,
-        dj.efc.jtdaj_nblock,
-        dj.efc.J_rownnz,
-        dj.efc.J_rowadr,
-        dj.efc.J_colind,
-        dj.efc.J,
+        d.efc.jtdaj_adr,
+        d.efc.jtdaj_nrow,
+        d.efc.jtdaj_nblock,
+        d.efc.J_rownnz,
+        d.efc.J_rowadr,
+        d.efc.J_colind,
+        d.efc.J,
         d.efc.D,
         d.efc.state,
-        dj.dof_cdof,
+        None,
         None,
         ctx.Jaref,
         ctx.done,
@@ -4564,46 +4389,26 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
     else:
       m_mat = d.qH if is_discrete else d.M
       elliptic = m.opt.cone == types.ConeType.ELLIPTIC
-      if compact:
-        # compact path: d.M is the dense 3D compact inertia block (nworld, nv_pad, nv_pad)
-        wp.launch_tiled(
-          _update_gradient_JTDAJ_dense_tiled_compact(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, elliptic),
-          dim=d.nworld,
-          inputs=[
-            d.nefc,
-            m_mat,
-            d.efc.J,
-            d.efc.D,
-            d.efc.state,
-            ctx.done,
-            ctx.cone_coef,
-            ctx.cone_weight,
-            ctx.cone_base,
-          ],
-          outputs=[ctx.h],
-          block_dim=m.block_dim.update_gradient_JTDAJ_dense,
-        )
-      else:
-        wp.launch_tiled(
-          _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0], elliptic),
-          dim=d.nworld,
-          inputs=[
-            m.nv,
-            m.M_colind,
-            m.M_hinit_i,
-            d.nefc,
-            m_mat,
-            d.efc.J,
-            d.efc.D,
-            d.efc.state,
-            ctx.done,
-            ctx.cone_coef,
-            ctx.cone_weight,
-            ctx.cone_base,
-          ],
-          outputs=[ctx.h],
-          block_dim=m.block_dim.update_gradient_JTDAJ_dense,
-        )
+      wp.launch_tiled(
+        _update_gradient_JTDAJ_dense_tiled(m.nv_pad, types.TILE_SIZE_JTDAJ_DENSE, d.njmax, m.M_colind.shape[0], elliptic),
+        dim=d.nworld,
+        inputs=[
+          m.nv,
+          m.M_colind,
+          m.M_hinit_i,
+          d.nefc,
+          m_mat,
+          d.efc.J,
+          d.efc.D,
+          d.efc.state,
+          ctx.done,
+          ctx.cone_coef,
+          ctx.cone_weight,
+          ctx.cone_base,
+        ],
+        outputs=[ctx.h],
+        block_dim=m.block_dim.update_gradient_JTDAJ_dense,
+      )
 
     det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
     if is_discrete:
@@ -4666,11 +4471,11 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
           outputs=[ctx.h],
         )
 
-    _cholesky_factorize_solve(m, d, ctx, compact=compact)
+    _cholesky_factorize_solve(m, d, ctx)
   else:
     raise ValueError(f"Unknown solver type: {m.opt.solver}")
 
-  if is_discrete and (m.opt.enableflags & types.EnableBit.SLEEP):
+  if _hold_sleeping(m, d):
     wp.launch(
       derivative._zero_sleeping_dofs,
       dim=(d.nworld, min(m.nv, ctx.Mgrad.shape[1])),
@@ -4688,27 +4493,23 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
 def _update_h_incremental(m: types.Model, d: types.Data, ctx: SolverContext):
   """Update upper triangle of H with delta from constraints that changed QUADRATIC state."""
   det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
-  sc = _sparse_compact(ctx)
-  if m.is_sparse or sc:
-    mj = ctx.compact_m_full if sc else m
-    dj = ctx.compact_d_full if sc else d
-    inc_kernel = _update_gradient_h_incremental_sparse(sc)
+  if m.is_sparse:
+    inc_kernel = _update_gradient_h_incremental_sparse()
     slots = _jtdaj_groups_per_world(d.nworld, ctx.quad_changed_ids.shape[1], inc_kernel)
     if det_atomics:
-      entries_per_lane = ceil((mj.nv * (mj.nv + 1) // 2) / _JTDAJ_THREADS_PER_GROUP)
+      entries_per_lane = ceil((m.nv * (m.nv + 1) // 2) / _JTDAJ_THREADS_PER_GROUP)
       max_records = ceil(ctx.quad_changed_ids.shape[1] / slots) * entries_per_lane
-      inc_kernel = _update_gradient_h_incremental_sparse(sc, max_records, True)
+      inc_kernel = _update_gradient_h_incremental_sparse(max_records, True)
     wp.launch(
       inc_kernel,
       dim=(d.nworld, slots, _JTDAJ_THREADS_PER_GROUP),
       inputs=[
-        dj.efc.J_rownnz,
-        dj.efc.J_rowadr,
-        dj.efc.J_colind,
-        dj.efc.J,
+        d.efc.J_rownnz,
+        d.efc.J_rowadr,
+        d.efc.J_colind,
+        d.efc.J,
         d.efc.D,
         d.efc.state,
-        dj.dof_cdof,
         ctx.quad_changed_ids,
         ctx.quad_changed_count,
         slots,
@@ -4737,12 +4538,7 @@ def _update_h_incremental(m: types.Model, d: types.Data, ctx: SolverContext):
 
 
 def _update_gradient_incremental(
-  m: types.Model,
-  d: types.Data,
-  ctx: SolverContext,
-  stable_fast: bool = False,
-  compact: bool = False,
-  h_stream: wp.Stream | None = None,
+  m: types.Model, d: types.Data, ctx: SolverContext, stable_fast: bool = False, h_stream: wp.Stream | None = None
 ):
   """Incremental gradient update: update H for changed constraints + re-factorize.
 
@@ -4771,8 +4567,8 @@ def _update_gradient_incremental(
   else:
     wp.wait_stream(h_stream)
 
-  _cholesky_factorize_solve(m, d, ctx, skip_unchanged=True, skip_noflip=stable_fast, compact=compact)
-  if m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP):
+  _cholesky_factorize_solve(m, d, ctx, skip_unchanged=True, skip_noflip=stable_fast)
+  if _hold_sleeping(m, d):
     wp.launch(
       derivative._zero_sleeping_dofs,
       dim=(d.nworld, min(m.nv, ctx.Mgrad.shape[1])),
@@ -5007,7 +4803,6 @@ def _solver_iteration(
   d: types.Data,
   ctx: SolverContext,
   nsolving: wp.array[int],
-  compact: bool = False,
 ):
   _linesearch(m, d, ctx)
 
@@ -5040,10 +4835,10 @@ def _solver_iteration(
     # only changed by a scalar along the same ray. Skip their qfrc/grad/
     # solve/search updates and track the scalar in ctx.grad_scale.
     _update_qfrc_constraint(m, d, ctx, stable_fast=True)
-    _update_gradient_incremental(m, d, ctx, stable_fast=True, compact=compact, h_stream=h_stream)
+    _update_gradient_incremental(m, d, ctx, stable_fast=True, h_stream=h_stream)
   else:
     _update_qfrc_constraint(m, d, ctx)
-    _update_gradient(m, d, ctx, compact=compact)
+    _update_gradient(m, d, ctx)
 
   # polak-ribiere
   if m.opt.solver == types.SolverType.CG:
@@ -5099,7 +4894,7 @@ def _solver_iteration(
     )
 
 
-def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True, compact: bool = False):
+def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, grad: bool = True):
   if m.opt.integrator == types.IntegratorType.DISCRETE:
     if ctx.tw_diag is not None and m.opt.solver == types.SolverType.CG:
       derivative.eff_prec_fold(m, d, tw_diag=ctx.tw_diag)
@@ -5113,11 +4908,9 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
       )
       d = dataclasses.replace(d, qfrc_smooth=qfrc_smooth_eff)
 
-  # inverse trace of the active inertia matrix, of the full model in a compacted solve
+  # inverse trace of the inertia matrix (of the awake DOFs if the sleeping ones are held)
   if isinstance(ctx, SolverContext):
-    mf = m if ctx.compact_m_full is None else ctx.compact_m_full
-    df = d if ctx.compact_d_full is None else ctx.compact_d_full
-    launch_inertia_scale(mf, df.M, ctx.inertia_scale, df)
+    launch_inertia_scale(m, d.M, ctx.inertia_scale, d.tree_awake if _hold_sleeping(m, d) else None)
 
   # initialize some efc arrays
   wp.launch(
@@ -5131,9 +4924,7 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
   # if we are only using 1 thread, it makes sense to do more dofs as we can also skip the
   # init kernel. For more than 1 thread, dofs_per_thread is lower for better load balancing.
 
-  sc = _sparse_compact(ctx)
-  dj = ctx.compact_d_full if sc else d
-  if m.is_sparse or sc:
+  if m.is_sparse:
     # Sparse J has few nonzeros per row, one thread handles them all.
     dofs_per_thread = m.nv
     threads_per_efc = 1
@@ -5148,21 +4939,24 @@ def init_context(m: types.Model, d: types.Data, ctx: SolverContext | InverseCont
     ctx.Jaref.zero_()
 
   wp.launch(
-    _solve_init_jaref_kernel(
-      sc or m.is_sparse, m.nv, dofs_per_thread, sc, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
-    ),
+    _solve_init_jaref_kernel(m.is_sparse, m.nv, dofs_per_thread, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
     dim=(d.nworld, d.njmax, threads_per_efc),
-    inputs=[d.nefc, d.qacc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.aref, dj.dof_cdof],
+    inputs=[d.nefc, d.qacc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind, d.efc.J, d.efc.aref],
     outputs=[ctx.Jaref],
   )
 
   # Ma = M @ qacc
-  _mul_m_compact_aware(m, d, ctx, d.efc.Ma, d.qacc, ctx.done)
+  _mul_m(m, d, ctx, d.efc.Ma, d.qacc, ctx.done)
 
   _update_constraint(m, d, ctx)
 
   if grad:
-    _update_gradient(m, d, ctx, compact=compact)
+    _update_gradient(m, d, ctx)
+
+
+def _hold_sleeping(m: types.Model, d: types.Data) -> bool:
+  """The world solver solves a sleeping model: it holds the sleeping DOFs at rest."""
+  return bool(m.opt.enableflags & types.EnableBit.SLEEP) and not island.rows_in_island_order(d)
 
 
 def _island_solver():
@@ -5184,37 +4978,22 @@ def solve(m: types.Model, d: types.Data):
     _island_solver().solve(m, d)
     return
 
-  enable_sleep = bool(m.opt.enableflags & types.EnableBit.SLEEP)
-  if enable_sleep:
-    island.update_active_dofs(m, d)
-
   if d.njmax == 0:
     wp.copy(d.qacc, d.qacc_smooth)
     d.qfrc_constraint.zero_()
     support.mul_m(m, d, d.efc.Ma, d.qacc)
     d.solver_niter.fill_(0)
-    if enable_sleep and m.ntree > 1 and not (m.opt.disableflags & types.DisableBit.ISLAND):
-      island.compute_island_mapping(m, d)
-    return
-
-  if enable_sleep and m.opt.integrator != types.IntegratorType.DISCRETE:
-    solve_compact(m, d)
+  else:
+    ctx = _create_solver_context(m, d, inplace_cholesky=True)
+    _solve(m, d, ctx)
     if m.opt.noslip_iterations > 0:
       noslip(m, d)
-    if m.ntree > 1 and not (m.opt.disableflags & types.DisableBit.ISLAND):
-      island.compute_island_mapping(m, d)
-    return
 
-  ctx = _create_solver_context(m, d, inplace_cholesky=True)
-  _solve(m, d, ctx)
-  if m.opt.noslip_iterations > 0:
-    noslip(m, d)
-
-  if enable_sleep and m.ntree > 1 and not (m.opt.disableflags & types.DisableBit.ISLAND):
+  if _hold_sleeping(m, d) and m.ntree > 1 and not (m.opt.disableflags & types.DisableBit.ISLAND):
     island.compute_island_mapping(m, d)
 
 
-def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
+def _solve(m: types.Model, d: types.Data, ctx: SolverContext):
   """Finds forces that satisfy constraints."""
   if m.opt.integrator == types.IntegratorType.DISCRETE:
     qfrc_smooth_eff = wp.zeros((d.nworld, m.nv_pad), dtype=float, device=d.qacc.device)
@@ -5231,12 +5010,12 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
 
   warmstart = not (m.opt.disableflags & types.DisableBit.WARMSTART)
   wp.launch(
-    _solve_init_dof(warmstart, m.is_sparse or _sparse_compact(ctx), not smooth.skip_qacc_smooth(m, d)),
+    _solve_init_dof(warmstart, m.is_sparse, not smooth.skip_qacc_smooth(m, d)),
     dim=(d.nworld, m.nv),
     inputs=[d.nefc, d.qacc_warmstart, d.qacc_smooth],
     outputs=[d.qacc, d.qfrc_constraint],
   )
-  if m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP):
+  if _hold_sleeping(m, d):
     wp.launch(
       derivative._zero_sleeping_dofs,
       dim=(d.nworld, m.nv),
@@ -5245,8 +5024,8 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
     )
 
   #  context
-  init_context(m, d, ctx, grad=False, compact=compact)
-  _update_gradient(m, d, ctx, compact=compact)
+  init_context(m, d, ctx, grad=False)
+  _update_gradient(m, d, ctx)
 
   nsolving = wp.full(shape=(1,), value=d.nworld, dtype=int)
 
@@ -5267,15 +5046,15 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
     # When the number of iterations reaches m.opt.iterations, solver_niter
     # becomes zero and all worlds are marked as converged to avoid an infinite loop.
     # note: we only launch the iteration kernel if everything is not done
-    wp.capture_while(nsolving, while_body=_solver_iteration, m=m, d=d, ctx=ctx, nsolving=nsolving, compact=compact)
+    wp.capture_while(nsolving, while_body=_solver_iteration, m=m, d=d, ctx=ctx, nsolving=nsolving)
   else:
     # This branch is mostly for when JAX is used as it is currently not compatible
     # with CUDA graph conditional.
     # It should be removed when JAX becomes compatible.
     for _ in range(m.opt.iterations):
-      _solver_iteration(m, d, ctx, nsolving, compact=compact)
+      _solver_iteration(m, d, ctx, nsolving)
 
-  # Recover qfrc_constraint (the compacted buffer when run under solve_compact):
+  # Recover qfrc_constraint:
   # the fast path leaves it stale, and the per-iteration zeroing wiped it for
   # worlds that converged early.
   if _use_incremental(m):
@@ -5285,7 +5064,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
       inputs=[d.qfrc_smooth, d.efc.Ma, ctx.grad, ctx.grad_scale],
       outputs=[d.qfrc_constraint],
     )
-  if m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP):
+  if _hold_sleeping(m, d):
     wp.launch(
       derivative._zero_sleeping_dofs,
       dim=(d.nworld, m.nv),
@@ -5300,296 +5079,12 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
     )
 
 
-# Active-DOF compaction solve (nvmax < nv).
-#
-# When fewer than nv DOFs are active, the active set is packed into a contiguous
-# [0, ncdof) range (see island.update_active_dofs) and the dense factor/solve runs at
-# size nvmax_pad instead of nv. The compacted workspace lives on Data as c* fields
-# (mirroring the island-local i* fields). The constrained solve gathers into compacted
-# arrays, shallow-replaces (m, d) so the stock dense Newton solver runs at nvmax_pad,
-# then scatters qacc/qfrc_constraint back, freezing inactive DOFs to 0.
-
-
-@wp.kernel
-def _init_compact_inertia(
-  # Data in:
-  ncdof_in: wp.array[int],
-  # Out:
-  M_c_out: wp.array3d[float],
-):
-  worldid, i, j = wp.tid()
-  val = 0.0
-  if i == j and i >= ncdof_in[worldid]:
-    val = 1.0
-  M_c_out[worldid, i, j] = val
-
-
-@wp.kernel
-def _mul_m_sparse_compact(
-  # Model:
-  M_mulm_rowadr: wp.array[int],
-  M_mulm_col: wp.array[int],
-  M_mulm_madr: wp.array[int],
-  # Data in:
-  M_in: wp.array2d[float],
-  dof_cdof_in: wp.array2d[int],
-  cdof_dof_in: wp.array2d[int],
-  # In:
-  vec: wp.array2d[float],
-  skip: wp.array[bool],
-  # Out:
-  res: wp.array2d[float],
-):
-  """Compacted res = M @ vec via the full-coordinate sparse M (no gathered cM)."""
-  worldid, ci = wp.tid()
-
-  if skip[worldid]:
-    return
-
-  dof = cdof_dof_in[worldid, ci]
-  if dof < 0:
-    res[worldid, ci] = 0.0
-    return
-
-  acc = float(0.0)
-  start = M_mulm_rowadr[dof]
-  end = M_mulm_rowadr[dof + 1]
-  for k in range(start, end):
-    # tree-internal columns are awake with the row; guard like _gather_M_sparse
-    # in case M ever carries cross-tree entries (their gathered value is zero)
-    cj = dof_cdof_in[worldid, M_mulm_col[k]]
-    if cj >= 0:
-      acc += M_in[worldid, M_mulm_madr[k]] * vec[worldid, cj]
-  res[worldid, ci] = acc
-
-
-def _sparse_compact(ctx: SolverContext | InverseContext) -> bool:
-  """Whether this solve is compact over a sparse full model (full J structures exist)."""
-  return ctx.compact_d_full is not None and ctx.compact_m_full.is_sparse
-
-
-def _mul_m_compact_aware(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, res, vec, skip):
-  """M @ vec: full-coordinate sparse walk under compact, support.mul_m natively."""
+def _mul_m(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, res, vec, skip):
+  """M @ vec, in the effective metric for the discrete integrator."""
   if m.opt.integrator == types.IntegratorType.DISCRETE:
     derivative.eff_mul_m(m, d, res, vec, skip=skip, efm_con=ctx.efm_con, flex_scratch=ctx.flex_scratch)
     return
-  dfull = ctx.compact_d_full
-  if dfull is not None:
-    mfull = ctx.compact_m_full
-    wp.launch(
-      _mul_m_sparse_compact,
-      dim=(d.nworld, m.nv),
-      inputs=[
-        mfull.M_mulm_rowadr,
-        mfull.M_mulm_col,
-        mfull.M_mulm_madr,
-        dfull.M,
-        dfull.dof_cdof,
-        dfull.cdof_dof,
-        vec,
-        skip,
-      ],
-      outputs=[res],
-    )
-  else:
-    support.mul_m(m, d, res, vec, skip=skip)
-
-
-@wp.kernel
-def _gather_M_sparse(
-  # Model:
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  M_colind: wp.array[int],
-  # Data in:
-  M_in: wp.array2d[float],
-  dof_cdof_in: wp.array2d[int],
-  # Out:
-  M_c_out: wp.array3d[float],
-):
-  worldid, i = wp.tid()
-  ci = dof_cdof_in[worldid, i]
-  if ci < 0:
-    return
-  rowadr = M_rowadr[i]
-  for k in range(M_rownnz[i]):
-    adr = rowadr + k
-    cj = dof_cdof_in[worldid, M_colind[adr]]
-    if cj >= 0:
-      val = M_in[worldid, adr]
-      M_c_out[worldid, ci, cj] = val
-      M_c_out[worldid, cj, ci] = val
-
-
-@wp.kernel
-def _gather_dof_vecs_compact(
-  # Data in:
-  qacc_warmstart_in: wp.array2d[float],
-  qfrc_smooth_in: wp.array2d[float],
-  qacc_smooth_in: wp.array2d[float],
-  cdof_dof_in: wp.array2d[int],
-  # Out:
-  qfrc_smooth_c_out: wp.array2d[float],
-  qacc_smooth_c_out: wp.array2d[float],
-  qacc_warmstart_c_out: wp.array2d[float],
-):
-  worldid, ci = wp.tid()
-  dof = cdof_dof_in[worldid, ci]
-  if dof >= 0:
-    qfrc_smooth_c_out[worldid, ci] = qfrc_smooth_in[worldid, dof]
-    qacc_smooth_c_out[worldid, ci] = qacc_smooth_in[worldid, dof]
-    qacc_warmstart_c_out[worldid, ci] = qacc_warmstart_in[worldid, dof]
-  else:
-    qfrc_smooth_c_out[worldid, ci] = 0.0
-    qacc_smooth_c_out[worldid, ci] = 0.0
-    qacc_warmstart_c_out[worldid, ci] = 0.0
-
-
-@wp.kernel
-def _scatter_dof_vecs(
-  # Data in:
-  dof_cdof_in: wp.array2d[int],
-  cMa_in: wp.array2d[float],
-  # In:
-  qacc_c_in: wp.array2d[float],
-  qfrc_constraint_c_in: wp.array2d[float],
-  # Data out:
-  qacc_out: wp.array2d[float],
-  qfrc_constraint_out: wp.array2d[float],
-  efc_Ma_out: wp.array2d[float],
-):
-  worldid, i = wp.tid()
-  ci = dof_cdof_in[worldid, i]
-  if ci >= 0:
-    qacc_out[worldid, i] = qacc_c_in[worldid, ci]
-    qfrc_constraint_out[worldid, i] = qfrc_constraint_c_in[worldid, ci]
-    efc_Ma_out[worldid, i] = cMa_in[worldid, ci]
-  else:
-    qacc_out[worldid, i] = 0.0
-    qfrc_constraint_out[worldid, i] = 0.0
-    efc_Ma_out[worldid, i] = 0.0
-
-
-@wp.kernel
-def _gather_J_dense(
-  # Data in:
-  nefc_in: wp.array[int],
-  dof_cdof_in: wp.array2d[int],
-  # In:
-  J_in: wp.array3d[float],
-  # Out:
-  J_c_out: wp.array3d[float],
-):
-  worldid, efcid = wp.tid()
-  if efcid >= nefc_in[worldid]:
-    return
-  nv = dof_cdof_in.shape[1]
-  for j in range(nv):
-    cj = dof_cdof_in[worldid, j]
-    if cj >= 0:
-      J_c_out[worldid, efcid, cj] = J_in[worldid, efcid, j]
-
-
-@event_scope
-def solve_compact(m: types.Model, d: types.Data):
-  """Run the dense Newton constraint solver in compacted DOF space.
-
-  Gathers the active-DOF inertia, constraint Jacobian, and smooth/warmstart vectors
-  into nvmax_pad-sized dense workspaces, runs the stock dense Newton solver on a
-  shallow-replaced (m, d) at nvmax_pad, then scatters qacc/qfrc_constraint back.
-  Inactive DOFs are frozen to 0. On the incremental Newton path the solver
-  kernels read the sparse M and J directly through the compaction maps.
-  """
-  _compact_gather(m, d)
-
-  # shallow-replace (m, d) so the stock dense Newton solver runs at nvmax_pad.
-  # Keep graph-conditional early-exit on CUDA (matches baseline: stops at convergence
-  # instead of running all iterations); fall back to the plain loop on CPU.
-  nvp = d.nvmax_pad
-  gc = m.opt.graph_conditional and wp.get_device().is_cuda
-  opt2 = dataclasses.replace(m.opt, graph_conditional=gc)
-  m2 = dataclasses.replace(
-    m,
-    opt=opt2,
-    nv=nvp,
-    nv_pad=nvp,
-    is_sparse=False,
-    M_tile_full=False,  # describes the uncompacted M
-  )
-  efc2 = dataclasses.replace(d.efc, J=d.cJ, Ma=d.cMa)
-  d2 = dataclasses.replace(
-    d,
-    M=d.cM,
-    qfrc_smooth=d.cqfrc_smooth,
-    qacc_smooth=d.cqacc_smooth,
-    qacc_warmstart=d.cqacc_warmstart,
-    qacc=d.cqacc,
-    qfrc_constraint=d.cqfrc_constraint,
-    efc=efc2,
-  )
-
-  sctx = _create_solver_context(m2, d2, inplace_cholesky=True, dense_hessian=not m.is_sparse)
-  # compact kernels read the full-coordinate sparse structures (M, J) through
-  # the compaction maps instead of dense products on gathered blocks
-  sctx.compact_m_full = m
-  sctx.compact_d_full = d
-  _solve(m2, d2, sctx, compact=True)
-
-  _compact_scatter(m, d)
-
-
-@event_scope
-def _compact_gather(m: types.Model, d: types.Data):
-  nvp = d.nvmax_pad
-  # gather compacted dense inertia and Jacobian only for dense models;
-  # sparse models read sparse M and J directly through compaction maps
-  if not m.is_sparse:
-    wp.launch(
-      _init_compact_inertia,
-      dim=(d.nworld, nvp, nvp),
-      inputs=[d.ncdof],
-      outputs=[d.cM],
-    )
-    wp.launch(
-      _gather_M_sparse,
-      dim=(d.nworld, m.nv),
-      inputs=[m.M_rownnz, m.M_rowadr, m.M_colind, d.M, d.dof_cdof],
-      outputs=[d.cM],
-    )
-    d.cJ.zero_()
-    wp.launch(
-      _gather_J_dense,
-      dim=(d.nworld, d.njmax),
-      inputs=[d.nefc, d.dof_cdof, d.efc.J],
-      outputs=[d.cJ],
-    )
-  # gather compacted DOF-space vectors in a single launch
-  wp.launch(
-    _gather_dof_vecs_compact,
-    dim=(d.nworld, nvp),
-    inputs=[
-      d.qacc_warmstart,
-      d.qfrc_smooth,
-      d.qacc_smooth,
-      d.cdof_dof,
-    ],
-    outputs=[
-      d.cqfrc_smooth,
-      d.cqacc_smooth,
-      d.cqacc_warmstart,
-    ],
-  )
-
-
-@event_scope
-def _compact_scatter(m: types.Model, d: types.Data):
-  # scatter results back to full DOF space (inactive frozen to 0) in one launch
-  wp.launch(
-    _scatter_dof_vecs,
-    dim=(d.nworld, m.nv),
-    inputs=[d.dof_cdof, d.cMa, d.cqacc, d.cqfrc_constraint],
-    outputs=[d.qacc, d.qfrc_constraint, d.efc.Ma],
-  )
+  support.mul_m(m, d, res, vec, skip=skip)
 
 
 @cache_kernel
@@ -5600,13 +5095,14 @@ def _noslip_factor_m(sleep: bool):
   def kernel(
     # Model:
     nv: int,
+    dof_treeid: wp.array[int],
     M_rownnz: wp.array[int],
     M_rowadr: wp.array[int],
     M_colind: wp.array[int],
     # Data in:
     nefc_in: wp.array[int],
     M_in: wp.array2d[float],
-    dof_cdof_in: wp.array2d[int],
+    tree_awake_in: wp.array2d[int],
     # Out:
     noslip_L_out: wp.array3d[float],
   ):
@@ -5623,7 +5119,7 @@ def _noslip_factor_m(sleep: bool):
 
       # inactive (sleeping) dofs: identity
       if wp.static(SLEEP):
-        if dof_cdof_in[worldid, i] < 0:
+        if tree_awake_in[worldid, dof_treeid[i]] == 0:
           noslip_L_out[worldid, i, i] = 1.0
           continue
 
@@ -5665,15 +5161,16 @@ def _noslip_minv_jt(is_sparse: bool, sleep: bool):
   def kernel(
     # Model:
     nv: int,
+    dof_treeid: wp.array[int],
     M_rowadr: wp.array[int],
     M_colind: wp.array[int],
     # Data in:
     nefc_in: wp.array[int],
+    tree_awake_in: wp.array2d[int],
     efc_J_rownnz_in: wp.array2d[int],
     efc_J_rowadr_in: wp.array2d[int],
     efc_J_colind_in: wp.array3d[int],
     efc_J_in: wp.array3d[float],
-    dof_cdof_in: wp.array2d[int],
     # In:
     noslip_L_in: wp.array3d[float],
     # Out:
@@ -5694,13 +5191,13 @@ def _noslip_minv_jt(is_sparse: bool, sleep: bool):
         sparseid = rowadr + k
         colind = efc_J_colind_in[worldid, 0, sparseid]
         if wp.static(SLEEP):
-          if dof_cdof_in[worldid, colind] < 0:
+          if tree_awake_in[worldid, dof_treeid[colind]] == 0:
             continue
         noslip_Y_out[worldid, efcid, colind] = efc_J_in[worldid, 0, sparseid]
     else:
       for k in range(nv):
         if wp.static(SLEEP):
-          if dof_cdof_in[worldid, k] < 0:
+          if tree_awake_in[worldid, dof_treeid[k]] == 0:
             noslip_Y_out[worldid, efcid, k] = 0.0
             continue
         noslip_Y_out[worldid, efcid, k] = efc_J_in[worldid, efcid, k]
@@ -6258,11 +5755,13 @@ def _noslip_qacc_init(sleep: bool):
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
     # Data in:
     nefc_in: wp.array[int],
+    tree_awake_in: wp.array2d[int],
     qacc_smooth_in: wp.array2d[float],
     efc_force_in: wp.array2d[float],
-    dof_cdof_in: wp.array2d[int],
     njmax_in: int,
     # In:
     noslip_Y_in: wp.array3d[float],
@@ -6278,7 +5777,7 @@ def _noslip_qacc_init(sleep: bool):
 
     # inactive (sleeping) dofs are frozen
     if wp.static(SLEEP):
-      if dof_cdof_in[worldid, dofid] < 0:
+      if tree_awake_in[worldid, dof_treeid[dofid]] == 0:
         qacc_out[worldid, dofid] = 0.0
         return
 
@@ -6460,15 +5959,17 @@ def _noslip_qacc_qfrc(is_sparse: bool, sleep: bool):
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
     # Data in:
     nefc_in: wp.array[int],
+    tree_awake_in: wp.array2d[int],
     qacc_smooth_in: wp.array2d[float],
     efc_J_rownnz_in: wp.array2d[int],
     efc_J_rowadr_in: wp.array2d[int],
     efc_J_colind_in: wp.array3d[int],
     efc_J_in: wp.array3d[float],
     efc_force_in: wp.array2d[float],
-    dof_cdof_in: wp.array2d[int],
     njmax_in: int,
     # In:
     noslip_Y_in: wp.array3d[float],
@@ -6485,7 +5986,7 @@ def _noslip_qacc_qfrc(is_sparse: bool, sleep: bool):
 
     # inactive (sleeping) dofs are frozen
     if wp.static(SLEEP):
-      if dof_cdof_in[worldid, dofid] < 0:
+      if tree_awake_in[worldid, dof_treeid[dofid]] == 0:
         qacc_out[worldid, dofid] = 0.0
         qfrc_constraint_out[worldid, dofid] = 0.0
         return
@@ -6603,11 +6104,11 @@ def noslip(m: types.Model, d: types.Data):
 
   sleep = bool(m.opt.enableflags & types.EnableBit.SLEEP)
 
-  launch_inertia_scale(m, d.M, inertia_scale, d)
+  launch_inertia_scale(m, d.M, inertia_scale, d.tree_awake if sleep else None)
   wp.launch(
     _noslip_factor_m(sleep),
     dim=d.nworld,
-    inputs=[m.nv, m.M_rownnz, m.M_rowadr, m.M_colind, d.nefc, d.M, d.dof_cdof],
+    inputs=[m.nv, m.dof_treeid, m.M_rownnz, m.M_rowadr, m.M_colind, d.nefc, d.M, d.tree_awake],
     outputs=[noslip_L],
   )
   wp.launch(
@@ -6615,14 +6116,15 @@ def noslip(m: types.Model, d: types.Data):
     dim=(d.nworld, d.njmax),
     inputs=[
       m.nv,
+      m.dof_treeid,
       m.M_rowadr,
       m.M_colind,
       d.nefc,
+      d.tree_awake,
       d.efc.J_rownnz,
       d.efc.J_rowadr,
       d.efc.J_colind,
       d.efc.J,
-      d.dof_cdof,
       noslip_L,
     ],
     outputs=[noslip_Y],
@@ -6648,7 +6150,7 @@ def noslip(m: types.Model, d: types.Data):
   wp.launch(
     _noslip_qacc_init(sleep),
     dim=(d.nworld, m.nv),
-    inputs=[d.nefc, d.qacc_smooth, d.efc.force, d.dof_cdof, d.njmax, noslip_Y],
+    inputs=[m.dof_treeid, d.nefc, d.tree_awake, d.qacc_smooth, d.efc.force, d.njmax, noslip_Y],
     outputs=[d.qacc],
   )
   wp.launch(
@@ -6682,14 +6184,15 @@ def noslip(m: types.Model, d: types.Data):
     _noslip_qacc_qfrc(m.is_sparse, sleep),
     dim=(d.nworld, m.nv),
     inputs=[
+      m.dof_treeid,
       d.nefc,
+      d.tree_awake,
       d.qacc_smooth,
       d.efc.J_rownnz,
       d.efc.J_rowadr,
       d.efc.J_colind,
       d.efc.J,
       d.efc.force,
-      d.dof_cdof,
       d.njmax,
       noslip_Y,
     ],
