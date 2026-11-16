@@ -134,8 +134,8 @@ def _constraint_residual(is_sparse: bool, param_grad: bool):
     efc_force_in: wp.array2d[float],
     efc_state_in: wp.array2d[int],
     # In:
-    lam_in: wp.array2d[float],
-    ctx_Jaref_in: wp.array2d[float],
+    lam: wp.array2d[float],
+    ctx_Jaref: wp.array2d[float],
     # Out:
     res_qvel_out: wp.array2d[float],
     res_dof_out: wp.array2d[float],
@@ -171,7 +171,7 @@ def _constraint_residual(is_sparse: bool, param_grad: bool):
         jj = efc_J_in[w, 0, sid]
       else:
         jj = efc_J_in[w, row, i]
-      Z += jj * lam_in[w, i]
+      Z += jj * lam[w, i]
 
     cid = efc_id_in[w, row]
     model_worldid = w % dof_invweight0.shape[0]
@@ -209,7 +209,7 @@ def _constraint_residual(is_sparse: bool, param_grad: bool):
       efc_aref_in[w, row],
       efc_force_in[w, row],
       efc_D_in[w, row],
-      ctx_Jaref_in[w, row],
+      ctx_Jaref[w, row],
     )
     Pb, Vb, Zb = derivatives[0], derivatives[1], derivatives[2]
     if wp.static(param_grad):
@@ -259,7 +259,7 @@ def _constraint_residual(is_sparse: bool, param_grad: bool):
     qadr, dadr = jnt_qposadr[jointid], jnt_dofadr[jointid]
     acceleration_bar = efc_D_in[w, row] * Z
     if ty == ConstraintType.EQUALITY:
-      jacobian_bar = Zb * lam_in[w, dadr] + Vb * qvel_in[w, dadr] + acceleration_bar * qacc_in[w, dadr]
+      jacobian_bar = Zb * lam[w, dadr] + Vb * qvel_in[w, dadr] + acceleration_bar * qacc_in[w, dadr]
       x = qpos_in[w, qadr] - qpos0[w % qpos0.shape[0], qadr]
       jacobian_grad = wp.grad(_joint_jacobian_contract)(x, eq_data[w % eq_data.shape[0], cid], jacobian_bar)[0]
       wp.atomic_add(res_dof_out, w, dadr, jacobian_grad)  # kernel_analyzer: ignore[atomic]
@@ -267,7 +267,7 @@ def _constraint_residual(is_sparse: bool, param_grad: bool):
       axis_bar = wp.vec3()
       for i in range(3):
         dof = dadr + i
-        axis_bar[i] = Zb * lam_in[w, dof] + Vb * qvel_in[w, dof] + acceleration_bar * qacc_in[w, dof]
+        axis_bar[i] = Zb * lam[w, dof] + Vb * qvel_in[w, dof] + acceleration_bar * qacc_in[w, dof]
       quat = wp.quat(qpos_in[w, qadr], qpos_in[w, qadr + 1], qpos_in[w, qadr + 2], qpos_in[w, qadr + 3])
       rotation_grad = wp.grad(_ball_jacobian_contract)(wp.vec3(), quat, axis_bar)[0]
       for i in range(3):
@@ -315,9 +315,17 @@ def _proj_row_spatial(Vsp: wp.spatial_vector, fm: wp.mat33, dimid: int) -> float
   return wp.dot(_frame_axis(fm, dimid - 3), wp.spatial_top(Vsp))
 
 
-# pyramidal edge e's projection of a contact-point spatial motion (the summed _edge_coef)
+@wp.func
+def _row_jaref_spatial(
+  A: wp.spatial_vector, V: wp.spatial_vector, fm: wp.mat33, dimid: int, k: float, b: float, imp: float, pos: float
+) -> float:
+  """Returns a contact row's Jaref from contact-point spatial acceleration and velocity."""
+  return _row_jaref(_proj_row_spatial(A, fm, dimid), _proj_row_spatial(V, fm, dimid), k, b, imp, pos)
+
+
 @wp.func
 def _proj_edge_spatial(Vsp: wp.spatial_vector, fm: wp.mat33, fric: vec5, e: int, condim: int) -> float:
+  """Projects a contact-point spatial motion onto pyramidal edge e."""
   c = _proj_row_spatial(Vsp, fm, 0)
   if condim > 1:
     dimid2 = e / 2 + 1
@@ -366,48 +374,47 @@ def _contact_contract(
     mu = fric[0] * imp_isq
 
     if (condim > 1) and (st == ConstraintState.CONE):  # middle zone: cone-coupled forces, shared N/T
-      N = _row_jaref(_proj_row_spatial(A, fm, 0), _proj_row_spatial(V, fm, 0), k, b, imp, pos) * mu
+      N = _row_jaref_spatial(A, V, fm, 0, k, b, imp, pos) * mu
       TT = float(0.0)
       for j in range(1, _MAXCONDIM):
         if j < condim:
-          uj = _row_jaref(_proj_row_spatial(A, fm, j), _proj_row_spatial(V, fm, j), 0.0, b_t, 0.0, 0.0) * _friction(fric, j - 1)
-          TT += uj * uj
+          tj = _row_jaref_spatial(A, V, fm, j, 0.0, b_t, 0.0, 0.0) * _friction(fric, j - 1)
+          TT += tj * tj
       T = wp.sqrt(wp.max(TT, MJ_MINVAL * MJ_MINVAL))
       fn = solver._eval_elliptic_middle(N, T, D0, mu, 0.0, True)[0]
       phi += -fn * _proj_row_spatial(Z, fm, 0)
       for j in range(1, _MAXCONDIM):
         if j < condim:
           frij = _friction(fric, j - 1)
-          uj = _row_jaref(_proj_row_spatial(A, fm, j), _proj_row_spatial(V, fm, j), 0.0, b_t, 0.0, 0.0)
+          uj = _row_jaref_spatial(A, V, fm, j, 0.0, b_t, 0.0, 0.0)
           fj = solver._eval_elliptic_middle(N, T, D0, mu, uj * frij * frij, False)[0]
           phi += -fj * _proj_row_spatial(Z, fm, j)
     else:  # bottom zone / frictionless: each row force = -D_row * Jaref_row
-      f0 = -D0 * _row_jaref(_proj_row_spatial(A, fm, 0), _proj_row_spatial(V, fm, 0), k, b, imp, pos)
+      f0 = -D0 * _row_jaref_spatial(A, V, fm, 0, k, b, imp, pos)
       phi += -f0 * _proj_row_spatial(Z, fm, 0)
+      imp_isq2 = imp_isq * imp_isq
       for j in range(1, _MAXCONDIM):
         if j < condim:
-          scale = imp_isq * imp_isq
+          scale = imp_isq2
           if j > 1:
-            friction = _friction(fric, j - 1)
-            scale *= fric[0] * fric[0] / (friction * friction)
+            frij = _friction(fric, j - 1)
+            scale *= fric[0] * fric[0] / (frij * frij)
           Dj = D0 / scale
-          fj = -Dj * _row_jaref(_proj_row_spatial(A, fm, j), _proj_row_spatial(V, fm, j), 0.0, b_t, 0.0, 0.0)
+          fj = -Dj * _row_jaref_spatial(A, V, fm, j, 0.0, b_t, 0.0, 0.0)
           phi += -fj * _proj_row_spatial(Z, fm, j)
-  else:  # pyramidal: ndim = 2*(condim-1) edges (1 if condim==1); each edge an independent force
-    ndim = int(1)
+  else:  # pyramidal: 2*(condim-1) edges (1 if condim==1); each edge an independent force
     if condim > 1:
-      ndim = 2 * (condim - 1)
-      friction = fric[0]
-      invweight = invweight + friction * friction * invweight
-      invweight = invweight * 2.0 * friction * friction * imp_isq * imp_isq
+      fri0 = fric[0]
+      invweight = invweight + fri0 * fri0 * invweight
+      invweight = invweight * 2.0 * fri0 * fri0 * imp_isq * imp_isq
     D = constraint._efc_D(invweight, imp)
     for e in range(_MAX_PYRAMID_EDGES):
-      if e < ndim:
-        if (active_edges & (1 << e)) != 0:
-          Jqve = _proj_edge_spatial(V, fm, fric, e, condim)
-          Jqae = _proj_edge_spatial(A, fm, fric, e, condim)
-          fe = -D * _row_jaref(Jqae, Jqve, k, b, imp, pos)
-          phi += -fe * _proj_edge_spatial(Z, fm, fric, e, condim)
+      # The caller sets bits only for this contact's active edges.
+      if (active_edges & (1 << e)) != 0:
+        Jqve = _proj_edge_spatial(V, fm, fric, e, condim)
+        Jqae = _proj_edge_spatial(A, fm, fric, e, condim)
+        fe = -D * _row_jaref(Jqae, Jqve, k, b, imp, pos)
+        phi += -fe * _proj_edge_spatial(Z, fm, fric, e, condim)
 
   return phi
 
@@ -431,23 +438,22 @@ def _contact_material_vjp(
   pair_friction_grad_out: wp.array2d[vec5],
 ):
   """Maps contact friction cotangents to geom or explicit-pair parameter gradients."""
-  if geom_friction_grad or pair_friction_grad:
-    # Recover the same explicit-pair selection used by the broadphase.
-    pairid = nxn_pairid[math.upper_tri_index(ngeom, wp.min(geom[0], geom[1]), wp.max(geom[0], geom[1]))][0]
-    if pairid >= 0:
-      if pair_friction_grad:
-        pair_worldid = w % pair_friction.shape[0]
-        friction = pair_friction[pair_worldid, pairid]
-        grad = vec5(0.0)
-        for i in range(5):
-          if friction[i] > MJ_MINMU:
-            grad[i] = -friction_bar[i]
-        wp.atomic_add(pair_friction_grad_out, pair_worldid, pairid, grad)  # kernel_analyzer: ignore[atomic]
-    elif geom_friction_grad:
-      grad1, grad2 = model_adjoint.geom_friction_vjp(geom_priority, geom_friction, geom, w, friction_bar)
-      model_worldid = w % geom_friction.shape[0]
-      wp.atomic_add(geom_friction_grad_out, model_worldid, geom[0], grad1)  # kernel_analyzer: ignore[atomic]
-      wp.atomic_add(geom_friction_grad_out, model_worldid, geom[1], grad2)  # kernel_analyzer: ignore[atomic]
+  # Recover the same explicit-pair selection used by the broadphase.
+  pairid = nxn_pairid[math.upper_tri_index(ngeom, wp.min(geom[0], geom[1]), wp.max(geom[0], geom[1]))][0]
+  if pairid >= 0:
+    if pair_friction_grad:
+      pair_worldid = w % pair_friction.shape[0]
+      friction = pair_friction[pair_worldid, pairid]
+      grad = vec5(0.0)
+      for i in range(5):
+        if friction[i] > MJ_MINMU:
+          grad[i] = -friction_bar[i]
+      wp.atomic_add(pair_friction_grad_out, pair_worldid, pairid, grad)  # kernel_analyzer: ignore[atomic]
+  elif geom_friction_grad:
+    grad1, grad2 = model_adjoint.geom_friction_vjp(geom_priority, geom_friction, geom, w, friction_bar)
+    model_worldid = w % geom_friction.shape[0]
+    wp.atomic_add(geom_friction_grad_out, model_worldid, geom[0], grad1)  # kernel_analyzer: ignore[atomic]
+    wp.atomic_add(geom_friction_grad_out, model_worldid, geom[1], grad2)  # kernel_analyzer: ignore[atomic]
 
 
 @wp.func
@@ -523,7 +529,7 @@ def _contact_residual(cone_type: int, geom_friction_grad: bool, pair_friction_gr
     efc_state_in: wp.array2d[int],
     nacon_in: wp.array[int],
     # In:
-    lam_in: wp.array2d[float],
+    lam: wp.array2d[float],
     # Out:
     res_qvel_out: wp.array2d[float],
     res_cdof_out: wp.array2d[wp.spatial_vector],
@@ -574,7 +580,7 @@ def _contact_residual(cone_type: int, geom_friction_grad: bool, pair_friction_gr
       h = side * column  # top=angular, bottom=linear (cdof convention)
       V += h * qvel_in[w, i]
       A += h * qacc_in[w, i]
-      Z += h * lam_in[w, i]
+      Z += h * lam[w, i]
       d0, d1 = constraint._dof_chain_advance(dof_parentid, d0, d1, 1)
 
     # Differentiate phi with Warp's generated adjoint.
@@ -637,14 +643,14 @@ def _contact_residual(cone_type: int, geom_friction_grad: bool, pair_friction_gr
       a = wp.spatial_top(column)
       h = side * column
       # dphi/dqvel_i = h_i*Vbar
-      wp.atomic_add(res_qvel_out[w], i, wp.dot(h, Vb))  # kernel_analyzer: ignore[atomic]
-      G = side * (qvel_in[w, i] * Vb + qacc_in[w, i] * Ab + lam_in[w, i] * Zb)  # cotangent on raw jac column
+      wp.atomic_add(res_qvel_out, w, i, wp.dot(h, Vb))  # kernel_analyzer: ignore[atomic]
+      G = side * (qvel_in[w, i] * Vb + qacc_in[w, i] * Ab + lam[w, i] * Zb)  # cotangent on raw jac column
       Ga = wp.spatial_top(G)
       Gl = wp.spatial_bottom(G)
-      wp.atomic_add(res_cdof_out[w], i, wp.spatial_vector(Ga + wp.cross(off, Gl), Gl))  # kernel_analyzer: ignore[atomic]
+      wp.atomic_add(res_cdof_out, w, i, wp.spatial_vector(Ga + wp.cross(off, Gl), Gl))  # kernel_analyzer: ignore[atomic]
       cpos_acc += wp.cross(Gl, a)  # d(off=p-com)/dp
       # doff/dcom = -doff/dp
-      wp.atomic_add(res_subtree_com_out[w], root, wp.cross(a, Gl))  # kernel_analyzer: ignore[atomic]
+      wp.atomic_add(res_subtree_com_out, w, root, wp.cross(a, Gl))  # kernel_analyzer: ignore[atomic]
       d0, d1 = constraint._dof_chain_advance(dof_parentid, d0, d1, 1)
     res_contact_pos_out[cid] += cpos_acc
 
