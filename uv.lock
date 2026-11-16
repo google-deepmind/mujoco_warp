@@ -1315,16 +1315,17 @@ wheels = [
 
 [[package]]
 name = "warp-lang"
-version = "1.18.0"
+version = "1.19.0"
 source = { registry = "https://pypi.nvidia.com/" }
 dependencies = [
     { name = "numpy" },
 ]
 wheels = [
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.18.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:3d0a12f411555c08015f84060187a0466800d2c837eb8800977b9604be438c21" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.18.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:090962bfae7dd22ade0d8e0258f41635e0e58980f15bcc9e7a7d312819dfe440" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.18.0-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:d76ab8c7d4f4897405fa0a744d38812fc44cfc8162c40e658dc9ca7790b6a645" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.18.0-py3-none-win_amd64.whl", hash = "sha256:1769e55746739f2e244a2b412123003c462ec3d977dfb5f420f924a8553d30aa" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.19.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:310e7dcd9b4afa1ea45bf2304d793efc88f7317182e996b2077b069a0e34d3a0" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.19.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:c797f5f4aa9925f676e20dd28e5416fee794499f3f3c0a5b66f2d4dfc2de9e32" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.19.0-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:bc1511b8d5d987a69c2b18edbad721a8949b9f3622a91e3f9187a208fa9e3fab" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.19.0-py3-none-win_amd64.whl", hash = "sha256:bb4865dde4c2ae916d3d2a4e20ed1cd406e1d0a76ae722c3c574a9d43385c4d9" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.19.0-py3-none-win_arm64.whl", hash = "sha256:4f422ccdb3f5509e6386c0f178071d0da43e872e7af40dba594f03507af10182" },
 ]
 
 [[package]]
@@ -1332,9 +1333,9 @@ name = "warp-optix"
 version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy" },
-    { name = "pyoptix" },
-    { name = "warp-lang" },
+    { name = "numpy", marker = "python_full_version == '3.12.*'" },
+    { name = "pyoptix", marker = "python_full_version == '3.12.*'" },
+    { name = "warp-lang", marker = "python_full_version == '3.12.*'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/db/90/f61ceaf0d85592296f611bf58fc469e7118a5b28be4bc5fcb4345427fe98/warp_optix-0.3.0.tar.gz", hash = "sha256:9695d5c81a88eb4d6297cb2af654658ce10cac504c11d5b4316b6059e836a348", size = 1028895, upload-time = "2026-11-11T09:13:50.484Z" }
 wheels = [
