@@ -594,6 +594,11 @@ def _has_kinematics_grad(d: Data) -> bool:
   return any(getattr(d, name).size and getattr(d, name).requires_grad for name in _KINEMATICS_OUT_FIELDS)
 
 
+def _shares_memory(a: wp.array, b: wp.array) -> bool:
+  """Returns whether two nonempty arrays share any memory."""
+  return bool(a.size and b.size) and a.ptr < b.ptr + b.capacity and b.ptr < a.ptr + a.capacity
+
+
 def step_supported(m: Model, d: Data, d_out: Data | None = None) -> tuple[str, ...]:
   """Returns unsupported-step reasons using the diff API's callback signature."""
   if d_out is None or d_out is d:
@@ -601,6 +606,10 @@ def step_supported(m: Model, d: Data, d_out: Data | None = None) -> tuple[str, .
   for name in ("nworld", "naconmax", "njmax"):
     if getattr(d, name) != getattr(d_out, name):
       return (f"step() differentiation expected matching {name}",)
+  # The backward linearizes at the input state, so the step must not overwrite it.
+  for name in _STEP_IN_FIELDS:
+    if any(_shares_memory(getattr(d, name), getattr(d_out, out)) for out in _STEP_OUT_FIELDS):
+      return (f"step() differentiation requires distinct state buffers; input {name} aliases output state",)
   try:
     _assert_step_supported(m)
     _assert_model_supported(m)
