@@ -368,11 +368,12 @@ class ConstraintTest(parameterized.TestCase):
       ("jdotv/connect_3d.xml", None),
       ("jdotv/weld_3d.xml", None),
       ("flex/rope.xml", None),
+      ("flex/moving_base_strain.xml", None),
     ),
     cone=(mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
   )
   def test_jtdaj_blocks(self, scene, cone):
-    """Every efc row is in one block, whose rows share columns and are stored back to back."""
+    """Blocks cover the efc rows except DOF friction, and their rows share columns back to back."""
     xml, keyframe = scene
     mjm, _, m, d = test_data.fixture(
       xml,
@@ -388,7 +389,8 @@ class ConstraintTest(parameterized.TestCase):
 
     if mjm.nflex > 0:
       mjw.fwd_position(m, d)
-    mjw.make_constraint(m, d)
+    else:
+      mjw.make_constraint(m, d)
 
     nefc = d.nefc.numpy()[0]
     nblock = d.efc.jtdaj_nblock.numpy()[0]
@@ -397,15 +399,20 @@ class ConstraintTest(parameterized.TestCase):
     order = np.argsort(adr)
     adr, nrow = adr[order], nrow[order]
     self.assertGreater(nefc, 0)
-    np.testing.assert_array_equal(adr, np.cumsum(nrow) - nrow, "blocks are contiguous")
-    _assert_eq(nrow.sum(), nefc, "rows in blocks")
+    self.assertGreater(nblock, 0)
+    self.assertTrue((nrow > 0).all())
+
+    efc_type = d.efc.type.numpy()[0, :nefc]
+    expected_rows = np.flatnonzero(efc_type != mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF)
+    rows = np.concatenate([np.arange(a, a + n) for a, n in zip(adr, nrow)])
+    np.testing.assert_array_equal(rows, expected_rows, "rows in blocks")
 
     rownnz = d.efc.J_rownnz.numpy()[0, :nefc]
     rowadr = d.efc.J_rowadr.numpy()[0, :nefc]
     colind = d.efc.J_colind.numpy()[0, 0]
     head = np.repeat(adr, nrow)
-    np.testing.assert_array_equal(rownnz, rownnz[head], "rownnz within blocks")
-    np.testing.assert_array_equal(rowadr, rowadr[head] + (np.arange(nefc) - head) * rownnz[head], "rowadr stride")
+    np.testing.assert_array_equal(rownnz[rows], rownnz[head], "rownnz within blocks")
+    np.testing.assert_array_equal(rowadr[rows], rowadr[head] + (rows - head) * rownnz[head], "rowadr stride")
     for a, n in zip(adr, nrow):
       cols = colind[rowadr[a] : rowadr[a] + n * rownnz[a]].reshape(n, rownnz[a])
       np.testing.assert_array_equal(cols, np.broadcast_to(cols[0], cols.shape), f"columns of block at row {a}")
