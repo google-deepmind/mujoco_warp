@@ -472,8 +472,13 @@ def _qderiv_actuator_passive_vel(
 
       vel += gain * act
   else:
-    if gain != 0.0:
-      vel += gain * ctrl_in[worldid, actid]
+    if gain != 0.0 and actuator_ctrlnum[actid] > 0:
+      ctrladr = actuator_ctrladr[actid]
+      ctrl = ctrl_in[worldid, ctrladr]
+      if not (opt_disableflags & DisableBit.CLAMPCTRL) and actuator_ctrllimited[ctrladr]:
+        bounds = actuator_ctrlrange[worldid % actuator_ctrlrange.shape[0], ctrladr]
+        ctrl = wp.clamp(ctrl, bounds[0], bounds[1])
+      vel += gain * ctrl
 
   vel_out[worldid, actid] = vel
 
@@ -1626,7 +1631,8 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
   Mj = m.M_fullm_j
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
 
-  if not (m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.DAMPER)):
+  flags = DisableBit.ACTUATION | DisableBit.DAMPER
+  if (m.opt.disableflags & flags) != flags:
     # TODO(team): only clear elements not set by _qderiv_actuator_passive
     out.zero_()
     if m.nactuator > 0 and not (m.opt.disableflags & DisableBit.ACTUATION):
