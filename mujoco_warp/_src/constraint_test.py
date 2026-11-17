@@ -26,6 +26,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
+from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -775,6 +776,54 @@ class ConstraintTest(parameterized.TestCase):
     self.assertGreater(mjd.nefc, 0, "Expected active contacts in MuJoCo")
     self.assertEqual(d.nefc.numpy()[0], mjd.nefc, "nefc mismatch")
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_interpolated_trilinear_{elastic2d}", m.nv)
+
+  # TODO(team): remove version check once mujoco >= 4.0.2 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=4.0.2"), "Requires MuJoCo >= 4.0.2")
+  def test_flex_interpolated_empty_cell(self):
+    """Test contact Jacobians of interpolated flex vertices redirected from an empty cell."""
+    # cell 1 (x in [0.5, 1]) only contains a 1% sliver and is pruned as empty, so the vertices at
+    # x = 0.5 and x = 0.505 are redirected to cell 0 and extrapolated, also for contact weights
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+        <mujoco>
+          <option solver="CG" tolerance="1e-6" timestep=".001"/>
+          <worldbody>
+            <geom type="plane" size="5 5 .1"/>
+            <flexcomp name="sliver" type="direct" dim="3" dof="trilinear" mass="1"
+                      cellcount="2 1 1" radius="0.001"
+                      point="0.0 0 0  0.5 0 0  0.0 1 0  0.5 1 0
+                             0.0 0 1  0.5 0 1  0.0 1 1  0.5 1 1
+                             0.505 0 0  0.505 1 0  0.505 0 1  0.505 1 1
+                             1.0 0.5 0.5"
+                      element="0 1 2 4  3 2 1 7  5 1 4 7  6 2 4 7  1 2 4 7
+                               1 8 3 5  9 3 8 11  10 8 5 11  7 3 5 11  8 3 5 11">
+              <contact condim="3" selfcollide="none"/>
+              <elasticity young="1e4" poisson="0.3" elastic2d="none"/>
+            </flexcomp>
+          </worldbody>
+        </mujoco>
+      """,
+      overrides={
+        "opt.cone": mujoco.mjtCone.mjCONE_ELLIPTIC,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+      },
+    )
+
+    # some contact vertex is redirected away from its natural cell
+    self.assertGreater(mjm.flex_interp[0], 0)
+    cellnum = mjm.flex_cellnum[0]
+    natcell = np.clip(np.floor(mjm.flex_vert0 * cellnum).astype(int), 0, cellnum - 1)
+    natcell = natcell[:, 0] * cellnum[1] * cellnum[2] + natcell[:, 1] * cellnum[2] + natcell[:, 2]
+    redirected = (mjm.flex_vertcell >= 0) & (mjm.flex_vertcell != natcell)
+    contact_verts = [v for v, f in zip(mjd.contact.vert.flat, mjd.contact.flex.flat) if f == 0 and v >= 0]
+    self.assertTrue(any(redirected[v] for v in contact_verts), "Expected contacts at redirected vertices")
+
+    mjw.kinematics(m, d)
+    mjw.make_constraint(m, d)
+
+    self.assertGreater(mjd.nefc, 0, "Expected active contacts in MuJoCo")
+    self.assertEqual(d.nefc.numpy()[0], mjd.nefc, "nefc mismatch")
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc_flex_interpolated_empty_cell", m.nv)
 
   def test_weld_coriolis(self):
     """Test weld Coriolis term Jdotv_r with default torquescale and high velocity."""

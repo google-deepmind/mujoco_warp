@@ -780,6 +780,13 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # create model
   m = types.Model(**{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model)})
+  # TODO(team): remove once mujoco >= 4.0.2 is required. Checks the field rather than the version,
+  # since releases up to 4.0.1 and 4.0.2.dev builds before flex_cellempty was added lack it.
+  if not hasattr(mjm, "flex_celladr"):
+    ncell = [int(np.prod(mjm.flex_cellnum[f])) if mjm.flex_interp[f] else 0 for f in range(mjm.nflex)]
+    m.nflexcell = int(sum(ncell))
+    m.flex_celladr = np.array([sum(ncell[:f]) if ncell[f] else -1 for f in range(mjm.nflex)], dtype=np.int32)
+    m.flex_cellempty = np.zeros(m.nflexcell, dtype=bool)
 
   m.opt = opt
   m.callback = types.Callback()
