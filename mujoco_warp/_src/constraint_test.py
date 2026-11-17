@@ -160,6 +160,108 @@ class ConstraintTest(parameterized.TestCase):
     _assert_eq(d.nacon.numpy()[0], mjd.ncon, "nacon")
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
 
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    nworld=(1, 2),
+    block_dim=(64, 128),
+  )
+  def test_sparse_contact_jac_shared_ancestor(self, cone, nworld, block_dim):
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <body pos="0 0 0.5">
+            <freejoint/>
+            <geom size="0.02" contype="0" conaffinity="0"/>
+            <body pos="0 0.04 0">
+              <joint axis="1 0 0"/>
+              <joint axis="0 1 0"/>
+              <joint/>
+              <geom size="0.02" contype="0" conaffinity="0"/>
+              <body pos="0 0 -0.15">
+                <joint axis="1 0 0"/>
+                <joint axis="0 1 0"/>
+                <geom size="0.02" contype="0" conaffinity="0"/>
+                <body pos="0 -0.02 -0.15">
+                  <geom size="0.06" condim="6" friction="0.7 0.02 0.005"/>
+                </body>
+              </body>
+            </body>
+            <body pos="0 -0.04 0">
+              <joint axis="1 0 0"/>
+              <joint axis="0 1 0"/>
+              <joint/>
+              <geom size="0.02" contype="0" conaffinity="0"/>
+              <body pos="0 0 -0.15">
+                <joint axis="1 0 0"/>
+                <joint axis="0 1 0"/>
+                <geom pos="0 0.02 -0.15" size="0.06" condim="6" friction="0.7 0.02 0.005"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+      nworld=nworld,
+      qvel_noise=0.5,
+    )
+    m.block_dim.contact_jac_sparse = block_dim
+    self.assertTrue(m.is_sparse)
+    self.assertEqual(mjd.ncon, 1)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qvel = d.qvel.numpy()
+      qpos[1, 7:] += 0.05
+      qvel[1] *= -0.7
+      d.qpos.assign(qpos)
+      d.qvel.assign(qvel)
+      mjd1.qpos[:] = qpos[1]
+      mjd1.qvel[:] = qvel[1]
+      mujoco.mj_forward(mjm, mjd1)
+      self.assertEqual(mjd1.ncon, 1)
+      mjds.append(mjd1)
+      mjw.fwd_kinematics(m, d)
+      mjw.collision(m, d)
+
+    for arr in (d.efc.J, d.efc.Jqvel, d.efc.vel):
+      arr.fill_(wp.inf)
+    for arr in (d.efc.J_colind, d.efc.J_rownnz, d.efc.J_rowadr):
+      arr.fill_(-1)
+    mjw.make_constraint(m, d)
+
+    nefc = mjd.nefc
+    np.testing.assert_array_equal(d.nefc.numpy(), nefc)
+    efc_J = d.efc.J.numpy()
+    efc_rownnz = d.efc.J_rownnz.numpy()
+    efc_rowadr = d.efc.J_rowadr.numpy()
+    efc_colind = d.efc.J_colind.numpy()
+    efc_vel = d.efc.vel.numpy()
+
+    J_dense = np.zeros((nworld, nefc, mjm.nv))
+    for w in range(nworld):
+      np.testing.assert_array_equal(efc_rownnz[w, :nefc], 10)
+      mujoco.mju_sparse2dense(
+        J_dense[w],
+        efc_J[w, 0].astype(np.float64),
+        efc_rownnz[w, :nefc],
+        efc_rowadr[w, :nefc],
+        efc_colind[w, 0],
+      )
+      self.assertEqual(mjds[w].nefc, nefc)
+      mj_J = np.zeros((nefc, mjm.nv))
+      mujoco.mju_sparse2dense(mj_J, mjds[w].efc_J, mjds[w].efc_J_rownnz, mjds[w].efc_J_rowadr, mjds[w].efc_J_colind)
+      np.testing.assert_allclose(J_dense[w], mj_J, rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(efc_vel[w, :nefc], mjds[w].efc_vel[:nefc], rtol=1e-5, atol=1e-5)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(J_dense[0], J_dense[1]))
+      self.assertFalse(np.allclose(efc_vel[0, :nefc], efc_vel[1, :nefc]))
+
   @parameterized.parameters(
     *itertools.product(
       (1, 2),  # nworld
@@ -255,59 +357,6 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
       _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
-
-  @parameterized.product(
-    scene=(
-      ("constraints.xml", 0),
-      ("constraints.xml", 1),
-      ("constraints.xml", 2),
-      ("humanoid/humanoid.xml", None),
-      ("aloha_pot/scene.xml", None),
-      ("jdotv/connect_3d.xml", None),
-      ("jdotv/weld_3d.xml", None),
-      ("flex/rope.xml", None),
-      ("flex/moving_base_strain.xml", None),
-    ),
-    cone=(mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
-  )
-  def test_jtdaj_blocks(self, scene, cone):
-    """Every efc row is in one block, whose rows share columns and are stored back to back."""
-    xml, keyframe = scene
-    mjm, _, m, d = test_data.fixture(
-      xml,
-      keyframe=keyframe,
-      overrides={
-        "opt.cone": cone,
-        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
-        "opt.solver": mujoco.mjtSolver.mjSOL_NEWTON,
-      },
-    )
-    d.efc.jtdaj_adr.fill_(-1)
-    d.efc.jtdaj_nrow.fill_(-1)
-
-    if mjm.nflex > 0:
-      mjw.fwd_position(m, d)
-    mjw.make_constraint(m, d)
-
-    nefc = d.nefc.numpy()[0]
-    nblock = d.efc.jtdaj_nblock.numpy()[0]
-    adr = d.efc.jtdaj_adr.numpy()[0, :nblock]
-    nrow = d.efc.jtdaj_nrow.numpy()[0, :nblock]
-    order = np.argsort(adr)
-    adr, nrow = adr[order], nrow[order]
-    self.assertGreater(nefc, 0)
-    np.testing.assert_array_equal(adr, np.cumsum(nrow) - nrow, "blocks are contiguous")
-    _assert_eq(nrow.sum(), nefc, "rows in blocks")
-
-    rownnz = d.efc.J_rownnz.numpy()[0, :nefc]
-    rowadr = d.efc.J_rowadr.numpy()[0, :nefc]
-    colind = d.efc.J_colind.numpy()[0, 0]
-    head = np.repeat(adr, nrow)
-    np.testing.assert_array_equal(rownnz, rownnz[head], "rownnz within blocks")
-    np.testing.assert_array_equal(rowadr, rowadr[head] + (np.arange(nefc) - head) * rownnz[head], "rowadr stride")
-    for a, n in zip(adr, nrow):
-      cols = colind[rowadr[a] : rowadr[a] + n * rownnz[a]].reshape(n, rownnz[a])
-      np.testing.assert_array_equal(cols, np.broadcast_to(cols[0], cols.shape), f"columns of block at row {a}")
 
   @parameterized.parameters(
     mujoco.mjtJacobian.mjJAC_DENSE,
@@ -689,8 +738,12 @@ class ConstraintTest(parameterized.TestCase):
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc_flex_3d_simplex", m.nv, tol=1e-3)
 
   # TODO(thowell): Add support for quadratic flex interpolation.
-  def test_flex_interpolated(self):
-    """Test collision and constraint generation for interpolated flex shells."""
+  @parameterized.parameters(
+    ("2 1 2", "none"),
+    ("2 2 2", "bend"),
+  )
+  def test_flex_interpolated(self, cellcount, elastic2d):
+    """Test collision and constraint generation for interpolated volume and shell flexes."""
     xml = f"""
       <mujoco>
         <option solver="CG" tolerance="1e-6" timestep=".001"/>
@@ -700,9 +753,9 @@ class ConstraintTest(parameterized.TestCase):
             <geom type="box" size=".05 .05 .05" mass="1"/>
           </body>
           <flexcomp name="softbody" type="grid" count="4 2 4" spacing=".025 .05 .025" pos="0 0 0"
-                    dim="3" cellcount="2 1 2" radius=".001"
+                    dim="3" cellcount="{cellcount}" radius=".001"
                     mass="5" dof="trilinear">
-            <elasticity young="1e4" poisson="0.3" damping="1e-3"/>
+            <elasticity young="1e4" poisson="0.3" damping="1e-3" elastic2d="{elastic2d}" thickness="0.01"/>
             <contact condim="3" selfcollide="none"/>
           </flexcomp>
         </worldbody>
@@ -721,7 +774,7 @@ class ConstraintTest(parameterized.TestCase):
 
     self.assertGreater(mjd.nefc, 0, "Expected active contacts in MuJoCo")
     self.assertEqual(d.nefc.numpy()[0], mjd.nefc, "nefc mismatch")
-    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_interpolated_trilinear", m.nv)
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_interpolated_trilinear_{elastic2d}", m.nv)
 
   def test_weld_coriolis(self):
     """Test weld Coriolis term Jdotv_r with default torquescale and high velocity."""
@@ -828,7 +881,76 @@ class ConstraintTest(parameterized.TestCase):
     keyframe = 0 if "<keyframe>" in xml else None
     mjm, mjd, m, d = test_data.fixture(xml=xml, keyframe=keyframe, overrides={"opt.cone": cone, "opt.jacobian": jacobian})
 
+    d.efc.vel.fill_(wp.inf)
+    d.efc.aref.fill_(wp.inf)
     mjw.make_constraint(m, d)
+
+    self.assertGreater(mjd.nefc, 0)
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "surfacevel", m.nv)
+
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    nworld=(1, 2),
+  )
+  def test_contact_surfacevel_external(self, cone, nworld):
+    """Applies external contact.surfacevel when geom_surfacevel is zero."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="2 2 0.01" condim="4" friction="0.8 0.02 0.001"/>
+          <body pos="0 0 0.095">
+            <freejoint/>
+            <geom size="0.1" condim="4" friction="0.8 0.02 0.001"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+      nworld=nworld,
+    )
+    self.assertFalse(mjm.flg_surfacevel)
+    self.assertFalse(m.flg_surfacevel)
+    self.assertEqual(mjd.ncon, 1)
+
+    mjm.flg_surfacevel = 1
+    m.flg_surfacevel = True
+
+    sv_worlds = [np.array([0.4, -0.25, 0.8], dtype=np.float32)]
+    if nworld == 2:
+      sv_worlds.append(np.array([-0.3, 0.5, -0.6], dtype=np.float32))
+
+    sv_np = d.contact.surfacevel.numpy()
+    worldid = d.contact.worldid.numpy()[:nworld]
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+
+    for w in range(nworld):
+      conid = int(np.flatnonzero(worldid == w)[0])
+      sv_np[conid] = sv_worlds[w]
+      mjds[w].contact.surfacevel[0] = sv_worlds[w]
+      mujoco.mj_makeConstraint(mjm, mjds[w])
+      mujoco.mj_fwdVelocity(mjm, mjds[w])
+
+    d.contact.surfacevel.assign(sv_np)
+    d.efc.Jqvel.fill_(wp.inf)
+    d.efc.vel.fill_(wp.inf)
+    d.efc.aref.fill_(wp.inf)
+    mjw.make_constraint(m, d)
+
+    nefc = mjd.nefc
+    self.assertGreater(nefc, 1)
+    efc_vel = d.efc.vel.numpy()
+    efc_aref = d.efc.aref.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(efc_vel[w, :nefc], mjds[w].efc_vel[:nefc], rtol=1e-5, atol=1e-5)
+      np.testing.assert_allclose(efc_aref[w, :nefc], mjds[w].efc_aref[:nefc], rtol=1e-5, atol=1e-5)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(efc_vel[0, :nefc], efc_vel[1, :nefc]))
 
   @parameterized.parameters(1, 2)
   def test_discrete_reference_constraint(self, nworld):

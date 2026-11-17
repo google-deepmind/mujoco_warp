@@ -13,11 +13,14 @@
 # limitations under the License.
 # ==============================================================================
 
+import warnings
+
 import mujoco
 import numpy as np
 import warp as wp
 
 from mujoco_warp._src import bvh
+from mujoco_warp._src import render_optix
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.types import ProjectionType
@@ -50,20 +53,28 @@ def _convert_texture_data(
   tex_data_out[y, x, 3] = float(a) * wp.static(1.0 / 255.0)
 
 
+def texture_pixels(mjm: mujoco.MjModel, tex_id: int) -> np.ndarray:
+  """Host pixels of a MuJoCo model texture as a (height, width, nchannel) uint8 array.
+
+  A by-reference texture (tex_adr == -1) is decoded from its file; a load failure raises.
+  """
+  tex_adr = mjm.tex_adr[tex_id]
+  if tex_adr == -1:
+    return mujoco.mj_loadTexture(mjm, tex_id)[0]
+  shape = (mjm.tex_height[tex_id], mjm.tex_width[tex_id], mjm.tex_nchannel[tex_id])
+  return mjm.tex_data[tex_adr : tex_adr + int(np.prod(shape))].reshape(shape)
+
+
 def create_warp_texture(mjm: mujoco.MjModel, tex_id: int) -> wp.Texture2D:
   """Create a Warp texture from a MuJoCo model texture data."""
-  tex_adr = mjm.tex_adr[tex_id]
-  tex_width = mjm.tex_width[tex_id]
-  tex_height = mjm.tex_height[tex_id]
-  nchannel = mjm.tex_nchannel[tex_id]
-  tex_size = tex_width * tex_height * nchannel
+  pixels = texture_pixels(mjm, tex_id)
+  tex_height, tex_width, nchannel = pixels.shape
   tex_data = wp.zeros((tex_height, tex_width, 4), dtype=float)
 
-  tex_slice = mjm.tex_data[tex_adr : tex_adr + tex_size]
   wp.launch(
     _convert_texture_data,
     dim=(tex_width, tex_height),
-    inputs=[tex_width, 0, nchannel, wp.array(tex_slice, dtype=wp.uint8)],
+    inputs=[tex_width, 0, nchannel, wp.array(pixels.ravel(), dtype=wp.uint8)],
     outputs=[tex_data],
   )
   return wp.Texture2D(tex_data, filter_mode=wp.TextureFilterMode.LINEAR)
@@ -282,6 +293,30 @@ def get_segmentation(rc: RenderContext, camera_index: int, seg_out: wp.array3d[w
   )
 
 
+# Rows per ray tile by backend. OptiX orders its launch indices for coherence itself, so tiling
+# there only scatters the pixel writes.
+TILE_ROWS = {"warp": 8, "optix": 1}
+
+
+@wp.func
+def tile_pixel(
+  # In:
+  rayid_local: int,
+  img_w: int,
+  img_h: int,
+  tile_rows: int,
+) -> tuple[int, int, int]:
+  """Map a camera-local ray index to a 2D-tiled (px, py, pixelid) coordinate."""
+  strip_pixels = img_w * tile_rows
+  strip_id = rayid_local // strip_pixels
+  base_y = strip_id * tile_rows
+  strip_h = wp.min(tile_rows, img_h - base_y)
+  in_strip = rayid_local - strip_id * strip_pixels
+  px = in_strip // strip_h
+  py = base_y + (in_strip % strip_h)
+  return px, py, py * img_w + px
+
+
 @wp.kernel
 def _build_rays(
   # In:
@@ -296,15 +331,17 @@ def _build_rays(
   n: int,
   sx: int,
   sy: int,
+  tile_rows: int,
   # Out:
   ray_out: wp.array[wp.vec3],
   ray_offset_out: wp.array[wp.vec3],
 ):
-  xid, yid = wp.tid()
+  rayid_local = wp.tid()
+  px, py, _ = tile_pixel(rayid_local, img_w, img_h, tile_rows)
   ray_dir, ray_offset = compute_ray(
-    projection, fovy, sensorsize, intrinsic, img_w * n, img_h * n, xid * n + sx, yid * n + sy, znear
+    projection, fovy, sensorsize, intrinsic, img_w * n, img_h * n, px * n + sx, py * n + sy, znear
   )
-  idx = offset + xid + yid * img_w
+  idx = offset + rayid_local
   ray_out[idx] = ray_dir
   ray_offset_out[idx] = ray_offset
 
@@ -339,6 +376,8 @@ def create_render_context(
   splat_rgba: np.ndarray | None = None,
   splat_adr: np.ndarray | None = None,
   splat_group_id: np.ndarray | None = None,
+  deterministic: bool = False,
+  backend: str = "warp",
 ) -> RenderContext:
   """Creates a render context on device.
 
@@ -368,7 +407,7 @@ def create_render_context(
                    Requires the model to contain a texture with type `mjTEXTURE_SKYBOX`.
     shadow_light_fraction: Fraction of a light's direct contribution reaching an
       occluded point. 0 is a true shadow.
-    samples_per_pixel: Sub-pixel samples per axis, averaged. Costs n*n renders.
+    samples_per_pixel: Sub-pixel samples per axis, averaged over n*n rays per pixel.
     enable_vertex_normals: Shade meshes from their authored vertex normals,
       matching mjr_uploadMesh. When False, use the face normal.
     enable_backface_culling: Drop primitive-ray hits whose normal faces away from
@@ -396,6 +435,12 @@ def create_render_context(
                if None then all splats are in one group.
     splat_group_id: Splat id for each world (nworld,). If None then all worlds
                     use the first splat group.
+    deterministic: Whether to use deterministic execution for flex BVH vertex
+                   normal accumulation.
+    backend: Ray-casting backend, "warp" (Warp BVH) or "optix" (requires the optix extra
+             and an OptiX-capable GPU). If "optix" is unavailable for the device or
+             model, a warning explains why and "warp" is used. OptiX launches cannot be
+             recorded into CUDA graphs.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -460,15 +505,20 @@ def create_render_context(
   mesh_registry = {}
   mesh_bvh_id = [wp.uint64(0) for _ in range(nmesh)]
   mesh_bounds_size = [wp.vec3(0.0, 0.0, 0.0) for _ in range(nmesh)]
+  mesh_bvh_rot = [wp.mat33(np.eye(3, dtype=np.float32)) for _ in range(nmesh)]
+  has_reframed_meshes = False
 
   for mid in range(nmesh):
-    mesh, half = bvh.build_mesh_bvh(mjm, mid, constructor=constructor)
+    mesh, half, bvh_rot, reframed = bvh.build_mesh_bvh(mjm, mid, constructor=constructor)
     mesh_registry[mesh.id] = mesh
     mesh_bvh_id[mid] = mesh.id
     mesh_bounds_size[mid] = half
+    mesh_bvh_rot[mid] = bvh_rot
+    has_reframed_meshes = has_reframed_meshes or reframed
 
   mesh_bvh_id_arr = wp.array(mesh_bvh_id, dtype=wp.uint64)
   mesh_bounds_size_arr = wp.array(mesh_bounds_size, dtype=wp.vec3)
+  mesh_bvh_rot_arr = wp.array(mesh_bvh_rot, dtype=wp.mat33)
 
   # HField BVHs
   nhfield = mjm.nhfield
@@ -506,7 +556,7 @@ def create_render_context(
     else:
       flex_geom_flexid.append(f)
       flex_geom_edgeid.append(-1)
-      fmesh, group_root = bvh.build_flex_bvh(mjm, mjd, nworld, f)
+      fmesh, group_root = bvh.build_flex_bvh(mjm, mjd, nworld, f, deterministic=bool(deterministic))
       flex_registry[f] = fmesh
       flex_bvh_id[f] = fmesh.id
       flex_group_root[:, f] = group_root.numpy()
@@ -516,11 +566,9 @@ def create_render_context(
   has_skybox = render_skybox and skybox_tex_ids.size > 0
   if has_skybox:
     skybox_tex_id_np = np.array([skybox_tex_ids[0]], dtype=int)
-    skybox_face_width_np = np.array([mjm.tex_width[skybox_tex_ids[0]]], dtype=int)
   else:
     render_skybox = False
     skybox_tex_id_np = np.array([-1], dtype=int)
-    skybox_face_width_np = np.array([1], dtype=int)
 
   textures_registry = []
   # Only materialize GPU textures when the caller actually needs them.
@@ -533,6 +581,8 @@ def create_render_context(
       else:
         textures_registry.append(empty_tex)
   textures = wp.array(textures_registry, dtype=wp.Texture2D)
+  # face width from the uploaded texture: tex_width is 0 for a by-reference skybox
+  skybox_face_width_np = np.array([textures_registry[skybox_id].width if has_skybox else 1], dtype=int)
 
   # Filter active cameras
   if cam_active is not None:
@@ -639,50 +689,71 @@ def create_render_context(
   znear = float(mjm.vis.map.znear * mjm.stat.extent)
   zfar = float(mjm.vis.map.zfar * mjm.stat.extent)
 
+  if backend not in ("warp", "optix"):
+    raise ValueError(f"backend must be 'warp' or 'optix', got {backend!r}")
+  if backend == "optix":
+    reason = ""
+    wo = render_optix.get_wo()
+    if wo is None:
+      reason = "warp-optix is not installed (pip install mujoco-warp[optix])"
+    elif flex_geom_flexid or splat_count:
+      reason = "the OptiX backend does not support flexes or splats yet"
+    elif nworld * mjm.ngeom >= 1 << 24:
+      reason = "OptiX instance ids hold 24 bits, so nworld * ngeom must be below 2**24"
+    else:
+      device = wp.get_device()
+      try:
+        # OptiX raises device-specific errors when it cannot create a context.
+        wo.get_context(device)
+      except Exception as e:
+        reason = f"OptiX is not supported on device {device.alias} ({e})"
+    if reason:
+      warnings.warn(f"backend='optix' is unavailable, using backend='warp': {reason}")
+      backend = "warp"
+
   if samples_per_pixel < 1:
     raise ValueError("samples_per_pixel must be at least 1.")
-  if samples_per_pixel > 1 and not use_precomputed_rays:
-    raise ValueError("samples_per_pixel > 1 requires use_precomputed_rays=True: dynamic rays carry no sub-pixel jitter.")
   if samples_per_pixel > 1 and ri == 0:
     raise ValueError("samples_per_pixel > 1 requires at least one camera with render_rgb=True.")
   nsamples = samples_per_pixel * samples_per_pixel
-  ray = wp.zeros(int(total) * nsamples, dtype=wp.vec3)
-  ray_offset = wp.zeros(int(total) * nsamples, dtype=wp.vec3)
+  if use_precomputed_rays:
+    ray = wp.zeros(int(total) * nsamples, dtype=wp.vec3)
+    ray_offset = wp.zeros(int(total) * nsamples, dtype=wp.vec3)
 
-  cam_projection = mjm.cam_projection
-
-  for sample in range(nsamples):
-    offset = sample * int(total)
-    for idx, cam_id_val in enumerate(active_cam_indices):
-      cam_id = int(cam_id_val)
-      img_w = int(cam_res_np[idx][0])
-      img_h = int(cam_res_np[idx][1])
-      wp.launch(
-        kernel=_build_rays,
-        dim=(img_w, img_h),
-        inputs=[
-          offset,
-          img_w,
-          img_h,
-          int(mjm.cam_projection[cam_id]),
-          float(mjm.cam_fovy[cam_id]),
-          wp.vec2(float(mjm.cam_sensorsize[cam_id, 0]), float(mjm.cam_sensorsize[cam_id, 1])),
-          wp.vec4(
-            float(mjm.cam_intrinsic[cam_id, 0]),
-            float(mjm.cam_intrinsic[cam_id, 1]),
-            float(mjm.cam_intrinsic[cam_id, 2]),
-            float(mjm.cam_intrinsic[cam_id, 3]),
-          ),
-          znear,
-          samples_per_pixel,
-          sample % samples_per_pixel,
-          sample // samples_per_pixel,
-        ],
-        outputs=[ray, ray_offset],
-      )
-      offset += img_w * img_h
-
-  aa_accum = wp.zeros((nworld, ri if nsamples > 1 else 1), dtype=wp.vec3)
+    for sample in range(nsamples):
+      offset = sample * int(total)
+      for idx, cam_id_val in enumerate(active_cam_indices):
+        cam_id = int(cam_id_val)
+        img_w = int(cam_res_np[idx][0])
+        img_h = int(cam_res_np[idx][1])
+        wp.launch(
+          kernel=_build_rays,
+          dim=img_w * img_h,
+          inputs=[
+            offset,
+            img_w,
+            img_h,
+            int(mjm.cam_projection[cam_id]),
+            float(mjm.cam_fovy[cam_id]),
+            wp.vec2(float(mjm.cam_sensorsize[cam_id, 0]), float(mjm.cam_sensorsize[cam_id, 1])),
+            wp.vec4(
+              float(mjm.cam_intrinsic[cam_id, 0]),
+              float(mjm.cam_intrinsic[cam_id, 1]),
+              float(mjm.cam_intrinsic[cam_id, 2]),
+              float(mjm.cam_intrinsic[cam_id, 3]),
+            ),
+            znear,
+            samples_per_pixel,
+            sample % samples_per_pixel,
+            sample // samples_per_pixel,
+            TILE_ROWS[backend],
+          ],
+          outputs=[ray, ray_offset],
+        )
+        offset += img_w * img_h
+  else:
+    ray = wp.empty(0, dtype=wp.vec3)
+    ray_offset = wp.empty(0, dtype=wp.vec3)
 
   bvh_ngeom = len(geom_enabled_idx)
 
@@ -728,6 +799,8 @@ def create_render_context(
     mesh_registry=mesh_registry,
     mesh_bvh_id=mesh_bvh_id_arr,
     mesh_bounds_size=mesh_bounds_size_arr,
+    mesh_bvh_rot=mesh_bvh_rot_arr,
+    has_reframed_meshes=has_reframed_meshes,
     mesh_texcoord=wp.array(mjm.mesh_texcoord, dtype=wp.vec2),
     mesh_texcoord_offsets=wp.array(mjm.mesh_texcoordadr, dtype=int),
     mesh_facetexcoord=wp.array(mjm.mesh_facetexcoord, dtype=wp.vec3i),
@@ -769,7 +842,6 @@ def create_render_context(
     enable_backface_culling=enable_backface_culling,
     shadow_light_fraction=shadow_light_fraction,
     samples_per_pixel=samples_per_pixel,
-    aa_accum=aa_accum,
     geom_ray_types=geom_ray_types,
     enable_vertex_normals=enable_vertex_normals,
     enable_specular=enable_specular,
@@ -778,6 +850,8 @@ def create_render_context(
     light_attenuation_is_default=light_attenuation_is_default,
     has_spot_lights=has_spot_lights,
     has_orthographic_camera=has_orthographic_camera,
+    any_rgb=any(render_rgb),
+    any_seg=any(render_seg),
     splat_position=splat_position,
     splat_rotation=splat_rotation,
     splat_scale=splat_scale,
@@ -788,9 +862,18 @@ def create_render_context(
     splat_upper=splat_upper,
     splat_group_root=splat_group_root,
     splat_count=splat_count,
+    backend=backend,
   )
 
-  bvh.build_scene_bvh(mjm, mjd, rc, nworld)
+  if backend == "optix":
+    # render imports this module, so import it here.
+    from mujoco_warp._src import render  # noqa: PLC0415
+
+    render_optix.build_scene_bvh(mjm, mjd, rc, nworld)
+    rc._megakernel = render._build_megakernel(mjm.nlight, rc)
+    rc.optix.pipeline = render_optix.create_pipeline(rc.optix, rc._megakernel, rc.geom_ray_types, rc.enable_backface_culling)
+  else:
+    bvh.build_scene_bvh(mjm, mjd, rc, nworld)
 
   warp_util.mark_batched(rc)
   return rc

@@ -17,14 +17,17 @@
 
 from typing import Tuple
 
+import mujoco
 import numpy as np
 import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
+import mujoco_warp as mjw
 from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import WrapType
 from mujoco_warp._src.types import vec10
 
@@ -426,6 +429,69 @@ def _dcmotor_resistance(
   return float(res.numpy()[0])
 
 
+# multiple actuators on tendon t1 and a joint actuator on j1 with the same transmission id
+_TENDON_ACTUATORS = """
+          <motor tendon="t1" gear="2" damping="3 .5 .1" armature=".5"/>
+          <motor joint="j1" gear="10" damping="100" armature="100"/>
+          <motor tendon="t0" gear="4" damping="1" armature=".25"/>
+          <motor tendon="t1" gear="-3" damping="1 .2 0" armature="2"/>
+"""
+
+
+def _actuator_damping_armature(xml: str, objtype: int, objid: int) -> Tuple[float, np.ndarray, float]:
+  mjm = mujoco.MjModel.from_xml_string(xml)
+  m = mjw.put_model(mjm)
+  actuatorid = mjm.jnt_actuatorid[objid] if objtype == ObjType.JOINT else mjm.tendon_actuatorid[objid]
+  damping = wp.empty(1, dtype=float)
+  dpoly = wp.empty(1, dtype=wp.vec2)
+  armature = wp.empty(1, dtype=float)
+
+  @wp.kernel(module="unique")
+  def actuator_damping_armature(
+    # Model:
+    actuator_trntype: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_damping: wp.array2d[float],
+    actuator_dampingpoly: wp.array2d[wp.vec2],
+    actuator_armature: wp.array2d[float],
+    actuator_gear: wp.array2d[wp.spatial_vector],
+    # In:
+    objtype: int,
+    objid: int,
+    actuatorid: int,
+    # Out:
+    damping_out: wp.array[float],
+    dpoly_out: wp.array[wp.vec2],
+    armature_out: wp.array[float],
+  ):
+    damping, dpoly = util_misc.actuator_target_damping(
+      actuator_trntype, actuator_trnid, actuator_damping, actuator_dampingpoly, actuator_gear, 0, objtype, objid, actuatorid
+    )
+    damping_out[0] = damping
+    dpoly_out[0] = dpoly
+    armature_out[0] = util_misc.actuator_target_armature(
+      actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, 0, objtype, objid, actuatorid
+    )
+
+  wp.launch(
+    actuator_damping_armature,
+    dim=(1,),
+    inputs=[
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.actuator_damping,
+      m.actuator_dampingpoly,
+      m.actuator_armature,
+      m.actuator_gear,
+      int(objtype),
+      int(objid),
+      int(actuatorid),
+    ],
+    outputs=[damping, dpoly, armature],
+  )
+  return damping.numpy()[0], dpoly.numpy()[0], armature.numpy()[0]
+
+
 class UtilMiscTest(parameterized.TestCase):
   def test_is_intersect(self):
     self.assertFalse(
@@ -465,6 +531,16 @@ class UtilMiscTest(parameterized.TestCase):
       )
     )
 
+    # Two segments that meet at their shared tangent point are not crossing.
+    self.assertFalse(
+      _is_intersect(
+        np.array([0.112450145, 0.138992026], dtype=np.float32),
+        np.array([-0.010828755, 0.010379695], dtype=np.float32),
+        np.array([-0.138847992, -0.12317808], dtype=np.float32),
+        np.array([-0.010828755, 0.010379695], dtype=np.float32),
+      )
+    )
+
   def test_length_circle(self):
     _assert_eq(
       _length_circle(np.array([0, 1]), np.array([1, 0]), 0, 1.0),
@@ -500,6 +576,26 @@ class UtilMiscTest(parameterized.TestCase):
       rtol=1e-3,
     )
 
+    # Vanishing arc with a rounding-scale cross product sign.
+    np.testing.assert_allclose(
+      _length_circle(
+        np.array([-0.0111310557, 0.0100548286], dtype=np.float32),
+        np.array([-0.0111310557, 0.0100548295], dtype=np.float32),
+        1,
+        0.015,
+      ),
+      0.0,
+      atol=1e-8,
+    )
+
+    for p0, p1, ind in (
+      ((0.015, 0.0), (0.015, 4.0e-10), 0),
+      ((0.015, 0.0), (0.015, -4.0e-10), 1),
+    ):
+      length = _length_circle(np.array(p0, dtype=np.float32), np.array(p1, dtype=np.float32), ind, 0.015)
+      self.assertGreaterEqual(length, 0.0)
+      self.assertLess(length, 1.0e-8)
+
   def test_wrap_circle(self):
     # no wrap
     wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1, 0, 0, 1]), np.array([MJ_MAXVAL, MJ_MAXVAL]), 0.1)
@@ -507,8 +603,8 @@ class UtilMiscTest(parameterized.TestCase):
     _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
     _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
 
-    # no wrap
-    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1, 0, 0, 1]), np.array([0.0, 0.0]), 0.1)
+    # no wrap: sidesite in the homotopy class of the straight segment
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1, 0, 0, 1]), np.array([0.1, 0.1]) / np.sqrt(2.0), 0.1)
     _assert_eq(wlen, -1.0, "wlen")
     _assert_eq(wpnt0, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt0")
     _assert_eq(wpnt1, np.array([MJ_MAXVAL, MJ_MAXVAL]), "wpnt1")
@@ -521,17 +617,42 @@ class UtilMiscTest(parameterized.TestCase):
     _assert_eq(wpnt0, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt0")
     _assert_eq(wpnt1, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt1")
 
-    # wrap
-    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([np.sqrt(2.0), 0, 0, np.sqrt(2.0)]), np.array([0.0, 0.0]), 1.0 + 5e-4)
+    # wrap w/ sidesite on the short arc
+    radius = 1.0 + 5e-4
+    wlen, wpnt0, wpnt1 = _wrap_circle(
+      np.array([np.sqrt(2.0), 0, 0, np.sqrt(2.0)]), radius * np.array([1.0, 1.0]) / np.sqrt(2.0), radius
+    )
     _assert_eq(wlen, 1e-3, "wlen")
     _assert_eq(wpnt0, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt0")
     _assert_eq(wpnt1, np.array([np.sqrt(2.0) / 2.0, np.sqrt(2.0) / 2.0]), "wpnt1")
 
-    # wrap
-    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1.0, 0, 0, 1.0]), np.array([0.0, 0.0]), 1.0)
+    # wrap w/ sidesite on the short arc
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1.0, 0, 0, 1.0]), np.array([1.0, 1.0]) / np.sqrt(2.0), 1.0)
     _assert_eq(wlen, 0.5 * np.pi, "wlen")
     _assert_eq(wpnt0, np.array([1.0, 0.0]), "wpnt0")
     _assert_eq(wpnt1, np.array([0.0, 1.0]), "wpnt1")
+
+    # wrap w/ sidesite on the long arc
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([1.0, 0, 0, 1.0]), np.array([-1.0, -1.0]) / np.sqrt(2.0), 1.0)
+    _assert_eq(wlen, 1.5 * np.pi, "wlen")
+    _assert_eq(wpnt0, np.array([1.0, 0.0]), "wpnt0")
+    _assert_eq(wpnt1, np.array([0.0, 1.0]), "wpnt1")
+
+    # sidesite more than 90 degrees from the clear segment: no wrap
+    side = np.array([-0.79, 0.61]) / np.hypot(0.79, 0.61)
+    wlen, _, _ = _wrap_circle(np.array([-4.17, -0.44, -1.13, -1.53]), side, 1.0)
+    _assert_eq(wlen, -1.0, "wlen")
+
+    # sidesite on the far side of a clear segment: wrap longer than pi
+    wlen, wpnt0, wpnt1 = _wrap_circle(np.array([2.0, -0.1, 2.0, 0.1]), np.array([-1.0, 0.0]), 1.0)
+    angle = np.arctan2(0.1, 2.0) + np.arccos(1.0 / np.hypot(2.0, 0.1))
+    _assert_eq(wlen, 2.0 * np.pi - 2.0 * angle, "wlen")
+    _assert_eq(wpnt0, np.array([np.cos(angle), -np.sin(angle)]), "wpnt0")
+    _assert_eq(wpnt1, np.array([np.cos(angle), np.sin(angle)]), "wpnt1")
+
+    # sidesite on the far side: wrap close to 2 * pi
+    wlen, _, _ = _wrap_circle(np.array([1.0, -1e-7, 1.0, 1e-7]), np.array([-1.0, 0.0]), 1.0)
+    _assert_eq(wlen, 2.0 * np.pi, "wlen")
 
     # wrap w/ sidesite
     wlen, wpnt0, wpnt1 = _wrap_circle(np.array([0, -100, 0, 100]), np.array([0.2, 0.0]), 0.1)
@@ -558,6 +679,45 @@ class UtilMiscTest(parameterized.TestCase):
       np.testing.assert_allclose(wlen, 1.12535e-6, atol=1e-8, rtol=1e-3)
       _assert_eq(wpnt0, np.array([0.00339341, 0.01461112]), "wpnt0")
       _assert_eq(wpnt1, np.array([0.00339232, 0.01461137]), "wpnt1")
+
+    # Wrap onset: nearly collinear segments, vanishing arc, and coincident tangent points.
+    for end, expected_wlen, expected_wpnt0, expected_wpnt1 in (
+      (
+        np.array([0.158835, -0.02149, -0.190895, 0.059719], dtype=np.float32),
+        1.12535e-6,
+        np.array([0.00339341, 0.01461112]),
+        np.array([0.00339232, 0.01461137]),
+      ),
+      (
+        np.array([0.102367133, 0.135701373, -0.106919013, -0.0959858745], dtype=np.float32),
+        0.0,
+        np.array([-0.0111310557, 0.0100548286]),
+        np.array([-0.0111310557, 0.0100548295]),
+      ),
+      (
+        np.array([0.112450145, 0.138992026, -0.138847992, -0.12317808], dtype=np.float32),
+        0.0,
+        np.array([-0.010828755, 0.010379695]),
+        np.array([-0.010828755, 0.010379695]),
+      ),
+    ):
+      for side in (np.array([MJ_MAXVAL, MJ_MAXVAL]), np.array([0.0, 0.015])):
+        wlen, wpnt0, wpnt1 = _wrap_circle(end, side, 0.015)
+        np.testing.assert_allclose(wlen, expected_wlen, atol=1e-8, rtol=1e-3)
+        _assert_eq(wpnt0, expected_wpnt0, "wpnt0")
+        _assert_eq(wpnt1, expected_wpnt1, "wpnt1")
+
+    # Original issue reproducer: near-coincident tangents with and without a side site.
+    for side in ((MJ_MAXVAL, MJ_MAXVAL), (-0.0160741229, -0.0119005293)):
+      wlen, wpnt0, wpnt1 = _wrap_circle(
+        np.array([0.0526477359, -0.0963205993, -0.0934890732, 0.101067334], dtype=np.float32),
+        np.array(side),
+        0.015,
+      )
+      self.assertGreaterEqual(wlen, 0.0)
+      self.assertLess(wlen, 1.0e-6)
+      np.testing.assert_allclose(np.linalg.norm(wpnt0), 0.015, rtol=1.0e-5)
+      np.testing.assert_allclose(np.linalg.norm(wpnt1), 0.015, rtol=1.0e-5)
 
   def test_wrap_inside(self):
     wlen, wpnt0, wpnt1 = _wrap_inside(np.array([1, 0, 0, 1]), 0.7071)
@@ -840,6 +1000,49 @@ class UtilMiscTest(parameterized.TestCase):
 
   # TODO(team): test util_misc.muscle_gain
   # TODO(team): test util_misc.muscle_bias
+
+  @parameterized.named_parameters(
+    # C UtilityFunctionValues
+    ("values", '<motor joint="j0" gear="5" damping="7" armature="3"/>', ObjType.JOINT, 0, 175.0, [0.0, 0.0], 75.0),
+    # C NonlinearDamping
+    ("nonlinear", '<motor joint="j0" gear="3" damping="2 0.5 0.1"/>', ObjType.JOINT, 0, 18.0, [4.5, 0.9], 0.0),
+    ("tendon_single", _TENDON_ACTUATORS, ObjType.TENDON, 0, 16.0, [0.0, 0.0], 4.0),
+    ("tendon_multiple", _TENDON_ACTUATORS, ObjType.TENDON, 1, 3.0 * 4 + 9, [0.5 * 4 + 0.2 * 9, 0.1 * 4], 0.5 * 4 + 2.0 * 9),
+  )
+  def test_actuator_damping_armature(self, actuators, objtype, objid, damping, dpoly, armature):
+    """Tests actuator damping and armature contributions to joints and tendons."""
+    actual_damping, actual_dpoly, actual_armature = _actuator_damping_armature(
+      f"""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0" type="slide" axis="1 0 0"/>
+            <geom size="1"/>
+          </body>
+          <body pos="3 0 0">
+            <joint name="j1" type="slide" axis="1 0 0"/>
+            <geom size="1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t0">
+            <joint joint="j0" coef="1"/>
+          </fixed>
+          <fixed name="t1">
+            <joint joint="j1" coef="1"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          {actuators}
+        </actuator>
+      </mujoco>
+      """,
+      objtype,
+      objid,
+    )
+    _assert_eq(actual_damping, damping, "damping")
+    _assert_eq(actual_dpoly, dpoly, "dpoly")
+    _assert_eq(actual_armature, armature, "armature")
 
 
 if __name__ == "__main__":

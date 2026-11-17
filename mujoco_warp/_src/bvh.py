@@ -22,11 +22,14 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import math as mjmath
+from mujoco_warp._src import render_optix
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import RenderContext
+from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
@@ -38,6 +41,9 @@ SPLAT_MIN_RESPONSE = 0.01
 @event_scope
 def refit_bvh(m: Model, d: Data, rc: RenderContext):
   """Refit the dynamic BVH structures in the render context."""
+  if rc.backend == "optix":
+    render_optix.refit_scene_bvh(m, d, rc)
+    return
   refit_scene_bvh(m, d, rc)
   if m.nflex:
     refit_flex_bvh(m, d, rc)
@@ -182,7 +188,7 @@ def _compute_bvh_bounds(
   geom_size: wp.array2d[wp.vec3],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   # In:
   bvh_ngeom: int,
   enabled_geom_ids: wp.array[int],
@@ -197,7 +203,7 @@ def _compute_bvh_bounds(
   geom_id = enabled_geom_ids[geom_local_id]
 
   pos = geom_xpos_in[worldid, geom_id]
-  rot = geom_xmat_in[worldid, geom_id]
+  rot = mjmath.quat_to_mat(geom_xquat_in[worldid, geom_id])
   size = geom_size[worldid % geom_size.shape[0], geom_id]
   type = geom_type[geom_id]
 
@@ -319,7 +325,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
   geom_dataid = wp.array(np.tile(mjm.geom_dataid, (nworld, 1)), dtype=int)
   geom_size = wp.array(np.tile(mjm.geom_size[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
   geom_xpos = wp.array(np.tile(mjd.geom_xpos[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.vec3)
-  geom_xmat = wp.array(np.tile(mjd.geom_xmat.reshape(mjm.ngeom, 3, 3)[np.newaxis, :, :, :], (nworld, 1, 1, 1)), dtype=wp.mat33)
+  geom_xquat = wp.array(np.tile(mjd.geom_xquat[np.newaxis, :, :], (nworld, 1, 1)), dtype=wp.quat)
 
   flex_vertadr = wp.array(mjm.flex_vertadr, dtype=int)
   flex_vertnum = wp.array(mjm.flex_vertnum, dtype=int)
@@ -334,7 +340,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
       geom_dataid,
       geom_size,
       geom_xpos,
-      geom_xmat,
+      geom_xquat,
       total_bvh_size,
       rc.enabled_geom_ids,
       rc.mesh_bounds_size,
@@ -390,7 +396,7 @@ def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
       m.geom_dataid,
       m.geom_size,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       total_bvh_size,
       rc.enabled_geom_ids,
       rc.mesh_bounds_size,
@@ -424,30 +430,106 @@ def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
   rc.bvh.refit()
 
 
+# Minimum triangle AABB surface-area reduction required to reframe a mesh BVH into authored space.
+_REFRAME_MIN_GAIN = 1.25
+
+
+@wp.kernel(module="unique")
+def _mesh_bvh_frame_area(
+  # In:
+  nface: int,
+  verts: wp.array[wp.vec3],
+  indices: wp.array[int],
+  rot: wp.mat33,
+  # Out:
+  areas_out: wp.array[wp.vec2],
+):
+  _, tid = wp.tid()
+  num_threads = wp.block_dim()
+
+  inertia_sum = float(0.0)
+  authored_sum = float(0.0)
+
+  for fid in range(tid, nface, num_threads):
+    v0 = verts[indices[3 * fid + 0]]
+    v1 = verts[indices[3 * fid + 1]]
+    v2 = verts[indices[3 * fid + 2]]
+
+    lo = wp.min(wp.min(v0, v1), v2)
+    hi = wp.max(wp.max(v0, v1), v2)
+    ext = hi - lo
+    inertia_sum += ext[0] * ext[1] + ext[1] * ext[2] + ext[2] * ext[0]
+
+    u0 = rot * v0
+    u1 = rot * v1
+    u2 = rot * v2
+    ulo = wp.min(wp.min(u0, u1), u2)
+    uhi = wp.max(wp.max(u0, u1), u2)
+    uext = uhi - ulo
+    authored_sum += uext[0] * uext[1] + uext[1] * uext[2] + uext[2] * uext[0]
+
+  total = wp.tile_sum(wp.tile(wp.vec2(inertia_sum, authored_sum), preserve_type=True))
+  if tid == 0:
+    areas_out[0] = total[0]
+
+
+@wp.kernel
+def _rotate_mesh_verts(
+  # In:
+  rot: wp.mat33,
+  # Out:
+  verts_out: wp.array[wp.vec3],
+):
+  vid = wp.tid()
+  verts_out[vid] = rot * verts_out[vid]
+
+
 def build_mesh_bvh(
   mjm: mujoco.MjModel,
   meshid: int,
   constructor: str = "sah",
   leaf_size: int = 2,
-) -> tuple[wp.Mesh, wp.vec3]:
+) -> tuple[wp.Mesh, wp.vec3, wp.mat33, bool]:
   """Create a Warp mesh BVH from mesh data."""
   v_start = mjm.mesh_vertadr[meshid]
   v_end = v_start + mjm.mesh_vertnum[meshid]
-  points = mjm.mesh_vert[v_start:v_end]
+  points_np = mjm.mesh_vert[v_start:v_end]
 
   f_start = mjm.mesh_faceadr[meshid]
   f_end = mjm.mesh_face.shape[0] if (meshid + 1) >= mjm.mesh_faceadr.shape[0] else mjm.mesh_faceadr[meshid + 1]
-  indices = mjm.mesh_face[f_start:f_end]
-  indices = indices.flatten()
-  pmin = np.min(points, axis=0)
-  pmax = np.max(points, axis=0)
+  faces = mjm.mesh_face[f_start:f_end]
+  pmin = np.min(points_np, axis=0)
+  pmax = np.max(points_np, axis=0)
   half = np.maximum(np.abs(pmin), np.abs(pmax))
 
-  points = wp.array(points, dtype=wp.vec3)
-  indices = wp.array(indices, dtype=wp.int32)
+  points = wp.array(points_np, dtype=wp.vec3)
+  indices = wp.array(faces.flatten(), dtype=wp.int32)
+  bvh_rot = wp.mat33(np.eye(3, dtype=np.float32))
+  reframed = False
+
+  quat = mjm.mesh_quat[meshid]
+  if faces.shape[0] > 0 and np.isfinite(_REFRAME_MIN_GAIN) and not np.allclose(quat, (1.0, 0.0, 0.0, 0.0)):
+    rot = np.empty(9, dtype=np.float64)
+    mujoco.mju_quat2Mat(rot, quat)
+    rot_m = rot.reshape(3, 3)
+    rot_wp = wp.mat33(np.ascontiguousarray(rot_m, dtype=np.float32))
+    areas = wp.empty(1, dtype=wp.vec2)
+    wp.launch_tiled(
+      _mesh_bvh_frame_area,
+      dim=1,
+      inputs=[faces.shape[0], points, indices, rot_wp],
+      outputs=[areas],
+      block_dim=256,
+    )
+    areas_np = areas.numpy()[0]
+    if float(areas_np[0]) / max(float(areas_np[1]), 1e-12) >= _REFRAME_MIN_GAIN:
+      wp.launch(_rotate_mesh_verts, dim=points.shape[0], inputs=[rot_wp], outputs=[points])
+      bvh_rot = wp.mat33(np.ascontiguousarray(rot_m.T, dtype=np.float32))
+      reframed = True
+
   mesh = wp.Mesh(points=points, indices=indices, bvh_constructor=constructor, bvh_leaf_size=leaf_size)
 
-  return mesh, half
+  return mesh, half, bvh_rot, reframed
 
 
 def _optimize_hfield_mesh(
@@ -622,50 +704,58 @@ def build_hfield_bvh(
   return mesh, half
 
 
-@wp.kernel
-def accumulate_flex_vertex_normals(
-  # Model:
-  nflex: int,
-  flex_dim: wp.array[int],
-  flex_vertadr: wp.array[int],
-  flex_elemadr: wp.array[int],
-  flex_elemnum: wp.array[int],
-  flex_elemdataadr: wp.array[int],
-  flex_elem: wp.array[int],
-  # Data in:
-  flexvert_xpos_in: wp.array2d[wp.vec3],
-  # Out:
-  flexvert_norm_out: wp.array2d[wp.vec3],
-):
-  """Accumulate per-vertex normals by summing adjacent face normals."""
-  worldid, elemid = wp.tid()
+@cache_kernel
+def accumulate_flex_vertex_normals(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  for i in range(nflex):
-    locid = elemid - flex_elemadr[i]
-    if locid >= 0 and locid < flex_elemnum[i]:
-      f = i
-      break
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    nflex: int,
+    flex_dim: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_elemadr: wp.array[int],
+    flex_elemnum: wp.array[int],
+    flex_elemdataadr: wp.array[int],
+    flex_elem: wp.array[int],
+    # Data in:
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    # Out:
+    flexvert_norm_out: wp.array2d[wp.vec3],
+  ):
+    """Accumulate per-vertex normals by summing adjacent face normals."""
+    worldid, elemid = wp.tid()
 
-  if flex_dim[f] == 1 or flex_dim[f] == 3:
-    return
+    for i in range(nflex):
+      locid = elemid - flex_elemadr[i]
+      if locid >= 0 and locid < flex_elemnum[i]:
+        f = i
+        break
 
-  local_elemid = elemid - flex_elemadr[f]
-  elem_adr = flex_elemdataadr[f]
-  vert_adr = flex_vertadr[f]
-  elem_base = elem_adr + local_elemid * 3
-  i0 = vert_adr + flex_elem[elem_base + 0]
-  i1 = vert_adr + flex_elem[elem_base + 1]
-  i2 = vert_adr + flex_elem[elem_base + 2]
+    if flex_dim[f] == 1 or flex_dim[f] == 3:
+      return
 
-  v0 = flexvert_xpos_in[worldid, i0]
-  v1 = flexvert_xpos_in[worldid, i1]
-  v2 = flexvert_xpos_in[worldid, i2]
+    local_elemid = elemid - flex_elemadr[f]
+    elem_adr = flex_elemdataadr[f]
+    vert_adr = flex_vertadr[f]
+    elem_base = elem_adr + local_elemid * 3
+    i0 = vert_adr + flex_elem[elem_base + 0]
+    i1 = vert_adr + flex_elem[elem_base + 1]
+    i2 = vert_adr + flex_elem[elem_base + 2]
 
-  face_nrm = wp.cross(v1 - v0, v2 - v0)
-  face_nrm = wp.normalize(face_nrm)
-  flexvert_norm_out[worldid, i0] += face_nrm
-  flexvert_norm_out[worldid, i1] += face_nrm
-  flexvert_norm_out[worldid, i2] += face_nrm
+    v0 = flexvert_xpos_in[worldid, i0]
+    v1 = flexvert_xpos_in[worldid, i1]
+    v2 = flexvert_xpos_in[worldid, i2]
+
+    face_nrm = wp.cross(v1 - v0, v2 - v0)
+    face_nrm = wp.normalize(face_nrm)
+    wp.atomic_add(flexvert_norm_out, worldid, i0, face_nrm)
+    wp.atomic_add(flexvert_norm_out, worldid, i1, face_nrm)
+    wp.atomic_add(flexvert_norm_out, worldid, i2, face_nrm)
+
+  return kernel
 
 
 @wp.kernel
@@ -998,6 +1088,7 @@ def build_flex_bvh(
   flex_id: int,
   constructor: str = "sah",
   leaf_size: int = 2,
+  deterministic: bool = False,
 ) -> tuple[wp.Mesh, wp.array, wp.array, wp.array, int]:
   """Create a Warp mesh BVH for a single 2D or 3D flex."""
   nflexvert = mjm.nflexvert
@@ -1027,7 +1118,7 @@ def build_flex_bvh(
   flex_shell = wp.array(mjm.flex_shell, dtype=int)
 
   wp.launch(
-    kernel=accumulate_flex_vertex_normals,
+    kernel=accumulate_flex_vertex_normals(deterministic),
     dim=(nworld, mjm.nflexelem),
     inputs=[mjm.nflex, flex_dim, flex_vertadr, flex_elemadr, flex_elemnum, flex_elemdataadr, flex_elem, flexvert_xpos],
     outputs=[flexvert_norm],
@@ -1114,7 +1205,7 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
   flexvert_norm = wp.zeros(d.flexvert_xpos.shape, dtype=wp.vec3)
 
   wp.launch(
-    kernel=accumulate_flex_vertex_normals,
+    kernel=accumulate_flex_vertex_normals(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
     dim=(d.nworld, m.nflexelem),
     inputs=[
       m.nflex,

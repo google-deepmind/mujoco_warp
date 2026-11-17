@@ -35,7 +35,6 @@ from mujoco_warp import reset_history
 from mujoco_warp import set_state
 from mujoco_warp import step
 from mujoco_warp import test_data
-from mujoco_warp._src import util_pkg
 from mujoco_warp._src.history import _reset_actuator_history_kernel
 from mujoco_warp._src.history import read_ctrl_delayed
 
@@ -63,23 +62,23 @@ class PublicAPITest(absltest.TestCase):
     """
     mjm, mjd, m, d = test_data.fixture(xml=xml)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     # step both with ctrl=10, then ctrl=20
     for ctrl_val in [10.0, 20.0, 30.0]:
       mjd.ctrl[0] = ctrl_val
       wp.copy(d.ctrl, wp.array(np.full((1, 1), ctrl_val), dtype=float))
       mujoco.mj_step(mjm, mjd)
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
     # compare read_ctrl at current time
     time_arr = d.time
     warp_result = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=-1, result=warp_result)
-    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
-      mj_result = np.zeros(1)
-      mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result, -1)
-      mj_result = mj_result[0]
-    else:
-      mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, -1)
+    mj_result = np.zeros(1)
+    mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result, -1)
+    mj_result = mj_result[0]
     np.testing.assert_allclose(
       warp_result.numpy()[0],
       mj_result,
@@ -90,12 +89,9 @@ class PublicAPITest(absltest.TestCase):
     # compare with explicit interp=0 (ZOH)
     warp_result_zoh = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=0, result=warp_result_zoh)
-    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
-      mj_result_zoh = np.zeros(1)
-      mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result_zoh, 0)
-      mj_result_zoh = mj_result_zoh[0]
-    else:
-      mj_result_zoh = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, 0)
+    mj_result_zoh = np.zeros(1)
+    mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result_zoh, 0)
+    mj_result_zoh = mj_result_zoh[0]
     np.testing.assert_allclose(
       warp_result_zoh.numpy()[0],
       mj_result_zoh,
@@ -121,12 +117,15 @@ class PublicAPITest(absltest.TestCase):
     """
     mjm, mjd, m, d = test_data.fixture(xml=xml)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     for i in range(4):
       qpos_val = float((i + 1) * 10)
       mjd.qpos[0] = qpos_val
       wp.copy(d.qpos, wp.array(np.full((1, 1), qpos_val), dtype=float))
       mujoco.mj_step(mjm, mjd)
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
     # compare read_sensor at current time
     dim = mjm.sensor_dim[0]
@@ -163,11 +162,14 @@ class PublicAPITest(absltest.TestCase):
     """
     mjm, mjd, m, d = test_data.fixture(xml=xml)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     for i, qval in enumerate([1.0, 2.0, 3.0]):
       mjd.qpos[0] = qval
       wp.copy(d.qpos, wp.array(np.full((1, 1), qval), dtype=float))
       mujoco.mj_step(mjm, mjd)
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
     dim = mjm.sensor_dim[0]
     for query_time, expected in [(0.0, 1.0), (0.01, 2.0), (0.02, 3.0)]:
@@ -201,13 +203,16 @@ class PublicAPITest(absltest.TestCase):
     """
     mjm, mjd, m, d = test_data.fixture(xml=xml)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     for i in range(4):
       qpos_val = float((i + 1) * 10)
       mjd.qpos[0] = qpos_val
       mjd.qpos[1] = qpos_val * 2
       wp.copy(d.qpos, wp.array(np.array([[qpos_val, qpos_val * 2]]), dtype=float))
       mujoco.mj_step(mjm, mjd)
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
     # read sensor 1 (index > 0) at current time
     dim = mjm.sensor_dim[1]
@@ -256,12 +261,9 @@ class PublicAPITest(absltest.TestCase):
     time_arr = wp.array([query_time], dtype=float)
     warp_result = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=0, result=warp_result)
-    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
-      mj_result = np.zeros(1)
-      mujoco.mj_readCtrl(mjm, mjd, 0, query_time, mj_result, 0)
-      mj_result = mj_result[0]
-    else:
-      mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, query_time, 0)
+    mj_result = np.zeros(1)
+    mujoco.mj_readCtrl(mjm, mjd, 0, query_time, mj_result, 0)
+    mj_result = mj_result[0]
     np.testing.assert_allclose(
       warp_result.numpy()[0],
       mj_result,
@@ -381,10 +383,13 @@ class PublicAPITest(absltest.TestCase):
 
     self.assertGreater(m.nhistory, 0)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     # ctrl applied immediately when delay=0
     for ctrl_val in [10.0, 20.0, 30.0]:
       wp.copy(d.ctrl, wp.array(np.full((1, 1), ctrl_val), dtype=float))
-      step(m, d)
+      wp.capture_launch(capture.graph)
       np.testing.assert_allclose(d.actuator_force.numpy()[0, 0], ctrl_val, atol=_TOLERANCE)
 
     # history buffer still readable
@@ -448,8 +453,11 @@ class MultiWorldDelayTest(parameterized.TestCase):
 
       wp.copy(d.ctrl, wp.array(np.full((nworld, 1), 10.0), dtype=float))
 
-      for i in range(nzero):
+      with wp.ScopedCapture() as capture:
         step(m, d)
+
+      for i in range(nzero):
+        wp.capture_launch(capture.graph)
         for w in range(nworld):
           act_force = d.actuator_force.numpy()[w, 0]
           np.testing.assert_allclose(
@@ -459,7 +467,7 @@ class MultiWorldDelayTest(parameterized.TestCase):
             err_msg=f"nworld={nworld} delay={delay} world={w} step {i}",
           )
 
-      step(m, d)
+      wp.capture_launch(capture.graph)
       for w in range(nworld):
         act_force = d.actuator_force.numpy()[w, 0]
         np.testing.assert_allclose(
@@ -550,10 +558,13 @@ class MultiWorldDelayTest(parameterized.TestCase):
       """
       mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
 
+      with wp.ScopedCapture() as capture:
+        step(m, d)
+
       for i in range(len(expected)):
         qpos_val = float((i + 1) * 10)
         wp.copy(d.qpos, wp.array(np.full((nworld, 1), qpos_val), dtype=float))
-        step(m, d)
+        wp.capture_launch(capture.graph)
         for w in range(nworld):
           sdata = d.sensordata.numpy()[w, 0]
           np.testing.assert_allclose(
@@ -598,9 +609,12 @@ class MultiWorldDelayTest(parameterized.TestCase):
 
     all_warp_outputs = [[] for _ in range(nworld)]
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     for _ in range(6):
       d.sensordata.fill_(wp.inf)
-      step(m, d)
+      wp.capture_launch(capture.graph)
       sensordata = d.sensordata.numpy()
       for w in range(nworld):
         mujoco.mj_step(mjm, mjds[w])
@@ -658,9 +672,12 @@ class MultiWorldDelayTest(parameterized.TestCase):
 
     all_warp_outputs = [[] for _ in range(nworld)]
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     for _ in range(6):
       d.sensordata.fill_(wp.inf)
-      step(m, d)
+      wp.capture_launch(capture.graph)
       sensordata = d.sensordata.numpy()
       for w in range(nworld):
         mujoco.mj_step(mjm, mjds[w])
@@ -703,9 +720,12 @@ class MultiActuatorSensorDelayTest(absltest.TestCase):
     mjd.ctrl[:] = 10.0
     wp.copy(d.ctrl, wp.array(np.full((1, 2), 10.0), dtype=float))
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     for i in range(5):
       mujoco.mj_step(mjm, mjd)
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
       mj_force = mjd.actuator_force.copy()
       warp_force = d.actuator_force.numpy()[0]
@@ -731,13 +751,16 @@ class MultiActuatorSensorDelayTest(absltest.TestCase):
     """
     mjm, mjd, m, d = test_data.fixture(xml=xml)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     for i in range(5):
       qpos_val = float((i + 1) * 10)
       mjd.qpos[:] = qpos_val
       wp.copy(d.qpos, wp.array(np.full((1, mjm.nq), qpos_val), dtype=float))
 
       mujoco.mj_step(mjm, mjd)
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
       mj_sdata = mjd.sensordata.copy()
       warp_sdata = d.sensordata.numpy()[0, : mjm.nsensordata]
@@ -771,12 +794,15 @@ class InterpolationTest(parameterized.TestCase):
 
     self.assertEqual(mjm.actuator_history[0, 1], interp_val)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     for i in range(6):
       ctrl_val = float((i + 1) * 10)
       mjd.ctrl[0] = ctrl_val
       wp.copy(d.ctrl, wp.array(np.full((1, 1), ctrl_val), dtype=float))
       mujoco.mj_step(mjm, mjd)
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
       mj_force = mjd.actuator_force[0]
       warp_force = d.actuator_force.numpy()[0, 0]
@@ -806,12 +832,15 @@ class InterpolationTest(parameterized.TestCase):
 
     self.assertEqual(mjm.sensor_history[0, 1], interp_val)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     for i in range(6):
       qpos_val = float((i + 1) * 10)
       mjd.qpos[0] = qpos_val
       wp.copy(d.qpos, wp.array(np.full((1, 1), qpos_val), dtype=float))
       mujoco.mj_step(mjm, mjd)
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
       mj_sdata = mjd.sensordata[0]
       warp_sdata = d.sensordata.numpy()[0, 0]
@@ -835,22 +864,22 @@ class InterpolationTest(parameterized.TestCase):
     """
     mjm, mjd, m, d = test_data.fixture(xml=xml)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     for ctrl_val in [10.0, 20.0, 30.0, 40.0, 50.0]:
       mjd.ctrl[0] = ctrl_val
       wp.copy(d.ctrl, wp.array(np.full((1, 1), ctrl_val), dtype=float))
       mujoco.mj_step(mjm, mjd)
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
     # compare read_ctrl with cubic interp at current time
     time_arr = d.time
     warp_result = wp.empty(d.nworld, dtype=float)
     read_ctrl(m, d, 0, time_arr, interp=2, result=warp_result)
-    if util_pkg.check_version("mujoco>=3.13.1.dev984848064"):
-      mj_result = np.zeros(1)
-      mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result, 2)
-      mj_result = mj_result[0]
-    else:
-      mj_result = mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, 2)
+    mj_result = np.zeros(1)
+    mujoco.mj_readCtrl(mjm, mjd, 0, mjd.time, mj_result, 2)
+    mj_result = mj_result[0]
     np.testing.assert_allclose(warp_result.numpy()[0], mj_result, atol=_TOLERANCE, err_msg="read_ctrl cubic interp mismatch")
 
 
@@ -882,9 +911,12 @@ class SensorFeatureTest(absltest.TestCase):
     mjd.qpos[0] = 5.0
     wp.copy(d.qpos, wp.array(np.full((1, 1), 5.0), dtype=float))
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     for i in range(3):
       mujoco.mj_step(mjm, mjd)
-      step(m, d)
+      wp.capture_launch(capture.graph)
       np.testing.assert_allclose(d.sensordata.numpy()[0, 0], mjd.sensordata[0], atol=_TOLERANCE, err_msg=f"step {i}")
 
   def test_sensor_delay_multi_dim(self):
@@ -911,9 +943,12 @@ class SensorFeatureTest(absltest.TestCase):
     mjd.qvel[:] = [1.0, 2.0, 3.0]
     wp.copy(d.qvel, wp.array(np.array([[1.0, 2.0, 3.0]]), dtype=float))
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     for _ in range(4):
       mujoco.mj_step(mjm, mjd)
-      step(m, d)
+      wp.capture_launch(capture.graph)
       warp_sdata = d.sensordata.numpy()[0, :3]
       np.testing.assert_allclose(warp_sdata, mjd.sensordata[:3], atol=_TOLERANCE)
 
@@ -994,10 +1029,13 @@ class BufferMechanicsTest(parameterized.TestCase):
     """
     _, _, m, d = test_data.fixture(xml=xml, nworld=nworld)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     # step 3 times with ctrl=10
     wp.copy(d.ctrl, wp.array(np.full((nworld, 1), 10.0), dtype=float))
     for _ in range(3):
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
     # save state
     saved_history = wp.empty_like(d.history)
@@ -1010,7 +1048,7 @@ class BufferMechanicsTest(parameterized.TestCase):
     # step 3 more times with ctrl=20, record final force
     wp.copy(d.ctrl, wp.array(np.full((nworld, 1), 20.0), dtype=float))
     for _ in range(3):
-      step(m, d)
+      wp.capture_launch(capture.graph)
     force_after = d.actuator_force.numpy().copy()
 
     # restore saved state
@@ -1023,7 +1061,7 @@ class BufferMechanicsTest(parameterized.TestCase):
     # step 3 more times with same ctrl=20
     wp.copy(d.ctrl, wp.array(np.full((nworld, 1), 20.0), dtype=float))
     for _ in range(3):
-      step(m, d)
+      wp.capture_launch(capture.graph)
     force_restored = d.actuator_force.numpy().copy()
 
     np.testing.assert_allclose(
@@ -1055,10 +1093,13 @@ class BufferMechanicsTest(parameterized.TestCase):
     """
     _, _, m, d = test_data.fixture(xml=xml, nworld=nworld)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     # step 3 times with ctrl=5
     wp.copy(d.ctrl, wp.array(np.full((nworld, 1), 5.0), dtype=float))
     for _ in range(3):
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
     # save state
     saved_history = wp.empty_like(d.history)
@@ -1071,7 +1112,7 @@ class BufferMechanicsTest(parameterized.TestCase):
     # step 3 more times with ctrl=10
     wp.copy(d.ctrl, wp.array(np.full((nworld, 1), 10.0), dtype=float))
     for _ in range(3):
-      step(m, d)
+      wp.capture_launch(capture.graph)
     sensor_after = d.sensordata.numpy().copy()
 
     # restore saved state
@@ -1084,7 +1125,7 @@ class BufferMechanicsTest(parameterized.TestCase):
     # step 3 more times with same ctrl=10
     wp.copy(d.ctrl, wp.array(np.full((nworld, 1), 10.0), dtype=float))
     for _ in range(3):
-      step(m, d)
+      wp.capture_launch(capture.graph)
     sensor_restored = d.sensordata.numpy().copy()
 
     np.testing.assert_allclose(
@@ -1191,6 +1232,9 @@ class StressWrapTest(parameterized.TestCase):
     """
     mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     nsteps = 25
     for step_i in range(nsteps):
       ctrl_val = float((step_i + 1) * 3.0)  # varying ctrl
@@ -1201,7 +1245,7 @@ class StressWrapTest(parameterized.TestCase):
 
       # Warp
       wp.copy(d.ctrl, wp.array(np.full((nworld, 1), ctrl_val), dtype=float))
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
       mj_force = mjd.actuator_force[0]
       warp_force = d.actuator_force.numpy()[0, 0]
@@ -1234,6 +1278,9 @@ class StressWrapTest(parameterized.TestCase):
     """
     mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     nsteps = 25
     for step_i in range(nsteps):
       ctrl_val = float((step_i + 1) * 2.0)
@@ -1242,7 +1289,7 @@ class StressWrapTest(parameterized.TestCase):
       mujoco.mj_step(mjm, mjd)
 
       wp.copy(d.ctrl, wp.array(np.full((nworld, 1), ctrl_val), dtype=float))
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
       mj_sensor = mjd.sensordata[0]
       warp_sensor = d.sensordata.numpy()[0, 0]
@@ -1284,6 +1331,9 @@ class ActivationDelayTest(parameterized.TestCase):
     mjd = mujoco.MjData(mjm)
     _, _, m, d = test_data.fixture(xml=xml, nworld=nworld)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     nsteps = 15
     for step_i in range(nsteps):
       ctrl_val = 1.0
@@ -1292,7 +1342,7 @@ class ActivationDelayTest(parameterized.TestCase):
       mujoco.mj_step(mjm, mjd)
 
       wp.copy(d.ctrl, wp.array(np.full((nworld, 1), ctrl_val), dtype=float))
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
       # compare activation
       mj_act = mjd.act[0]
@@ -1337,6 +1387,9 @@ class ActivationDelayTest(parameterized.TestCase):
     mjd = mujoco.MjData(mjm)
     _, _, m, d = test_data.fixture(xml=xml, nworld=nworld)
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     nsteps = 10
     for step_i in range(nsteps):
       ctrl_val = 5.0
@@ -1345,7 +1398,7 @@ class ActivationDelayTest(parameterized.TestCase):
       mujoco.mj_step(mjm, mjd)
 
       wp.copy(d.ctrl, wp.array(np.full((nworld, 1), ctrl_val), dtype=float))
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
       mj_act = mjd.act[0]
       warp_act = d.act.numpy()[0, 0]
@@ -1458,29 +1511,32 @@ class ResetHistoryTest(parameterized.TestCase):
       nworld=nworld,
     )
 
-    # 1. Initial make_data parity with MuJoCo C
+    # Initial make_data parity with MuJoCo C
     self.assertGreater(mjm.nhistory, 0)
     for w in range(nworld):
       np.testing.assert_allclose(d.history.numpy()[w], mjd.history, atol=1e-6)
 
-    # 2. Step pass 1 and verify history changes
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
+    # Step pass 1 and verify history changes
     d.ctrl.fill_(10.0)
     for _ in range(15):
-      step(m, d)
+      wp.capture_launch(capture.graph)
     qpos_pass1 = d.qpos.numpy().copy()
     sensordata_pass1 = d.sensordata.numpy().copy()
     self.assertFalse(np.allclose(d.history.numpy()[0], mjd.history))
 
-    # 3. reset_data parity with mj_resetData
+    # reset_data parity with mj_resetData
     reset_data(m, d)
     mujoco.mj_resetData(mjm, mjd)
     for w in range(nworld):
       np.testing.assert_allclose(d.history.numpy()[w], mjd.history, atol=1e-6)
 
-    # 4. Step pass 2 and verify trajectory reproducibility
+    # Step pass 2 and verify trajectory reproducibility
     d.ctrl.fill_(10.0)
     for _ in range(15):
-      step(m, d)
+      wp.capture_launch(capture.graph)
     np.testing.assert_allclose(d.qpos.numpy(), qpos_pass1, atol=1e-6)
     np.testing.assert_allclose(d.sensordata.numpy(), sensordata_pass1, atol=1e-6)
 
@@ -1505,9 +1561,12 @@ class ResetHistoryTest(parameterized.TestCase):
       nworld=nworld,
     )
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     d.ctrl.fill_(5.0)
     for _ in range(10):
-      step(m, d)
+      wp.capture_launch(capture.graph)
     hist_before = d.history.numpy().copy()
 
     # World 0 is reset, world 1 (if present) is not reset
@@ -1527,7 +1586,7 @@ class ResetHistoryTest(parameterized.TestCase):
     # Selective reset with reverse mask
     if nworld == 2:
       for _ in range(10):
-        step(m, d)
+        wp.capture_launch(capture.graph)
       hist_dirty = d.history.numpy().copy()
       mask_alt = wp.array([False, True], dtype=bool)
       reset_data(m, d, reset=mask_alt)
@@ -1567,6 +1626,56 @@ class ResetHistoryTest(parameterized.TestCase):
 
     for w in range(nworld):
       np.testing.assert_allclose(d.sensordata.numpy()[w], mjd.sensordata, atol=1e-6)
+
+  @parameterized.product(nworld=(1, 2), nsample=(5, 7, 10, 16))
+  def test_subtimestep_interval_sensor_reset(self, nworld, nsample):
+    """Test sub-timestep and equal-timestep sensor intervals initialize monotonic timestamps."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option timestep="0.01" gravity="0 0 0"/>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <jointpos joint="slide" delay="0.02" interval="0.002 0" nsample="{nsample}"/>
+          <jointpos joint="slide" delay="0.02" interval="0.002 -0.001" nsample="{nsample}"/>
+          <jointpos joint="slide" delay="0.02" interval="0.01 0" nsample="{nsample}"/>
+          <jointpos joint="slide" delay="0.02" interval="0.01 -0.005" nsample="{nsample}"/>
+          <jointpos joint="slide" delay="0.02" interval="0.015 0" nsample="{nsample}"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos_vals = np.array([[5.0]]) + 3.0 * np.arange(nworld)[:, None]
+    d.qpos = wp.array2d(qpos_vals, dtype=float)
+    d.history.fill_(wp.inf)
+    reset_history(m, d)
+    hist = d.history.numpy()
+
+    for sid in range(mjm.nsensor):
+      adr = int(m.sensor_historyadr.numpy()[0, sid])
+      for w in range(nworld):
+        times = hist[w, adr + 2 : adr + 2 + nsample]
+        self.assertTrue(np.all(np.diff(times) > 0.0))
+
+    mjd = mujoco.MjData(mjm)
+    for w in range(nworld):
+      np.testing.assert_allclose(hist[w], mjd.history, atol=_TOLERANCE)
+
+    # Verify t=0 sample is recorded and read back after delay=0.02 (3 steps)
+    for _ in range(3):
+      step(m, d)
+    sens = d.sensordata.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(sens[w, 0], qpos_vals[w, 0], atol=1e-6)
+    if nworld == 2:
+      self.assertFalse(np.allclose(sens[0], sens[1]))
 
   @parameterized.parameters(1, 2)
   def test_init_history_none_times_preserves_buffer(self, nworld):
@@ -1622,6 +1731,69 @@ class ResetHistoryTest(parameterized.TestCase):
       # Values updated
       np.testing.assert_allclose(updated_history[w, act_v : act_v + act_n], [10.0, 20.0, 30.0], atol=1e-6)
       np.testing.assert_allclose(updated_history[w, sens_v : sens_v + sens_n * sens_dim], [1.0, 2.0, 3.0], atol=1e-6)
+
+  @parameterized.parameters(1, 2)
+  def test_init_history_none_times_preserves_wrapped_cursor(self, nworld):
+    """Test init_ctrl_history and init_sensor_history with times=None after buffer wraps."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01"/>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide"/>
+            <geom size="0.1" mass="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="slide" delay="0.02" nsample="3"/>
+        </actuator>
+        <sensor>
+          <jointpos joint="slide" delay="0.02" nsample="3"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # advance the circular cursors away from nsample - 1
+    for _ in range(2):
+      step(m, d)
+    orig_history = d.history.numpy().copy()
+
+    ctrl_vals = np.array([[10.0, 20.0, 30.0]]) + 100.0 * np.arange(nworld)[:, None]
+    sensor_vals = np.array([[1.0, 2.0, 3.0]]) + 100.0 * np.arange(nworld)[:, None]
+    init_ctrl_history(m, d, ctrlid=0, times=None, values=wp.array2d(ctrl_vals, dtype=float))
+    init_sensor_history(m, d, sensorid=0, times=None, values=wp.array2d(sensor_vals, dtype=float))
+    history = d.history.numpy()
+
+    act_adr = m.actuator_historyadr.numpy()[0, 0]
+    sens_adr = m.sensor_historyadr.numpy()[0, 0]
+    nsample = 3
+
+    for w in range(nworld):
+      for adr, vals in ((act_adr, ctrl_vals), (sens_adr, sensor_vals)):
+        cursor = int(orig_history[w, adr + 1])
+        self.assertNotEqual(cursor, nsample - 1)
+        times = slice(adr + 2, adr + 2 + nsample)
+
+        # cursor and timestamps preserved
+        self.assertEqual(history[w, adr + 1], cursor)
+        np.testing.assert_allclose(history[w, times], orig_history[w, times], atol=_TOLERANCE)
+
+        # values written in logical order relative to the cursor
+        for i in range(nsample):
+          phys = (cursor + 1 + i) % nsample
+          np.testing.assert_allclose(history[w, adr + 2 + nsample + phys], vals[w, i], atol=_TOLERANCE)
+
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.history[:] = orig_history[w]
+      mujoco.mj_initCtrlHistory(mjm, mjd_w, 0, None, ctrl_vals[w])
+      mujoco.mj_initSensorHistory(mjm, mjd_w, 0, None, sensor_vals[w], mjd_w.history[sens_adr])
+      np.testing.assert_allclose(history[w], mjd_w.history, atol=_TOLERANCE)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(history[0], history[1]))
 
   def test_init_sensor_history_phase_none_preserves_user_slot(self):
     """Test init_sensor_history with phase=None preserves interval user slot (time_prev)."""
@@ -1780,10 +1952,13 @@ class BatchedDelayTest(parameterized.TestCase):
       wp.copy(m.actuator_delay, wp.array2d(delays, dtype=float))
       wp.copy(m.sensor_delay, wp.array2d(delays, dtype=float))
 
+      with wp.ScopedCapture() as capture:
+        step(m, d)
+
       for t in range(5):
         ctrl_val = float(t + 1) * 10.0
         d.ctrl.fill_(ctrl_val)
-        step(m, d)
+        wp.capture_launch(capture.graph)
 
       qpos = d.qpos.numpy()[:, 0]
       sdata = d.sensordata.numpy()[:, 0]
@@ -1824,9 +1999,12 @@ class BatchedDelayTest(parameterized.TestCase):
       batch_sizes=batch_sizes,
     )
 
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     d.ctrl.fill_(10.0)
     for _ in range(10):
-      step(m, d)
+      wp.capture_launch(capture.graph)
 
     # Full reset
     reset_data(m, d)
@@ -1837,7 +2015,7 @@ class BatchedDelayTest(parameterized.TestCase):
     # Selective reset with reverse mask
     if nworld == 2:
       for _ in range(10):
-        step(m, d)
+        wp.capture_launch(capture.graph)
       hist_dirty = d.history.numpy().copy()
       mask = wp.array([False, True], dtype=bool)
       reset_data(m, d, reset=mask)
@@ -1868,9 +2046,12 @@ class BatchedDelayTest(parameterized.TestCase):
       """,
       nworld=1,
     )
+    with wp.ScopedCapture() as capture:
+      step(m, d)
+
     d.ctrl.fill_(10.0)
     for _ in range(5):
-      step(m, d)
+      wp.capture_launch(capture.graph)
     self.assertFalse(np.allclose(d.history.numpy()[0], mjd.history))
 
     reset_history(m, d)

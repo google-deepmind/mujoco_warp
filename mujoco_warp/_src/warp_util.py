@@ -159,12 +159,30 @@ def cache_kernel(func):
         return hash(tuple(a))
       return hash(a)
 
-    key = tuple(_hash_arg(a) for a in args) + (hash(func.__name__),)
+    key = tuple(_hash_arg(a) for a in args) + (func.__module__, func.__name__)
     if key not in _KERNEL_CACHE:
       _KERNEL_CACHE[key] = func(*args)
     return _KERNEL_CACHE[key]
 
   return wrapper
+
+
+_SIDE_STREAMS = {}
+
+
+def side_stream(device: wp.Device) -> wp.Stream | None:
+  """Returns a second stream while the device's stream is capturing a graph, else None.
+
+  Launches under wp.ScopedStream(side) fork the captured node chain until
+  wp.wait_stream(side) joins it, so they run beside the launches issued in between.
+  """
+  if not device.is_cuda or not device.stream.is_capturing:
+    return None
+  # one per capturing stream, so that concurrent captures do not share a branch
+  key = (device.alias, device.stream.cuda_stream)
+  if key not in _SIDE_STREAMS:
+    _SIDE_STREAMS[key] = wp.Stream(device)
+  return _SIDE_STREAMS[key]
 
 
 def check_toolkit_driver():

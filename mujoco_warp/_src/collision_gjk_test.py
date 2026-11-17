@@ -26,6 +26,7 @@ from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
+from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import OverflowType
@@ -46,6 +47,7 @@ def _geom_dist(
   horizon_size: int | None = None,
   warn_overflow: bool = True,
   overflow_out: wp.array | None = None,
+  return_all: bool = False,
 ):
   # we run multiccd on static scenes so these need to be initialized
   has_cylinder = GeomType.CYLINDER in (m.geom_type.numpy()[gid1], m.geom_type.numpy()[gid2])
@@ -91,7 +93,7 @@ def _geom_dist(
     mesh_polymap: wp.array[int],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     # In:
     gid1: int,
     gid2: int,
@@ -120,6 +122,9 @@ def _geom_dist(
     dist_out: wp.array[float],
     ncon_out: wp.array[int],
     pos_out: wp.array[wp.vec3],
+    w1_out: wp.array[wp.vec3],
+    w2_out: wp.array[wp.vec3],
+    dists_out: wp.array[float],
   ):
     worldid = wp.tid()
 
@@ -131,7 +136,7 @@ def _geom_dist(
     else:
       geom1.pos = pos1
     if wp.static(mat1 == None):
-      geom1.rot = geom_xmat_in[worldid, gid1]
+      geom1.rot = quat_to_mat(geom_xquat_in[worldid, gid1])
     else:
       geom1.rot = mat1
     geom1.size = geom_size[worldid % geom_size.shape[0], gid1]
@@ -162,7 +167,7 @@ def _geom_dist(
     else:
       geom2.pos = pos2
     if wp.static(mat2 == None):
-      geom2.rot = geom_xmat_in[worldid, gid2]
+      geom2.rot = quat_to_mat(geom_xquat_in[worldid, gid2])
     else:
       geom2.rot = mat2
     geom2.size = geom_size[worldid % geom_size.shape[0], gid2]
@@ -214,7 +219,7 @@ def _geom_dist(
     )
 
     if multiccd and idx >= 0:
-      ncon, witness1, witness2, _ = multicontact(
+      ncon, witness1, witness2, dists = multicontact(
         polygon,
         clipped,
         pnormal,
@@ -231,6 +236,7 @@ def _geom_dist(
         face[idx],
         x1,
         x2,
+        dist,
         geom1,
         geom2,
         geomtype1,
@@ -240,15 +246,25 @@ def _geom_dist(
       ncon_out[0] = ncon
       pos_out[0] = witness1[0]
       pos_out[1] = witness2[0]
+      for i in range(ncon):
+        w1_out[i] = witness1[i]
+        w2_out[i] = witness2[i]
+        dists_out[i] = dists[i]
     else:
       dist_out[0] = dist
       ncon_out[0] = ncon
       pos_out[0] = x1
       pos_out[1] = x2
+      w1_out[0] = x1
+      w2_out[0] = x2
+      dists_out[0] = dist
 
-  dist_out = wp.array(shape=(1,), dtype=float)
-  ncon_out = wp.array(shape=(1,), dtype=int)
-  pos_out = wp.array(shape=(2,), dtype=wp.vec3)
+  dist_out = wp.full(1, wp.inf, dtype=float)
+  ncon_out = wp.full(1, -1, dtype=int)
+  pos_out = wp.full(2, wp.vec3(wp.inf), dtype=wp.vec3)
+  w1_out = wp.full(4, wp.vec3(wp.inf), dtype=wp.vec3)
+  w2_out = wp.full(4, wp.vec3(wp.inf), dtype=wp.vec3)
+  dists_out = wp.full(4, wp.inf, dtype=float)
   wp.launch(
     _ccd_kernel,
     dim=1,
@@ -269,7 +285,7 @@ def _geom_dist(
       m.mesh_polymapnum,
       m.mesh_polymap,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       gid1,
       gid2,
       m.opt.ccd_iterations,
@@ -297,13 +313,56 @@ def _geom_dist(
       dist_out,
       ncon_out,
       pos_out,
+      w1_out,
+      w2_out,
+      dists_out,
     ],
   )
+  if return_all:
+    ncon = int(ncon_out.numpy()[0])
+    return dist_out.numpy()[0], ncon, w1_out.numpy()[:ncon], w2_out.numpy()[:ncon], dists_out.numpy()[:ncon]
   return dist_out.numpy()[0], ncon_out.numpy()[0], pos_out.numpy()[0], pos_out.numpy()[1]
 
 
 class GJKTest(parameterized.TestCase):
   """Tests for GJK/EPA."""
+
+  @parameterized.parameters(4.49, 20.0)
+  def test_single_mesh_witness_distance(self, tilt):
+    """The direct CCD helper preserves clipped and fallback single-witness distances."""
+    axis = 5.676
+    angle = np.deg2rad(tilt)
+    z = 0.010885 + 0.01 * (np.cos(angle) + np.sin(angle) * (abs(np.cos(axis)) + abs(np.sin(axis))))
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <mesh name="cube" vertex="-.01 -.01 -.01  -.01 -.01 .01  -.01 .01 -.01  -.01 .01 .01
+                                    .01 -.01 -.01   .01 -.01 .01   .01 .01 -.01   .01 .01 .01"/>
+        </asset>
+        <default>
+          <geom type="mesh" mesh="cube" margin=".0005"/>
+        </default>
+        <worldbody>
+          <geom/>
+          <body pos=".00213 .00364 {z}" axisangle="{np.cos(axis)} {np.sin(axis)} 0 {tilt}">
+            <freejoint/>
+            <geom/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    dist, ncon, w1, w2, dists = _geom_dist(m, d, 0, 1, multiccd=True, margin=0.001, return_all=True)
+    self.assertEqual(mjd.ncon, 1)
+    self.assertEqual(ncon, 1)
+    # As in the driver regression, 1e-5 would hide the single-clipped-point error.
+    np.testing.assert_allclose(dists + 0.001, mjd.contact.dist, atol=1e-7, rtol=0)
+    np.testing.assert_allclose(0.5 * (w1 + w2), mjd.contact.pos, atol=1e-5, rtol=1e-5)
+    if tilt == 4.49:
+      self.assertGreater(abs(dists[0] - dist), 2e-6)
+    else:
+      self.assertEqual(dists[0], dist)
 
   def test_spheres_distance(self):
     """Test distance between two spheres."""
@@ -464,6 +523,24 @@ class GJKTest(parameterized.TestCase):
     dist, ncon, _, _ = _geom_dist(m, d, 0, 1)
     self.assertEqual(1, ncon)
     self.assertAlmostEqual(-0.0031312597856874586, dist)
+
+  def test_mesh_mesh_initial_guess(self):
+    """Test penetration between two meshes whose first support point has the initial guess norm."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <mesh name="octahedron" vertex=".125 0 0  -.125 0 0  0 .25 0  0 -.25 0  0 0 .375  0 0 -.375"/>
+      </asset>
+      <worldbody>
+        <geom type="mesh" mesh="octahedron"/>
+        <geom type="mesh" mesh="octahedron" pos=".125 0 0"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    dist, _, _, _ = _geom_dist(m, d, 0, 1)
+    self.assertAlmostEqual(-0.10714285714285714, dist, places=6)
 
   def test_cylinder_cylinder_contact(self):
     """Test penetration between two cylinder."""
@@ -769,6 +846,27 @@ class GJKTest(parameterized.TestCase):
 
     dist, _, _, _ = _geom_dist(m, d, 0, 1, pos2=pos, mat2=rot)
     self.assertAlmostEqual(dist, -0.0016624178339902445)
+
+  def test_cylinder_box_side_witness(self):
+    """Test cylinder side resting on a box face: EPA ends on coplanar faces that tie for closest."""
+    # cylinder at the origin as in the collision driver, which shifts geom1 there
+    _, _, m, d = test_data.fixture(
+      xml="""
+       <mujoco>
+         <worldbody>
+           <geom type="cylinder" size=".05 .12"/>
+           <geom type="box" size=".5 .5 .5" pos="-0.5415780544281006 -0.02145402319729328 0.49598589539527893"/>
+         </worldbody>
+       </mujoco>
+       """
+    )
+
+    dist, _, x1, x2 = _geom_dist(m, d, 0, 1)
+    self.assertLess(dist, 0.0)
+
+    # witnesses must lie where the cylinder side overlaps the box face: z in [-0.004, 0.12]
+    for x in (x1, x2):
+      self.assertBetween(x[2], 0.49598589539527893 - 0.5 - 1e-4, 0.12 + 1e-4)
 
   def test_cylinder_capsule(self):
     """Test cylinder and a capsule with CCD fallback."""
@@ -1076,6 +1174,27 @@ class GJKTest(parameterized.TestCase):
     np.testing.assert_allclose(x1, np.array([1.907368, -0.052973, 0.700000]), atol=1e-4)
     np.testing.assert_allclose(x2, np.array([1.300000, -0.052973, 0.700000]), atol=1e-4)
 
+  def test_tilted_box_box_multiccd(self):
+    """Test witness points for tilted box-box face contact."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="box" pos="0 0 0.08" euler="5 0 0" size="0.1 0.1 0.1"/>
+          <geom type="box" pos="0 0 -0.05" size="1 1 0.05"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    _, ncon, x1, x2 = _geom_dist(m, d, 0, 1, multiccd=True)
+    cos5 = np.cos(np.deg2rad(5.0))
+    sin5 = np.sin(np.deg2rad(5.0))
+    y_upper = 0.1 * cos5 + 0.1 * sin5
+    z_upper = 0.08 + 0.1 * sin5 - 0.1 * cos5
+    self.assertEqual(ncon, 4)
+    np.testing.assert_allclose(x1, np.array([-0.1, y_upper, z_upper]), atol=1e-5)
+    np.testing.assert_allclose(x2, np.array([-0.1, y_upper, 0.0]), atol=1e-5)
+
   @parameterized.parameters(0.0, 0.1)
   def test_hfield_support(self, margin: float):
     """Test support function for height field geoms."""
@@ -1146,6 +1265,53 @@ class GJKTest(parameterized.TestCase):
 
     # dir = (0, 1, eps): expect prism[5] + margin offset
     np.testing.assert_allclose(result[3], prism[5], rtol=1e-5)
+
+  def test_mesh_support(self):
+    """Test support function hill climb for mesh geoms."""
+    # capped square antiprism: vertices with 4 and 5 neighbors
+    _, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="antiprism" vertex="0 0 1  .9165 0 .4  0 .9165 .4  -.9165 0 .4  0 -.9165 .4
+                                         0 0 -1  .6481 .6481 -.4  -.6481 .6481 -.4  -.6481 -.6481 -.4  .6481 -.6481 -.4"/>
+        </asset>
+        <worldbody>
+          <geom type="mesh" mesh="antiprism"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def _support_kernel(
+      mesh_vertnum: wp.array[int],
+      mesh_vert: wp.array[wp.vec3],
+      mesh_graph: wp.array[int],
+      vertex_index_out: wp.array2d[int],
+    ):
+      vertid, index = wp.tid()
+      geom = Geom()
+      geom.pos = wp.vec3(0.0)
+      geom.rot = wp.identity(n=3, dtype=float)
+      geom.vertadr = 0
+      geom.vertnum = mesh_vertnum[0]
+      geom.vert = mesh_vert
+      geom.graphadr = 0
+      geom.graph = mesh_graph
+      geom.index = index - 1  # -1: no warm start
+      sp = support(geom, GeomType.MESH, wp.normalize(mesh_vert[vertid]))
+      vertex_index_out[vertid, index] = sp.vertex_index
+
+    nvert = m.mesh_vert.shape[0]
+    vertex_index = wp.empty((nvert, nvert + 1), dtype=int)
+    wp.launch(
+      _support_kernel,
+      dim=vertex_index.shape,
+      inputs=[m.mesh_vertnum, m.mesh_vert, m.mesh_graph],
+      outputs=[vertex_index],
+    )
+    np.testing.assert_array_equal(vertex_index.numpy(), np.tile(np.arange(nvert)[:, None], (1, nvert + 1)))
 
   def test_flex_support_margin_inflation(self):
     """Test support function inflation by margin for flex simplex elements."""
@@ -1319,6 +1485,141 @@ class GJKTest(parameterized.TestCase):
     )
     # Expected dist is negative penetration depth: -0.05
     np.testing.assert_allclose(out_dist.numpy()[0], -0.05, atol=1e-4)
+
+  def test_box_box_margin_shallow_multiccd(self):
+    """Test shallow penetration (within margin) of two boxes with multicontact."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="geom1" type="box" pos="0 0 2.05" size="1 1 1"/>
+          <geom name="geom2" type="box" pos="0 0 0" size="10 10 1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # Shallow margin band: distance = +0.05, margin = 0.1 -> depth = -0.05
+    dist, ncon, w1, w2, dists = _geom_dist(m, d, 0, 1, multiccd=True, margin=0.1, return_all=True)
+    self.assertEqual(ncon, 4)
+    self.assertAlmostEqual(dist, -0.05, places=5)
+    pos = 0.5 * (w1 + w2)
+    for i in range(4):
+      self.assertAlmostEqual(dists[i], -0.05, places=5)
+      direction = (w1[i] - w2[i]) / np.linalg.norm(w1[i] - w2[i])
+      np.testing.assert_allclose(direction, [0.0, 0.0, -1.0], atol=1e-5)
+    expected_pos = np.array([[-1.0, 1.0, 1.025], [1.0, 1.0, 1.025], [1.0, -1.0, 1.025], [-1.0, -1.0, 1.025]])
+    np.testing.assert_allclose(pos, expected_pos, atol=1e-5)
+
+  def test_box_box_margin_touching_multiccd(self):
+    """Test touching boxes with margin and multicontact."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="geom1" type="box" pos="0 0 2.0" size="1 1 1"/>
+          <geom name="geom2" type="box" pos="0 0 0" size="10 10 1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # Touching faces: distance = 0.0, margin = 0.1 -> depth = -0.1
+    dist, ncon, w1, w2, dists = _geom_dist(m, d, 0, 1, multiccd=True, margin=0.1, return_all=True)
+    self.assertEqual(ncon, 4)
+    self.assertAlmostEqual(dist, -0.1, places=5)
+    pos = 0.5 * (w1 + w2)
+    for i in range(4):
+      self.assertAlmostEqual(dists[i], -0.1, places=5)
+      direction = (w1[i] - w2[i]) / np.linalg.norm(w1[i] - w2[i])
+      np.testing.assert_allclose(direction, [0.0, 0.0, -1.0], atol=1e-5)
+    expected_pos = np.array([[-1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, -1.0, 1.0], [-1.0, -1.0, 1.0]])
+    np.testing.assert_allclose(pos, expected_pos, atol=1e-5)
+
+  def test_box_box_margin_deep_multiccd(self):
+    """Test deep penetration (overlapping geoms) of two boxes with margin and multicontact."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="geom1" type="box" pos="0 0 1.9" size="1 1 1"/>
+          <geom name="geom2" type="box" pos="0 0 0" size="10 10 1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # Deep penetration: distance = -0.1, margin = 0.1 -> depth = -0.2
+    dist, ncon, w1, w2, dists = _geom_dist(m, d, 0, 1, multiccd=True, margin=0.1, return_all=True)
+    self.assertEqual(ncon, 4)
+    self.assertAlmostEqual(dist, -0.2, places=5)
+    pos = 0.5 * (w1 + w2)
+    for i in range(4):
+      self.assertAlmostEqual(dists[i], -0.2, places=5)
+      direction = (w1[i] - w2[i]) / np.linalg.norm(w1[i] - w2[i])
+      np.testing.assert_allclose(direction, [0.0, 0.0, -1.0], atol=1e-5)
+    expected_pos = np.array([[-1.0, 1.0, 0.95], [1.0, 1.0, 0.95], [1.0, -1.0, 0.95], [-1.0, -1.0, 0.95]])
+    np.testing.assert_allclose(pos, expected_pos, atol=1e-5)
+
+  def test_box_edge_margin_multiccd(self):
+    """Test box edge against box face with margin and multicontact."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="geom1" pos="1.10164554 -0.11389316 0.74"
+                quat="-0.348312918 0 0 0.937378318" type="box" size="0.65 0.48 0.04"/>
+          <geom name="geom2" type="box" size="0.1 1.2 1.4" pos="1.45 0 1.425"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # Same geometry as BoxEdgeFlipped (uninflated x1[0] = 1.907368) with geom2
+    # shifted +0.05 in x (uninflated x2[0] = 1.35) and margin = 0.1 (0.05 each).
+    _, ncon, x1, x2 = _geom_dist(m, d, 0, 1, multiccd=True, margin=0.1)
+    self.assertEqual(ncon, 2)
+    np.testing.assert_allclose(x1, np.array([1.907368 + 0.05, -0.052973, 0.700000]), atol=1e-4)
+    np.testing.assert_allclose(x2, np.array([1.350000 - 0.05, -0.052973, 0.700000]), atol=1e-4)
+
+  def test_mesh_mesh_margin_multiccd(self):
+    """Test mesh-mesh face-face and edge-face collisions with margin and multicontact."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="box" vertex="-1 -1 -1 1 -1 -1 1 1 -1 1 1 1 1 -1 1 -1 1 -1 -1 1 1 -1 -1 1"
+                scale="1 1 .01"/>
+          <mesh name="pentaprism"
+                vertex="1 0 0 0.309 0.951 0 -0.809 0.588 0 -0.809 -0.588 0 0.309 -0.951 0
+                        1 0 1 0.309 0.951 1 -0.809 0.588 1 -0.809 -0.588 1 0.309 -0.951 1"
+                scale=".2 .2 .1"/>
+        </asset>
+        <worldbody>
+          <geom name="geom1" type="mesh" pos="0 0 -0.01" mesh="box"/>
+          <geom name="geom2" type="mesh" pos="0 0 -0.001" mesh="pentaprism"/>
+          <geom name="geom3" type="mesh" pos="0 0 0.19" euler="0 90 0" mesh="pentaprism"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # deep penetration face-face: distance = -0.001, margin = 0.1 -> depth = -0.101
+    dist, ncon, w1, w2, dists = _geom_dist(m, d, 0, 1, multiccd=True, margin=0.1, return_all=True)
+    self.assertEqual(ncon, 4)
+    self.assertAlmostEqual(dist, -0.101, places=5)
+    pos = 0.5 * (w1 + w2)
+    for i in range(4):
+      self.assertAlmostEqual(dists[i], -0.101, places=5)
+      direction = (w1[i] - w2[i]) / np.linalg.norm(w1[i] - w2[i])
+      np.testing.assert_allclose(direction, [0.0, 0.0, 1.0], atol=1e-5)
+      self.assertAlmostEqual(pos[i][2], -0.0005, places=5)
+
+    # deep penetration edge-face: distance = -0.01, margin = 0.1 -> depth = -0.11
+    dist, ncon, w1, w2, dists = _geom_dist(m, d, 0, 2, multiccd=True, margin=0.1, return_all=True)
+    self.assertEqual(ncon, 2)
+    self.assertAlmostEqual(dist, -0.11, places=5)
+    pos = 0.5 * (w1 + w2)
+    for i in range(2):
+      self.assertAlmostEqual(dists[i], -0.11, places=5)
+      direction = (w1[i] - w2[i]) / np.linalg.norm(w1[i] - w2[i])
+      np.testing.assert_allclose(direction, [0.0, 0.0, 1.0], atol=1e-5)
+      self.assertAlmostEqual(pos[i][2], -0.005, places=5)
 
 
 if __name__ == "__main__":

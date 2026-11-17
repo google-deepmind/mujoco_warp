@@ -19,5 +19,6 @@ repos:
       - id: kernel-analyzer
         name: kernel-analyzer
         entry: uv run python contrib/kernel_analyzer/kernel_analyzer/cli.py
+        args: [--check_atomic=True]
         language: system
         types: [python]

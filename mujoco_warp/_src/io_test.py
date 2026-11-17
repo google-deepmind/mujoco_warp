@@ -495,12 +495,35 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_array_equal(data.qpos, [0.25])
     np.testing.assert_array_equal(data.qvel, [0.5])
 
-  @parameterized.parameters((47, 48), (48, 64), (63, 64), (64, 80))
+  @parameterized.parameters((23, 24), (47, 48), (48, 48), (49, 64), (63, 64), (64, 80), (79, 80), (80, 96))
   def test_augmented_cholesky_padding(self, nv, expected):
-    _, nv_pad = io._get_padded_sizes(nv, 0, False, types.TILE_SIZE_JTDAJ_DENSE, augment_cholesky=True)
-    self.assertEqual(nv_pad, expected)
+    """16-byte rows up to H_ONE_TILE_MAX, the blocked Cholesky's augmented tiles past it."""
+    _, _, m, _ = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <replicate count="{nv}">
+            <body>
+              <joint/>
+              <geom size="0.1"/>
+            </body>
+          </replicate>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    self.assertEqual(m.nv_pad, expected)
 
-  @parameterized.parameters((15, 16), (16, 32), (31, 32), (32, 48))
+  def test_M_tile_pattern(self):
+    """Two 24-DOF chains: tile 1 holds DOFs of both, tile 2 only couples to the second chain."""
+    links = "".join('<body><joint axis="0 1 0"/><geom size=".1"/>' for _ in range(24)) + "</body>" * 24
+    mjm = mujoco.MjModel.from_xml_string(f"<mujoco><worldbody>{links}{links}</worldbody></mujoco>")
+    m = put_model(mjm)
+    np.testing.assert_array_equal(m.M_tile_colmask.numpy()[:3, 0], [0b0, 0b1, 0b10])
+    np.testing.assert_array_equal(m.M_tile_offdiag.numpy()[:3], [1, 1, 1])
+    self.assertFalse(m.M_tile_full)  # tile 2 never couples to tile 0
+
+  @parameterized.parameters((15, 16), (16, 16), (31, 32), (32, 32), (33, 48), (47, 48), (48, 48), (49, 64), (63, 64), (64, 80))
   def test_augmented_cholesky_nvmax_padding(self, nvmax, expected):
     self.assertEqual(io._nvmax_pad(nvmax), expected)
 
@@ -536,49 +559,143 @@ class IOTest(parameterized.TestCase):
       if isinstance(val, wp.array):
         self.assertEqual(val.shape, getattr(d, attr).shape, f"{attr} shape mismatch")
 
-  @parameterized.parameters(("constraints.xml", 2), ("flex/rope.xml", None))
-  def test_put_data_builds_jtdaj_block_list(self, xml, keyframe):
-    """put_data builds the JTDAJ block list that make_constraint builds for the same state."""
+  def test_put_data_builds_jtdaj_block_list(self):
+    """put_data builds the sparse-Newton JTDAJ block list straight from the loaded efc.
+
+    make_constraint builds efc.jtdaj_* while assembling constraints, but put_data does not run it;
+    it must populate the list so a put_data state is directly solvable, matching make_constraint.
+    """
     mjm, mjd, m, d = test_data.fixture(
-      xml,
-      keyframe=keyframe,
-      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": mujoco.mjtSolver.mjSOL_NEWTON},
+      "constraints.xml",
+      keyframe=2,
+      overrides={
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "opt.solver": mujoco.mjtSolver.mjSOL_NEWTON,
+      },
     )
     self.assertTrue(m.is_sparse)
     self.assertGreater(mjd.nefc, 0)
 
-    def blocks():
-      nblock = d.efc.jtdaj_nblock.numpy()[0]
-      adr = d.efc.jtdaj_adr.numpy()[0, :nblock]
-      nrow = d.efc.jtdaj_nrow.numpy()[0, :nblock]
-      order = np.argsort(adr)
-      return adr[order], nrow[order]
+    nblock = int(d.efc.jtdaj_nblock.numpy()[0])
+    adr = d.efc.jtdaj_adr.numpy()[0, :nblock].copy()
+    nrow = d.efc.jtdaj_nrow.numpy()[0, :nblock].copy()
 
-    put_adr, put_nrow = blocks()
-    if mjm.nflex > 0:
-      mjwarp.fwd_position(m, d)
-    mjwarp.make_constraint(m, d)
-    adr, nrow = blocks()
+    # the blocks partition exactly the rows that are not DOF friction (those get no block)
+    etype = mjd.efc_type[: mjd.nefc]
+    eid = mjd.efc_id[: mjd.nefc]
+    is_dof_friction = etype == mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
+    self.assertTrue(is_dof_friction.any())
+    self.assertGreater(nblock, 0)
+    covered = np.zeros(mjd.nefc, dtype=bool)
+    for a, n in zip(adr.tolist(), nrow.tolist()):
+      self.assertFalse(covered[a : a + n].any())
+      covered[a : a + n] = True
+    np.testing.assert_array_equal(covered, ~is_dof_friction)
 
-    np.testing.assert_array_equal(put_adr, adr)
-    np.testing.assert_array_equal(put_nrow, nrow)
+    # each block is one constraint instance: a maximal run of rows sharing (efc_type, efc_id)
+    for a, n in zip(adr.tolist(), nrow.tolist()):
+      self.assertTrue((etype[a : a + n] == etype[a]).all())
+      self.assertTrue((eid[a : a + n] == eid[a]).all())
+      if a > 0:  # maximal: the preceding row belongs to a different instance
+        self.assertTrue(etype[a - 1] != etype[a] or eid[a - 1] != eid[a])
 
-  def test_reset_data_clears_jtdaj_block_list(self):
-    """reset_data empties the JTDAJ block list of the worlds it resets, along with nefc."""
-    _, _, m, d = test_data.fixture(
-      "constraints.xml",
-      keyframe=2,
-      nworld=2,
-      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": mujoco.mjtSolver.mjSOL_NEWTON},
+  def test_put_data_dense_mujoco_jacobian_sparse_blocks(self):
+    """MuJoCo's dense efc_J loads as sparse rows that share their JTDAJ block's support."""
+    # MuJoCo is dense below 60 DOFs, MJWarp sparse above 32; the spinning box has DOF friction rows
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body name="b0" pos="0 0 .049">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b1" pos="0 0 .148">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b2" pos="0 0 .247">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b3" pos="0 0 .346">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b4" pos="1 0 1">
+            <freejoint/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+          <body name="b5" pos="1.2 0 1">
+            <joint type="free" frictionloss=".1"/>
+            <geom type="box" size=".05 .05 .05"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="b4" body2="b5"/>
+        </equality>
+        <keyframe>
+          <key qvel="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 2 3"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
     )
-    mjwarp.forward(m, d)
-    nblock = d.efc.jtdaj_nblock.numpy()
-    self.assertTrue((nblock > 0).all())
+    self.assertFalse(mujoco.mj_isSparse(mjm))
+    self.assertTrue(m.is_sparse)
+    self.assertIn(mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF, mjd.efc_type[: mjd.nefc])
 
-    mjwarp.reset_data(m, d, reset=wp.array([True, False], dtype=bool))
+    rownnz, rowadr = d.efc.J_rownnz.numpy()[0], d.efc.J_rowadr.numpy()[0]
+    colind, J = d.efc.J_colind.numpy()[0, 0], d.efc.J.numpy()[0, 0]
+    for r in range(mjd.nefc):
+      row = np.zeros(mjm.nv)
+      row[colind[rowadr[r] : rowadr[r] + rownnz[r]]] = J[rowadr[r] : rowadr[r] + rownnz[r]]
+      np.testing.assert_allclose(row, mjd.efc_J.reshape((mjd.nefc, mjm.nv))[r], atol=1e-6)
+    nblock = d.efc.jtdaj_nblock.numpy()[0]
+    for a, n in zip(d.efc.jtdaj_adr.numpy()[0, :nblock], d.efc.jtdaj_nrow.numpy()[0, :nblock]):
+      for r in range(a + 1, a + n):
+        np.testing.assert_array_equal(colind[rowadr[r] : rowadr[r] + rownnz[r]], colind[rowadr[a] : rowadr[a] + rownnz[a]])
 
-    _assert_eq(d.nefc.numpy()[0], 0, "nefc")
-    _assert_eq(d.efc.jtdaj_nblock.numpy(), [0, nblock[1]], "jtdaj_nblock")
+    # solving the loaded state from a cold start reaches MuJoCo's solution
+    d.qacc.fill_(wp.inf)
+    d.qacc_warmstart.zero_()
+    mjwarp.solve(m, d)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-4, atol=1e-4)
+
+    with self.assertRaises(ValueError):
+      mjwarp.put_data(mjm, mjd, njmax_nnz=1)
+
+  @parameterized.parameters("auto", "sparse")
+  def test_put_data_flex_equality_blocks(self, jacobian):
+    """Each edge row of a flex equality loads as its own JTDAJ block."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option jacobian="{jacobian}"/>
+        <worldbody>
+          <flexcomp name="rope" type="grid" dim="1" count="14 1 1" spacing=".1 .1 .1" radius=".03" mass="1">
+            <edge equality="true"/>
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <pin id="0"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qvel_noise=0.5,
+    )
+    self.assertEqual(mujoco.mj_isSparse(mjm), jacobian == "sparse")
+    self.assertTrue(m.is_sparse)
+    self.assertGreater(mjd.nefc, 1)
+
+    nblock = d.efc.jtdaj_nblock.numpy()[0]
+    np.testing.assert_array_equal(d.efc.jtdaj_adr.numpy()[0, :nblock], np.arange(mjd.nefc))
+    np.testing.assert_array_equal(d.efc.jtdaj_nrow.numpy()[0, :nblock], 1)
+
+    d.qacc.fill_(wp.inf)
+    d.qacc_warmstart.zero_()
+    mjwarp.solve(m, d)
+    np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-4, atol=1e-4)
 
   @parameterized.parameters(types.Model, types.Data, types.RenderContext)
   def test_is_batched_metadata(self, dataclass_type):
@@ -856,15 +973,14 @@ class IOTest(parameterized.TestCase):
       "act_dot",
       "xpos",
       "xquat",
-      "xmat",
       "xipos",
-      "ximat",
+      "xiquat",
       "xanchor",
       "xaxis",
       "geom_xpos",
-      "geom_xmat",
+      "geom_xquat",
       "site_xpos",
-      "site_xmat",
+      "site_xquat",
       "cam_xpos",
       "cam_xmat",
       "light_xpos",
@@ -914,6 +1030,10 @@ class IOTest(parameterized.TestCase):
         getattr(mjd, field).reshape(-1),
         field,
       )
+    _assert_eq(mjd.xmat.reshape((-1, 3, 3)), test_data.quat_to_mat(d.xquat.numpy()[world_id]), "xmat")
+    _assert_eq(mjd.ximat.reshape((-1, 3, 3)), test_data.quat_to_mat(d.xiquat.numpy()[world_id]), "ximat")
+    _assert_eq(mjd.geom_xmat.reshape((-1, 3, 3)), test_data.quat_to_mat(d.geom_xquat.numpy()[world_id]), "geom_xmat")
+    _assert_eq(mjd.site_xmat.reshape((-1, 3, 3)), test_data.quat_to_mat(d.site_xquat.numpy()[world_id]), "site_xmat")
 
     # actuator_moment
     actuator_moment_dense = np.zeros((mjm.nu, mjm.nv))
@@ -934,7 +1054,7 @@ class IOTest(parameterized.TestCase):
 
     # contact
     ncon = int(d.nacon.numpy()[0] / nworld)
-    for field in [
+    contact_fields = [
       "dist",
       "pos",
       "frame",
@@ -943,10 +1063,13 @@ class IOTest(parameterized.TestCase):
       "solref",
       "solreffriction",
       "solimp",
+      "adhesion",
       "dim",
       "geom",
       # TODO(team): efc_address
-    ]:
+    ]
+    contact_fields.append("surfacevel")
+    for field in contact_fields:
       _assert_eq(
         getattr(d.contact, field).numpy()[world_id * ncon : world_id * ncon + ncon].reshape(-1),
         getattr(mjd.contact, field).reshape(-1),
@@ -1224,9 +1347,12 @@ class IOTest(parameterized.TestCase):
     m = mjwarp.put_model(mjm)
     d = mjwarp.put_data(mjm, mjd, nconmax=16, njmax=16)
 
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m, d)
+
     # let the box fall and settle on the ground
     for _ in range(30):
-      mjwarp.step(m, d)
+      wp.capture_launch(capture.graph)
 
     # check that box is above ground
     # box center should be at z ≈ 0.5 when resting on ground
@@ -1537,26 +1663,23 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(m.opt.noslip_iterations, 3)
     np.testing.assert_allclose(m.opt.noslip_tolerance.numpy(), [1e-3])
 
-  @parameterized.parameters(7, 8)
-  def test_contact_sensor_vel_unsupported(self, bit):
-    """Contact sensor with linvel (bit 7) or angvel (bit 8) raises NotImplementedError."""
-    mjm = mujoco.MjModel.from_xml_string("""
-      <mujoco>
-        <worldbody>
-          <geom type="plane" size="1 1 1"/>
-          <body>
-            <freejoint/>
-            <geom size="0.1"/>
-          </body>
-        </worldbody>
-        <sensor>
-          <contact data="found"/>
-        </sensor>
-      </mujoco>
-    """)
-    mjm.sensor_intprm[0, 0] |= 1 << bit
+  @parameterized.parameters("linvel", "angvel")
+  def test_contact_sensor_vel_flex_unsupported(self, data):
+    """Contact sensor linvel or angvel with flex raises NotImplementedError."""
     with self.assertRaises(NotImplementedError):
-      put_model(mjm)
+      test_data.fixture(
+        xml=f"""
+        <mujoco>
+          <worldbody>
+            <geom type="plane" size="1 1 1"/>
+            <flexcomp name="rope" type="grid" count="3 1 1" spacing=".1 .1 .1" pos="0 0 .5" dim="1" radius=".01"/>
+          </worldbody>
+          <sensor>
+            <contact data="{data}"/>
+          </sensor>
+        </mujoco>
+        """
+      )
 
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_reset_data(self, xml):
@@ -1630,6 +1753,36 @@ class IOTest(parameterized.TestCase):
         _assert_eq(getattr(d.contact, arr).numpy(), -1, arr)
       else:
         _assert_eq(getattr(d.contact, arr).numpy(), 0.0, arr)
+
+  def test_reset_data_act(self):
+    """Tests that reset_data zeros all activation states when na > nu."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="joint"/>
+            <geom size="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <dcmotor joint="joint" motorconst="0.05" resistance="2.0" inductance="0.01" thermal="10 5 0 0.004 25 25"/>
+        </actuator>
+      </mujoco>
+      """
+    )
+    self.assertGreater(m.na, m.nu)
+
+    d.ctrl.fill_(wp.inf)
+    d.act.fill_(wp.inf)
+    d.act_dot.fill_(wp.inf)
+
+    mujoco.mj_resetData(mjm, mjd)
+    mjwarp.reset_data(m, d)
+
+    _assert_eq(d.ctrl.numpy()[0], mjd.ctrl, "ctrl")
+    _assert_eq(d.act.numpy()[0], mjd.act, "act")
+    _assert_eq(d.act_dot.numpy()[0], mjd.act_dot, "act_dot")
 
   def test_reset_data_world(self):
     """Tests per-world reset."""
@@ -1959,7 +2112,6 @@ class IOTest(parameterized.TestCase):
         <extension>
           <plugin plugin="mujoco.pid"/>
           <plugin plugin="mujoco.sensor.touch_grid"/>
-          <plugin plugin="mujoco.elasticity.cable"/>
         </extension>
         <worldbody>
           <geom type="plane" size="10 10 .001"/>
@@ -1968,15 +2120,6 @@ class IOTest(parameterized.TestCase):
             <geom type="sphere" size=".1"/>
             <site name="site"/>
           </body>
-          <composite type="cable" curve="s" count="41 1 1" size="1" offset="-.3 0 .6" initial="none">
-            <plugin plugin="mujoco.elasticity.cable">
-              <config key="twist" value="1e7"/>
-              <config key="bend" value="4e6"/>
-              <config key="vmax" value="0.05"/>
-            </plugin>
-            <joint kind="main" damping=".015"/>
-            <geom type="capsule" size=".005" rgba=".8 .2 .1 .1" condim="1"/>
-          </composite>
         </worldbody>
         <actuator>
           <plugin plugin="mujoco.pid" joint="joint"/>
@@ -2089,6 +2232,38 @@ class IOTest(parameterized.TestCase):
       if isinstance(m_val, wp.array):
         m_val = m_val.numpy()
       np.testing.assert_array_equal(m_val, mjm_val, err_msg=f"mismatch: {field}")
+
+  def test_tendon_type(self):
+    """Tests that tendon_type matches mjModel for fixed and spatial tendons."""
+    mjm, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <site name="site0"/>
+          <body>
+            <joint name="joint0"/>
+            <geom size="0.1"/>
+            <site name="site1" pos="1 0 0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial>
+            <site site="site0"/>
+            <site site="site1"/>
+          </spatial>
+          <fixed>
+            <joint joint="joint0" coef="1"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """
+    )
+
+    expected = [types.TendonType.SPATIAL, types.TendonType.FIXED]
+    np.testing.assert_array_equal(m.tendon_type.numpy(), expected)
+    np.testing.assert_array_equal(mjm.tendon_type, expected)
+    self.assertEqual(types.TendonType.FIXED, mujoco.mjtTendon.mjTENDON_FIXED)
+    self.assertEqual(types.TendonType.SPATIAL, mujoco.mjtTendon.mjTENDON_SPATIAL)
 
   def test_model_batched_fields(self):
     """Test Model batched fields."""
@@ -2564,8 +2739,8 @@ class IOTest(parameterized.TestCase):
 
   @parameterized.parameters(0, mujoco.mjtDisableBit.mjDSBL_MULTICCD)
   def test_margin_box_box(self, disableflags):
-    """Box-box with margin uses the primitive collider (as in MuJoCo), with or without MULTICCD."""
-    _, _, m, _ = test_data.fixture(
+    """Box-box with margin succeeds without error, with or without MULTICCD."""
+    test_data.fixture(
       xml="""
       <mujoco>
         <worldbody>
@@ -2582,30 +2757,9 @@ class IOTest(parameterized.TestCase):
       """,
       overrides={"opt.disableflags": disableflags},
     )
-    self.assertTrue(m.has_boxbox_margin)
-
-  def test_no_margin_box_box(self):
-    """Box-box without margin keeps using the convex collider."""
-    _, _, m, _ = test_data.fixture(
-      xml="""
-      <mujoco>
-        <worldbody>
-          <body>
-            <freejoint/>
-            <geom type="box" size=".1 .1 .1"/>
-          </body>
-          <body pos="0 0 .5">
-            <freejoint/>
-            <geom type="box" size=".1 .1 .1"/>
-          </body>
-        </worldbody>
-      </mujoco>
-      """
-    )
-    self.assertFalse(m.has_boxbox_margin)
 
   def test_margin_multiccd_box_mesh(self):
-    """MULTICCD + box-mesh with margin raises NotImplementedError."""
+    """MULTICCD + box-mesh with margin succeeds without error."""
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
         <worldbody>
@@ -2623,11 +2777,10 @@ class IOTest(parameterized.TestCase):
         </asset>
       </mujoco>
     """)
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
+    mjwarp.put_model(mjm)
 
   def test_margin_multiccd_mesh_mesh(self):
-    """MULTICCD + mesh-mesh with margin raises NotImplementedError."""
+    """MULTICCD + mesh-mesh with margin succeeds without error."""
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
         <worldbody>
@@ -2645,8 +2798,7 @@ class IOTest(parameterized.TestCase):
         </asset>
       </mujoco>
     """)
-    with self.assertRaises(NotImplementedError):
-      mjwarp.put_model(mjm)
+    mjwarp.put_model(mjm)
 
   def test_margin_box_box_nativeccd_disabled(self):
     """Box-box with margin and NATIVECCD disabled succeeds without error."""
@@ -2669,8 +2821,8 @@ class IOTest(parameterized.TestCase):
     mjwarp.put_model(mjm)
 
   def test_margin_pair_box_box(self):
-    """Pair with margin on box-box uses the primitive collider (as in MuJoCo)."""
-    _, _, m, _ = test_data.fixture(
+    """Pair with margin on box-box succeeds without error."""
+    test_data.fixture(
       xml="""
       <mujoco>
         <worldbody>
@@ -2689,7 +2841,6 @@ class IOTest(parameterized.TestCase):
       </mujoco>
       """
     )
-    self.assertTrue(m.has_boxbox_margin)
 
   @parameterized.parameters(*_IO_TEST_MODELS)
   def test_kernel_recompilation(self, xml):
@@ -2734,6 +2885,53 @@ class IOTest(parameterized.TestCase):
     mjm.eq_type[0] = mujoco.mjtEq.mjEQ_FLEX
 
     with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(mjm)
+
+  def test_flex_rod_hinge_map(self):
+    """Verify put_model maps each 1D rod bending hinge to its flex and flex_bending address."""
+    mjm, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" dim="2" mass="1">
+            <elasticity young="1e3" thickness="1e-2" elastic2d="bend"/>
+          </flexcomp>
+          <flexcomp name="rope" type="grid" count="3 1 1" spacing="0.1 0.1 0.1" pos="0 1 0" radius="0.01" dim="1" mass="1"/>
+          <flexcomp name="rod" type="grid" count="4 1 1" spacing="0.1 0.1 0.1" pos="0 2 0" radius="0.01" dim="1" mass="1">
+            <elasticity young="1e7"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    rod = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "rod")
+    adr = mjm.flex_bendingadr[rod]
+    self.assertGreater(adr, 0)
+    self.assertEqual(m.nflexrodhinge, 2)
+    np.testing.assert_array_equal(m.flex_rodhinge_map.numpy(), [[rod, adr + 1], [rod, adr + 1 + types.ROD_HINGE_SIZE]])
+    self.assertFalse(m.has_flex_edge_stiff_damp)
+
+  @parameterized.parameters(
+    # quadratic flexes are rejected before the self-collision check
+    ("trilinear", "Self-collision of interpolated flexes"),
+    ("quadratic", "Quadratic flex interpolation"),
+  )
+  def test_flex_interp_selfcollide_error(self, dof, message):
+    """Verify loading an interpolated flex with self-collision raises NotImplementedError."""
+    xml = f"""
+    <mujoco>
+      <worldbody>
+        <flexcomp type="grid" count="3 3 3" spacing="0.1 0.1 0.1"
+                  pos="0 0 0.5" name="cube" dim="3" mass="1" radius="0.005"
+                  dof="{dof}">
+          <contact selfcollide="auto"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+
+    with self.assertRaisesRegex(NotImplementedError, message):
       mjwarp.put_model(mjm)
 
   @parameterized.parameters(
@@ -2847,7 +3045,7 @@ class IOTest(parameterized.TestCase):
 
     # For each contact field, verify that it is tiled correctly
     ncon = mjd.ncon
-    for field in [
+    contact_fields = [
       "dist",
       "pos",
       "frame",
@@ -2859,13 +3057,52 @@ class IOTest(parameterized.TestCase):
       "adhesion",
       "dim",
       "geom",
-    ]:
+    ]
+    contact_fields.append("surfacevel")
+    for field in contact_fields:
       val_device = getattr(d.contact, field).numpy()
       val_host = getattr(mjd.contact, field)
       for w in range(nworld):
         device_slice = val_device[w * ncon : (w + 1) * ncon].reshape(-1)
         host_slice = val_host[:ncon].reshape(-1)
         _assert_eq(device_slice, host_slice, f"{field} mismatch in world {w}")
+
+  @parameterized.parameters(1, 2)
+  def test_contact_surfacevel_roundtrip(self, nworld):
+    """Tests put_data, get_data_into, and reset_data for non-zero contact.surfacevel."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="2 2 0.01" condim="4" surfacevel="0.4 -0.2 0 0 0 1.2"/>
+          <body pos="0.1 0.2 0.095">
+            <freejoint/>
+            <geom size="0.1" condim="4"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertEqual(mjd.ncon, 1)
+    expected = mjd.contact.surfacevel[0].copy()
+    self.assertFalse(np.allclose(expected, 0.0))
+
+    surfacevel = d.contact.surfacevel.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(surfacevel[w], expected, rtol=1e-5, atol=1e-5)
+
+    if nworld == 2:
+      surfacevel[1] = [-0.5, 0.3, -0.7]
+      d.contact.surfacevel.assign(surfacevel)
+
+    for w in range(nworld):
+      out = mujoco.MjData(mjm)
+      mjwarp.get_data_into(out, mjm, d, world_id=w)
+      np.testing.assert_allclose(out.contact.surfacevel[0], surfacevel[w], rtol=1e-5, atol=1e-5)
+
+    mjwarp.reset_data(m, d)
+    np.testing.assert_array_equal(d.contact.surfacevel.numpy()[:nworld], np.zeros((nworld, 3)))
 
   def test_flex_interp_negative_success(self):
     """Test that put_model succeeds for negative flex_interp (shell elements)."""
@@ -2934,6 +3171,66 @@ class IOTest(parameterized.TestCase):
     with warnings.catch_warnings():
       warnings.simplefilter("error")
       mjwarp.put_model(mjm)
+
+  @parameterized.parameters(1, 2)
+  def test_make_put_data_sleep_arrays(self, nworld):
+    """Tests that make_data and put_data initialize all sleep arrays consistently."""
+    mjm, mjd, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <body mocap="true">
+            <geom size=".1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint type="slide"/>
+            <geom size=".1"/>
+          </body>
+          <body pos="2 0 0">
+            <joint type="slide"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # make_data initializes awake counts and indices without requiring a step
+    d_make = mjwarp.make_data(mjm, nworld=nworld)
+    for w in range(nworld):
+      self.assertEqual(d_make.ntree_awake.numpy()[w], 2)
+      self.assertEqual(d_make.nbody_awake.numpy()[w], 4)
+      self.assertEqual(d_make.nv_awake.numpy()[w], 2)
+      np.testing.assert_array_equal(d_make.body_awake_ind.numpy()[w], [0, 1, 2, 3])
+      np.testing.assert_array_equal(d_make.dof_awake_ind.numpy()[w], [0, 1])
+
+    # put_data derives body_awake, counts, and indices from tree_asleep
+    mjd.tree_asleep[:] = [0, -(1 + types.MJ_MINAWAKE)]
+    d_put = mjwarp.put_data(mjm, mjd, nworld=nworld)
+    for w in range(nworld):
+      self.assertEqual(d_put.ntree_awake.numpy()[w], 1)
+      self.assertEqual(d_put.nbody_awake.numpy()[w], 3)
+      self.assertEqual(d_put.nv_awake.numpy()[w], 1)
+      np.testing.assert_array_equal(
+        d_put.body_awake.numpy()[w],
+        [types.SleepState.STATIC, types.SleepState.AWAKE, types.SleepState.ASLEEP, types.SleepState.AWAKE],
+      )
+      np.testing.assert_array_equal(d_put.body_awake_ind.numpy()[w, :3], [0, 1, 3])
+      np.testing.assert_array_equal(d_put.dof_awake_ind.numpy()[w, :1], [1])
+
+    if nworld == 2:
+      qvel = d_put.qvel.numpy()
+      qvel[1, 0] = 1.0
+      d_put.qvel.assign(qvel)
+    mjwarp.step(m, d_put)
+    self.assertEqual(d_put.tree_awake.numpy()[0, 0], 0)
+    if nworld == 2:
+      self.assertEqual(d_put.tree_awake.numpy()[1, 0], 1)
+      self.assertFalse(np.allclose(d_put.qpos.numpy()[0], d_put.qpos.numpy()[1]))
 
 
 if __name__ == "__main__":

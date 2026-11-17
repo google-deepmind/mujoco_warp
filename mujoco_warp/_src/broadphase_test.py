@@ -148,9 +148,14 @@ class BroadphaseTest(parameterized.TestCase):
       np.vstack([np.expand_dims(mjd1.geom_xpos, axis=0), np.expand_dims(mjd2.geom_xpos, axis=0)]),
       dtype=wp.vec3,
     )
-    d3.geom_xmat = wp.array(
-      np.vstack([np.expand_dims(mjd1.geom_xmat, axis=0), np.expand_dims(mjd2.geom_xmat, axis=0)]),
-      dtype=wp.mat33,
+    d3.geom_xquat = wp.array(
+      np.vstack(
+        [
+          np.expand_dims(test_data.mat_to_quat(mjd1.geom_xmat), axis=0),
+          np.expand_dims(test_data.mat_to_quat(mjd2.geom_xmat), axis=0),
+        ]
+      ),
+      dtype=wp.quat,
     )
     ctx3 = broadphase_caller(m, d3)
 
