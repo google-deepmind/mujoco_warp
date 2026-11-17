@@ -1686,7 +1686,14 @@ def _tendon_actuator_residual_seed(
 
 
 @event_scope
-def tendon_qpos_vjp(m: Model, d: Data, lam: wp.array2d[float], bc: BackwardContext | None = None):
+def tendon_qpos_vjp(
+  m: Model,
+  d: Data,
+  lam: wp.array2d[float],
+  bc: BackwardContext | None = None,
+  *,
+  reset_seeds: bool = True,
+):
   """Returns the residual position VJP -d(lam.T @ qfrc_tendon_and_tendon_act)/dqpos."""
   if bc is None:
     from mujoco_warp._src import adjoint
@@ -1697,8 +1704,9 @@ def tendon_qpos_vjp(m: Model, d: Data, lam: wp.array2d[float], bc: BackwardConte
   if not m.ntendon:
     return smooth_res_qpos
 
-  bc.adj_ten_length.zero_()
-  bc.adj_ten_J.zero_()
+  if reset_seeds:
+    bc.adj_ten_length.zero_()
+    bc.adj_ten_J.zero_()
   flags = DisableBit.ACTUATION | DisableBit.SPRING | DisableBit.DAMPER
   implicitfast = m.opt.integrator == IntegratorType.IMPLICITFAST and (m.opt.disableflags & flags) != flags
   dsbl_spring = bool(m.opt.disableflags & DisableBit.SPRING)

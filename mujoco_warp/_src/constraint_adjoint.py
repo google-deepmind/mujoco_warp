@@ -25,6 +25,7 @@ from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import ConstraintState
 from mujoco_warp._src.types import ConstraintType
+from mujoco_warp._src.types import EqType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec12
@@ -38,11 +39,12 @@ _MAXCONDIM = 6  # max valid MuJoCo condim; elliptic friction rows = dimid 1..con
 _MAX_PYRAMID_EDGES = 10  # 2*(_MAXCONDIM - 1) pyramidal edges at condim 6
 
 
-# Non-contact constraint residual VJP (equality / joint-limit / dof-friction rows), orchestrated by
-# adjoint._residual_constraint_sparse; contact rows live in the bottom section of this file.
+# Non-contact constraint residual VJP (equality / joint+tendon limit / dof+tendon friction rows),
+# orchestrated by adjoint._residual_constraint_sparse; contact rows live below.
 #   gather (manual): Z_e = sum_i J_ei*lam_i + true topology invweight (A/V stay frozen anchors).
 #   leaf _constraint_row_phi (loop-free, only AD'd piece): phi_e = -Z*f, f anchored to efc.force.
-#   scatter (manual): res_qvel += J*Vbar (all rows); res_dof += J*Pbar (position-bearing only).
+#   scatter (manual): res_qvel += J*Vbar (all rows); res_dof += J*Pbar (joint rows);
+#                     adj_ten_length / adj_ten_J += tendon position & dJ/dqpos seeds (tendon rows).
 # Routing: dense or CSR according to m.is_sparse.
 
 
@@ -56,8 +58,10 @@ def _constraint_gather(is_sparse: bool):
     nv: int,
     jnt_dofadr: wp.array[int],
     dof_invweight0: wp.array2d[float],
+    eq_type: wp.array[int],
     eq_obj1id: wp.array[int],
     eq_obj2id: wp.array[int],
+    tendon_invweight0: wp.array2d[float],
     # Data in:
     nefc_in: wp.array[int],
     efc_type_in: wp.array2d[int],
@@ -79,8 +83,14 @@ def _constraint_gather(is_sparse: bool):
     if row >= nefc_in[w]:
       return
     ty = efc_type_in[w, row]
-    if ty != ConstraintType.EQUALITY and ty != ConstraintType.LIMIT_JOINT and ty != ConstraintType.FRICTION_DOF:
-      return  # contact rows -> _contact_*; TODO(etaoxing): tendon limit/friction (structural gate raises)
+    if (
+      ty != ConstraintType.EQUALITY
+      and ty != ConstraintType.LIMIT_JOINT
+      and ty != ConstraintType.FRICTION_DOF
+      and ty != ConstraintType.LIMIT_TENDON
+      and ty != ConstraintType.FRICTION_TENDON
+    ):
+      return
     if efc_state_in[w, row] == ConstraintState.SATISFIED:
       return
     Z = float(0.0)
@@ -99,7 +109,15 @@ def _constraint_gather(is_sparse: bool):
       invw_out[w, row] = dof_invweight0[w % dof_invweight0.shape[0], cid]
     elif ty == ConstraintType.LIMIT_JOINT:
       invw_out[w, row] = dof_invweight0[w % dof_invweight0.shape[0], jnt_dofadr[cid]]
-    else:  # The support gate admits only joint equalities; match constraint._equality_joint.
+    elif ty == ConstraintType.FRICTION_TENDON or ty == ConstraintType.LIMIT_TENDON:
+      invw_out[w, row] = tendon_invweight0[w % tendon_invweight0.shape[0], cid]
+    elif eq_type[cid] == EqType.TENDON:
+      invweight = tendon_invweight0[w % tendon_invweight0.shape[0], eq_obj1id[cid]]
+      ten2 = eq_obj2id[cid]
+      if ten2 >= 0:
+        invweight += tendon_invweight0[w % tendon_invweight0.shape[0], ten2]
+      invw_out[w, row] = invweight
+    else:
       model_worldid = w % dof_invweight0.shape[0]
       invweight = dof_invweight0[model_worldid, jnt_dofadr[eq_obj1id[cid]]]
       joint2 = eq_obj2id[cid]
@@ -123,6 +141,11 @@ def _constraint_row_phi(
   dof_frictionloss: wp.array2d[float],
   eq_solref: wp.array2d[wp.vec2],
   eq_solimp: wp.array2d[vec5],
+  tendon_solref_lim: wp.array2d[wp.vec2],
+  tendon_solimp_lim: wp.array2d[vec5],
+  tendon_solref_fri: wp.array2d[wp.vec2],
+  tendon_solimp_fri: wp.array2d[vec5],
+  tendon_frictionloss: wp.array2d[float],
   # Data in:
   nefc_in: wp.array[int],
   efc_type_in: wp.array2d[int],
@@ -135,7 +158,7 @@ def _constraint_row_phi(
   efc_force_in: wp.array2d[float],
   efc_state_in: wp.array2d[int],
   # In:
-  Z_in: wp.array2d[float],  # = J*lam (gather) -> Zbar (= -f; the dJ/dq topology seed, unused for G1)
+  Z_in: wp.array2d[float],  # = J*lam (gather) -> Zbar (= -f; the dJ/dq topology seed)
   invw_in: wp.array2d[float],  # topology inverse weight
   ctx_Jaref_in: wp.array2d[float],  # frozen J*qacc - aref (jaref value anchor)
   # Out:
@@ -146,18 +169,30 @@ def _constraint_row_phi(
   if row >= nefc_in[w]:
     return
   ty = efc_type_in[w, row]
-  if ty != ConstraintType.EQUALITY and ty != ConstraintType.LIMIT_JOINT and ty != ConstraintType.FRICTION_DOF:
+  if (
+    ty != ConstraintType.EQUALITY
+    and ty != ConstraintType.LIMIT_JOINT
+    and ty != ConstraintType.FRICTION_DOF
+    and ty != ConstraintType.LIMIT_TENDON
+    and ty != ConstraintType.FRICTION_TENDON
+  ):
     return
   st = efc_state_in[w, row]
   if st == ConstraintState.SATISFIED:
     return
   cid = efc_id_in[w, row]
   Z = Z_in[w, row]
-  if ty == ConstraintType.FRICTION_DOF and st == ConstraintState.LINEARNEG:  # saturated friction: force = +frictionloss
+  if ty == ConstraintType.FRICTION_DOF and st == ConstraintState.LINEARNEG:
     phi_out[w, row] = -Z * dof_frictionloss[w % dof_frictionloss.shape[0], cid]
     return
-  if ty == ConstraintType.FRICTION_DOF and st == ConstraintState.LINEARPOS:  # saturated friction: force = -frictionloss
+  if ty == ConstraintType.FRICTION_DOF and st == ConstraintState.LINEARPOS:
     phi_out[w, row] = -Z * (-dof_frictionloss[w % dof_frictionloss.shape[0], cid])
+    return
+  if ty == ConstraintType.FRICTION_TENDON and st == ConstraintState.LINEARNEG:
+    phi_out[w, row] = -Z * tendon_frictionloss[w % tendon_frictionloss.shape[0], cid]
+    return
+  if ty == ConstraintType.FRICTION_TENDON and st == ConstraintState.LINEARPOS:
+    phi_out[w, row] = -Z * (-tendon_frictionloss[w % tendon_frictionloss.shape[0], cid])
     return
   # QUADRATIC (equality / active limit / stuck friction): f = -D*jaref, value-anchored to efc.force.
   dt = opt_timestep[w % opt_timestep.shape[0]]
@@ -167,15 +202,23 @@ def _constraint_row_phi(
     sr = dof_solref[w % dof_solref.shape[0], cid]
     si = dof_solimp[w % dof_solimp.shape[0], cid]
     kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P, False)
+  elif ty == ConstraintType.FRICTION_TENDON:
+    sr = tendon_solref_fri[w % tendon_solref_fri.shape[0], cid]
+    si = tendon_solimp_fri[w % tendon_solimp_fri.shape[0], cid]
+    kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P, False)
   elif ty == ConstraintType.EQUALITY:
     sr = eq_solref[w % eq_solref.shape[0], cid]
     si = eq_solimp[w % eq_solimp.shape[0], cid]
+    kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P, False)
+  elif ty == ConstraintType.LIMIT_TENDON:
+    sr = tendon_solref_lim[w % tendon_solref_lim.shape[0], cid]
+    si = tendon_solimp_lim[w % tendon_solimp_lim.shape[0], cid]
     kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P, False)
   else:  # LIMIT_JOINT (slide/hinge scalar J; ball 3-dof -axis J)
     sr = jnt_solref[w % jnt_solref.shape[0], cid]
     si = jnt_solimp[w % jnt_solimp.shape[0], cid]
     kbi = constraint._contact_kbimp(opt_disableflags, dt, sr, si, P, False)
-  k = 0.0 if ty == ConstraintType.FRICTION_DOF else kbi[0]
+  k = 0.0 if (ty == ConstraintType.FRICTION_DOF or ty == ConstraintType.FRICTION_TENDON) else kbi[0]
   b = kbi[1]
   imp = kbi[2]
   g = k * imp * P + b * V
@@ -203,7 +246,7 @@ def _ball_jacobian_objective(delta: wp.vec3, quat: wp.quat, seed: wp.vec3):
 
 
 # scatter (manual): re-walk the row's J support; res_qvel_out += J*Vbar for all active rows,
-# res_dof_out += J*Pbar only for position-bearing rows (a friction row's P is identically zero)
+# res_dof_out += J*Pbar for joint rows, and adj_ten_length/adj_ten_J for tendon rows.
 @cache_kernel
 def _constraint_scatter(is_sparse: bool):
   @wp.kernel(module="unique", enable_backward=False)
@@ -214,13 +257,22 @@ def _constraint_scatter(is_sparse: bool):
     jnt_type: wp.array[int],
     jnt_qposadr: wp.array[int],
     jnt_dofadr: wp.array[int],
+    eq_type: wp.array[int],
+    eq_obj1id: wp.array[int],
     eq_obj2id: wp.array[int],
     eq_data: wp.array2d[vec12],
+    ten_J_rownnz: wp.array[int],
+    ten_J_rowadr: wp.array[int],
+    ten_J_colind: wp.array[int],
+    tendon_range: wp.array2d[wp.vec2],
+    tendon_length0: wp.array2d[float],
     # Data in:
     nefc_in: wp.array[int],
     qpos_in: wp.array2d[float],
     qvel_in: wp.array2d[float],
     qacc_in: wp.array2d[float],
+    ten_J_in: wp.array2d[float],
+    ten_length_in: wp.array2d[float],
     efc_type_in: wp.array2d[int],
     efc_id_in: wp.array2d[int],
     efc_J_rownnz_in: wp.array2d[int],
@@ -238,19 +290,31 @@ def _constraint_scatter(is_sparse: bool):
     # Out:
     res_qvel_out: wp.array2d[float],
     res_dof_out: wp.array2d[float],
+    adj_ten_length_out: wp.array2d[float],
+    adj_ten_J_out: wp.array2d[float],
   ):
     w, row = wp.tid()
     if row >= nefc_in[w]:
       return
     ty = efc_type_in[w, row]
-    if ty != ConstraintType.EQUALITY and ty != ConstraintType.LIMIT_JOINT and ty != ConstraintType.FRICTION_DOF:
+    if (
+      ty != ConstraintType.EQUALITY
+      and ty != ConstraintType.LIMIT_JOINT
+      and ty != ConstraintType.FRICTION_DOF
+      and ty != ConstraintType.LIMIT_TENDON
+      and ty != ConstraintType.FRICTION_TENDON
+    ):
       return
-    if efc_state_in[w, row] == ConstraintState.SATISFIED:
+    st = efc_state_in[w, row]
+    if st == ConstraintState.SATISFIED:
       return
+    cid = efc_id_in[w, row]
+    is_ten_eq = ty == ConstraintType.EQUALITY and eq_type[cid] == EqType.TENDON
+    is_ten_row = is_ten_eq or ty == ConstraintType.LIMIT_TENDON or ty == ConstraintType.FRICTION_TENDON
     Vb = adjV_in[w, row]
     Pb = adjP_in[w, row]
-    # position-bearing rows; FRICTION_DOF excluded (its P == 0, no qpos route)
-    route_p = ty == ConstraintType.LIMIT_JOINT or ty == ConstraintType.EQUALITY
+    # Joint position rows route J*Pbar into res_dof; tendon rows route via tendon_kinematics_vjp.
+    route_p = ty == ConstraintType.LIMIT_JOINT or (ty == ConstraintType.EQUALITY and not is_ten_eq)
     count = nv
     start = int(0)
     if wp.static(is_sparse):
@@ -269,9 +333,71 @@ def _constraint_scatter(is_sparse: bool):
         if route_p:
           wp.atomic_add(res_dof_out[w], i, jj * Pb)  # kernel_analyzer: ignore[atomic]
 
+    if is_ten_row:
+      force_seed = adjZ_in[w, row]
+      acc_seed = (efc_D_in[w, row] * Z_in[w, row]) if st == ConstraintState.QUADRATIC else 0.0
+      if ty == ConstraintType.FRICTION_TENDON:
+        rownnz = ten_J_rownnz[cid]
+        rowadr = ten_J_rowadr[cid]
+        for k in range(rownnz):
+          ei = rowadr + k
+          di = ten_J_colind[ei]
+          g_J = force_seed * lam_in[w, di] + Vb * qvel_in[w, di] + acc_seed * qacc_in[w, di]
+          if g_J != 0.0:
+            wp.atomic_add(adj_ten_J_out[w], ei, g_J)  # kernel_analyzer: ignore[atomic]
+      elif ty == ConstraintType.LIMIT_TENDON:
+        tenrange = tendon_range[w % tendon_range.shape[0], cid]
+        length = ten_length_in[w, cid]
+        dist_min = length - tenrange[0]
+        dist_max = tenrange[1] - length
+        scl = float(dist_min < dist_max) * 2.0 - 1.0
+        if Pb != 0.0:
+          wp.atomic_add(adj_ten_length_out[w], cid, scl * Pb)  # kernel_analyzer: ignore[atomic]
+        rownnz = ten_J_rownnz[cid]
+        rowadr = ten_J_rowadr[cid]
+        for k in range(rownnz):
+          ei = rowadr + k
+          di = ten_J_colind[ei]
+          g_J = scl * (force_seed * lam_in[w, di] + Vb * qvel_in[w, di] + acc_seed * qacc_in[w, di])
+          if g_J != 0.0:
+            wp.atomic_add(adj_ten_J_out[w], ei, g_J)  # kernel_analyzer: ignore[atomic]
+      else:
+        obj1id = eq_obj1id[cid]
+        obj2id = eq_obj2id[cid]
+        if Pb != 0.0:
+          wp.atomic_add(adj_ten_length_out[w], obj1id, Pb)  # kernel_analyzer: ignore[atomic]
+        rownnz1 = ten_J_rownnz[obj1id]
+        rowadr1 = ten_J_rowadr[obj1id]
+        for k in range(rownnz1):
+          ei1 = rowadr1 + k
+          di1 = ten_J_colind[ei1]
+          g_J1 = force_seed * lam_in[w, di1] + Vb * qvel_in[w, di1] + acc_seed * qacc_in[w, di1]
+          if g_J1 != 0.0:
+            wp.atomic_add(adj_ten_J_out[w], ei1, g_J1)  # kernel_analyzer: ignore[atomic]
+        if obj2id > -1:
+          data = eq_data[w % eq_data.shape[0], cid]
+          tl0_w = w % tendon_length0.shape[0]
+          dif = ten_length_in[w, obj2id] - tendon_length0[tl0_w, obj2id]
+          dif2 = dif * dif
+          deriv = data[1] + 2.0 * data[2] * dif + 3.0 * data[3] * dif2 + 4.0 * data[4] * dif2 * dif
+          deriv2 = 2.0 * data[2] + 6.0 * data[3] * dif + 12.0 * data[4] * dif2
+          rownnz2 = ten_J_rownnz[obj2id]
+          rowadr2 = ten_J_rowadr[obj2id]
+          dot_g_J2 = float(0.0)
+          for k in range(rownnz2):
+            ei2 = rowadr2 + k
+            di2 = ten_J_colind[ei2]
+            g_J2 = force_seed * lam_in[w, di2] + Vb * qvel_in[w, di2] + acc_seed * qacc_in[w, di2]
+            if deriv != 0.0 and g_J2 != 0.0:
+              wp.atomic_add(adj_ten_J_out[w], ei2, -deriv * g_J2)  # kernel_analyzer: ignore[atomic]
+            dot_g_J2 += g_J2 * ten_J_in[w, ei2]
+          len2_seed = -deriv * Pb - deriv2 * dot_g_J2
+          if len2_seed != 0.0:
+            wp.atomic_add(adj_ten_length_out[w], obj2id, len2_seed)  # kernel_analyzer: ignore[atomic]
+      return
+
     if not route_p:
       return
-    cid = efc_id_in[w, row]
     jointid = cid
     if ty == ConstraintType.EQUALITY:
       jointid = eq_obj2id[cid]

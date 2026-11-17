@@ -41,6 +41,11 @@ def _accum_constraint_params(
   dof_frictionloss_grad: bool,
   eq_solref_grad: bool,
   eq_solimp_grad: bool,
+  tendon_solref_lim_grad: bool,
+  tendon_solimp_lim_grad: bool,
+  tendon_solref_fri_grad: bool,
+  tendon_solimp_fri_grad: bool,
+  tendon_frictionloss_grad: bool,
 ):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -52,6 +57,11 @@ def _accum_constraint_params(
     res_dof_frictionloss: wp.array2d[float],
     res_eq_solref: wp.array2d[wp.vec2],
     res_eq_solimp: wp.array2d[vec5],
+    res_tendon_solref_lim: wp.array2d[wp.vec2],
+    res_tendon_solimp_lim: wp.array2d[vec5],
+    res_tendon_solref_fri: wp.array2d[wp.vec2],
+    res_tendon_solimp_fri: wp.array2d[vec5],
+    res_tendon_frictionloss: wp.array2d[float],
     # Out:
     jnt_solref_grad_out: wp.array2d[wp.vec2],
     jnt_solimp_grad_out: wp.array2d[vec5],
@@ -60,6 +70,11 @@ def _accum_constraint_params(
     dof_frictionloss_grad_out: wp.array2d[float],
     eq_solref_grad_out: wp.array2d[wp.vec2],
     eq_solimp_grad_out: wp.array2d[vec5],
+    tendon_solref_lim_grad_out: wp.array2d[wp.vec2],
+    tendon_solimp_lim_grad_out: wp.array2d[vec5],
+    tendon_solref_fri_grad_out: wp.array2d[wp.vec2],
+    tendon_solimp_fri_grad_out: wp.array2d[vec5],
+    tendon_frictionloss_grad_out: wp.array2d[float],
   ):
     worldid, paramid = wp.tid()
     if wp.static(jnt_solref_grad):
@@ -83,6 +98,21 @@ def _accum_constraint_params(
     if wp.static(eq_solimp_grad):
       if worldid < res_eq_solimp.shape[0] and paramid < res_eq_solimp.shape[1]:
         eq_solimp_grad_out[worldid, paramid] -= res_eq_solimp[worldid, paramid]
+    if wp.static(tendon_solref_lim_grad):
+      if worldid < res_tendon_solref_lim.shape[0] and paramid < res_tendon_solref_lim.shape[1]:
+        tendon_solref_lim_grad_out[worldid, paramid] -= res_tendon_solref_lim[worldid, paramid]
+    if wp.static(tendon_solimp_lim_grad):
+      if worldid < res_tendon_solimp_lim.shape[0] and paramid < res_tendon_solimp_lim.shape[1]:
+        tendon_solimp_lim_grad_out[worldid, paramid] -= res_tendon_solimp_lim[worldid, paramid]
+    if wp.static(tendon_solref_fri_grad):
+      if worldid < res_tendon_solref_fri.shape[0] and paramid < res_tendon_solref_fri.shape[1]:
+        tendon_solref_fri_grad_out[worldid, paramid] -= res_tendon_solref_fri[worldid, paramid]
+    if wp.static(tendon_solimp_fri_grad):
+      if worldid < res_tendon_solimp_fri.shape[0] and paramid < res_tendon_solimp_fri.shape[1]:
+        tendon_solimp_fri_grad_out[worldid, paramid] -= res_tendon_solimp_fri[worldid, paramid]
+    if wp.static(tendon_frictionloss_grad):
+      if worldid < res_tendon_frictionloss.shape[0] and paramid < res_tendon_frictionloss.shape[1]:
+        tendon_frictionloss_grad_out[worldid, paramid] -= res_tendon_frictionloss[worldid, paramid]
 
   return kernel
 
@@ -134,6 +164,11 @@ def _constraint_param_pairs(m: Model, bc: BackwardContext):
     (m.dof_frictionloss, bc.res_dof_frictionloss),
     (m.eq_solref, bc.res_eq_solref),
     (m.eq_solimp, bc.res_eq_solimp),
+    (m.tendon_solref_lim, bc.res_tendon_solref_lim),
+    (m.tendon_solimp_lim, bc.res_tendon_solimp_lim),
+    (m.tendon_solref_fri, bc.res_tendon_solref_fri),
+    (m.tendon_solimp_fri, bc.res_tendon_solimp_fri),
+    (m.tendon_frictionloss, bc.res_tendon_frictionloss),
   )
 
 

@@ -3159,6 +3159,11 @@ class BackwardContext:
   res_eq_solimp: wp.array
   res_jnt_solref: wp.array
   res_jnt_solimp: wp.array
+  res_tendon_solref_lim: wp.array
+  res_tendon_solimp_lim: wp.array
+  res_tendon_solref_fri: wp.array
+  res_tendon_solimp_fri: wp.array
+  res_tendon_frictionloss: wp.array
   smooth_res_qpos: array("nworld", "nq", float)
   smooth_res_dof: array("nworld", "nv", float)
   smooth_adj_qvel: array("nworld", "nv", float)

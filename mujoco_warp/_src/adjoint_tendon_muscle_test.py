@@ -148,6 +148,8 @@ def _check_step_grads(
   seed: int = 0,
   mocap_grad: bool = False,
   post_fk: bool = False,
+  qpos_override: np.ndarray | None = None,
+  qvel_override: np.ndarray | None = None,
   ctrl_override: np.ndarray | None = None,
   stiffnesspoly: tuple[float, float] | None = None,
   dampingpoly: tuple[float, float] | None = None,
@@ -167,9 +169,15 @@ def _check_step_grads(
   d_out = mjw.make_data(mjm, nworld=nworld)
 
   rng = np.random.default_rng(seed)
-  qpos0 = np.tile(mjm.qpos0, (nworld, 1)) + 0.18 * rng.standard_normal((nworld, mjm.nq))
-  qpos0 = _normalize_quats_mjm(mjm, qpos0).astype(np.float32)
-  qvel0 = (0.35 * rng.standard_normal((nworld, mjm.nv))).astype(np.float32)
+  if qpos_override is not None:
+    qpos0 = _normalize_quats_mjm(mjm, qpos_override).astype(np.float32)
+  else:
+    qpos0 = np.tile(mjm.qpos0, (nworld, 1)) + 0.18 * rng.standard_normal((nworld, mjm.nq))
+    qpos0 = _normalize_quats_mjm(mjm, qpos0).astype(np.float32)
+  if qvel_override is not None:
+    qvel0 = qvel_override.astype(np.float32)
+  else:
+    qvel0 = (0.35 * rng.standard_normal((nworld, mjm.nv))).astype(np.float32)
   act0 = rng.uniform(0.15, 0.85, size=(nworld, mjm.na)).astype(np.float32) if mjm.na else np.zeros((nworld, 0), np.float32)
   if ctrl_override is not None:
     ctrl0 = ctrl_override.astype(np.float32)
@@ -755,22 +763,191 @@ class AdjointTendonMuscleTest(parameterized.TestCase):
     ctrl_ad = np.stack([c.grad.numpy()[0] for c in ctrl_wps], axis=0)
     np.testing.assert_allclose(ctrl_ad, ct_fd, atol=3e-3, rtol=5e-3)
 
+  @parameterized.product(integrator=("Euler", "implicitfast"), jacobian=("dense", "sparse"))
+  def test_tendon_limits_lower_and_upper_fixed_and_spatial(self, integrator: str, jacobian: str):
+    xml = f"""
+    <mujoco>
+      <option timestep="0.004" integrator="{integrator}" jacobian="{jacobian}" solver="Newton" iterations="30"/>
+      <worldbody>
+        <body name="mocap_anchor" pos="0 0.12 0.5" mocap="true">
+          <geom name="g_wrap" type="sphere" size="0.04" contype="0" conaffinity="0"/>
+          <site name="s_anchor" pos="0.02 -0.04 0.01"/>
+        </body>
+        <body pos="0 0 0.5">
+          <joint name="j0" type="hinge" axis="0 0 1" damping="0.1"/>
+          <geom type="capsule" fromto="0 0 0 0.25 0 0" size="0.025" mass="1.0" contype="0" conaffinity="0"/>
+          <site name="s0" pos="0.12 0.03 0"/>
+          <body pos="0.25 0 0">
+            <joint name="j1" type="hinge" axis="0 1 0.2" damping="0.08"/>
+            <geom type="capsule" fromto="0 0 0 0.22 0 0" size="0.02" mass="0.7" contype="0" conaffinity="0"/>
+            <site name="s1" pos="0.16 0.02 -0.02"/>
+          </body>
+        </body>
+      </worldbody>
+      <tendon>
+        <fixed name="t_fix_lim" limited="true" range="-0.015 0.015" margin="0.005" solreflimit="0.02 1.0">
+          <joint joint="j0" coef="0.08"/>
+          <joint joint="j1" coef="-0.05"/>
+        </fixed>
+        <spatial name="t_spa_lim" limited="true" range="0.24 0.29" margin="0.01" solreflimit="0.02 1.0">
+          <site site="s_anchor"/>
+          <geom geom="g_wrap"/>
+          <site site="s0"/>
+          <site site="s1"/>
+        </spatial>
+      </tendon>
+      <actuator>
+        <muscle tendon="t_spa_lim" force="75" lengthrange="0.15 0.55"/>
+      </actuator>
+    </mujoco>
+    """
+    # World 0 hits lower fixed/spatial limits; world 1 hits upper fixed/spatial limits.
+    qpos = np.array([[-0.35, 0.20], [0.42, -0.25]], dtype=np.float32)
+    qvel = np.array([[-0.30, 0.25], [0.35, -0.20]], dtype=np.float32)
+    _check_step_grads(self, xml, seed=66, mocap_grad=True, qpos_override=qpos, qvel_override=qvel)
+
+  @parameterized.product(integrator=("Euler", "implicitfast"), jacobian=("dense", "sparse"))
+  def test_tendon_frictionloss_sticking_and_slipping(self, integrator: str, jacobian: str):
+    xml = f"""
+    <mujoco>
+      <option timestep="0.004" integrator="{integrator}" jacobian="{jacobian}" solver="Newton" iterations="35"/>
+      <worldbody>
+        <body pos="0 0 0.5">
+          <joint name="j0" type="hinge" axis="0 0 1" damping="0.05"/>
+          <geom type="capsule" fromto="0 0 0 0.26 0 0" size="0.025" mass="1.0" contype="0" conaffinity="0"/>
+          <site name="s0" pos="0.06 0.05 0.01"/>
+          <body pos="0.26 0 0">
+            <joint name="j1" type="hinge" axis="0 0.2 1" damping="0.05"/>
+            <geom name="g_cyl" type="cylinder" size="0.035 0.06" mass="0.3" contype="0" conaffinity="0"/>
+            <geom type="capsule" fromto="0 0 0 0.22 0 0" size="0.02" mass="0.7" contype="0" conaffinity="0"/>
+            <site name="s1" pos="0.16 0.04 -0.01"/>
+          </body>
+        </body>
+      </worldbody>
+      <tendon>
+        <fixed name="t_fix_fri" frictionloss="0.45">
+          <joint joint="j0" coef="0.1"/>
+          <joint joint="j1" coef="-0.06"/>
+        </fixed>
+        <spatial name="t_spa_fri" frictionloss="0.6" stiffness="2.0" damping="0.3">
+          <site site="s0"/>
+          <geom geom="g_cyl"/>
+          <site site="s1"/>
+        </spatial>
+      </tendon>
+      <actuator>
+        <general joint="j0" gainprm="4.0"/>
+        <general tendon="t_spa_fri" gainprm="5.0"/>
+      </actuator>
+    </mujoco>
+    """
+    # World 0 slips at high speed (LINEARPOS/LINEARNEG); world 1 sticks near zero (QUADRATIC).
+    qpos = np.array([[0.22, -0.18], [-0.15, 0.20]], dtype=np.float32)
+    qvel = np.array([[2.8, -2.4], [0.002, -0.001]], dtype=np.float32)
+    ctrl = np.array([[0.8, -0.6], [0.02, -0.01]], dtype=np.float32)
+    _check_step_grads(self, xml, seed=77, qpos_override=qpos, qvel_override=qvel, ctrl_override=ctrl)
+
+    # Also verify m.tendon_frictionloss parameter gradient in the slipping regime.
+    mjw.enable_grad()
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    m = mjw.put_model(mjm)
+    m.tendon_frictionloss.requires_grad = True
+    d = mjw.make_data(mjm, nworld=1)
+    d_out = mjw.make_data(mjm, nworld=1)
+    d.qpos.assign(qpos[:1])
+    d.qvel.assign(qvel[:1])
+    d.ctrl.assign(ctrl[:1])
+    w_qv = np.array([[1.2, -0.9]], dtype=np.float32)
+    w_qv_wp = wp.array(w_qv, dtype=float)
+    loss = wp.zeros(1, dtype=float, requires_grad=True)
+    bc = adjoint.create_backward_context(m, d)
+    tape = wp.Tape()
+    with adjoint.backward_context(bc):
+      with tape:
+        mjw.step(m, d, d_out)
+        wp.launch(_weighted_sum_2d, dim=(1, mjm.nv), inputs=[d_out.qvel, w_qv_wp], outputs=[loss])
+      tape.backward(loss=loss)
+
+    eps = 1e-5
+    fl_fd = np.zeros(mjm.ntendon)
+    base_fl = mjm.tendon_frictionloss.copy()
+    for tid in range(mjm.ntendon):
+      mjm.tendon_frictionloss[:] = base_fl
+      mjm.tendon_frictionloss[tid] = base_fl[tid] + eps
+      mjd_p = mujoco.MjData(mjm)
+      mjd_p.qpos[:] = qpos[0]
+      mjd_p.qvel[:] = qvel[0]
+      mjd_p.ctrl[:] = ctrl[0]
+      mujoco.mj_step(mjm, mjd_p)
+      mjm.tendon_frictionloss[:] = base_fl
+      mjm.tendon_frictionloss[tid] = base_fl[tid] - eps
+      mjd_m = mujoco.MjData(mjm)
+      mjd_m.qpos[:] = qpos[0]
+      mjd_m.qvel[:] = qvel[0]
+      mjd_m.ctrl[:] = ctrl[0]
+      mujoco.mj_step(mjm, mjd_m)
+      fl_fd[tid] = float(np.sum((mjd_p.qvel - mjd_m.qvel) * w_qv[0])) / (2.0 * eps)
+    np.testing.assert_allclose(m.tendon_frictionloss.grad.numpy()[0], fl_fd, atol=1e-4, rtol=2e-3)
+
+  @parameterized.product(integrator=("Euler", "implicitfast"), jacobian=("dense", "sparse"))
+  def test_tendon_equality_single_and_coupled_polynomial(self, integrator: str, jacobian: str):
+    xml = f"""
+    <mujoco>
+      <option timestep="0.004" integrator="{integrator}" jacobian="{jacobian}" solver="Newton" iterations="35"/>
+      <worldbody>
+        <body name="arm_a" pos="-0.2 0 0.5">
+          <joint name="ja0" type="hinge" axis="0 0 1" damping="0.1"/>
+          <geom type="capsule" fromto="0 0 0 0.25 0 0" size="0.025" mass="1.0" contype="0" conaffinity="0"/>
+          <site name="sa0" pos="0.05 0.04 0.01"/>
+          <body pos="0.25 0 0">
+            <joint name="ja1" type="hinge" axis="0 0.3 1" damping="0.08"/>
+            <geom name="g_cyl_a" type="cylinder" size="0.035 0.05" mass="0.3" contype="0" conaffinity="0"/>
+            <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.6" contype="0" conaffinity="0"/>
+            <site name="sa1" pos="0.15 0.035 -0.01"/>
+          </body>
+        </body>
+        <body name="arm_b" pos="0.2 0 0.5">
+          <joint name="jb0" type="hinge" axis="0 1 0" damping="0.1"/>
+          <geom type="capsule" fromto="0 0 0 0.24 0 0" size="0.025" mass="0.9" contype="0" conaffinity="0"/>
+          <site name="sb0" pos="0.05 0.01 0.04"/>
+          <body pos="0.24 0 0">
+            <joint name="jb1" type="hinge" axis="0 1 0.2" damping="0.08"/>
+            <geom name="g_sph_b" type="sphere" size="0.04" mass="0.3" contype="0" conaffinity="0"/>
+            <geom type="capsule" fromto="0 0 0 0.2 0 0" size="0.02" mass="0.6" contype="0" conaffinity="0"/>
+            <site name="sb1" pos="0.15 -0.01 0.035"/>
+          </body>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial name="t_a">
+          <site site="sa0"/>
+          <geom geom="g_cyl_a"/>
+          <site site="sa1"/>
+        </spatial>
+        <spatial name="t_b">
+          <site site="sb0"/>
+          <geom geom="g_sph_b"/>
+          <site site="sb1"/>
+        </spatial>
+        <fixed name="t_single">
+          <joint joint="ja0" coef="0.06"/>
+          <joint joint="jb1" coef="-0.04"/>
+        </fixed>
+      </tendon>
+      <equality>
+        <tendon tendon1="t_single" polycoef="0.01 0 0 0 0" solref="0.02 1.0"/>
+        <tendon tendon1="t_a" tendon2="t_b" polycoef="0.015 -0.65 0.45 -0.3 0.2" solref="0.02 1.0"/>
+      </equality>
+      <actuator>
+        <muscle tendon="t_a" force="85" lengthrange="0.1 0.55"/>
+        <muscle tendon="t_b" force="80" lengthrange="0.1 0.55"/>
+      </actuator>
+    </mujoco>
+    """
+    _check_step_grads(self, xml, seed=88)
+
   def test_unsupported_tendon_features_rejected(self):
     cases = [
-      (
-        "limit",
-        """
-        <mujoco><option solver="Newton"/><worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
-        <tendon><fixed limited="true" range="-0.1 0.1"><joint joint="j" coef="1"/></fixed></tendon></mujoco>
-        """,
-      ),
-      (
-        "frictionloss",
-        """
-        <mujoco><option solver="Newton"/><worldbody><body><joint name="j"/><geom size="0.1"/></body></worldbody>
-        <tendon><fixed frictionloss="0.5"><joint joint="j" coef="1"/></fixed></tendon></mujoco>
-        """,
-      ),
       (
         "armature",
         """

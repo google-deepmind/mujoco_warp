@@ -109,8 +109,6 @@ def _model_supported(m: Model) -> tuple[tuple[str, ...], frozenset[str]]:
   ):
     reasons.append("non-identity actuator/control mapping (requires one control per actuator in actuator order)")
   if m.ntendon:
-    if m.eq_ten_adr.size or m.tendon_limited_adr.size or np.any(m.tendon_frictionloss.numpy() != 0.0):
-      reasons.append("tendon equality/limit/frictionloss constraints")
     if np.any(m.tendon_armature.numpy() != 0.0):
       reasons.append("tendon armature (tendon_armature / tendon_bias)")
     if np.any(m.tendon_actfrclimited.numpy()):
@@ -219,6 +217,11 @@ def _create_backward_context(m: Model, d: Data) -> BackwardContext:
     res_eq_solimp=wp.zeros_like(m.eq_solimp),
     res_jnt_solref=wp.zeros_like(m.jnt_solref),
     res_jnt_solimp=wp.zeros_like(m.jnt_solimp),
+    res_tendon_solref_lim=wp.zeros_like(m.tendon_solref_lim),
+    res_tendon_solimp_lim=wp.zeros_like(m.tendon_solimp_lim),
+    res_tendon_solref_fri=wp.zeros_like(m.tendon_solref_fri),
+    res_tendon_solimp_fri=wp.zeros_like(m.tendon_solimp_fri),
+    res_tendon_frictionloss=wp.zeros_like(m.tendon_frictionloss),
     res_body_mass=wp.zeros_like(m.body_mass),
     res_body_inertia=wp.zeros_like(m.body_inertia),
     res_body_ipos=wp.zeros_like(m.body_ipos),
@@ -257,11 +260,8 @@ def _assert_step_supported(m: Model):
     raise NotImplementedError("adjoint.step_backward does not support caller-supplied contacts (run_collision_detection=False)")
   if m.opt.enableflags & EnableBit.SLEEP and not (m.opt.disableflags & DisableBit.ISLAND):
     raise NotImplementedError("adjoint.step_backward does not support sleep")
-  has_ten_efc = bool(
-    m.eq_ten_adr.size or m.tendon_limited_adr.size or (m.ntendon and np.any(m.tendon_frictionloss.numpy() != 0.0))
-  )
-  if m.eq_connect_adr.size or m.eq_wld_adr.size or has_ten_efc or m.nflex:
-    raise NotImplementedError("adjoint.step_backward does not support connect/weld equality, tendon, or flex constraint rows")
+  if m.eq_connect_adr.size or m.eq_wld_adr.size or m.nflex:
+    raise NotImplementedError("adjoint.step_backward does not support connect/weld equality or flex constraint rows")
   callbacks = []
   if not (m.opt.disableflags & DisableBit.ACTUATION):
     callbacks.append("control")
@@ -356,8 +356,10 @@ def _residual_constraint_sparse(
       nv,
       m.jnt_dofadr,
       m.dof_invweight0,
+      m.eq_type,
       m.eq_obj1id,
       m.eq_obj2id,
+      m.tendon_invweight0,
       d_bwd.nefc,
       d_bwd.efc.type,
       d_bwd.efc.id,
@@ -405,12 +407,21 @@ def _residual_constraint_sparse(
       m.jnt_type,
       m.jnt_qposadr,
       m.jnt_dofadr,
+      m.eq_type,
+      m.eq_obj1id,
       m.eq_obj2id,
       m.eq_data,
+      m.ten_J_rownnz,
+      m.ten_J_rowadr,
+      m.ten_J_colind,
+      m.tendon_range,
+      m.tendon_length0,
       d_bwd.nefc,
       d.qpos,
       d.qvel,
       d_bwd.qacc,
+      d_bwd.ten_J,
+      d_bwd.ten_length,
       d_bwd.efc.type,
       d_bwd.efc.id,
       d_bwd.efc.J_rownnz,
@@ -425,7 +436,7 @@ def _residual_constraint_sparse(
       efc_Z,
       efc_Z.grad,
     ],
-    outputs=[res_qvel, res_dof],
+    outputs=[res_qvel, res_dof, bc.adj_ten_length, bc.adj_ten_J],
   )
 
   model_adjoint.constraint_params_backward(m, bc)
@@ -441,8 +452,13 @@ def noncontact_constraint_backward(
   res_qvel: wp.array,
   ctx_Jaref: wp.array,
   bc: BackwardContext,
+  *,
+  defer_tendon_kinematics: bool = False,
 ):
   """Accumulates non-contact residuals in input position and velocity space."""
+  if not defer_tendon_kinematics and m.ntendon:
+    bc.adj_ten_length.zero_()
+    bc.adj_ten_J.zero_()
   _residual_constraint_sparse(m, d, d_bwd, ctx_Jaref, lam, res_qvel, bc.res_dof, bc)
   wp.launch(
     smooth_kinematics_adjoint._dof_to_qpos,
@@ -450,6 +466,12 @@ def noncontact_constraint_backward(
     inputs=[m.jnt_type, m.jnt_qposadr, m.jnt_dofadr, d.qpos, bc.res_dof],
     outputs=[res_qpos],
   )
+  if not defer_tendon_kinematics and m.ntendon:
+    tendon_adjoint.tendon_kinematics_vjp(m, d_bwd, d.qpos, bc.adj_ten_length, bc.adj_ten_J, res_qpos, bc)
+    if (d.mocap_pos.grad is not None or d.mocap_quat.grad is not None) and (
+      m.wrap_site_pair_adr.size > 0 or m.wrap_geom_adr.size > 0
+    ):
+      smooth_kinematics_adjoint.kinematics_mocap_backward(m, d_bwd, bc, tendon=True)
 
 
 def _residual_contact(
@@ -616,9 +638,14 @@ def forward_backward_ift(
   """Differentiates forward dynamics at the converged acceleration."""
   solver_ctx = solve_backward(m, d_bwd, adj_qacc, bc)
   lam = solver_ctx.search
+  if m.ntendon:
+    bc.adj_ten_length.zero_()
+    bc.adj_ten_J.zero_()
   if d_bwd.njmax and m.nv:
     contact_constraint_backward(m, d, d_bwd, lam, bc.res_qpos, bc.res_qvel, bc)
-    noncontact_constraint_backward(m, d, d_bwd, lam, bc.res_qpos, bc.res_qvel, solver_ctx.Jaref, bc)
+    noncontact_constraint_backward(
+      m, d, d_bwd, lam, bc.res_qpos, bc.res_qvel, solver_ctx.Jaref, bc, defer_tendon_kinematics=True
+    )
   forward_adjoint.smooth_qvel_backward(
     m,
     d,
@@ -674,6 +701,11 @@ _STEP_MODEL_FIELDS = (
   "dof_frictionloss",
   "eq_solref",
   "eq_solimp",
+  "tendon_solref_lim",
+  "tendon_solimp_lim",
+  "tendon_solref_fri",
+  "tendon_solimp_fri",
+  "tendon_frictionloss",
   "geom_friction",
   "pair_friction",
 )

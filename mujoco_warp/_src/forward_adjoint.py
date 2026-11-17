@@ -1098,7 +1098,7 @@ def smooth_qpos_backward(m: Model, d: Data, d_bwd: Data, lam: wp.array, res_qpos
     smooth_kinematics_adjoint.kinematics_mocap_backward(m, d_bwd, bc)
   model_adjoint.inertia_param_vjp(m, d_bwd, bc)
   if m.ntendon:
-    residual = tendon_adjoint.tendon_qpos_vjp(m, d_bwd, lam, bc=bc)
+    residual = tendon_adjoint.tendon_qpos_vjp(m, d_bwd, lam, bc=bc, reset_seeds=False)
     wp.launch(adjoint_util._accum_cols, dim=residual.shape, inputs=[residual], outputs=[res_qpos])
     if mocap_grad and (m.wrap_site_pair_adr.size > 0 or m.wrap_geom_adr.size > 0):
       smooth_kinematics_adjoint.kinematics_mocap_backward(m, d_bwd, bc, tendon=True)
