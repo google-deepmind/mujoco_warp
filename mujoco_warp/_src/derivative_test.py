@@ -39,6 +39,126 @@ def _assert_eq(a, b, name):
 
 
 class DerivativeTest(parameterized.TestCase):
+  @parameterized.product(nworld=(1, 2), control=(-2.0, 0.2, 2.0), disable_clamp=(False, True))
+  def test_smooth_vel_mapped_clamped_control(self, nworld, control, disable_clamp):
+    """Affine velocity gains use their mapped control and its limits, matching C."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" timestep=".01" gravity="0 0 0"/>
+        <default>
+          <geom size=".1" mass="1" contype="0" conaffinity="0"/>
+        </default>
+        <worldbody>
+          <body>
+            <joint name="passive" type="slide"/>
+            <geom/>
+          </body>
+          <body pos="1 0 0">
+            <joint name="controlled" type="slide"/>
+            <geom mass="2"/>
+          </body>
+          <body pos="2 0 0">
+            <joint name="other" type="slide"/>
+            <geom/>
+          </body>
+        </worldbody>
+        <actuator>
+          <dcmotor joint="passive" input="none" motorconst=".05" resistance="2"/>
+          <general joint="controlled" gaintype="affine" gainprm="1 0 -.4"
+                   biastype="affine" biasprm="0 0 -.3" ctrlrange="-.5 .7"/>
+          <motor joint="other"/>
+        </actuator>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": types.DisableBit.CLAMPCTRL if disable_clamp else 0},
+      nworld=nworld,
+      nconmax=0,
+      njmax=0,
+      batch_sizes={"actuator_ctrlrange": nworld},
+    )
+    self.assertEqual(mjm.actuator_ctrlnum[0], 0)
+    self.assertEqual(mjm.actuator_ctrladr[1], 0)  # Actuator 1 consumes control 0, not control 1.
+    qpos = np.array([[0.1, -0.2, 0.3], [-0.3, 0.4, -0.1]], dtype=np.float32)[:nworld]
+    qvel = np.array([[0.4, -0.2, 0.1], [-0.3, 0.6, -0.2]], dtype=np.float32)[:nworld]
+    ctrl = np.array([[control, 0.15], [-control + 0.1, -0.25]], dtype=np.float32)[:nworld]
+    ranges = m.actuator_ctrlrange.numpy()
+    if nworld == 2:
+      ranges[1, 0] = [-0.25, 0.45]
+      m.actuator_ctrlrange.assign(ranges)
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+    d.ctrl.assign(ctrl)
+    mjw.forward(m, d)
+    out = wp.full((nworld, m.nC), wp.inf, dtype=float)
+    mjw.deriv_smooth_vel(m, d, out)
+    actual = out.numpy()
+    for world in range(nworld):
+      mjm.actuator_ctrlrange[:] = ranges[world]
+      mjd = mujoco.MjData(mjm)
+      mjd.qpos[:], mjd.qvel[:], mjd.ctrl[:] = qpos[world], qvel[world], ctrl[world]
+      mjd.qDeriv.fill(np.nan)
+      # implicitfast evaluates mjd_smooth_vel(flg_bias=0) at the input state.
+      mujoco.mj_step(mjm, mjd)
+      expected = mjd.M - mjm.opt.timestep * mjd.qDeriv[mjm.mapD2M]
+      np.testing.assert_allclose(actual[world], expected, atol=1e-5, rtol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(actual[0], actual[1]))
+
+  @parameterized.product(
+    nworld=(1, 2),
+    disableflags=(0, types.DisableBit.ACTUATION, types.DisableBit.DAMPER, types.DisableBit.ACTUATION | types.DisableBit.DAMPER),
+  )
+  def test_smooth_vel_independent_disable_flags(self, nworld, disableflags):
+    """Disabling actuation or damping preserves the other velocity derivative."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" timestep=".01" gravity="0 0 0"/>
+        <default>
+          <geom size=".1" contype="0" conaffinity="0"/>
+        </default>
+        <worldbody>
+          <body>
+            <joint name="j0" axis="0 1 0" damping="1.5"/>
+            <geom pos=".2 0 0" mass="2"/>
+            <body pos=".4 0 0">
+              <joint name="j1" axis="0 1 0" damping="2"/>
+              <geom pos=".2 0 0" mass="1"/>
+            </body>
+          </body>
+        </worldbody>
+        <actuator>
+          <general joint="j0" gaintype="affine" gainprm="1 0 -.4" biastype="affine" biasprm="0 0 -.3"/>
+          <velocity joint="j1" kv="2"/>
+        </actuator>
+      </mujoco>
+      """,
+      overrides={"opt.disableflags": disableflags},
+      nworld=nworld,
+      nconmax=0,
+      njmax=0,
+    )
+    qpos = np.array([[0.2, -0.4], [-0.3, 0.7]], dtype=np.float32)[:nworld]
+    qvel = np.array([[0.4, -0.2], [-0.3, 0.6]], dtype=np.float32)[:nworld]
+    ctrl = np.array([[0.5, -0.1], [-0.2, 0.3]], dtype=np.float32)[:nworld]
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+    d.ctrl.assign(ctrl)
+    mjw.forward(m, d)
+    out = wp.full((nworld, m.nC), wp.inf, dtype=float)
+    mjw.deriv_smooth_vel(m, d, out)
+    actual = out.numpy()
+    for world in range(nworld):
+      mjd = mujoco.MjData(mjm)
+      mjd.qpos[:], mjd.qvel[:], mjd.ctrl[:] = qpos[world], qvel[world], ctrl[world]
+      mjd.qDeriv.fill(np.nan)
+      mujoco.mj_step(mjm, mjd)
+      expected = mjd.M - mjm.opt.timestep * mjd.qDeriv[mjm.mapD2M]
+      np.testing.assert_allclose(actual[world], expected, atol=1e-5, rtol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(actual[0], actual[1]))
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
   def test_smooth_vel(self, jacobian):
     """Tests qDeriv."""
