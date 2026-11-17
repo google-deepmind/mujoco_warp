@@ -876,7 +876,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     ):
       gaintype = int(mjm.actuator_gaintype[i])
       biastype = int(mjm.actuator_biastype[i])
-      if gaintype == int(mujoco.mjtGain.mjGAIN_PID) or (
+      if (
         gaintype == int(mujoco.mjtGain.mjGAIN_FIXED)
         and biastype == int(mujoco.mjtBias.mjBIAS_AFFINE)
         and mjm.actuator_gainprm[i, 0] == -mjm.actuator_biasprm[i, 1]

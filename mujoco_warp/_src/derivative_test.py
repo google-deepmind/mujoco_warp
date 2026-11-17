@@ -4515,96 +4515,109 @@ class DerivativeTest(parameterized.TestCase):
       self.assertFalse(np.allclose(qacc_smooth[0], qacc_smooth[1]))
       self.assertFalse(np.allclose(qacc[0], qacc[1]))
 
-  @parameterized.product(
-    integrator=(mujoco.mjtIntegrator.mjINT_IMPLICITFAST, mujoco.mjtIntegrator.mjINT_DISCRETE),
-    disableflags=(0, mjw.DisableBit.CLAMPCTRL),
-  )
-  def test_pid_and_multi_input_deriv(self, integrator, disableflags):
+  @parameterized.parameters(mujoco.mjtIntegrator.mjINT_IMPLICITFAST, mujoco.mjtIntegrator.mjINT_DISCRETE)
+  def test_pid_and_multi_input_deriv(self, integrator):
     """Tests <pid>, per-input ctrlrange clamping, and ctrladr indexing in derivatives."""
-    mjm, mjd, m, d = test_data.fixture(
-      xml="""
-      <mujoco>
-        <worldbody>
-          <body>
-            <joint name="j0"/>
-            <geom size="0.1"/>
-            <body pos="0.2 0 0">
-              <joint name="j1"/>
+    derivs = {}
+    for disableflags in (0, mjw.DisableBit.CLAMPCTRL):
+      mjm, mjd, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <worldbody>
+            <body>
+              <joint name="j0"/>
               <geom size="0.1"/>
               <body pos="0.2 0 0">
-                <joint name="j2"/>
+                <joint name="j1"/>
                 <geom size="0.1"/>
+                <body pos="0.2 0 0">
+                  <joint name="j2"/>
+                  <geom size="0.1"/>
+                </body>
               </body>
             </body>
-          </body>
-        </worldbody>
-        <actuator>
-          <dcmotor joint="j0" motorconst="2" resistance="1" controller="10 0 4 5"
-                   input="pos vel ff" ctrlrange="-1 1"/>
-          <pid joint="j1" input="pos vel ff" kp="15" kv="3" ki="4" slewmax="2"
-               posrange="-0.8 0.8" velrange="-0.5 0.5" ffrange="-0.5 0.5" forcerange="-20 20"/>
-          <general joint="j2" gaintype="affine" gainprm="0 -2 -3" biastype="affine" biasprm="0 -5 -1"
-                   ctrllimited="true" ctrlrange="-1 1"/>
-        </actuator>
-        <keyframe>
-          <key qpos="0.1 -0.2 0.15" qvel="0.3 -0.4 0.2" act="0.05 0.02"
-               ctrl="0.2 10.0 10.0 1.2 -3.0 2.0 5.0"/>
-        </keyframe>
-      </mujoco>
-      """,
-      keyframe=0,
-      overrides={"opt.integrator": integrator, "opt.disableflags": disableflags},
-    )
+          </worldbody>
+          <actuator>
+            <dcmotor joint="j0" motorconst="2" resistance="1" controller="10 0 6 0 0 15"
+                     input="pos vel ff" ctrlrange="-1 1"/>
+            <pid joint="j1" input="pos vel ff" kp="15" kv="3" ki="4" slewmax="2"
+                 posrange="-0.8 0.8" velrange="-0.5 0.5" ffrange="-0.5 0.5" forcerange="-1 20"/>
+            <general joint="j2" gaintype="affine" gainprm="0 -2 -3" biastype="affine" biasprm="0 -5 -1"
+                     ctrllimited="true" ctrlrange="-0.5 0.5"/>
+          </actuator>
+          <keyframe>
+            <key qpos="0.1 -0.2 0.15" qvel="0.3 -0.4 0.2" act="0.05 0.02"
+                 ctrl="0.2 10.0 10.0 1.2 -3.0 2.0 5.0"/>
+          </keyframe>
+        </mujoco>
+        """,
+        keyframe=0,
+        overrides={"opt.integrator": integrator, "opt.disableflags": disableflags},
+      )
 
-    d.actuator_force.fill_(wp.inf)
-    mjw.fwd_actuation(m, d)
-    _assert_eq(d.actuator_force.numpy()[0], mjd.actuator_force, "actuator_force")
+      d.actuator_force.fill_(wp.inf)
+      mjw.fwd_actuation(m, d)
+      _assert_eq(d.actuator_force.numpy()[0], mjd.actuator_force, "actuator_force")
 
-    if integrator == mujoco.mjtIntegrator.mjINT_IMPLICITFAST:
-      qH = wp.full((1, m.nC), wp.inf, dtype=float)
-      mjw.deriv_smooth_vel(m, d, qH)
-      mujoco.mj_step(mjm, mjd)
-      _assert_eq(qH.numpy()[0], mjd.M - mjm.opt.timestep * mjd.qDeriv[mjm.mapD2M], "M - dt * qDeriv")
-    else:
-      for arr in (d.qacc_smooth, d.qacc, d.efm_as):
+      if integrator == mujoco.mjtIntegrator.mjINT_IMPLICITFAST:
+        qH = wp.full((1, m.nC), wp.inf, dtype=float)
+        mjw.deriv_smooth_vel(m, d, qH)
+        mujoco.mj_step(mjm, mjd)
+        qH_np = qH.numpy()[0]
+        _assert_eq(qH_np, mjd.M - mjm.opt.timestep * mjd.qDeriv[mjm.mapD2M], "M - dt * qDeriv")
+        diag_m = mjm.M_rowadr + mjm.M_rownnz - 1
+        derivs[disableflags] = (mjd.M[diag_m] - qH_np[diag_m]) / mjm.opt.timestep
+      else:
+        for arr in (d.qacc_smooth, d.qacc, d.efm_as):
+          arr.fill_(wp.inf)
+        mjw.forward(m, d)
+        efm_as_np = d.efm_as.numpy()[0]
+        c_efm_as = np.zeros(mjm.nactuator)
+        c_efm_as[mjd.efm_aid[: mjd.nefmA]] = mjd.efm_as[: mjd.nefmA]
+        _assert_eq(efm_as_np, c_efm_as, "efm_as")
+        _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
+        _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+        derivs[disableflags] = efm_as_np
+
+    # All 3 DOFs have non-zero clamped derivatives and change when CLAMPCTRL is disabled
+    self.assertTrue(np.all(np.abs(derivs[0]) > 1e-4))
+    self.assertTrue(np.all(np.abs(derivs[0] - derivs[mjw.DisableBit.CLAMPCTRL]) > 1e-4))
+
+    if integrator == mujoco.mjtIntegrator.mjINT_DISCRETE:
+      _, mjd_passive, m_passive, d_passive = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option integrator="discrete"/>
+          <worldbody>
+            <body>
+              <joint name="j0" type="slide" axis="1 0 0"/>
+              <joint name="j1" type="slide" axis="0 1 0"/>
+              <geom size="0.1"/>
+            </body>
+          </worldbody>
+          <tendon>
+            <fixed name="t0">
+              <joint joint="j0" coef="1.5"/>
+              <joint joint="j1" coef="-2.0"/>
+            </fixed>
+          </tendon>
+          <actuator>
+            <dcmotor tendon="t0" motorconst="4" resistance="0.5" input="none"/>
+          </actuator>
+          <keyframe>
+            <key qpos="0.1 -0.2" qvel="0.5 -0.4"/>
+          </keyframe>
+        </mujoco>
+        """,
+        keyframe=0,
+      )
+      self.assertEqual(m_passive.nu, 0)
+      self.assertTrue(m_passive.has_efm_actuator)
+      for arr in (d_passive.efm_as, d_passive.qacc_smooth):
         arr.fill_(wp.inf)
-      mjw.forward(m, d)
-      _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
-      _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
-
-      if disableflags == 0:
-        _, mjd_passive, m_passive, d_passive = test_data.fixture(
-          xml="""
-          <mujoco>
-            <option integrator="discrete"/>
-            <worldbody>
-              <body>
-                <joint name="j0" type="slide" axis="1 0 0"/>
-                <joint name="j1" type="slide" axis="0 1 0"/>
-                <geom size="0.1"/>
-              </body>
-            </worldbody>
-            <tendon>
-              <fixed name="t0">
-                <joint joint="j0" coef="1.5"/>
-                <joint joint="j1" coef="-2.0"/>
-              </fixed>
-            </tendon>
-            <actuator>
-              <dcmotor tendon="t0" motorconst="4" resistance="0.5" input="none"/>
-            </actuator>
-            <keyframe>
-              <key qpos="0.1 -0.2" qvel="0.5 -0.4"/>
-            </keyframe>
-          </mujoco>
-          """,
-          keyframe=0,
-        )
-        self.assertEqual(m_passive.nu, 0)
-        self.assertTrue(m_passive.has_efm_actuator)
-        d_passive.qacc_smooth.fill_(wp.inf)
-        mjw.forward(m_passive, d_passive)
-        _assert_eq(d_passive.qacc_smooth.numpy()[0], mjd_passive.qacc_smooth, "passive_qacc_smooth")
+      mjw.forward(m_passive, d_passive)
+      _assert_eq(d_passive.efm_as.numpy()[0], mjd_passive.efm_as, "passive_efm_as")
+      _assert_eq(d_passive.qacc_smooth.numpy()[0], mjd_passive.qacc_smooth, "passive_qacc_smooth")
 
 
 if __name__ == "__main__":

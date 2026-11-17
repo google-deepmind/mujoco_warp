@@ -4293,7 +4293,10 @@ class PIDTest(parameterized.TestCase):
 
   def test_pid_batched_params(self):
     """Tests per-world batched gainprm, biasprm, dynprm, and ctrlrange on <pid>."""
-    nworld = 2
+    # Note: mj_compile freezes actuator_actnum and actuator_dyntype from compile-time
+    # slewmax > 0 and ki > 0, so new state slots cannot be enabled (0 -> positive)
+    # post-compile, whereas scaling or zeroing allocated slots per world is supported.
+    nworld = 4
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -4302,13 +4305,24 @@ class PIDTest(parameterized.TestCase):
             <joint name="j0" type="slide" axis="1 0 0"/>
             <geom size="0.1"/>
           </body>
+          <body>
+            <joint name="j1" type="slide" axis="1 0 0"/>
+            <geom size="0.1"/>
+          </body>
+          <body>
+            <joint name="j2" type="slide" axis="1 0 0"/>
+            <geom size="0.1"/>
+          </body>
         </worldbody>
         <actuator>
           <pid joint="j0" input="pos vel ff" kp="10" kv="2" ki="5" imax="0.5" slewmax="3"
                posrange="-1 1" velrange="-1 1" ffrange="-1 1"/>
+          <pid joint="j1" input="pos" kp="8" slewmax="2"/>
+          <general joint="j2" dyntype="integrator" gaintype="fixed" gainprm="4"/>
         </actuator>
         <keyframe>
-          <key qpos="0.1" qvel="-0.2" act="0.0 0.05" ctrl="0.8 1.5 -1.5"/>
+          <key qpos="0.1 -0.1 0.0" qvel="-0.2 0.1 0.0" act="0.0 0.05 0.1 0.25"
+               ctrl="0.8 1.5 -1.5 0.5 1.2"/>
         </keyframe>
       </mujoco>
       """,
@@ -4326,11 +4340,21 @@ class PIDTest(parameterized.TestCase):
     biasprm = m.actuator_biasprm.numpy()
     dynprm = m.actuator_dynprm.numpy()
     ctrlrange = m.actuator_ctrlrange.numpy()
+
+    # World 1: scaled positive gains, slewmax, and ctrlrange
     gainprm[1, 0, 0] = 12.0  # ki
     biasprm[1, 0, 1] = -25.0  # -kp
     biasprm[1, 0, 2] = -6.0  # -kv
     dynprm[1, 0, 1] = 1.0  # slewmax
     ctrlrange[1] *= 0.5
+
+    # World 2: ki zeroed on actnum=2 actuator -> act_dot slots [slew_dot, 0.0]
+    gainprm[2, 0, 0] = 0.0
+
+    # World 3: slewmax zeroed on actnum=2, plus nonzero ki on slew-only actnum=1 (no OOB)
+    dynprm[3, 0, 1] = 0.0
+    gainprm[3, 1, 0] = 7.0
+
     m.actuator_gainprm.assign(gainprm)
     m.actuator_biasprm.assign(biasprm)
     m.actuator_dynprm.assign(dynprm)
@@ -4342,7 +4366,7 @@ class PIDTest(parameterized.TestCase):
 
     act_dot = d.act_dot.numpy()
     force = d.actuator_force.numpy()
-    for w in range(nworld):
+    for w in range(3):
       mjm.actuator_gainprm[:] = gainprm[w]
       mjm.actuator_biasprm[:] = biasprm[w]
       mjm.actuator_dynprm[:] = dynprm[w]
@@ -4351,8 +4375,20 @@ class PIDTest(parameterized.TestCase):
       mujoco.mj_forward(mjm, mjd)
       np.testing.assert_allclose(act_dot[w], mjd.act_dot, rtol=1e-5, atol=1e-5)
       np.testing.assert_allclose(force[w], mjd.actuator_force, rtol=1e-5, atol=1e-5)
+
+    # World 2: slew slot active, integral slot zeroed
+    self.assertNotEqual(act_dot[2, 0], 0.0)
+    self.assertEqual(act_dot[2, 1], 0.0)
     self.assertFalse(np.allclose(force[0], force[1]))
-    self.assertFalse(np.allclose(act_dot[0], act_dot[1]))
+    self.assertFalse(np.allclose(force[0], force[2]))
+
+    # World 3: slew slot zeroed, integral stays in act_last (slot 1), and neighbor slot 3 intact
+    self.assertEqual(act_dot[3, 0], 0.0)
+    np.testing.assert_allclose(act_dot[3, 1], 0.8 - 0.1, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(act_dot[3, 3], 1.2, rtol=1e-5, atol=1e-5)
+    # Force on slew-only actuator 1 ignores unallocated ki and preserves neighbor actuator 2
+    np.testing.assert_allclose(force[3, 1], force[0, 1], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(force[3, 2], 4.0 * 0.25, rtol=1e-5, atol=1e-5)
 
 
 if __name__ == "__main__":

@@ -3147,34 +3147,36 @@ def _actuator_force(
         act_dot_out[worldid, act_last] = act_dot
 
     elif dyntype == DynType.PID:
-      adr = act_first
+      actnum = actuator_actnum[uid]
       act_dot = 0.0
 
-      # slew rate limit on position setpoint
-      if dynprm[1] > 0.0:
-        if ctrlnum > 0:
-          u_first, act_dot = _slew_limit(
-            u_first,
-            act_in[worldid, adr],
-            dynprm[1],
-            opt_timestep[worldid % opt_timestep.shape[0]],
-            period,
-          )
+      # slew rate limit on position setpoint (slot 0 when actnum == 2)
+      if actnum == 2 or dynprm[1] > 0.0:
+        slew_dot = 0.0
+        if dynprm[1] > 0.0:
+          if ctrlnum > 0:
+            u_first, slew_dot = _slew_limit(
+              u_first,
+              act_in[worldid, act_first],
+              dynprm[1],
+              opt_timestep[worldid % opt_timestep.shape[0]],
+              period,
+            )
+          else:
+            u_first = 0.0
+        if actnum == 2:
+          act_dot_out[worldid, act_first] = slew_dot
         else:
-          u_first = 0.0
-          act_dot = 0.0
-        if gainprm[0] > 0.0:
-          act_dot_out[worldid, adr] = act_dot
-          adr += 1
+          act_dot = slew_dot
 
-      # integral of position error with anti-windup clamping
-      if gainprm[0] > 0.0:
+      # integral of position error (kept in act_last even if slewmax == 0 in batch)
+      if gainprm[0] > 0.0 and (actnum == 2 or dynprm[1] <= 0.0):
         err = u_first - actuator_length_in[worldid, uid]
         if period > 0.0:
           err -= period * wp.round(err / period)
         imax = dynprm[0]
         if imax > 0.0:
-          z = act_in[worldid, adr]
+          z = act_in[worldid, act_last]
           if z >= imax:
             err = wp.min(err, 0.0)
           elif z <= -imax:
@@ -3313,7 +3315,7 @@ def _actuator_force(
     if period > 0.0:
       qref -= period * wp.round((qref - length) / period)
     force = -biasprm[1] * qref - biasprm[2] * u4[1] + u4[2]
-    if na and act_first >= 0 and gainprm[0] > 0.0:
+    if na and act_first >= 0 and gainprm[0] > 0.0 and (actuator_actnum[uid] == 2 or dynprm[1] <= 0.0):
       force += gainprm[0] * ctrl_act
     force += bias
   else:

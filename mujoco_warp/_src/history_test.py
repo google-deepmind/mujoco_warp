@@ -2107,6 +2107,7 @@ class BatchedDelayTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
+        <option timestep="0.004"/>
         <worldbody>
           <body>
             <joint name="j0" type="slide" axis="1 0 0"/>
