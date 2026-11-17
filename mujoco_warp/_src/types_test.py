@@ -59,6 +59,10 @@ class TypesTest(parameterized.TestCase):
       mj_fields.insert(mj_fields.index("nbuffer") + 3, "stat")
       if not util_pkg.check_version("mujoco>=3.17.1.dev1006378379"):
         mj_fields.insert(mj_fields.index("flex_vertbodyid") + 1, "flex_vertcell")
+      if "flex_cellempty" not in mj_fields:
+        mj_fields.insert(mj_fields.index("nflexshelldata") + 1, "nflexcell")
+        mj_fields.insert(mj_fields.index("flex_cellnum") + 1, "flex_celladr")
+        mj_fields.insert(mj_fields.index("flex_vertcell") + 1, "flex_cellempty")
       if not util_pkg.check_version("mujoco>=3.17.1"):
         if "nplastic" not in mj_fields:
           mj_fields.insert(mj_fields.index("npaths") + 1, "nplastic")
