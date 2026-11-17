@@ -2147,13 +2147,17 @@ def _zero_qfrc_constraint_sparse(
   qfrc_constraint_out[worldid, dofid] = 0.0
 
 
+# Threads that split the nonzeros of one constraint row.
+_QFRC_LANES = 2
+
+
 @cache_kernel
-def _update_constraint_init_qfrc_constraint_sparse(compact: bool, nv: int, deterministic: bool = False):
+def _update_constraint_init_qfrc_constraint_sparse(compact: bool, max_records: int = 0, deterministic: bool = False):
   COMPACT = compact
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = nv
+    module_options["deterministic_max_records"] = max_records
 
   @wp.kernel(module="unique", module_options=module_options, grid_stride=True)
   def kernel(
@@ -2168,10 +2172,11 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool, nv: int, deter
     # In:
     state_changed_count_in: wp.array[int],
     ctx_done_in: wp.array[bool],
+    slots_per_world: int,
     # Data out:
     qfrc_constraint_out: wp.array2d[float],
   ):
-    worldid, efcid = wp.tid()
+    worldid, slot, lane = wp.tid()
 
     if ctx_done_in[worldid]:
       return
@@ -2179,24 +2184,23 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool, nv: int, deter
     if state_changed_count_in[worldid] == 0:
       return
 
-    if efcid >= nefc_in[worldid]:
-      return
+    nefc = wp.min(nefc_in[worldid], efc_force_in.shape[1])
+    for efcid in range(slot, nefc, slots_per_world):
+      force = efc_force_in[worldid, efcid]
+      if force == 0.0:
+        continue
 
-    force = efc_force_in[worldid, efcid]
-    if force == 0.0:
-      return
-
-    rownnz = efc_J_rownnz_in[worldid, efcid]
-    rowadr = efc_J_rowadr_in[worldid, efcid]
-    for i in range(rownnz):
-      sparseid = rowadr + i
-      colind = efc_J_colind_in[worldid, 0, sparseid]
-      if wp.static(COMPACT):
-        colind = dof_cdof_in[worldid, colind]
-        if colind < 0:
-          continue
-      efc_J = efc_J_in[worldid, 0, sparseid]
-      wp.atomic_add(qfrc_constraint_out[worldid], colind, efc_J * force)
+      rownnz = efc_J_rownnz_in[worldid, efcid]
+      rowadr = efc_J_rowadr_in[worldid, efcid]
+      for i in range(lane, rownnz, wp.static(_QFRC_LANES)):
+        sparseid = rowadr + i
+        colind = efc_J_colind_in[worldid, 0, sparseid]
+        if wp.static(COMPACT):
+          colind = dof_cdof_in[worldid, colind]
+          if colind < 0:
+            continue
+        efc_J = efc_J_in[worldid, 0, sparseid]
+        wp.atomic_add(qfrc_constraint_out[worldid], colind, efc_J * force)
 
   return kernel
 
@@ -2438,11 +2442,26 @@ def _update_qfrc_constraint(m: types.Model, d: types.Data, ctx: SolverContext | 
       inputs=[changed, ctx.done],
       outputs=[d.qfrc_constraint],
     )
-    det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+    qfrc_kernel = _update_constraint_init_qfrc_constraint_sparse(sc)
+    slots_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax, qfrc_kernel, threads_per_group=_QFRC_LANES)
+    if bool(m.opt.deterministic & types.DeterminismType.ATOMICS):
+      max_records = ceil(d.njmax / slots_per_world) * ceil(m.nv / _QFRC_LANES)
+      qfrc_kernel = _update_constraint_init_qfrc_constraint_sparse(sc, max_records, True)
     wp.launch(
-      _update_constraint_init_qfrc_constraint_sparse(sc, m.nv if det_atomics else 0, det_atomics),
-      dim=(d.nworld, d.njmax),
-      inputs=[d.nefc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.force, dj.dof_cdof, changed, ctx.done],
+      qfrc_kernel,
+      dim=(d.nworld, slots_per_world, _QFRC_LANES),
+      inputs=[
+        d.nefc,
+        dj.efc.J_rownnz,
+        dj.efc.J_rowadr,
+        dj.efc.J_colind,
+        dj.efc.J,
+        d.efc.force,
+        dj.dof_cdof,
+        changed,
+        ctx.done,
+        slots_per_world,
+      ],
       outputs=[d.qfrc_constraint],
     )
   else:
@@ -4289,11 +4308,13 @@ def _JTDACJ_sparse(
   return kernel
 
 
-def _jtdaj_groups_per_world(nworld: int, max_groups: int, kernel: wp.Kernel, min_groups: int = 1) -> int:
+def _jtdaj_groups_per_world(
+  nworld: int, max_groups: int, kernel: wp.Kernel, min_groups: int = 1, threads_per_group: int = _JTDAJ_THREADS_PER_GROUP
+) -> int:
   # Per-world work is sized for capacity and often idle, so cap groups at a few resident waves.
   block_size, min_grid_size = wp.get_suggested_block_size(kernel)
-  device_warps = max(1, block_size * min_grid_size // _JTDAJ_THREADS_PER_GROUP)
-  return max(min_groups, min(max_groups, _JTDAJ_OVERSUBSCRIBE_WAVES * device_warps // nworld))
+  device_groups = max(1, block_size * min_grid_size // threads_per_group)
+  return max(min_groups, min(max_groups, _JTDAJ_OVERSUBSCRIBE_WAVES * device_groups // nworld))
 
 
 def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
