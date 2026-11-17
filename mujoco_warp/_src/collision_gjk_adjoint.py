@@ -340,17 +340,19 @@ def _replay_gjk_feature(
   weights = _feature_weights(dim, simplex)
   delta = _linear_combine(dim, weights, simplex)
   point1 = _linear_combine(dim, weights, _mat43_rows(points1[0], points1[1], points1[2]))
-  point2 = point1 - delta
+  normal = -delta
   distance = wp.sqrt(wp.dot(delta, delta))
+  if dim == 3:
+    # Use the face normal to avoid differentiating a near-zero separation.
+    face_normal = wp.cross(simplex[1] - simplex[0], simplex[2] - simplex[0])
+    if wp.dot(face_normal, face_normal) > 0.0:
+      normal = wp.where(wp.dot(face_normal, simplex[0]) > 0.0, -face_normal, face_normal)
+      distance = -wp.dot(simplex[0], wp.normalize(normal))
   if distance < 1.0e-12:
     return 0, 0.0, zero, zero, zero
   full_margin = radius + 0.5 * margin
-  point2 = point2 + full_margin * (delta / distance)
   dist = distance - full_margin
-  # The inflated witnesses coincide at contact onset. Their subtraction loses
-  # the normal in float32 and introduces a spurious 1 / abs(dist) in its VJP.
-  # The uninflated separation has length approximately radius and the same direction.
-  normal = -delta
+  point2 = point1 + dist * wp.normalize(normal)
   return 1, dist, point1, point2, normal
 
 
