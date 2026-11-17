@@ -116,6 +116,31 @@ class RenderTest(parameterized.TestCase):
     rgb = _unpack_rgb(rc.rgb_data.numpy())[0, 4]
     self.assertGreater(int(rgb[0]), int(rgb[1]) + 100)
 
+  def test_configurable_splat_transmittance(self):
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <camera/>
+          <geom type="box" pos="0 0 -2" size="10 10 0.1"/>
+        </worldbody>
+      </mujoco>
+    """
+    )
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(3, 3),
+      render_rgb=True,
+      render_depth=True,
+      splat_min_transmittance=0.01,
+      splat_depth_transmittance_threshold=0.6,
+      **_sample_splats([0.0, 0.0, -1.0], [0.2, 0.2, 0.2], [1.0, 0.0, 0.0, 0.5]),
+    )
+    rc.depth_data.fill_(wp.inf)
+    mjw.render(m, d, rc)
+
+    np.testing.assert_allclose(rc.depth_data.numpy()[0, 4], 1.0, atol=1e-5)
+
   def test_splat_is_occluded_by_geometry(self):
     xml = """
     <mujoco>

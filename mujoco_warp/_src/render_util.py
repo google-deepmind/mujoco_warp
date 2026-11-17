@@ -28,6 +28,9 @@ from mujoco_warp._src.types import RenderContext
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
+_DEFAULT_MIN_SPLAT_TRANSMITTANCE = 0.005
+_DEFAULT_SPLAT_DEPTH_TRANSMITTANCE_THRESHOLD = 0.1
+
 
 @wp.kernel
 def _convert_texture_data(
@@ -378,6 +381,8 @@ def create_render_context(
   splat_group_id: np.ndarray | None = None,
   deterministic: bool = False,
   backend: str = "warp",
+  splat_min_transmittance: float = _DEFAULT_MIN_SPLAT_TRANSMITTANCE,
+  splat_depth_transmittance_threshold: float = _DEFAULT_SPLAT_DEPTH_TRANSMITTANCE_THRESHOLD,
 ) -> RenderContext:
   """Creates a render context on device.
 
@@ -441,10 +446,22 @@ def create_render_context(
              and an OptiX-capable GPU). If "optix" is unavailable for the device or
              model, a warning explains why and "warp" is used. OptiX launches cannot be
              recorded into CUDA graphs.
+    splat_min_transmittance: Remaining transmittance below which Gaussian splat
+      compositing stops. Must be strictly between 0 and 1.
+    splat_depth_transmittance_threshold: Remaining transmittance below which
+      Gaussian splat depth is recorded. Must be strictly between 0 and 1 and
+      greater than or equal to splat_min_transmittance.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
   """
+  if not 0.0 < splat_min_transmittance < 1.0:
+    raise ValueError("splat_min_transmittance must be strictly between 0 and 1")
+  if not 0.0 < splat_depth_transmittance_threshold < 1.0:
+    raise ValueError("splat_depth_transmittance_threshold must be strictly between 0 and 1")
+  if splat_depth_transmittance_threshold < splat_min_transmittance:
+    raise ValueError("splat_depth_transmittance_threshold must be greater than or equal to splat_min_transmittance")
+
   mjd = mujoco.MjData(mjm)
   mujoco.mj_forward(mjm, mjd)
 
@@ -862,6 +879,8 @@ def create_render_context(
     splat_upper=splat_upper,
     splat_group_root=splat_group_root,
     splat_count=splat_count,
+    splat_min_transmittance=splat_min_transmittance,
+    splat_depth_transmittance_threshold=splat_depth_transmittance_threshold,
     backend=backend,
   )
 
