@@ -292,7 +292,7 @@ _TREE_CASES = (
   dict(
     testcase_name="dense_blocks",
     overrides={"opt.jacobian": "DENSE"},
-    covers=("smooth._qLD_acc", "smooth._solve_LD_sparse_level"),
+    covers=("smooth._solve_LD_sparse_level",),
     sparse_blocks=True,
   ),
 )
