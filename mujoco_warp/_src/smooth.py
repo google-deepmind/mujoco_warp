@@ -1002,6 +1002,33 @@ def _subtree_com_world_tiled(
     subtree_com_out[worldid, 0] = com / mass
 
 
+@wp.func
+def inert_com(
+  # In:
+  mass: float,
+  inertia: wp.vec3,
+  rotation: wp.mat33,
+  offset: wp.vec3,
+) -> vec10:
+  """Express principal inertia in a rotated, translated COM frame (mju_inertCom)."""
+  row0 = wp.cw_mul(rotation[0], inertia)
+  row1 = wp.cw_mul(rotation[1], inertia)
+  row2 = wp.cw_mul(rotation[2], inertia)
+  x, y, z = offset[0], offset[1], offset[2]
+  return vec10(
+    wp.dot(row0, rotation[0]) + mass * (y * y + z * z),
+    wp.dot(row1, rotation[1]) + mass * (x * x + z * z),
+    wp.dot(row2, rotation[2]) + mass * (x * x + y * y),
+    wp.dot(row0, rotation[1]) - mass * x * y,
+    wp.dot(row0, rotation[2]) - mass * x * z,
+    wp.dot(row1, rotation[2]) - mass * y * z,
+    mass * x,
+    mass * y,
+    mass * z,
+    mass,
+  )
+
+
 @wp.kernel
 def _cinert(
   # Model:
@@ -1020,34 +1047,7 @@ def _cinert(
   inert = body_inertia[worldid % body_inertia.shape[0], bodyid]
   mass = body_mass[worldid % body_mass.shape[0], bodyid]
   dif = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
-  # express inertia in com-based frame (mju_inertCom)
-
-  res = vec10()
-  # res_rot = mat * diag(inert) * mat'
-  row0 = wp.cw_mul(mat[0], inert)
-  row1 = wp.cw_mul(mat[1], inert)
-  row2 = wp.cw_mul(mat[2], inert)
-  res[0] = wp.dot(row0, mat[0])
-  res[1] = wp.dot(row1, mat[1])
-  res[2] = wp.dot(row2, mat[2])
-  res[3] = wp.dot(row0, mat[1])
-  res[4] = wp.dot(row0, mat[2])
-  res[5] = wp.dot(row1, mat[2])
-  # res_rot -= mass * dif_cross * dif_cross
-  res[0] += mass * (dif[1] * dif[1] + dif[2] * dif[2])
-  res[1] += mass * (dif[0] * dif[0] + dif[2] * dif[2])
-  res[2] += mass * (dif[0] * dif[0] + dif[1] * dif[1])
-  res[3] -= mass * dif[0] * dif[1]
-  res[4] -= mass * dif[0] * dif[2]
-  res[5] -= mass * dif[1] * dif[2]
-  # res_tran = mass * dif
-  res[6] = mass * dif[0]
-  res[7] = mass * dif[1]
-  res[8] = mass * dif[2]
-  # res_mass = mass
-  res[9] = mass
-
-  cinert_out[worldid, bodyid] = res
+  cinert_out[worldid, bodyid] = inert_com(mass, inert, mat, dif)
 
 
 @wp.kernel
