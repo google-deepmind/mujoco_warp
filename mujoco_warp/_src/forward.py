@@ -277,6 +277,13 @@ def _next_activation(
   dyntype = actuator_dyntype[uid]
 
   if dyntype == DynType.DCMOTOR:
+    if not limit:
+      # rk4 stage: explicit euler with the stage-scaled timestep, as in mj_RungeKutta
+      h = act_dot_scale * opt_timestep[opt_timestep_id]
+      for j in range(actadr, actadr + actnum):
+        act_out[worldid, j] = act_in[worldid, j] + act_dot_in[worldid, j] * h
+      return
+
     dynprm = actuator_dynprm[actuator_dynprm_id, uid]
     gainprm = actuator_gainprm[actuator_gainprm_id, uid]
     biasprm = actuator_biasprm[actuator_biasprm_id, uid]
@@ -287,10 +294,7 @@ def _next_activation(
       act = act_in[worldid, j]
       act_dot = act_dot_in[worldid, j]
 
-      if not limit:
-        # rk4 stage: explicit euler with the stage-scaled timestep, as in mj_RungeKutta
-        act = act + act_dot * act_dot_scale * opt_timestep[opt_timestep_id]
-      elif offset == slots[4]:  # current
+      if offset == slots[4]:  # current
         R = gainprm[0]
         te = wp.max(MJ_MINVAL, dynprm[0])
         act = act + act_dot * te * (1.0 - wp.exp(-opt_timestep[opt_timestep_id] / te))

@@ -326,11 +326,14 @@ class ForwardTest(parameterized.TestCase):
       """
     )
 
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
     for i in range(6):
       mjd.ctrl[0] = np.sin(i)
       d.ctrl.fill_(float(mjd.ctrl[0]))
       mujoco.mj_step(mjm, mjd)
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
@@ -346,11 +349,11 @@ class ForwardTest(parameterized.TestCase):
         </option>
         <worldbody>
           <body>
-            <joint name="slide1" type="slide" axis="0 0 1"/>
+            <joint name="slide1" type="slide"/>
             <geom size=".03"/>
           </body>
           <body pos="0 .1 0">
-            <joint name="slide2" type="slide" axis="0 0 1"/>
+            <joint name="slide2" type="slide"/>
             <geom size=".03"/>
           </body>
           <body pos="0 .2 0">
@@ -358,7 +361,7 @@ class ForwardTest(parameterized.TestCase):
             <geom size=".03"/>
           </body>
           <body pos="0 .3 0">
-            <joint name="slide3" type="slide" axis="0 0 1"/>
+            <joint name="slide3" type="slide"/>
             <geom size=".03"/>
           </body>
         </worldbody>
@@ -366,7 +369,7 @@ class ForwardTest(parameterized.TestCase):
           <dcmotor joint="slide1" motorconst="2" resistance=".5" inductance=".001" input="voltage"/>
           <dcmotor joint="slide2" motorconst="1" resistance="1" inductance=".001" input="pos vel" controller="10 0 5"/>
           <dcmotor joint="hinge" motorconst=".05" resistance="2" input="none" lugre="1e4 100 .005 .008 .1"/>
-          <general joint="slide3" dyntype="filter" dynprm=".05" gainprm="1"/>
+          <general joint="slide3" dyntype="filter" dynprm=".05"/>
         </actuator>
         <keyframe>
           <key qpos=".1 -.2 .3 .05" qvel=".5 -1 .02 .7" ctrl="1 .5 0 -1"/>
@@ -376,9 +379,12 @@ class ForwardTest(parameterized.TestCase):
       keyframe=0,
     )
 
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
     for _ in range(3):
       mujoco.mj_step(mjm, mjd)
-      mjw.step(m, d)
+      wp.capture_launch(capture.graph)
 
     _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
     _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
