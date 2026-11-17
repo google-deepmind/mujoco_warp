@@ -5392,7 +5392,7 @@ def passive(m: Model, d: Data):
     )
 
   gravity_enabled = not (m.opt.disableflags & DisableBit.GRAVITY)
-  if gravity_enabled and m.has_gravcomp:
+  if gravity_enabled:
     wp.launch(
       _gravity_force,
       dim=(d.nworld, m.nv),

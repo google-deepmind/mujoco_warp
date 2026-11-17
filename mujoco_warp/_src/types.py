@@ -1649,8 +1649,6 @@ class Model:
     has_flex_edge_stiff_damp: whether any non-rigid flex has edge stiffness or damping
     has_tendon_stiffness: whether any tendon has positive stiffness
     has_tendon_damping: whether any tendon has positive damping
-    has_tendon_armature: whether any tendon has armature (including tendon actuator armature)
-    has_gravcomp: whether any body has gravity compensation
     has_efm_actuator: whether any actuator contributes effective metric coupling
     has_actuator_wrap: whether any wrap-eligible rotational actuator is present
     has_actuator_dcmotor: whether any DC motor actuator is present
@@ -1698,8 +1696,7 @@ class Model:
     tendon_geom_adr: geom tendon address
     tendon_limited_adr: addresses for limited tendons
     max_ten_J_rownnz: maximum number of non-zeros in a tendon row
-    ten_wrapadr_site: wrap object starting address for sites
-    ten_wrapnum_site: number of site wrap objects per tendon
+    tendon_geom_wrapadr: first geom wrap index per tendon (into wrap_geom_adr)
     wrap_jnt_adr: addresses for joint tendon wrap object
     wrap_site_adr: addresses for site tendon wrap object
     wrap_site_pair_adr: first address for site wrap pair
@@ -2229,8 +2226,6 @@ class Model:
   has_flex_edge_stiff_damp: bool
   has_tendon_stiffness: bool
   has_tendon_damping: bool
-  has_tendon_armature: bool
-  has_gravcomp: bool
   has_efm_actuator: bool
   has_actuator_wrap: bool
   has_actuator_dcmotor: bool
@@ -2274,8 +2269,7 @@ class Model:
   tendon_geom_adr: array("ntendon_geom", int)
   tendon_limited_adr: array("ntendon_limited", int)
   max_ten_J_rownnz: int
-  ten_wrapadr_site: array("nten_wrapadr_site", int)
-  ten_wrapnum_site: array("ntendon", int)
+  tendon_geom_wrapadr: array("ntendon", int)
   wrap_jnt_adr: array("nwrap_jnt", int)
   wrap_site_adr: array("nwrap_site", int)
   wrap_site_pair_adr: array("nwrap_site_pair", int)

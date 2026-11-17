@@ -1038,6 +1038,72 @@ class PassiveTest(parameterized.TestCase):
       _assert_eq(d.qpos.numpy()[0], mjd.qpos, f"interp_qpos_step_{step_idx}")
       _assert_eq(d.qvel.numpy()[0], mjd.qvel, f"interp_qvel_step_{step_idx}")
 
+  @parameterized.parameters(1, 2)
+  def test_gravcomp_runtime_update(self, nworld):
+    """Tests runtime updates to body_gravcomp and gravity inside a captured graph."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="1 2 -3">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint name="j0" axis="0 1 0" actuatorgravcomp="true"/>
+            <geom size=".1" pos=".2 0 0"/>
+            <body pos=".3 0 0">
+              <joint type="ball"/>
+              <joint type="slide" axis="1 0 0"/>
+              <geom size=".1" pos=".1 .1 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="j0"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"body_gravcomp": nworld},
+    )
+
+    with wp.ScopedCapture() as capture:
+      mjw.set_const(m, d)
+      mjw.passive(m, d)
+      mjw.fwd_actuation(m, d)
+
+    for arr in (d.qfrc_gravcomp, d.qfrc_passive, d.qfrc_actuator):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+    np.testing.assert_array_equal(d.qfrc_gravcomp.numpy(), 0.0)
+
+    gravcomp = np.tile(np.array([0.0, 0.5, 1.0], dtype=np.float32), (nworld, 1))
+    if nworld == 2:
+      gravcomp[1] = [0.0, 1.0, 0.25]
+    gravity = np.array([[-2.0, 1.0, -4.0]], dtype=np.float32)
+    m.body_gravcomp.assign(gravcomp)
+    m.opt.gravity.assign(gravity)
+
+    for arr in (d.qfrc_gravcomp, d.qfrc_passive, d.qfrc_actuator):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+
+    qfrc_gravcomp = d.qfrc_gravcomp.numpy()
+    qfrc_passive = d.qfrc_passive.numpy()
+    qfrc_actuator = d.qfrc_actuator.numpy()
+    mjm.opt.gravity[:] = gravity[0]
+    for w in range(nworld):
+      mjm.body_gravcomp[:] = gravcomp[w]
+      mujoco.mj_setConst(mjm, mjd)
+      mujoco.mj_passive(mjm, mjd)
+      mujoco.mj_fwdActuation(mjm, mjd)
+      _assert_eq(qfrc_gravcomp[w], mjd.qfrc_gravcomp, f"qfrc_gravcomp_world_{w}")
+      _assert_eq(qfrc_passive[w], mjd.qfrc_passive, f"qfrc_passive_world_{w}")
+      _assert_eq(qfrc_actuator[w], mjd.qfrc_actuator, f"qfrc_actuator_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_gravcomp[0], qfrc_gravcomp[1]))
+
 
 if __name__ == "__main__":
   wp.init()
