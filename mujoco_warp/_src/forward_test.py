@@ -203,13 +203,21 @@ class ForwardTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
-        <option timestep="0.002"/>
         <worldbody>
           <body>
-            <joint name="arm" type="hinge" axis="0 0 1" damping="0.2"/>
+            <joint name="arm" damping="0.2"/>
             <geom size="0.1" mass="1"/>
           </body>
+          <body pos="1 0 0">
+            <joint name="arm2" damping="0.1"/>
+            <geom size="0.2" mass="1"/>
+          </body>
         </worldbody>
+        <tendon>
+          <fixed name="t" actuatorfrclimited="true" actuatorfrcrange="-3 3">
+            <joint joint="arm2" coef="1"/>
+          </fixed>
+        </tendon>
         <actuator>
           <motor joint="arm" gear="3"/>
           <general joint="arm" dyntype="filter" dynprm="0.08" gainprm="4" group="1"/>
@@ -217,9 +225,11 @@ class ForwardTest(parameterized.TestCase):
           <intvelocity joint="arm" kp="15" kv="1" actrange="-2 2" group="31"/>
           <motor joint="arm" gear="2" group="-1"/>
           <dcmotor joint="arm" motorconst="3" resistance="2" group="3"/>
+          <position tendon="t" kp="5" kv="4"/>
+          <dcmotor tendon="t" motorconst="2" resistance="1" cogging="2.5 6 0" group="3"/>
         </actuator>
         <keyframe>
-          <key qpos="0.08" qvel="-0.12" act="0.1 -0.15" ctrl="0.6 -0.5 0.4 0.3 -0.2 0.7"/>
+          <key qpos="0.08 0.26" qvel="-0.12 0.15" act="0.1 -0.15" ctrl="0.6 -0.5 0.4 0.3 -0.2 0.7 0 0"/>
         </keyframe>
       </mujoco>
       """,

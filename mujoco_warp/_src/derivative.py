@@ -82,6 +82,7 @@ def _jnt_actfrc_clamped(
 @wp.func
 def _tendon_actfrc_clamped(
   # Model:
+  opt_disableactuator: int,
   tendon_actfrclimited: wp.array[bool],
   tendon_actfrcrange: wp.array2d[wp.vec2],
   actuator_trntype: wp.array[int],
@@ -91,6 +92,7 @@ def _tendon_actfrc_clamped(
   actuator_dynprm: wp.array2d[vec10],
   actuator_gainprm: wp.array2d[vec10],
   actuator_biasprm: wp.array2d[vec10],
+  actuator_group: wp.array[int],
   # Data in:
   act_in: wp.array2d[float],
   act_dot_in: wp.array2d[float],
@@ -106,6 +108,10 @@ def _tendon_actfrc_clamped(
       ten_force = float(0.0)
       for j in range(actuator_force_in.shape[1]):
         if actuator_trntype[j] == TrnType.TENDON and actuator_trnid[j][0] == tenid:
+          # disabled actuators add no force, mechanical or otherwise (dcmotorPreMechForce)
+          if opt_disableactuator != 0:
+            if util_misc.actuator_disabled(opt_disableactuator, actuator_group[j]):
+              continue
           f = actuator_force_in[worldid, j]
           if actuator_biastype[j] == BiasType.DCMOTOR:
             f -= util_misc.dcmotor_mech_force(
@@ -133,6 +139,7 @@ def _dcmotor_saturation(
   # Model:
   opt_timestep: wp.array[float],
   opt_disableflags: int,
+  opt_disableactuator: int,
   tendon_actfrclimited: wp.array[bool],
   tendon_actfrcrange: wp.array2d[wp.vec2],
   actuator_trntype: wp.array[int],
@@ -149,6 +156,7 @@ def _dcmotor_saturation(
   actuator_actlimited: wp.array[bool],
   actuator_actrange: wp.array2d[wp.vec2],
   actuator_actearly: wp.array[bool],
+  actuator_group: wp.array[int],
   actuator_forcelimited: wp.array[bool],
   actuator_forcerange: wp.array2d[wp.vec2],
   actuator_ctrllimited: wp.array[bool],
@@ -234,6 +242,7 @@ def _dcmotor_saturation(
       flags = flags | 1
 
   if (flags & 1) == 0 and _tendon_actfrc_clamped(
+    opt_disableactuator,
     tendon_actfrclimited,
     tendon_actfrcrange,
     actuator_trntype,
@@ -243,6 +252,7 @@ def _dcmotor_saturation(
     actuator_dynprm,
     actuator_gainprm,
     actuator_biasprm,
+    actuator_group,
     act_in,
     act_dot_in,
     actuator_length_in,
@@ -327,6 +337,7 @@ def _qderiv_actuator_passive_vel(disable_actuator: bool = False):
       sat_dcmotor = _dcmotor_saturation(
         opt_timestep,
         opt_disableflags,
+        opt_disableactuator,
         tendon_actfrclimited,
         tendon_actfrcrange,
         actuator_trntype,
@@ -343,6 +354,7 @@ def _qderiv_actuator_passive_vel(disable_actuator: bool = False):
         actuator_actlimited,
         actuator_actrange,
         actuator_actearly,
+        actuator_group,
         actuator_forcelimited,
         actuator_forcerange,
         actuator_ctrllimited,
@@ -425,6 +437,7 @@ def _qderiv_actuator_passive_vel(disable_actuator: bool = False):
       gaintype != GainType.DCMOTOR
       and biastype != BiasType.DCMOTOR
       and _tendon_actfrc_clamped(
+        opt_disableactuator,
         tendon_actfrclimited,
         tendon_actfrcrange,
         actuator_trntype,
@@ -434,6 +447,7 @@ def _qderiv_actuator_passive_vel(disable_actuator: bool = False):
         actuator_dynprm,
         actuator_gainprm,
         actuator_biasprm,
+        actuator_group,
         act_in,
         act_dot_in,
         actuator_length_in,
@@ -2389,6 +2403,7 @@ def _eff_actuator_actuation(nv: int, disable_actuator: bool = False, determinist
       sat_dc = _dcmotor_saturation(
         opt_timestep,
         opt_disableflags,
+        opt_disableactuator,
         tendon_actfrclimited,
         tendon_actfrcrange,
         actuator_trntype,
@@ -2405,6 +2420,7 @@ def _eff_actuator_actuation(nv: int, disable_actuator: bool = False, determinist
         actuator_actlimited,
         actuator_actrange,
         actuator_actearly,
+        actuator_group,
         actuator_forcelimited,
         actuator_forcerange,
         actuator_ctrllimited,
@@ -2535,6 +2551,7 @@ def _eff_actuator_actuation(nv: int, disable_actuator: bool = False, determinist
       gaintype != GainType.DCMOTOR
       and biastype != BiasType.DCMOTOR
       and _tendon_actfrc_clamped(
+        opt_disableactuator,
         tendon_actfrclimited,
         tendon_actfrcrange,
         actuator_trntype,
@@ -2544,6 +2561,7 @@ def _eff_actuator_actuation(nv: int, disable_actuator: bool = False, determinist
         actuator_dynprm,
         actuator_gainprm,
         actuator_biasprm,
+        actuator_group,
         act_in,
         act_dot_in,
         actuator_length_in,

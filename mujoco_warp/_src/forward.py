@@ -2897,7 +2897,6 @@ def _actuator_force(disable_actuator: bool = False):
           u_filter -= period * wp.round((u_filter - act) / period)
         act_dot = (u_filter - act) / wp.max(dynprm[0], MJ_MINVAL)
       elif dyntype == DynType.MUSCLE:
-        dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
         act = act_in[worldid, act_last]
         act_dot = util_misc.muscle_dynamics(ctrl, act, dynprm)
       elif dyntype == DynType.DCMOTOR:
@@ -3174,70 +3173,81 @@ def _tendon_actuator_force(deterministic: bool = False):
   return kernel
 
 
-@wp.kernel
-def _tendon_actuator_force_clamp(
-  # Model:
-  tendon_actfrclimited: wp.array[bool],
-  tendon_actfrcrange: wp.array2d[wp.vec2],
-  actuator_trntype: wp.array[int],
-  actuator_biastype: wp.array[int],
-  actuator_actadr: wp.array[int],
-  actuator_trnid: wp.array[wp.vec2i],
-  actuator_dynprm: wp.array2d[vec10],
-  actuator_gainprm: wp.array2d[vec10],
-  actuator_biasprm: wp.array2d[vec10],
-  actuator_forcelimited: wp.array[bool],
-  actuator_forcerange: wp.array2d[wp.vec2],
-  # Data in:
-  act_in: wp.array2d[float],
-  act_dot_in: wp.array2d[float],
-  actuator_length_in: wp.array2d[float],
-  actuator_force_in: wp.array2d[float],
-  # In:
-  ten_actfrc_in: wp.array2d[float],
-  # Data out:
-  actuator_force_out: wp.array2d[float],
-):
-  worldid, actid = wp.tid()
+@cache_kernel
+def _tendon_actuator_force_clamp(disable_actuator: bool = False):
+  @wp.kernel(module="unique", module_options={"enable_backward": False})
+  def kernel(
+    # Model:
+    opt_disableactuator: int,
+    tendon_actfrclimited: wp.array[bool],
+    tendon_actfrcrange: wp.array2d[wp.vec2],
+    actuator_trntype: wp.array[int],
+    actuator_biastype: wp.array[int],
+    actuator_actadr: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_dynprm: wp.array2d[vec10],
+    actuator_gainprm: wp.array2d[vec10],
+    actuator_biasprm: wp.array2d[vec10],
+    actuator_group: wp.array[int],
+    actuator_forcelimited: wp.array[bool],
+    actuator_forcerange: wp.array2d[wp.vec2],
+    # Data in:
+    act_in: wp.array2d[float],
+    act_dot_in: wp.array2d[float],
+    actuator_length_in: wp.array2d[float],
+    actuator_force_in: wp.array2d[float],
+    # In:
+    ten_actfrc_in: wp.array2d[float],
+    # Data out:
+    actuator_force_out: wp.array2d[float],
+  ):
+    worldid, actid = wp.tid()
 
-  if actuator_trntype[actid] != TrnType.TENDON:
-    return
+    if actuator_trntype[actid] != TrnType.TENDON:
+      return
 
-  tenid = actuator_trnid[actid][0]
-  ten_limited = tendon_actfrclimited[tenid]
-  frc_limited = actuator_forcelimited[actid]
-  is_dcmotor = actuator_biastype[actid] == BiasType.DCMOTOR
-  if not ten_limited and not frc_limited and not is_dcmotor:
-    return
+    # disabled actuators keep zero force: no force limits and no DC motor mechanical forces
+    if wp.static(disable_actuator):
+      if util_misc.actuator_disabled(opt_disableactuator, actuator_group[actid]):
+        return
 
-  force = actuator_force_in[worldid, actid]
-  if ten_limited:
-    ten_actfrc = ten_actfrc_in[worldid, tenid]
-    if ten_actfrc != 0.0:
-      actfrcrange = tendon_actfrcrange[worldid % tendon_actfrcrange.shape[0], tenid]
-      if ten_actfrc < actfrcrange[0]:
-        force *= actfrcrange[0] / ten_actfrc
-      elif ten_actfrc > actfrcrange[1]:
-        force *= actfrcrange[1] / ten_actfrc
+    tenid = actuator_trnid[actid][0]
+    ten_limited = tendon_actfrclimited[tenid]
+    frc_limited = actuator_forcelimited[actid]
+    is_dcmotor = actuator_biastype[actid] == BiasType.DCMOTOR
+    if not ten_limited and not frc_limited and not is_dcmotor:
+      return
 
-  if frc_limited:
-    forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], actid]
-    force = wp.clamp(force, forcerange[0], forcerange[1])
+    force = actuator_force_in[worldid, actid]
+    if ten_limited:
+      ten_actfrc = ten_actfrc_in[worldid, tenid]
+      if ten_actfrc != 0.0:
+        actfrcrange = tendon_actfrcrange[worldid % tendon_actfrcrange.shape[0], tenid]
+        if ten_actfrc < actfrcrange[0]:
+          force *= actfrcrange[0] / ten_actfrc
+        elif ten_actfrc > actfrcrange[1]:
+          force *= actfrcrange[1] / ten_actfrc
 
-  # add DC motor mechanical forces (not subject to current or tendon force limits)
-  if is_dcmotor:
-    force += util_misc.dcmotor_mech_force(
-      act_in,
-      act_dot_in,
-      worldid,
-      actuator_actadr[actid],
-      actuator_length_in[worldid, actid],
-      actuator_dynprm[worldid % actuator_dynprm.shape[0], actid],
-      actuator_gainprm[worldid % actuator_gainprm.shape[0], actid],
-      actuator_biasprm[worldid % actuator_biasprm.shape[0], actid],
-    )
+    if frc_limited:
+      forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], actid]
+      force = wp.clamp(force, forcerange[0], forcerange[1])
 
-  actuator_force_out[worldid, actid] = force
+    # add DC motor mechanical forces (not subject to current or tendon force limits)
+    if is_dcmotor:
+      force += util_misc.dcmotor_mech_force(
+        act_in,
+        act_dot_in,
+        worldid,
+        actuator_actadr[actid],
+        actuator_length_in[worldid, actid],
+        actuator_dynprm[worldid % actuator_dynprm.shape[0], actid],
+        actuator_gainprm[worldid % actuator_gainprm.shape[0], actid],
+        actuator_biasprm[worldid % actuator_biasprm.shape[0], actid],
+      )
+
+    actuator_force_out[worldid, actid] = force
+
+  return kernel
 
 
 @cache_kernel
@@ -3381,9 +3391,10 @@ def fwd_actuation(m: Model, d: Data):
       )
 
       wp.launch(
-        _tendon_actuator_force_clamp,
+        _tendon_actuator_force_clamp(bool(m.opt.disableactuator)),
         dim=(d.nworld, m.nactuator),
         inputs=[
+          m.opt.disableactuator,
           m.tendon_actfrclimited,
           m.tendon_actfrcrange,
           m.actuator_trntype,
@@ -3393,6 +3404,7 @@ def fwd_actuation(m: Model, d: Data):
           m.actuator_dynprm,
           m.actuator_gainprm,
           m.actuator_biasprm,
+          m.actuator_group,
           m.actuator_forcelimited,
           m.actuator_forcerange,
           d.act,
