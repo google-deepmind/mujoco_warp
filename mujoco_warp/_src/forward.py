@@ -2832,8 +2832,6 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
     else:
       collision_driver.collision(m, d)
 
-  constraint.make_constraint(m, d)
-
   if sleep_enabled:
     if m.neq > 0:
       woke_eq = wp.zeros(1, dtype=int) if m.opt.graph_conditional else None
@@ -2842,6 +2840,8 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
         wp.capture_if(woke_eq, on_true=sleep.update_sleep, m=m, d=d)
       else:
         sleep.update_sleep(m, d)
+
+  constraint.make_constraint(m, d)
 
   smooth.crb(m, d)
   smooth.tendon_armature(m, d)

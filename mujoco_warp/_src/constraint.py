@@ -24,13 +24,98 @@ from mujoco_warp._src import types
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import OverflowType
+from mujoco_warp._src.types import SleepState
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec12
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+
+@wp.func
+def _tendon_awake(
+  # Model:
+  dof_treeid: wp.array[int],
+  ten_J_colind: wp.array[int],
+  # Data in:
+  tree_awake_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  rowadr: int,
+  rownnz: int,
+) -> bool:
+  for i in range(rownnz):
+    t = dof_treeid[ten_J_colind[rowadr + i]]
+    if t >= 0 and tree_awake_in[worldid, t] == 1:
+      return True
+  return False
+
+
+@wp.func
+def _body_pair_awake(
+  # Model:
+  body_treeid: wp.array[int],
+  # Data in:
+  body_awake_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  body1: int,
+  body2: int,
+) -> bool:
+  awake1 = body_treeid[body1] >= 0 and body_awake_in[worldid, body1] == SleepState.AWAKE
+  awake2 = body_treeid[body2] >= 0 and body_awake_in[worldid, body2] == SleepState.AWAKE
+  return awake1 or awake2
+
+
+@wp.func
+def _flex_nodes_awake(
+  # Model:
+  body_treeid: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  # Data in:
+  body_awake_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  flexid: int,
+) -> bool:
+  nadr = flex_nodeadr[flexid]
+  for j in range(flex_nodenum[flexid]):
+    b = flex_nodebodyid[nadr + j]
+    if body_treeid[b] >= 0 and body_awake_in[worldid, b] == SleepState.AWAKE:
+      return True
+  return False
+
+
+@wp.func
+def _flex_awake(
+  # Model:
+  body_treeid: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  # Data in:
+  body_awake_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  flexid: int,
+) -> bool:
+  if flex_interp[flexid] != 0:
+    return _flex_nodes_awake(body_treeid, flex_nodeadr, flex_nodenum, flex_nodebodyid, body_awake_in, worldid, flexid)
+  vadr = flex_vertadr[flexid]
+  for j in range(flex_vertnum[flexid]):
+    b = flex_vertbodyid[vadr + j]
+    if body_treeid[b] >= 0 and body_awake_in[worldid, b] == SleepState.AWAKE:
+      return True
+  return False
 
 
 @wp.kernel
@@ -285,7 +370,7 @@ def _efc_row(
 
 
 @cache_kernel
-def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -298,6 +383,7 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
     body_weldid: wp.array[int],
     body_dofnum: wp.array[int],
     body_dofadr: wp.array[int],
+    body_treeid: wp.array[int],
     body_invweight0: wp.array2d[wp.vec2],
     jnt_type: wp.array[int],
     jnt_dofadr: wp.array[int],
@@ -321,6 +407,7 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
     site_xpos_in: wp.array2d[wp.vec3],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
+    body_awake_in: wp.array2d[int],
     cvel_in: wp.array2d[wp.spatial_vector],
     cdof_dot_in: wp.array2d[wp.spatial_vector],
     subtree_linvel_in: wp.array2d[wp.vec3],
@@ -354,21 +441,24 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if not eq_active_in[worldid, eqid]:
       return
 
+    obj1id = eq_obj1id[eqid]
+    obj2id = eq_obj2id[eqid]
+    is_site = nsite > 0 and eq_objtype[eqid] == types.ObjType.SITE
+    body1 = site_bodyid[obj1id] if is_site else obj1id
+    body2 = site_bodyid[obj2id] if is_site else obj2id
+
+    if wp.static(enable_sleep):
+      if not _body_pair_awake(body_treeid, body_awake_in, worldid, body1, body2):
+        return
+
     data = eq_data[worldid % eq_data.shape[0], eqid]
     anchor1 = wp.vec3f(data[0], data[1], data[2])
     anchor2 = wp.vec3f(data[3], data[4], data[5])
 
-    obj1id = eq_obj1id[eqid]
-    obj2id = eq_obj2id[eqid]
-
-    if nsite > 0 and eq_objtype[eqid] == types.ObjType.SITE:
-      body1 = site_bodyid[obj1id]
-      body2 = site_bodyid[obj2id]
+    if is_site:
       pos1 = site_xpos_in[worldid, obj1id]
       pos2 = site_xpos_in[worldid, obj2id]
     else:
-      body1 = obj1id
-      body2 = obj2id
       pos1 = xpos_in[worldid, body1] + math.quat_to_mat(xquat_in[worldid, body1]) @ anchor1
       pos2 = xpos_in[worldid, body2] + math.quat_to_mat(xquat_in[worldid, body2]) @ anchor2
 
@@ -622,7 +712,7 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -632,6 +722,7 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
     qpos0: wp.array2d[float],
     jnt_qposadr: wp.array[int],
     jnt_dofadr: wp.array[int],
+    jnt_bodyid: wp.array[int],
     dof_invweight0: wp.array2d[float],
     eq_obj1id: wp.array[int],
     eq_obj2id: wp.array[int],
@@ -643,6 +734,7 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
     qpos_in: wp.array2d[float],
     qvel_in: wp.array2d[float],
     eq_active_in: wp.array2d[bool],
+    body_awake_in: wp.array2d[int],
     njmax_in: int,
     njmax_nnz_in: int,
     # Data out:
@@ -674,6 +766,12 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
     jntid_1 = eq_obj1id[eqid]
     jntid_2 = eq_obj2id[eqid]
+
+    if wp.static(enable_sleep):
+      s1 = body_awake_in[worldid, jnt_bodyid[jntid_1]]
+      s2 = body_awake_in[worldid, jnt_bodyid[jntid_2]] if jntid_2 >= 0 else SleepState.STATIC
+      if s1 != SleepState.AWAKE and s2 != SleepState.AWAKE:
+        return
 
     rownnz = int(0)
     rowadr = int(0)
@@ -768,13 +866,14 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
     opt_timestep: wp.array[float],
     opt_disableflags: int,
+    dof_treeid: wp.array[int],
     eq_obj1id: wp.array[int],
     eq_obj2id: wp.array[int],
     eq_solref: wp.array2d[wp.vec2],
@@ -791,6 +890,7 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     eq_active_in: wp.array2d[bool],
     ten_J_in: wp.array2d[float],
     ten_length_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     njmax_in: int,
     njmax_nnz_in: int,
     # Data out:
@@ -822,6 +922,15 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
     obj1id = eq_obj1id[eqid]
     obj2id = eq_obj2id[eqid]
+    rownnz1 = ten_J_rownnz[obj1id]
+    rowadr1 = ten_J_rowadr[obj1id]
+
+    if wp.static(enable_sleep):
+      awake = _tendon_awake(dof_treeid, ten_J_colind, tree_awake_in, worldid, rowadr1, rownnz1)
+      if not awake and obj2id >= 0:
+        awake = _tendon_awake(dof_treeid, ten_J_colind, tree_awake_in, worldid, ten_J_rowadr[obj2id], ten_J_rownnz[obj2id])
+      if not awake:
+        return
 
     data = eq_data[worldid % eq_data.shape[0], eqid]
     solref = eq_solref[worldid % eq_solref.shape[0], eqid]
@@ -847,8 +956,6 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
       pos = pos1 - data[0]
       deriv = 0.0
 
-    rownnz1 = ten_J_rownnz[obj1id]
-    rowadr1 = ten_J_rowadr[obj1id]
     rownnz2 = 0
     rowadr2 = 0
 
@@ -962,12 +1069,20 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _equality_flex_alloc(is_sparse: bool, newton: bool):
+def _equality_flex_alloc(is_sparse: bool, newton: bool, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    body_treeid: wp.array[int],
+    flex_interp: wp.array[int],
+    flex_nodeadr: wp.array[int],
+    flex_nodenum: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_vertnum: wp.array[int],
     flex_edgeadr: wp.array[int],
     flex_edgenum: wp.array[int],
+    flex_nodebodyid: wp.array[int],
+    flex_vertbodyid: wp.array[int],
     flexedge_J_rownnz: wp.array[int],
     eq_obj1id: wp.array[int],
     eq_flex_adr: wp.array[int],
@@ -976,6 +1091,7 @@ def _equality_flex_alloc(is_sparse: bool, newton: bool):
     flexedge_efcadr: wp.array[int],
     # Data in:
     eq_active_in: wp.array2d[bool],
+    body_awake_in: wp.array2d[int],
     njmax_in: int,
     njmax_nnz_in: int,
     # Data out:
@@ -999,6 +1115,21 @@ def _equality_flex_alloc(is_sparse: bool, newton: bool):
       return
 
     flexid = eq_obj1id[eqid]
+    if wp.static(enable_sleep):
+      if not _flex_awake(
+        body_treeid,
+        flex_interp,
+        flex_nodeadr,
+        flex_nodenum,
+        flex_vertadr,
+        flex_vertnum,
+        flex_nodebodyid,
+        flex_vertbodyid,
+        body_awake_in,
+        worldid,
+        flexid,
+      ):
+        return
     nrow = flex_efcnum[flexid]
     if nrow == 0:
       return
@@ -1171,7 +1302,7 @@ def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -1184,6 +1315,7 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     body_weldid: wp.array[int],
     body_dofnum: wp.array[int],
     body_dofadr: wp.array[int],
+    body_treeid: wp.array[int],
     body_invweight0: wp.array2d[wp.vec2],
     jnt_type: wp.array[int],
     jnt_dofadr: wp.array[int],
@@ -1208,6 +1340,7 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     site_xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
+    body_awake_in: wp.array2d[int],
     cvel_in: wp.array2d[wp.spatial_vector],
     cdof_dot_in: wp.array2d[wp.spatial_vector],
     subtree_linvel_in: wp.array2d[wp.vec3],
@@ -1244,6 +1377,12 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
     obj1id = eq_obj1id[eqid]
     obj2id = eq_obj2id[eqid]
+    body1 = site_bodyid[obj1id] if is_site else obj1id
+    body2 = site_bodyid[obj2id] if is_site else obj2id
+
+    if wp.static(enable_sleep):
+      if not _body_pair_awake(body_treeid, body_awake_in, worldid, body1, body2):
+        return
 
     data = eq_data[worldid % eq_data.shape[0], eqid]
     anchor1 = wp.vec3(data[0], data[1], data[2])
@@ -1252,8 +1391,6 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     torquescale = data[10]
 
     if is_site:
-      body1 = site_bodyid[obj1id]
-      body2 = site_bodyid[obj2id]
       pos1 = site_xpos_in[worldid, obj1id]
       pos2 = site_xpos_in[worldid, obj2id]
 
@@ -1262,8 +1399,6 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
       quat1 = math.quat_inv(qfull1)
 
     else:
-      body1 = obj1id
-      body2 = obj2id
       xquat1 = xquat_in[worldid, body1]
       xquat2 = xquat_in[worldid, body2]
       pos1 = xpos_in[worldid, body1] + math.quat_to_mat(xquat1) @ anchor2
@@ -1622,7 +1757,7 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = False, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -1633,6 +1768,7 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
     body_rootid: wp.array[int],
     body_dofnum: wp.array[int],
     body_dofadr: wp.array[int],
+    body_treeid: wp.array[int],
     body_invweight0: wp.array2d[wp.vec2],
     dof_bodyid: wp.array[int],
     flex_interp: wp.array[int],
@@ -1659,6 +1795,7 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
     eq_active_in: wp.array2d[bool],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
+    body_awake_in: wp.array2d[int],
     njmax_in: int,
     njmax_nnz_in: int,
     flexnode_xpos_in: wp.array2d[wp.vec3],
@@ -1695,6 +1832,11 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
     if order == 0:
       return
 
+    nstart = flex_nodeadr[f]
+    if wp.static(enable_sleep):
+      if not _flex_nodes_awake(body_treeid, flex_nodeadr, flex_nodenum, flex_nodebodyid, body_awake_in, worldid, f):
+        return
+
     # nodes per cell
     npc = wp.where(order < 0, 4, 8)
 
@@ -1708,7 +1850,6 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
     cx = cellnum[0]
     cy = cellnum[1]
     cz = cellnum[2]
-    nstart = flex_nodeadr[f]
     ny_g = cy + 1
     nz_g = cz + 1
 
@@ -1955,7 +2096,7 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
 
 
 @cache_kernel
-def _friction_dof(is_sparse: bool, is_discrete: bool = False):
+def _friction_dof(is_sparse: bool, is_discrete: bool = False, enable_sleep: bool = False):
   # sparse Newton adds these rows to the Hessian diagonal directly, so they get no JTDAJ block
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
@@ -1963,12 +2104,14 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
     nv: int,
     opt_timestep: wp.array[float],
     opt_disableflags: int,
+    dof_bodyid: wp.array[int],
     dof_solref: wp.array2d[wp.vec2],
     dof_solimp: wp.array2d[vec5],
     dof_frictionloss: wp.array2d[float],
     dof_invweight0: wp.array2d[float],
     # Data in:
     qvel_in: wp.array2d[float],
+    body_awake_in: wp.array2d[int],
     njmax_in: int,
     njmax_nnz_in: int,
     # Data out:
@@ -1997,6 +2140,11 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
     if dof_frictionloss[dof_frictionloss_id, dofid] <= 0.0:
       dof_frictionadr_out[worldid, dofid] = -1
       return
+
+    if wp.static(enable_sleep):
+      if body_awake_in[worldid, dof_bodyid[dofid]] == SleepState.ASLEEP:
+        dof_frictionadr_out[worldid, dofid] = -1
+        return
 
     rowadr = int(0)
     if wp.static(is_sparse):
@@ -2060,13 +2208,14 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
     opt_timestep: wp.array[float],
     opt_disableflags: int,
+    dof_treeid: wp.array[int],
     ten_J_rownnz: wp.array[int],
     ten_J_rowadr: wp.array[int],
     ten_J_colind: wp.array[int],
@@ -2077,6 +2226,7 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # Data in:
     qvel_in: wp.array2d[float],
     ten_J_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     njmax_in: int,
     njmax_nnz_in: int,
     # Data out:
@@ -2109,6 +2259,10 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
       return
 
     rownnz_tenJ = ten_J_rownnz[tenid]
+    rowadr_tenJ = ten_J_rowadr[tenid]
+    if wp.static(enable_sleep):
+      if rownnz_tenJ > 0 and not _tendon_awake(dof_treeid, ten_J_colind, tree_awake_in, worldid, rowadr_tenJ, rownnz_tenJ):
+        return
     rowadr_efc = int(0)
     if wp.static(is_sparse):
       rowadr_efc = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz_tenJ, efc_nnz_out)
@@ -2128,7 +2282,6 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
     Jqvel = float(0.0)
 
-    rowadr_tenJ = ten_J_rowadr[tenid]
     if wp.static(is_sparse):
       efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
       efc_J_rowadr_out[worldid, efcid] = rowadr_efc
@@ -2189,7 +2342,7 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -2198,6 +2351,7 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
     opt_disableflags: int,
     jnt_qposadr: wp.array[int],
     jnt_dofadr: wp.array[int],
+    jnt_bodyid: wp.array[int],
     jnt_solref: wp.array2d[wp.vec2],
     jnt_solimp: wp.array2d[vec5],
     jnt_range: wp.array2d[wp.vec2],
@@ -2207,6 +2361,7 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
     # Data in:
     qpos_in: wp.array2d[float],
     qvel_in: wp.array2d[float],
+    body_awake_in: wp.array2d[int],
     njmax_in: int,
     njmax_nnz_in: int,
     # Data out:
@@ -2232,6 +2387,9 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
   ):
     worldid, jntlimitedid = wp.tid()
     jntid = jnt_limited_slide_hinge_adr[jntlimitedid]
+    if wp.static(enable_sleep):
+      if body_awake_in[worldid, jnt_bodyid[jntid]] == SleepState.ASLEEP:
+        return
     jnt_range_id = worldid % jnt_range.shape[0]
     jntrange = jnt_range[jnt_range_id, jntid]
 
@@ -2310,7 +2468,7 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
 
 
 @cache_kernel
-def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -2319,6 +2477,7 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
     opt_disableflags: int,
     jnt_qposadr: wp.array[int],
     jnt_dofadr: wp.array[int],
+    jnt_bodyid: wp.array[int],
     jnt_solref: wp.array2d[wp.vec2],
     jnt_solimp: wp.array2d[vec5],
     jnt_range: wp.array2d[wp.vec2],
@@ -2328,6 +2487,7 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # Data in:
     qpos_in: wp.array2d[float],
     qvel_in: wp.array2d[float],
+    body_awake_in: wp.array2d[int],
     njmax_in: int,
     njmax_nnz_in: int,
     # Data out:
@@ -2353,6 +2513,9 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
   ):
     worldid, jntlimitedid = wp.tid()
     jntid = jnt_limited_ball_adr[jntlimitedid]
+    if wp.static(enable_sleep):
+      if body_awake_in[worldid, jnt_bodyid[jntid]] == SleepState.ASLEEP:
+        return
     qposadr = jnt_qposadr[jntid]
 
     qpos = qpos_in[worldid]
@@ -2451,13 +2614,14 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     nv: int,
     opt_timestep: wp.array[float],
     opt_disableflags: int,
+    dof_treeid: wp.array[int],
     ten_J_rownnz: wp.array[int],
     ten_J_rowadr: wp.array[int],
     ten_J_colind: wp.array[int],
@@ -2471,6 +2635,7 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     qvel_in: wp.array2d[float],
     ten_J_in: wp.array2d[float],
     ten_length_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     njmax_in: int,
     njmax_nnz_in: int,
     # Data out:
@@ -2508,6 +2673,10 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
     if active:
       rownnz_tenJ = ten_J_rownnz[tenid]
+      rowadr_tenJ = ten_J_rowadr[tenid]
+      if wp.static(enable_sleep):
+        if rownnz_tenJ > 0 and not _tendon_awake(dof_treeid, ten_J_colind, tree_awake_in, worldid, rowadr_tenJ, rownnz_tenJ):
+          return
       rowadr_efc = int(0)
       if wp.static(is_sparse):
         rowadr_efc = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz_tenJ, efc_nnz_out)
@@ -2528,7 +2697,6 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
       Jqvel = float(0.0)
       scl = float(dist_min < dist_max) * 2.0 - 1.0
 
-      rowadr_tenJ = ten_J_rowadr[tenid]
       if wp.static(is_sparse):
         efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
         efc_J_rowadr_out[worldid, efcid] = rowadr_efc
@@ -5275,6 +5443,7 @@ def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
   newton = m.opt.solver == types.SolverType.NEWTON
   is_discrete = m.opt.integrator == types.IntegratorType.DISCRETE
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   efc_nnz = wp.empty((d.nworld,), dtype=int)
 
   wp.launch(
@@ -5286,7 +5455,7 @@ def make_constraint(m: types.Model, d: types.Data):
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
     if not (m.opt.disableflags & types.DisableBit.EQUALITY):
       wp.launch(
-        _equality_connect(m.is_sparse, newton, is_discrete),
+        _equality_connect(m.is_sparse, newton, is_discrete, enable_sleep),
         dim=(d.nworld, m.eq_connect_adr.size),
         inputs=[
           m.nv,
@@ -5298,6 +5467,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.body_weldid,
           m.body_dofnum,
           m.body_dofadr,
+          m.body_treeid,
           m.body_invweight0,
           m.jnt_type,
           m.jnt_dofadr,
@@ -5320,6 +5490,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.site_xpos,
           d.subtree_com,
           d.cdof,
+          d.body_awake,
           d.cvel,
           d.cdof_dot,
           d.subtree_linvel,
@@ -5348,7 +5519,7 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
       wp.launch(
-        _equality_weld(m.is_sparse, newton, is_discrete),
+        _equality_weld(m.is_sparse, newton, is_discrete, enable_sleep),
         dim=(d.nworld, m.eq_wld_adr.size),
         inputs=[
           m.nv,
@@ -5360,6 +5531,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.body_weldid,
           m.body_dofnum,
           m.body_dofadr,
+          m.body_treeid,
           m.body_invweight0,
           m.jnt_type,
           m.jnt_dofadr,
@@ -5383,6 +5555,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.site_xquat,
           d.subtree_com,
           d.cdof,
+          d.body_awake,
           d.cvel,
           d.cdof_dot,
           d.subtree_linvel,
@@ -5411,7 +5584,7 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
       wp.launch(
-        _equality_joint(m.is_sparse, newton, is_discrete),
+        _equality_joint(m.is_sparse, newton, is_discrete, enable_sleep),
         dim=(d.nworld, m.eq_jnt_adr.size),
         inputs=[
           m.nv,
@@ -5420,6 +5593,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.qpos0,
           m.jnt_qposadr,
           m.jnt_dofadr,
+          m.jnt_bodyid,
           m.dof_invweight0,
           m.eq_obj1id,
           m.eq_obj2id,
@@ -5430,6 +5604,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.qpos,
           d.qvel,
           d.eq_active,
+          d.body_awake,
           d.njmax,
           d.njmax_nnz,
         ],
@@ -5455,12 +5630,13 @@ def make_constraint(m: types.Model, d: types.Data):
         ],
       )
       wp.launch(
-        _equality_tendon(m.is_sparse, newton, is_discrete),
+        _equality_tendon(m.is_sparse, newton, is_discrete, enable_sleep),
         dim=(d.nworld, m.eq_ten_adr.size),
         inputs=[
           m.nv,
           m.opt.timestep,
           m.opt.disableflags,
+          m.dof_treeid,
           m.eq_obj1id,
           m.eq_obj2id,
           m.eq_solref,
@@ -5476,6 +5652,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.eq_active,
           d.ten_J,
           d.ten_length,
+          d.tree_awake,
           d.njmax,
           d.njmax_nnz,
         ],
@@ -5504,11 +5681,19 @@ def make_constraint(m: types.Model, d: types.Data):
       if m.nflex > 0:
         flex_block = wp.empty((d.nworld, m.eq_flex_adr.size), dtype=wp.vec3i)
         wp.launch(
-          _equality_flex_alloc(m.is_sparse, newton),
+          _equality_flex_alloc(m.is_sparse, newton, enable_sleep),
           dim=(d.nworld, m.eq_flex_adr.size),
           inputs=[
+            m.body_treeid,
+            m.flex_interp,
+            m.flex_nodeadr,
+            m.flex_nodenum,
+            m.flex_vertadr,
+            m.flex_vertnum,
             m.flex_edgeadr,
             m.flex_edgenum,
+            m.flex_nodebodyid,
+            m.flex_vertbodyid,
             m.flexedge_J_rownnz,
             m.eq_obj1id,
             m.eq_flex_adr,
@@ -5516,6 +5701,7 @@ def make_constraint(m: types.Model, d: types.Data):
             m.flex_efcnnz,
             m.flexedge_efcadr,
             d.eq_active,
+            d.body_awake,
             d.njmax,
             d.njmax_nnz,
           ],
@@ -5567,7 +5753,7 @@ def make_constraint(m: types.Model, d: types.Data):
 
         if m.eq_flexstrain_adr.size:
           wp.launch(
-            _equality_flexstrain(m.is_sparse, newton, is_discrete),
+            _equality_flexstrain(m.is_sparse, newton, is_discrete, enable_sleep),
             dim=(d.nworld, m.eq_flexstrain_adr.size),
             inputs=[
               m.nv,
@@ -5577,6 +5763,7 @@ def make_constraint(m: types.Model, d: types.Data):
               m.body_rootid,
               m.body_dofnum,
               m.body_dofadr,
+              m.body_treeid,
               m.body_invweight0,
               m.dof_bodyid,
               m.flex_interp,
@@ -5602,6 +5789,7 @@ def make_constraint(m: types.Model, d: types.Data):
               d.eq_active,
               d.subtree_com,
               d.cdof,
+              d.body_awake,
               d.njmax,
               d.njmax_nnz,
               d.flexnode_xpos,
@@ -5631,17 +5819,19 @@ def make_constraint(m: types.Model, d: types.Data):
 
     if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS):
       wp.launch(
-        _friction_dof(m.is_sparse, is_discrete),
+        _friction_dof(m.is_sparse, is_discrete, enable_sleep),
         dim=(d.nworld, m.nv),
         inputs=[
           m.nv,
           m.opt.timestep,
           m.opt.disableflags,
+          m.dof_bodyid,
           m.dof_solref,
           m.dof_solimp,
           m.dof_frictionloss,
           m.dof_invweight0,
           d.qvel,
+          d.body_awake,
           d.njmax,
           d.njmax_nnz,
         ],
@@ -5666,12 +5856,13 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        _friction_tendon(m.is_sparse, newton, is_discrete),
+        _friction_tendon(m.is_sparse, newton, is_discrete, enable_sleep),
         dim=(d.nworld, m.ntendon),
         inputs=[
           m.nv,
           m.opt.timestep,
           m.opt.disableflags,
+          m.dof_treeid,
           m.ten_J_rownnz,
           m.ten_J_rowadr,
           m.ten_J_colind,
@@ -5681,6 +5872,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.tendon_invweight0,
           d.qvel,
           d.ten_J,
+          d.tree_awake,
           d.njmax,
           d.njmax_nnz,
         ],
@@ -5709,7 +5901,7 @@ def make_constraint(m: types.Model, d: types.Data):
     # limit
     if not (m.opt.disableflags & types.DisableBit.LIMIT):
       wp.launch(
-        _limit_ball(m.is_sparse, newton, is_discrete),
+        _limit_ball(m.is_sparse, newton, is_discrete, enable_sleep),
         dim=(d.nworld, m.jnt_limited_ball_adr.size),
         inputs=[
           m.nv,
@@ -5717,6 +5909,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.opt.disableflags,
           m.jnt_qposadr,
           m.jnt_dofadr,
+          m.jnt_bodyid,
           m.jnt_solref,
           m.jnt_solimp,
           m.jnt_range,
@@ -5725,6 +5918,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.jnt_limited_ball_adr,
           d.qpos,
           d.qvel,
+          d.body_awake,
           d.njmax,
           d.njmax_nnz,
         ],
@@ -5751,7 +5945,7 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        _limit_slide_hinge(m.is_sparse, newton, is_discrete),
+        _limit_slide_hinge(m.is_sparse, newton, is_discrete, enable_sleep),
         dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
         inputs=[
           m.nv,
@@ -5759,6 +5953,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.opt.disableflags,
           m.jnt_qposadr,
           m.jnt_dofadr,
+          m.jnt_bodyid,
           m.jnt_solref,
           m.jnt_solimp,
           m.jnt_range,
@@ -5767,6 +5962,7 @@ def make_constraint(m: types.Model, d: types.Data):
           m.jnt_limited_slide_hinge_adr,
           d.qpos,
           d.qvel,
+          d.body_awake,
           d.njmax,
           d.njmax_nnz,
         ],
@@ -5793,12 +5989,13 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       wp.launch(
-        _limit_tendon(m.is_sparse, newton, is_discrete),
+        _limit_tendon(m.is_sparse, newton, is_discrete, enable_sleep),
         dim=(d.nworld, m.tendon_limited_adr.size),
         inputs=[
           m.nv,
           m.opt.timestep,
           m.opt.disableflags,
+          m.dof_treeid,
           m.ten_J_rownnz,
           m.ten_J_rowadr,
           m.ten_J_colind,
@@ -5811,6 +6008,7 @@ def make_constraint(m: types.Model, d: types.Data):
           d.qvel,
           d.ten_J,
           d.ten_length,
+          d.tree_awake,
           d.njmax,
           d.njmax_nnz,
         ],
@@ -6274,16 +6472,18 @@ def make_constraint(m: types.Model, d: types.Data):
 
 
 @cache_kernel
-def _regularize_constraint(is_sparse: bool, flg_adhesion: bool):
+def _regularize_constraint(is_sparse: bool, flg_adhesion: bool, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
     nv: int,
+    dof_treeid: wp.array[int],
     M_rownnz: wp.array[int],
     M_rowadr: wp.array[int],
     # Data in:
     nefc_in: wp.array[int],
     M_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     qH_in: wp.array2d[float],
     # In:
     type_in: wp.array2d[int],
@@ -6323,6 +6523,9 @@ def _regularize_constraint(is_sparse: bool, flg_adhesion: bool):
       if J == 0.0:
         continue
       c = J_colind_in[worldid, 0, rowadr + a] if wp.static(is_sparse) else a
+      if wp.static(enable_sleep):
+        if tree_awake_in[worldid, dof_treeid[c]] == 0:
+          continue
       diag_adr = M_rowadr[c] + M_rownnz[c] - 1
       Mdiag = M_in[worldid, diag_adr]
       qHdiag = qH_in[worldid, diag_adr]
@@ -6355,14 +6558,16 @@ def _regularize_constraint(is_sparse: bool, flg_adhesion: bool):
 def regularize_constraint(m: types.Model, d: types.Data):
   """Regularizes constraints against effective metric (discrete integrator)."""
   wp.launch(
-    _regularize_constraint(m.is_sparse, m.flg_adhesion),
+    _regularize_constraint(m.is_sparse, m.flg_adhesion, bool(m.opt.enableflags & types.EnableBit.SLEEP)),
     dim=(d.nworld, d.efc.D.shape[1]),
     inputs=[
       m.nv,
+      m.dof_treeid,
       m.M_rownnz,
       m.M_rowadr,
       d.nefc,
       d.M,
+      d.tree_awake,
       d.qH,
       d.efc.type,
       d.efc.id,

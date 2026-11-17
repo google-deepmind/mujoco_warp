@@ -31,6 +31,7 @@ from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
+from mujoco_warp._src import types
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -1506,6 +1507,106 @@ class ForwardTest(parameterized.TestCase):
     mjw.inverse(m, d)
 
     _assert_eq(d.qfrc_inverse.numpy()[0], mjd.qfrc_inverse, "qfrc_inverse")
+
+  @parameterized.parameters(1, 2)
+  def test_heterogeneous_kinematic_tree(self, nworld):
+    """Verify active robot in heterogeneous composite model matches isolated trajectory."""
+
+    def _step_captured(m, d, nstep):
+      with wp.ScopedCapture() as capture:
+        mjw.step(m, d)
+      for _ in range(nstep):
+        wp.capture_launch(capture.graph)
+
+    _, _, m_hinge, d_hinge = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="10 10 .1"/>
+          <body name="body_a" pos="0 0 1">
+            <joint name="jnt_a" axis="0 1 0"/>
+            <geom type="capsule" size=".05 .3" mass="1.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=1,
+      nvmax=1,
+    )
+    _step_captured(m_hinge, d_hinge, 20)
+    refs = [d_hinge]
+
+    if nworld == 2:
+      _, _, m_slide, d_slide = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option>
+            <flag sleep="enable"/>
+          </option>
+          <worldbody>
+            <geom type="plane" size="10 10 .1"/>
+            <body name="body_b" pos="2 0 1">
+              <joint name="jnt_b" type="slide"/>
+              <geom type="box" size=".1 .1 .1" mass="2.0"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+        nworld=1,
+        nvmax=1,
+      )
+      _step_captured(m_slide, d_slide, 20)
+      refs.append(d_slide)
+
+    policy_table = np.array(
+      [
+        [int(types.SleepPolicy.AUTO), int(types.SleepPolicy.ALWAYS)],
+        [int(types.SleepPolicy.ALWAYS), int(types.SleepPolicy.AUTO)],
+      ][:nworld],
+      dtype=np.int32,
+    )
+    _, _, m_comp, d_comp = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="10 10 .1"/>
+          <body name="body_a" pos="0 0 1">
+            <joint name="jnt_a" axis="0 1 0"/>
+            <geom type="capsule" size=".05 .3" mass="1.0"/>
+          </body>
+          <body name="body_b" pos="2 0 1">
+            <joint name="jnt_b" type="slide"/>
+            <geom type="box" size=".1 .1 .1" mass="2.0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"tree_sleep_policy": nworld},
+      nvmax=1,
+    )
+    m_comp.tree_sleep_policy.assign(policy_table)
+    _step_captured(m_comp, d_comp, 20)
+
+    qpos_comp = d_comp.qpos.numpy()
+    qvel_comp = d_comp.qvel.numpy()
+    qacc_comp = d_comp.qacc.numpy()
+    for w, d_ref in enumerate(refs):
+      always = 1 - w
+      np.testing.assert_allclose(qpos_comp[w, w : w + 1], d_ref.qpos.numpy()[0], atol=1e-5, rtol=1e-5)
+      np.testing.assert_allclose(qvel_comp[w, w : w + 1], d_ref.qvel.numpy()[0], atol=1e-5, rtol=1e-5)
+      np.testing.assert_allclose(qacc_comp[w, w : w + 1], d_ref.qacc.numpy()[0], atol=1e-5, rtol=1e-5)
+      self.assertEqual(qpos_comp[w, always], 0.0)
+      self.assertEqual(qvel_comp[w, always], 0.0)
+      self.assertEqual(qacc_comp[w, always], 0.0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos_comp[0], qpos_comp[1]))
 
 
 class DCMotorTest(parameterized.TestCase):

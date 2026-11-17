@@ -2511,7 +2511,7 @@ def _update_gradient_zero_grad_dot(stable_fast: bool):
 
 
 @cache_kernel
-def _update_gradient_grad(stable_fast: bool, deterministic: bool = False):
+def _update_gradient_grad(stable_fast: bool, enable_sleep: bool = False, deterministic: bool = False):
   STABLE_FAST = stable_fast
   module_options = {"enable_backward": False}
   if deterministic:
@@ -2519,7 +2519,10 @@ def _update_gradient_grad(stable_fast: bool, deterministic: bool = False):
 
   @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
   def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
     # Data in:
+    tree_awake_in: wp.array2d[int],
     qfrc_smooth_in: wp.array2d[float],
     qfrc_constraint_in: wp.array2d[float],
     efc_Ma_in: wp.array2d[float],
@@ -2538,6 +2541,11 @@ def _update_gradient_grad(stable_fast: bool, deterministic: bool = False):
     # Fast path: grad stays stale (see _update_gradient_zero_grad_dot).
     if wp.static(STABLE_FAST):
       if state_changed_count_in[worldid] == 0:
+        return
+
+    if wp.static(enable_sleep):
+      if tree_awake_in[worldid, dof_treeid[dofid]] == 0:
+        ctx_grad_out[worldid, dofid] = 0.0
         return
 
     grad = efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid] - qfrc_constraint_in[worldid, dofid]
@@ -3849,6 +3857,42 @@ def _update_gradient_cholesky_blocked_skip_unchanged(
   return kernel
 
 
+@cache_kernel
+def _mask_sleeping_h(skip_unchanged: bool = False, skip_noflip: bool = False):
+  """Sets sleeping DOF rows and columns in the upper triangle of ctx.h to identity."""
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
+    # In:
+    ctx_done_in: wp.array[bool],
+    quad_changed_count_in: wp.array[int],
+    state_changed_count_in: wp.array[int],
+    # Out:
+    ctx_h_out: wp.array3d[float],
+  ):
+    worldid, r, c = wp.tid()
+    if c < r or ctx_done_in[worldid]:
+      return
+    if wp.static(skip_noflip):
+      if state_changed_count_in[worldid] == 0:
+        return
+    if wp.static(skip_unchanged):
+      if quad_changed_count_in[worldid] == 0:
+        return
+    if tree_awake_in[worldid, dof_treeid[r]] == 0 or tree_awake_in[worldid, dof_treeid[c]] == 0:
+      ctx_h_out[worldid, r, c] = 1.0 if r == c else 0.0
+
+  return kernel
+
+
+def _mask_discrete_sleep(m: types.Model, compact: bool) -> bool:
+  return not compact and m.opt.integrator == types.IntegratorType.DISCRETE and bool(m.opt.enableflags & types.EnableBit.SLEEP)
+
+
 def _cholesky_factorize_solve(
   m: types.Model,
   d: types.Data,
@@ -3862,6 +3906,16 @@ def _cholesky_factorize_solve(
   If skip_unchanged is True (blocked path only), worlds where no constraints
   changed reuse the cached factorization in hfactor instead of refactorizing.
   """
+  if _mask_discrete_sleep(m, compact):
+    quad_changed = ctx.quad_changed_count if skip_unchanged else d.nefc
+    state_changed = ctx.state_changed_count if skip_noflip else quad_changed
+    wp.launch(
+      _mask_sleeping_h(skip_unchanged, skip_noflip),
+      dim=(d.nworld, m.nv, m.nv),
+      inputs=[m.dof_treeid, d.tree_awake, ctx.done, quad_changed, state_changed],
+      outputs=[ctx.h],
+    )
+
   if m.nv <= types.H_ONE_TILE_MAX:
     wp.launch_tiled(
       _update_gradient_cholesky(m.nv_pad, skip_noflip),
@@ -4313,10 +4367,11 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       inputs=[d.nefc, ctx.alpha, ctx.done],
       outputs=[ctx.grad_dot, ctx.newton_decrement, ctx.grad_scale, ctx.search_unchanged],
     )
+    mask_sleep = _mask_discrete_sleep(m, compact)
     wp.launch(
-      _update_gradient_grad(False, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
+      _update_gradient_grad(False, mask_sleep, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
       dim=(d.nworld, m.nv),
-      inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, d.nefc, ctx.done],
+      inputs=[m.dof_treeid, d.tree_awake, d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, d.nefc, ctx.done],
       outputs=[ctx.grad, ctx.grad_dot],
     )
 
@@ -4596,10 +4651,11 @@ def _update_gradient_incremental(
   )
 
   det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+  mask_sleep = _mask_discrete_sleep(m, compact)
   wp.launch(
-    _update_gradient_grad(stable_fast, det_atomics),
+    _update_gradient_grad(stable_fast, mask_sleep, det_atomics),
     dim=(d.nworld, m.nv),
-    inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, changed, ctx.done],
+    inputs=[m.dof_treeid, d.tree_awake, d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, changed, ctx.done],
     outputs=[ctx.grad, ctx.grad_dot],
   )
 
