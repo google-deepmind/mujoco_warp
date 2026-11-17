@@ -1789,12 +1789,6 @@ def _rne_cacc_forward(m: Model, d: Data, flg_acc: bool = False):
   )
 
 
-@wp.func
-def rne_body_force(ci: vec10, cv: wp.spatial_vector, ca: wp.spatial_vector) -> wp.spatial_vector:
-  """Returns a body's local RNE force, shared with generated derivative leaves."""
-  return math.inert_vec(ci, ca) + math.motion_cross_force(cv, math.inert_vec(ci, cv))
-
-
 @wp.kernel
 def _cfrc(
   # Data in:
@@ -1814,7 +1808,8 @@ def _cfrc(
   cacc = cacc_in[worldid, bodyid]
   cinert = cinert_in[worldid, bodyid]
   cvel = cvel_in[worldid, bodyid]
-  frc = rne_body_force(cinert, cvel, cacc)
+  frc = math.inert_vec(cinert, cacc)
+  frc += math.motion_cross_force(cvel, math.inert_vec(cinert, cvel))
   if flg_cfrc_ext:
     frc -= cfrc_ext_in[worldid, bodyid]
 

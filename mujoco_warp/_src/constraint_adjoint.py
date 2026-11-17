@@ -86,9 +86,15 @@ def _joint_jacobian_contract(x: float, data: vec12, jacobian_bar: float):
 
 
 @wp.func
+def _ball_axis_angle(quat: wp.quat) -> tuple[wp.vec3, float]:
+  """Normalizes a ball-joint quaternion and returns its rotation axis and angle."""
+  return math.normalize_with_norm(math.quat_to_vel(wp.normalize(quat)))
+
+
+@wp.func
 def _ball_jacobian_contract(delta: wp.vec3, quat: wp.quat, axis_bar: wp.vec3):
   rotated = math.quat_integrate(quat, delta, 1.0)
-  axis, _ = constraint._ball_axis_angle(rotated)
+  axis, _ = _ball_axis_angle(rotated)
   return -wp.dot(axis, axis_bar)
 
 

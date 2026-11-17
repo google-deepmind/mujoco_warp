@@ -391,8 +391,14 @@ def xfrc_kinematics_backward(m: Model, d: Data, lam: wp.array2d, xfrc_applied: w
 
 
 @wp.func
+def _rne_body_force(ci: vec10, cv: wp.spatial_vector, ca: wp.spatial_vector) -> wp.spatial_vector:
+  """Computes a body's spatial force from its inertia, velocity, and acceleration."""
+  return math.inert_vec(ci, ca) + math.motion_cross_force(cv, math.inert_vec(ci, cv))
+
+
+@wp.func
 def _rne_force_contract(ci: vec10, cv: wp.spatial_vector, ca: wp.spatial_vector, force_bar: wp.spatial_vector):
-  return wp.dot(smooth.rne_body_force(ci, cv, ca), force_bar)
+  return wp.dot(_rne_body_force(ci, cv, ca), force_bar)
 
 
 @wp.func
@@ -405,7 +411,7 @@ def _rne_contract(
   force_bar: wp.spatial_vector,
   mass_force_bar: wp.spatial_vector,
 ):
-  return wp.dot(smooth.rne_body_force(ci, cv, ca), force_bar) + wp.dot(math.inert_vec(ci, mass_ca), mass_force_bar)
+  return wp.dot(_rne_body_force(ci, cv, ca), force_bar) + wp.dot(math.inert_vec(ci, mass_ca), mass_force_bar)
 
 
 @wp.func
