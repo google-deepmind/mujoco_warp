@@ -304,7 +304,11 @@ def solve_backward(m: Model, d_bwd: Data, adj_qacc: wp.array, bc: BackwardContex
     if m.nv:
       smooth.solve_m(m, d_bwd, solver_ctx.search, adj_qacc)
     return solver_ctx
-  solver.init_context(m, d_bwd, solver_ctx, grad=False, hessian=True)
+  # Reuse forward's constraint states and forces instead of recomputing them
+  # from J @ qacc via init_context(), which can change the active set at a boundary.
+  solver_ctx.done.zero_()
+  solver._init_jaref(m, d_bwd, solver_ctx)
+  solver._update_hessian(m, d_bwd, solver_ctx)
   if m.nv <= H_ONE_TILE_MAX:
     wp.launch_tiled(
       _solve_adjoint_cholesky(m.nv_pad),
@@ -315,7 +319,7 @@ def solve_backward(m: Model, d_bwd: Data, adj_qacc: wp.array, bc: BackwardContex
     )
   else:
     wp.launch(_load_rhs, dim=(d_bwd.nworld, m.nv_pad), inputs=[m.nv, adj_qacc], outputs=[solver_ctx.grad])
-    # init_context initializes the padded block to the identity.
+    # _update_hessian initializes the padded block to the identity.
     rhs = solver_ctx.grad.reshape((d_bwd.nworld, m.nv_pad, 1))
     # This helper loads the entire RHS before storing its solution, so reuse the padded buffer.
     wp.launch_tiled(
@@ -778,6 +782,8 @@ def step_backward_scratch(m: Model, d: Data, d_out: Data, bc: BackwardContext) -
       vel=d_out.efc.vel,
       aref=d_out.efc.aref,
       frictionloss=d_out.efc.frictionloss,
+      force=d_out.efc.force,
+      state=d_out.efc.state,
       jtdaj_adr=d_out.efc.jtdaj_adr,
       jtdaj_nrow=d_out.efc.jtdaj_nrow,
       jtdaj_nblock=d_out.efc.jtdaj_nblock,

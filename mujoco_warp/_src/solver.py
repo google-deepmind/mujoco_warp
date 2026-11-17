@@ -4648,6 +4648,42 @@ def _solver_iteration(
     )
 
 
+def _init_jaref(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext):
+  """Compute J @ qacc - aref without changing constraint states or forces."""
+  # jaref = d.efc_J @ d.qacc - d.efc_aref
+
+  # if we are only using 1 thread, it makes sense to do more dofs as we can also skip the
+  # init kernel. For more than 1 thread, dofs_per_thread is lower for better load balancing.
+
+  if m.is_sparse:
+    # Sparse J has few nonzeros per row, one thread handles them all.
+    dofs_per_thread = m.nv
+    threads_per_efc = 1
+  elif m.nv > 50:
+    dofs_per_thread = 20
+    threads_per_efc = ceil(m.nv / dofs_per_thread)
+  else:
+    dofs_per_thread = 50
+    threads_per_efc = ceil(m.nv / dofs_per_thread)
+  # we need to clear the jaref array if we're doing atomic adds.
+  if threads_per_efc > 1:
+    ctx.Jaref.zero_()
+
+  sc = _sparse_compact(ctx)
+  dj = ctx.compact_d_full if sc else d
+  if sc:
+    dofs_per_thread = m.nv
+    threads_per_efc = 1
+  wp.launch(
+    _solve_init_jaref_kernel(
+      sc or m.is_sparse, m.nv, dofs_per_thread, sc, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+    ),
+    dim=(d.nworld, d.njmax, threads_per_efc),
+    inputs=[d.nefc, d.qacc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.aref, dj.dof_cdof],
+    outputs=[ctx.Jaref],
+  )
+
+
 def init_context(
   m: types.Model,
   d: types.Data,
@@ -4688,38 +4724,7 @@ def init_context(
     outputs=[d.solver_niter, ctx.search_dot, ctx.done],
   )
 
-  # jaref = d.efc_J @ d.qacc - d.efc_aref
-
-  # if we are only using 1 thread, it makes sense to do more dofs as we can also skip the
-  # init kernel. For more than 1 thread, dofs_per_thread is lower for better load balancing.
-
-  if m.is_sparse:
-    # Sparse J has few nonzeros per row, one thread handles them all.
-    dofs_per_thread = m.nv
-    threads_per_efc = 1
-  elif m.nv > 50:
-    dofs_per_thread = 20
-    threads_per_efc = ceil(m.nv / dofs_per_thread)
-  else:
-    dofs_per_thread = 50
-    threads_per_efc = ceil(m.nv / dofs_per_thread)
-  # we need to clear the jaref array if we're doing atomic adds.
-  if threads_per_efc > 1:
-    ctx.Jaref.zero_()
-
-  sc = _sparse_compact(ctx)
-  dj = ctx.compact_d_full if sc else d
-  if sc:
-    dofs_per_thread = m.nv
-    threads_per_efc = 1
-  wp.launch(
-    _solve_init_jaref_kernel(
-      sc or m.is_sparse, m.nv, dofs_per_thread, sc, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
-    ),
-    dim=(d.nworld, d.njmax, threads_per_efc),
-    inputs=[d.nefc, d.qacc, dj.efc.J_rownnz, dj.efc.J_rowadr, dj.efc.J_colind, dj.efc.J, d.efc.aref, dj.dof_cdof],
-    outputs=[ctx.Jaref],
-  )
+  _init_jaref(m, d, ctx)
 
   if hessian:
     _update_efc_force(m, d, ctx)
