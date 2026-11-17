@@ -3259,7 +3259,6 @@ def _comvel_branch(enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
-    body_parentid: wp.array[int],
     body_jntnum: wp.array[int],
     body_jntadr: wp.array[int],
     body_dofadr: wp.array[int],
@@ -3287,10 +3286,9 @@ def _comvel_branch(enable_sleep: bool = False):
     qvel = qvel_in[worldid]
     cdof = cdof_in[worldid]
 
+    cvel = wp.spatial_vector()
     for i in range(start, end):
       bodyid = body_branches[i]
-      pid = body_parentid[bodyid]
-      cvel = cvel_out[worldid, pid]
       dofid = body_dofadr[bodyid]
       jntid = body_jntadr[bodyid]
       jntnum = body_jntnum[bodyid]
@@ -3354,7 +3352,6 @@ def com_vel(m: Model, d: Data):
     _comvel_branch(enable_sleep),
     dim=(d.nworld, m.nbranch),
     inputs=[
-      m.body_parentid,
       m.body_jntnum,
       m.body_jntadr,
       m.body_dofadr,
@@ -4579,7 +4576,7 @@ def inv_m(m: Model, d: Data, Minv: wp.array2d[float]):
 
 
 @cache_kernel
-def _tile_cholesky_factorize_solve_block(tile: TileSet, enable_sleep: bool = False):
+def _tile_cholesky_factorize_solve_block(tile: TileSet, enable_sleep: bool = False, store_factor: bool = True):
   # Fused factor+solve: densify the block, factor it, and back-substitute in one launch (avoids
   # re-loading the factor). Grid/densify structure matches _tile_cholesky_factorize_block.
   block_size = tile.size
@@ -4614,7 +4611,8 @@ def _tile_cholesky_factorize_solve_block(tile: TileSet, enable_sleep: bool = Fal
 
     L = wp.tile_reshape(block, (block_size, block_size))
     wp.tile_cholesky_inplace(L, fill_mode="upper")
-    wp.tile_store(L_out[worldid], wp.tile_reshape(L, (block_area,)), offset=(qLD_block_adr[start],))
+    if wp.static(store_factor):
+      wp.tile_store(L_out[worldid], wp.tile_reshape(L, (block_area,)), offset=(qLD_block_adr[start],))
 
     rhs = wp.tile_load(y[worldid], shape=(block_size,), offset=(start,))
     sol = wp.tile_cholesky_solve(L, rhs, fill_mode="upper")
@@ -4696,6 +4694,7 @@ def _factor_solve_blocks(
   D: wp.array2d[float],
   x: wp.array2d[float],
   y: wp.array2d[float],
+  store_factor: bool,
 ):
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   for tile in m.M_tiles:
@@ -4709,7 +4708,7 @@ def _factor_solve_blocks(
       )
     else:
       wp.launch_tiled(
-        _tile_cholesky_factorize_solve_block(tile, enable_sleep),
+        _tile_cholesky_factorize_solve_block(tile, enable_sleep, store_factor),
         dim=(d.nworld, tile.adr.size),
         inputs=[m.dof_treeid, m.qLD_block_adr, M, d.tree_awake, tile.elemid, tile.adr, y],
         outputs=[x, L],
@@ -4717,7 +4716,7 @@ def _factor_solve_blocks(
       )
 
 
-def factor_solve_i(m, d, M, L, D, x, y):
+def factor_solve_i(m, d, M, L, D, x, y, store_factor: bool = True):
   """Factorizes and solves the inertia-like linear system.
 
   Compact blocks use reciprocal diagonals, full small blocks use scalar Cholesky, dense blocks use
@@ -4731,9 +4730,10 @@ def factor_solve_i(m, d, M, L, D, x, y):
     D: Output reciprocal diagonal for compact and sparse blocks.
     x: Output array for the solution.
     y: Input right-hand side array.
+    store_factor: Write the factor of dense blocks to L; scalar and sparse blocks always use L.
   """
   if m.M_tiles:
-    _factor_solve_blocks(m, d, M, L, D, x, y)
+    _factor_solve_blocks(m, d, M, L, D, x, y, store_factor)
   if L.shape[1] > m.qLD_block_total:
     L_ldl = L[:, m.qLD_block_total :]
     _factor_i_sparse(m, d, M, L_ldl, D)

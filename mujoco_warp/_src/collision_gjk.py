@@ -30,6 +30,7 @@ wp.set_module_options({"enable_backward": False})
 
 FLOAT_MIN = -1e30
 FLOAT_MAX = 1e30
+EPA_WITNESS_TOL = 1e-3
 
 MINVAL = 1e-15
 MINVAL2 = 1e-30
@@ -186,14 +187,27 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       while imax != prev:
         prev = imax
         i = geom.graph[vert_edgeadr + imax]
-        subidx = geom.graph[edge_localid + i]
-        while subidx >= 0:
-          idx = geom.graph[vert_globalid + subidx]
-          dist = wp.dot(local_dir, geom.vert[geom.vertadr + idx])
-          imax = wp.where(dist > max_dist, subidx, imax)
-          max_dist = wp.where(dist > max_dist, dist, max_dist)
-          i += 1
-          subidx = geom.graph[edge_localid + i]
+        more = int(1)
+        while more != 0:
+          # load neighbors four at a time so their dependent loads overlap
+          # (face_globalid follows edge_localid, so reads past a list end stay in the graph)
+          near = wp.vec4i()
+          for k in range(4):
+            near[k] = geom.graph[edge_localid + i + k]
+          for k in range(4):
+            # mask entries after the -1 terminator
+            if near[k] < 0:
+              more = 0
+            if more == 0:
+              near[k] = -1
+          near_dist = wp.vec4()
+          for k in range(4):
+            near_dist[k] = wp.dot(local_dir, geom.vert[geom.vertadr + geom.graph[vert_globalid + wp.max(near[k], 0)]])
+          for k in range(4):
+            if near[k] >= 0 and near_dist[k] > max_dist:
+              imax = near[k]
+              max_dist = near_dist[k]
+          i += 4
 
       sp.cached_index = imax
       sp.vertex_index = geom.graph[vert_globalid + imax]
@@ -982,7 +996,34 @@ def _epa_witness(
   v2 = pt.vert[2 * face[1]] - pt.vert[2 * face[1] + 1]
   v3 = pt.vert[2 * face[2]] - pt.vert[2 * face[2] + 1]
 
-  coordinates = _tri_affine_coord(v1, v2, v3, pt.face_pr[face_idx])
+  n = pt.face_pr[face_idx]
+  coordinates = _tri_affine_coord(v1, v2, v3, n)
+
+  # coplanar faces tie for closest, so the selected face may not contain the witness; extrapolating
+  # outside it is inaccurate and unbounded for sliver faces, so use the face the ray along n exits
+  if wp.min(coordinates) < -EPA_WITNESS_TOL:
+    for i in range(pt.nface):
+      if i == face_idx:
+        continue
+      fi = pt.face[i]
+      if _is_face_deleted(fi):
+        continue
+      face_i = _get_face_verts(fi)
+      u1 = pt.vert[2 * face_i[0]] - pt.vert[2 * face_i[0] + 1]
+      u2 = pt.vert[2 * face_i[1]] - pt.vert[2 * face_i[1] + 1]
+      u3 = pt.vert[2 * face_i[2]] - pt.vert[2 * face_i[2] + 1]
+      u2_x_u3 = wp.cross(u2, u3)
+      c = wp.vec3(wp.dot(u2_x_u3, n), wp.dot(wp.cross(u3, u1), n), wp.dot(wp.cross(u1, u2), n))
+      s = c[0] + c[1] + c[2]
+      # skip faces parallel to n or hit behind the origin
+      if not _same_sign(wp.dot(u1, u2_x_u3), s):
+        continue
+      coord_i = c / s
+      if wp.min(coord_i) >= -EPA_WITNESS_TOL:
+        face = face_i
+        coordinates = coord_i
+        break
+
   l1 = coordinates[0]
   l2 = coordinates[1]
   l3 = coordinates[2]
@@ -2270,7 +2311,6 @@ def _set_edge(
   return 2
 
 
-# recover multiple contacts from EPA polytope
 @wp.func
 def multicontact(
   # In:
@@ -2290,16 +2330,23 @@ def multicontact(
   epa_face: int,
   x1: wp.vec3,
   x2: wp.vec3,
+  dist: float,
   geom1: Geom,
   geom2: Geom,
   geomtype1: int,
   geomtype2: int,
 ) -> Tuple[int, mat43, mat43, wp.vec4]:
+  """Recover clipped contacts from GJK/EPA features.
+
+  Returns clipped witnesses and their margin-inflated distances, or the original
+  GJK/EPA witness and distance as one fallback contact.
+  """
   witness1 = mat43()
   witness2 = mat43()
   dists = wp.vec4()
   witness1[0] = x1
   witness2[0] = x2
+  dists[0] = dist
 
   if geomtype1 == GeomType.MESH:
     vert = geom1.vert

@@ -125,24 +125,56 @@ def _create_constraint(
   return types.Constraint(**efc_kwargs)
 
 
-def _jtdaj_groups(mjd: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
+def _jtdaj_groups(mjm: mujoco.MjModel, mjd: mujoco.MjData, dof_friction: bool = False) -> tuple[np.ndarray, np.ndarray]:
   """Group loaded efc rows into JTDAJ blocks: maximal runs sharing (efc_type, efc_id).
 
   MuJoCo lays each constraint's rows out contiguously, so this reproduces the block list
   make_constraint builds in-kernel. Returns block start rows (adr) and lengths (nrow).
-  DOF friction rows get no block, matching make_constraint.
+  The edge rows of a flex equality share an efc_id but are each their own block.
+  DOF friction rows get no block, matching make_constraint, unless dof_friction.
   """
   nefc = mjd.nefc
   if nefc == 0:
     return np.zeros(0, dtype=int), np.zeros(0, dtype=int)
   etype = mjd.efc_type[:nefc]
   eid = mjd.efc_id[:nefc]
+  is_eq = etype == mujoco.mjtConstraint.mjCNSTR_EQUALITY
+  is_flex_eq = np.zeros(nefc, dtype=bool)
+  is_flex_eq[is_eq] = mjm.eq_type[eid[is_eq]] == mujoco.mjtEq.mjEQ_FLEX
   boundary = np.ones(nefc, dtype=bool)
-  boundary[1:] = (etype[1:] != etype[:-1]) | (eid[1:] != eid[:-1])
+  boundary[1:] = (etype[1:] != etype[:-1]) | (eid[1:] != eid[:-1]) | is_flex_eq[1:]
   adr = np.flatnonzero(boundary)
   nrow = np.diff(np.append(adr, nefc))
+  if dof_friction:
+    return adr, nrow
   keep = etype[adr] != mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
   return adr[keep], nrow[keep]
+
+
+def _dense_J_supports(mjm: mujoco.MjModel, mjd: mujoco.MjData):
+  """Each block's rows and the union of their nonzero columns, DOF friction rows included."""
+  dense_J = mjd.efc_J.reshape((mjd.nefc, -1))
+  for start, nrow in zip(*_jtdaj_groups(mjm, mjd, dof_friction=True)):
+    yield start, nrow, np.flatnonzero(np.any(dense_J[start : start + nrow] != 0.0, axis=0))
+
+
+def _dense_J_to_sparse(
+  mjd: mujoco.MjData, supports: list, rownnz: np.ndarray, rowadr: np.ndarray, colind: np.ndarray, J: np.ndarray
+):
+  """Sparse rows of MuJoCo's dense efc_J; the rows of each JTDAJ block share one support.
+
+  The sparse JTDAJ reads every row of a block at the support of its first row, so zeros within
+  the block's support are kept (mju_dense2sparse would drop them per row).
+  """
+  dense_J = mjd.efc_J.reshape((mjd.nefc, -1))
+  adr = 0
+  for start, nrow, cols in supports:
+    for row in range(start, start + nrow):
+      rownnz[row] = cols.size
+      rowadr[row] = adr
+      colind[adr : adr + cols.size] = cols
+      J[adr : adr + cols.size] = dense_J[row, cols]
+      adr += cols.size
 
 
 def _flex_has_stiffness(mjm: mujoco.MjModel, f: int) -> bool:
@@ -878,7 +910,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   jnt_limited_slide_hinge = mjm.jnt_limited & np.isin(mjm.jnt_type, (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE))
   m.jnt_limited_slide_hinge_adr = np.nonzero(jnt_limited_slide_hinge)[0]
   m.jnt_limited_ball_adr = np.nonzero(mjm.jnt_limited & (mjm.jnt_type == mujoco.mjtJoint.mjJNT_BALL))[0]
-  m.dof_tri_row, m.dof_tri_col = np.triu_indices(mjm.nv)
 
   # precompute body_isdofancestor: which DOFs affect each body
   # TODO: Investigate alternative approach such as bitmap
@@ -1309,6 +1340,11 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   # M_hinit_i: row index of each CSR entry (its madr is the flat index). The dense Newton H-init
   # uses (M_hinit_i, M_colind) to scatter M's upper triangle into the dense H tile from CSR.
   M_hinit_i = np.zeros(mjm.nC, dtype=np.int32)
+  # M_tile_colmask/M_tile_offdiag: tile pattern of M, which seeds the sparse-tile Newton Cholesky
+  tile = types.TILE_SIZE_JTDAJ_DENSE
+  ntiles = max(1, (m.nv_pad + tile - 1) // tile)
+  M_tile_colmask = np.zeros((ntiles, (ntiles + 63) // 64), dtype=np.uint64)
+  M_tile_offdiag = np.zeros(ntiles, dtype=np.int32)
   for i in range(mjm.nv):
     rowadr = mjm.M_rowadr[i]
     rownnz = mjm.M_rownnz[i]
@@ -1317,8 +1353,22 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       col = int(mjm.M_colind[madr])
       M_elemid[i, col] = madr
       M_hinit_i[madr] = i
+      if col // tile < i // tile:
+        M_tile_colmask[i // tile, col // tile // 64] |= np.uint64(1) << np.uint64(col // tile % 64)
+      elif col != i:
+        M_tile_offdiag[i // tile] = 1
   m.M_elemid = M_elemid
   m.M_hinit_i = M_hinit_i
+  m.M_tile_colmask = M_tile_colmask
+  m.M_tile_offdiag = M_tile_offdiag
+  # whether M and its reverse-elimination fill-in cover every tile holding real DOFs
+  ntiles_nv = (mjm.nv + tile - 1) // tile
+  colmask = [sum(int(w) << (64 * k) for k, w in enumerate(row)) for row in M_tile_colmask[:ntiles_nv]]
+  for tk in range(ntiles_nv - 1, 0, -1):
+    if colmask[tk]:
+      parent = colmask[tk].bit_length() - 1
+      colmask[parent] |= colmask[tk] & ((1 << parent) - 1)
+  m.M_tile_full = all(colmask[tk] == (1 << tk) - 1 for tk in range(ntiles_nv))
 
   # Precompute per-block gather indices for the dense-block densify (tile_load_indexed). For each
   # dense block and flat slot (row, col), store the CSR address of M[max(i,j), min(i,j)], or nC
@@ -1627,7 +1677,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nbody_fluid_box": len(m.body_fluid_box_adr),
       "njnt_limited_slide_hinge": len(m.jnt_limited_slide_hinge_adr),
       "njnt_limited_ball": len(m.jnt_limited_ball_adr),
-      "ndof_tri": len(m.dof_tri_row),
       "nnxn_geom_pair": len(m.nxn_geom_pair),
       "nnxn_geom_pair_filtered": len(m.nxn_geom_pair_filtered),
       "neq_connect": len(m.eq_connect_adr),
@@ -1662,6 +1711,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nqLD_all_updates": len(m.qLD_all_updates),
       "nqLD_level_offsets": len(m.qLD_level_offsets),
       "nM_fullm": len(m.M_fullm_i),
+      "nv_tile": m.M_tile_colmask.shape[0],
+      "nv_tile_word": m.M_tile_colmask.shape[1],
       "nqD_fullm": len(m.qD_fullm_i),
       "nv_plus_1": len(m.M_mulm_rowadr),
       "nM_mulm": len(m.M_mulm_col),
@@ -2176,8 +2227,6 @@ def _allocate_island_arrays(
 
 
 _COMPACT_DATA_FIELDS: tuple[str, ...] = (
-  "cdof_tri_row",
-  "cdof_tri_col",
   "cM",
   "cJ",
   "cMa",
@@ -2199,11 +2248,10 @@ def _allocate_compact_arrays(
 ):
   """Allocate workspace for the compacted dense factor/solve (when nvmax is requested).
 
-  Mirrors the island-local ``i*`` Data fields with a ``c*`` (compact) prefix. The
-  constant dof-pair indices are derived on the host since
-  they depend only on nvmax_pad; the workspace shadows are sized by nvmax_pad so the
-  blocked Cholesky never reads out of bounds on its partial tile. When the user does not
-  request compaction (nvmax is None) everything is allocated empty.
+  Mirrors the island-local ``i*`` Data fields with a ``c*`` (compact) prefix. The workspace
+  shadows are sized by nvmax_pad so the blocked Cholesky never reads out of bounds on its
+  partial tile. When the user does not request compaction (nvmax is None) everything is
+  allocated empty.
 
   TODO(team): once the compact path replaces the island solver, the whole forward
   pipeline can run in compacted space and ``d.M`` / ``d.qacc`` etc. become nvmax-sized
@@ -2212,15 +2260,6 @@ def _allocate_compact_arrays(
   nw = nworld if compact else 0
   nvp = nvmax_pad if compact else 0
   njp = njmax_pad if compact else 0
-
-  if compact:
-    # upper-triangular (i <= j) DOF pairs of the nvmax_pad-wide compacted Hessian
-    tri_row, tri_col = np.triu_indices(nvmax_pad)
-    d.cdof_tri_row = wp.array(tri_row.astype(np.int32), dtype=int)
-    d.cdof_tri_col = wp.array(tri_col.astype(np.int32), dtype=int)
-  else:
-    d.cdof_tri_row = wp.empty(0, dtype=int)
-    d.cdof_tri_col = wp.empty(0, dtype=int)
 
   alloc_dense_compact = compact and not is_sparse(mjm)
 
@@ -2388,7 +2427,6 @@ def make_data(
   sizes["njmax"] = njmax
   sizes["nvmax"] = nvmax
   sizes["nvmax_pad"] = _nvmax_pad(nvmax)
-  sizes["ncdof_tri"] = sizes["nvmax_pad"] * (sizes["nvmax_pad"] + 1) // 2
   sizes["nflexintcell"] = _get_nflexintcell(mjm)
   sizes["nflexface"] = _get_nflexface(mjm)
   sizes["nflexrodhinge"], sizes["nflexrodedge"] = _get_nflexrod_counts(mjm)
@@ -2620,7 +2658,6 @@ def put_data(
   sizes["njmax"] = njmax
   sizes["nvmax"] = nvmax
   sizes["nvmax_pad"] = _nvmax_pad(nvmax)
-  sizes["ncdof_tri"] = sizes["nvmax_pad"] * (sizes["nvmax_pad"] + 1) // 2
   sizes["nflexface"] = _get_nflexface(mjm)
   sizes["nflexrodhinge"], sizes["nflexrodedge"] = _get_nflexrod_counts(mjm)
   efm_d = _get_efm_data(mjm)
@@ -2629,11 +2666,16 @@ def put_data(
   qld_total = lay["total"] + (mjm.nC if lay["has_sparse"] else 0)
   sizes["qld_total"] = qld_total
 
+  # MuJoCo's dense efc_J loads as sparse rows that keep their block's union support
+  supports = list(_dense_J_supports(mjm, mjd)) if is_sparse(mjm) and not mujoco.mj_isSparse(mjm) and mjd.nefc else []
+  supports_nnz = sum(nrow * cols.size for _, nrow, cols in supports)
   if njmax_nnz is None:
     if is_sparse(mjm):
-      njmax_nnz = _default_njmax_nnz(mjm, nconmax, njmax)
+      njmax_nnz = max(_default_njmax_nnz(mjm, nconmax, njmax), supports_nnz)
     else:
       njmax_nnz = njmax * mjm.nv
+  elif njmax_nnz < supports_nnz:
+    raise ValueError(f"njmax_nnz {njmax_nnz} is below the {supports_nnz} Jacobian entries of the loaded constraints")
 
   # Capture sleep state before mj_kinematics, which resets tree_asleep as a side effect.
   tree_asleep_init = mjd.tree_asleep.copy()
@@ -2696,7 +2738,7 @@ def put_data(
   # make_constraint builds the block list in-kernel; put_data does not run it, so build it here
   # -- otherwise solving a put_data state would assemble an empty J^T D J.
   if is_sparse(mjm) and mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
-    jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjd)
+    jtdaj_adr, jtdaj_nrow = _jtdaj_groups(mjm, mjd)
     nblock = jtdaj_adr.shape[0]
     adr_row = np.zeros(njmax, dtype=int)
     nrow_row = np.zeros(njmax, dtype=int)
@@ -2719,10 +2761,7 @@ def put_data(
         J_colind[:nnz] = mjd.efc_J_colind[:nnz]
         J[:nnz] = mjd.efc_J[:nnz]
       else:
-        dense_J = mjd.efc_J.reshape((-1, mjm.nv))[: mjd.nefc]
-        mujoco.mju_dense2sparse(
-          J[: mjd.nefc * mjm.nv], dense_J, J_rownnz[: mjd.nefc], J_rowadr[: mjd.nefc], J_colind[: mjd.nefc * mjm.nv]
-        )
+        _dense_J_to_sparse(mjd, supports, J_rownnz, J_rowadr, J_colind, J)
 
     efc.J_rownnz = wp.array(np.tile(J_rownnz, (nworld, 1)), dtype=int)
     efc.J_rowadr = wp.array(np.tile(J_rowadr, (nworld, 1)), dtype=int)
