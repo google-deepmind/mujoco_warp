@@ -27,6 +27,7 @@ from mujoco_warp._src.types import ConstraintState
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec10
 from mujoco_warp._src.types import vec12
 from mujoco_warp._src.warp_util import cache_kernel
 
@@ -341,13 +342,12 @@ def _proj_edge_spatial(Vsp: wp.spatial_vector, fm: wp.mat33, fric: vec5, e: int,
 
 
 @wp.func
-def _contact_contract(
+def _contact_force_contract(
   # In:
   fm: wp.mat33,
   fric: vec5,
   V: wp.spatial_vector,
   A: wp.spatial_vector,
-  Z: wp.spatial_vector,
   pos: float,
   dt: float,
   imp_isq: float,
@@ -359,9 +359,10 @@ def _contact_contract(
   condim: int,
   st: int,
   active_edges: int,
+  force_bar: vec10,
   is_elliptic: bool,
 ):
-  """Returns phi = lambda.T @ r_contact = -(J @ lambda).T @ f_contact."""
+  """Contract the local force law with a fixed row cotangent, preserving the forward branch."""
   if is_elliptic:
     if st == ConstraintState.SATISFIED:
       return 0.0
@@ -388,16 +389,16 @@ def _contact_contract(
           TT += tj * tj
       T = wp.sqrt(wp.max(TT, MJ_MINVAL * MJ_MINVAL))
       fn = solver._eval_elliptic_middle(N, T, D0, mu, 0.0, True)[0]
-      phi += -fn * _proj_row_spatial(Z, fm, 0)
+      phi += fn * force_bar[0]
       for j in range(1, _MAXCONDIM):
         if j < condim:
           frij = _friction(fric, j - 1)
           uj = _row_jaref_spatial(A, V, fm, j, 0.0, b_t, 0.0, 0.0)
           fj = solver._eval_elliptic_middle(N, T, D0, mu, uj * frij * frij, False)[0]
-          phi += -fj * _proj_row_spatial(Z, fm, j)
+          phi += fj * force_bar[j]
     else:  # bottom zone / frictionless: each row force = -D_row * Jaref_row
       f0 = -D0 * _row_jaref_spatial(A, V, fm, 0, k, b, imp, pos)
-      phi += -f0 * _proj_row_spatial(Z, fm, 0)
+      phi += f0 * force_bar[0]
       imp_isq2 = imp_isq * imp_isq
       for j in range(1, _MAXCONDIM):
         if j < condim:
@@ -407,7 +408,7 @@ def _contact_contract(
             scale *= fric[0] * fric[0] / (frij * frij)
           Dj = D0 / scale
           fj = -Dj * _row_jaref_spatial(A, V, fm, j, 0.0, b_t, 0.0, 0.0)
-          phi += -fj * _proj_row_spatial(Z, fm, j)
+          phi += fj * force_bar[j]
   else:  # pyramidal: 2*(condim-1) edges (1 if condim==1); each edge an independent force
     if condim > 1:
       fri0 = fric[0]
@@ -420,8 +421,32 @@ def _contact_contract(
         Jqve = _proj_edge_spatial(V, fm, fric, e, condim)
         Jqae = _proj_edge_spatial(A, fm, fric, e, condim)
         fe = -D * _row_jaref(Jqae, Jqve, k, b, imp, pos)
-        phi += -fe * _proj_edge_spatial(Z, fm, fric, e, condim)
+        phi += fe * force_bar[e]
 
+  return phi
+
+
+@wp.func
+def _contact_jacobian_contract(
+  # In:
+  fm: wp.mat33,
+  fric: vec5,
+  Z: wp.spatial_vector,
+  force: vec10,
+  condim: int,
+  is_elliptic: bool,
+):
+  """Contract J @ lambda with the recorded force, which is zero on inactive rows."""
+  phi = float(0.0)
+  if is_elliptic:
+    for i in range(_MAXCONDIM):
+      if i < condim:
+        phi -= force[i] * _proj_row_spatial(Z, fm, i)
+  else:
+    rows = 1 if condim == 1 else 2 * (condim - 1)
+    for i in range(_MAX_PYRAMID_EDGES):
+      if i < rows:
+        phi -= force[i] * _proj_edge_spatial(Z, fm, fric, i, condim)
   return phi
 
 
@@ -532,6 +557,7 @@ def _contact_residual(cone_type: int, geom_friction_grad: bool, pair_friction_gr
     contact_worldid_in: wp.array[int],
     efc_pos_in: wp.array2d[float],
     efc_margin_in: wp.array2d[float],
+    efc_force_in: wp.array2d[float],
     efc_state_in: wp.array2d[int],
     nacon_in: wp.array[int],
     # In:
@@ -596,12 +622,21 @@ def _contact_residual(cone_type: int, geom_friction_grad: bool, pair_friction_gr
     invweight = (
       body_invweight0[model_worldid, geom_bodyid[geom[0]]][0] + body_invweight0[model_worldid, geom_bodyid[geom[1]]][0]
     )
-    derivatives = wp.grad(_contact_contract)(
-      contact_frame_in[cid],
-      contact_friction_in[cid],
+    # Product rule for -J.T @ f: differentiate J with the recorded force, then
+    # differentiate the local force law with its cotangent -J @ lambda.
+    frame = contact_frame_in[cid]
+    friction = contact_friction_in[cid]
+    force_ref = vec10()
+    for i in range(contact_efc_address_in.shape[1]):
+      row = contact_efc_address_in[cid, i]
+      if row >= 0:
+        force_ref[i] = efc_force_in[w, row]
+    jacobian_derivatives = wp.grad(_contact_jacobian_contract)(frame, friction, Z, force_ref, condim, wp.static(IS_ELLIPTIC))
+    force_derivatives = wp.grad(_contact_force_contract)(
+      frame,
+      friction,
       V,
       A,
-      Z,
       efc_pos_in[w, e0] - efc_margin_in[w, e0],
       dt,
       imp_isq,
@@ -613,12 +648,13 @@ def _contact_residual(cone_type: int, geom_friction_grad: bool, pair_friction_gr
       condim,
       st,
       active_edges,
+      jacobian_derivatives[3],
       wp.static(IS_ELLIPTIC),
     )
-    # Only the first six inputs have cotangents consumed by this residual path.
-    frame_bar, friction_bar = derivatives[0], derivatives[1]
-    Vb, Ab, Zb = derivatives[2], derivatives[3], derivatives[4]
-    pos_bar = derivatives[5]
+    frame_bar = force_derivatives[0] + jacobian_derivatives[0]
+    friction_bar = force_derivatives[1] + jacobian_derivatives[1]
+    Vb, Ab, Zb = force_derivatives[2], force_derivatives[3], jacobian_derivatives[2]
+    pos_bar = force_derivatives[4]
     res_contact_frame_out[cid] += frame_bar
     wp.atomic_add(res_efc_pos_out, w, e0, pos_bar)  # kernel_analyzer: ignore[atomic]
     if wp.static(geom_friction_grad or pair_friction_grad):

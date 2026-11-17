@@ -460,6 +460,7 @@ def _residual_contact(
       d_bwd.contact.worldid,
       d_bwd.efc.pos,
       d_bwd.efc.margin,
+      d_bwd.efc.force,
       d_bwd.efc.state,
       d_bwd.nacon,
       lam,
