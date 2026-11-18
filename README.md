@@ -119,7 +119,7 @@ If you prefer [PyTorch](https://pytorch.org/) for research, consider one of thes
 * [Isaac Lab](https://github.com/isaac-sim/IsaacLab/tree/feature/newton) integrates MJWarp via [Newton](https://github.com/newton-physics/newton).  This setup enables powerful, highly extensible multi-physics simulation with deep NVIDIA ecosystem integration.
 * [mjlab](https://github.com/mujocolab/mjlab) exposes the [Isaac Lab](https://github.com/isaac-sim/IsaacLab) manager-based API directly on top of MJWarp, providing a focused framework for robotics research with minimal dependencies and direct access to native MuJoCo data structures.
 
-If your robots need to share a scene with deformable or granular material, [Alloy](https://github.com/argonrobotics-ai/alloy) steps MJWarp robots together with cloth, soft bodies, sand and liquids in parallel worlds on one GPU, with Gymnasium environments for robot learning.
+If your robots need to share a scene with deformable or granular material, [Alloy](https://github.com/argonrobotics-ai/alloy) steps MJWarp robots together with cloth, soft bodies, sand or liquids in parallel worlds on one GPU, with Gymnasium environments for robot learning.
 
 # MuJoCo API Compatibility
 
