@@ -1775,7 +1775,7 @@ class CollisionTest(parameterized.TestCase):
 
     mjw.collision(m, d)
 
-    self.assertGreater(d.nacon.numpy()[0], 0)
+    np.testing.assert_equal(d.nacon.numpy()[0], 4)
     self.assertEqual(d.overflow.numpy()[0], types.OverflowType.HFIELD if extra_contact else 0)
 
   @parameterized.parameters(1, 2)
