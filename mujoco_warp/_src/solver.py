@@ -727,6 +727,12 @@ def _compute_efc_eval_pt_pyramidal(
 
 
 @wp.func
+def _elliptic_mu_scale(D0: float, D1: float) -> float:
+  """Regularized cone scale sqrt(R1/R0) from the normal and first friction rows."""
+  return wp.sqrt(math.safe_div(D0, D1))
+
+
+@wp.func
 def _compute_efc_eval_pt_elliptic(
   efcid: int,
   alpha: float,
@@ -1038,6 +1044,7 @@ def _linesearch_iterative_kernel(
   is_sparse: bool,
   incremental: bool,
   warn_overflow: int,
+  is_discrete: bool,
 ):
   """Factory for iterative linesearch kernel.
 
@@ -1048,12 +1055,14 @@ def _linesearch_iterative_kernel(
     is_sparse: Use sparse matrix representation for constraint Jacobian.
     incremental: Use incremental linesearch updates.
     warn_overflow: Overflow warning bitmask.
+    is_discrete: Discrete integrator (per-contact regularized cone scale).
   """
   LS_ITERATIONS = ls_iterations
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   FUSE_JV = fuse_jv
   INCREMENTAL = incremental
   IS_SPARSE = is_sparse
+  IS_DISCRETE = is_discrete
 
   # Native snippet for CUDA __syncthreads()
   @wp.func_native(snippet="WP_TILE_SYNC();")
@@ -1175,7 +1184,10 @@ def _linesearch_iterative_kernel(
               # primary row: accumulate secondary rows and write quad, quad1, quad2
               dim = contact_dim_in[conid]
               friction = contact_friction_in[conid]
-              mu = friction[0] * impratio_invsqrt
+              mu_scale = impratio_invsqrt
+              if wp.static(IS_DISCRETE):
+                mu_scale = _elliptic_mu_scale(efc_D, efc_D_in[worldid, contact_efc_address_in[conid, 1]])
+              mu = friction[0] * mu_scale
 
               u0 = Jaref * mu
               v0 = jv * mu
@@ -1261,6 +1273,7 @@ def _linesearch_iterative_kernel(
         efc_id = 0
         contact_friction = types.vec5(0.0)
         efc_addr0 = int(0)
+        mu_scale = impratio_invsqrt
         ctx_quad = wp.vec3(0.0)
         quad1 = wp.vec3(0.0)
         quad2 = wp.vec3(0.0)
@@ -1274,12 +1287,15 @@ def _linesearch_iterative_kernel(
           ctx_quad = ctx_quad_in[worldid, efcid]
           quad1 = ctx_quad_in[worldid, efc_addr1]
           quad2 = ctx_quad_in[worldid, efc_addr2]
+          if wp.static(IS_DISCRETE):
+            if efcid == efc_addr0:
+              mu_scale = _elliptic_mu_scale(efc_D_in[worldid, efc_addr0], efc_D_in[worldid, efc_addr1])
 
         local_p0 += _compute_efc_eval_pt_alpha_zero(
           efcid,
           ne,
           nf,
-          impratio_invsqrt,
+          mu_scale,
           efc_type,
           efc_D_in[worldid],
           efc_frictionloss_in[worldid],
@@ -1348,6 +1364,7 @@ def _linesearch_iterative_kernel(
           efc_id = 0
           contact_friction = types.vec5(0.0)
           efc_addr0 = int(0)
+          mu_scale = impratio_invsqrt
           ctx_quad = wp.vec3(0.0)
           quad1 = wp.vec3(0.0)
           quad2 = wp.vec3(0.0)
@@ -1361,13 +1378,16 @@ def _linesearch_iterative_kernel(
             ctx_quad = ctx_quad_in[worldid, efcid]
             quad1 = ctx_quad_in[worldid, efc_addr1]
             quad2 = ctx_quad_in[worldid, efc_addr2]
+            if wp.static(IS_DISCRETE):
+              if efcid == efc_addr0:
+                mu_scale = _elliptic_mu_scale(efc_D_in[worldid, efc_addr0], efc_D_in[worldid, efc_addr1])
 
           local_lo_in += _compute_efc_eval_pt(
             efcid,
             lo_alpha_in,
             ne,
             nf,
-            impratio_invsqrt,
+            mu_scale,
             efc_type,
             efc_D_in[worldid],
             efc_frictionloss_in[worldid],
@@ -1426,6 +1446,7 @@ def _linesearch_iterative_kernel(
             efc_id = 0
             contact_friction = types.vec5(0.0)
             efc_addr0 = int(0)
+            mu_scale = impratio_invsqrt
             ctx_quad = wp.vec3(0.0)
             quad1 = wp.vec3(0.0)
             quad2 = wp.vec3(0.0)
@@ -1439,6 +1460,9 @@ def _linesearch_iterative_kernel(
               ctx_quad = ctx_quad_in[worldid, efcid]
               quad1 = ctx_quad_in[worldid, efc_addr1]
               quad2 = ctx_quad_in[worldid, efc_addr2]
+              if wp.static(IS_DISCRETE):
+                if efcid == efc_addr0:
+                  mu_scale = _elliptic_mu_scale(efc_D_in[worldid, efc_addr0], efc_D_in[worldid, efc_addr1])
 
             r_lo, r_hi, r_mid = _compute_efc_eval_pt_3alphas(
               efcid,
@@ -1447,7 +1471,7 @@ def _linesearch_iterative_kernel(
               mid_alpha,
               ne,
               nf,
-              impratio_invsqrt,
+              mu_scale,
               efc_type,
               efc_D_in[worldid],
               efc_frictionloss_in[worldid],
@@ -1611,6 +1635,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
       m.is_sparse,
       _use_incremental(m),
       int(m.opt.warn_overflow),
+      m.opt.integrator == types.IntegratorType.DISCRETE,
     ),
     dim=d.nworld,
     inputs=[
@@ -1996,9 +2021,15 @@ def _solve_init_search_cg_tiled(
 
 
 @cache_kernel
-def _update_constraint_efc(track_changes: bool, cone_rows: bool = False, deterministic: bool = False):
+def _update_constraint_efc(
+  track_changes: bool,
+  cone_rows: bool = False,
+  is_discrete: bool = False,
+  deterministic: bool = False,
+):
   TRACK_CHANGES = track_changes
   CONE_ROWS = cone_rows
+  IS_DISCRETE = is_discrete
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2090,9 +2121,19 @@ def _update_constraint_efc(track_changes: bool, cone_rows: bool = False, determi
 
       dim = contact_dim_in[conid]
       friction = contact_friction_in[conid]
-      mu = friction[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
       jaref0 = ctx_Jaref_in[worldid, efcid0]
       D0 = efc_D_in[worldid, efcid0]
+      mu_scale = float(0.0)
+      if wp.static(IS_DISCRETE):
+        efcid1 = contact_efc_address_in[conid, 1]
+        if efcid1 < 0:
+          efc_force_out[worldid, efcid] = 0.0
+          efc_state_out[worldid, efcid] = types.ConstraintState.SATISFIED.value
+          return
+        mu_scale = _elliptic_mu_scale(D0, efc_D_in[worldid, efcid1])
+      else:
+        mu_scale = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+      mu = friction[0] * mu_scale
 
       for j in range(1, dim):
         efcidj = contact_efc_address_in[conid, j]
@@ -2430,7 +2471,12 @@ def _update_efc_force(m: types.Model, d: types.Data, ctx: SolverContext | Invers
 
   cone_rows = isinstance(ctx, SolverContext) and ctx.cone_coef is not None
   wp.launch(
-    _update_constraint_efc(track_changes, cone_rows, bool(m.opt.deterministic & types.DeterminismType.ATOMICS)),
+    _update_constraint_efc(
+      track_changes,
+      cone_rows,
+      m.opt.integrator == types.IntegratorType.DISCRETE,
+      bool(m.opt.deterministic & types.DeterminismType.ATOMICS),
+    ),
     dim=(d.nworld, d.njmax),
     inputs=efc_inputs,
     outputs=[
@@ -4051,9 +4097,11 @@ def _JTDACJ_sparse(
   max_condim: int,
   block_dim: int = types.BlockDim.update_gradient_JTDAJ_sparse,
   max_records: int = 0,
+  is_discrete: bool = False,
   deterministic: bool = False,
 ):
   COMPACT = compact
+  IS_DISCRETE = is_discrete
   ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   MAX_CONDIM = max_condim
   module_options = {"enable_backward": False, "block_dim": block_dim}
@@ -4075,9 +4123,17 @@ def _JTDACJ_sparse(
       efcid0: int,
       block_rows: int,
     ) -> types.vec16:
-      mu = fri[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+      D0 = efc_D_in[worldid, efcid0]
+      mu_scale = float(0.0)
+      if wp.static(IS_DISCRETE):
+        if block_rows < 2:
+          return types.vec16()
+        mu_scale = _elliptic_mu_scale(D0, efc_D_in[worldid, efcid0 + 1])
+      else:
+        mu_scale = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+      mu = fri[0] * mu_scale
       mu2 = mu * mu
-      dm = math.safe_div(efc_D_in[worldid, efcid0], mu2 * (1.0 + mu2))
+      dm = math.safe_div(D0, mu2 * (1.0 + mu2))
       if dm == 0.0:
         return types.vec16()
 
@@ -4388,12 +4444,12 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       elliptic = m.opt.cone == types.ConeType.ELLIPTIC
       threads_per_group = 1 if elliptic and wp.get_device().is_cpu else _JTDAJ_THREADS_PER_GROUP
       block_dim = threads_per_group if elliptic else mj.block_dim.update_gradient_JTDAJ_sparse
-      jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim)
+      jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, 0, is_discrete, False)
       groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax, jtdaj_kernel)
       if bool(m.opt.deterministic & types.DeterminismType.ATOMICS):
         entries_per_lane = ceil((mj.nv * (mj.nv + 1) // 2) / threads_per_group)
         max_records = ceil(d.njmax / groups_per_world) * entries_per_lane
-        jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, max_records, True)
+        jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, max_records, is_discrete, True)
       jtdaj_inputs = [
         m.opt.impratio_invsqrt,
         d.contact.friction,
@@ -5028,7 +5084,12 @@ def _constraint_row_cost_diff(
   if efcid != contact_efc_address_in[conid, 0]:
     return 0.0
   friction = contact_friction_in[conid]
-  mu = friction[0] * impratio_invsqrt
+  efcid1 = contact_efc_address_in[conid, 1]
+  if efcid1 >= 0:
+    mu_scale = _elliptic_mu_scale(D, efc_D_in[worldid, efcid1])
+  else:
+    mu_scale = impratio_invsqrt
+  mu = friction[0] * mu_scale
   dim = contact_dim_in[conid]
   Dm = math.safe_div(D, mu * mu * (1.0 + mu * mu))
   return _elliptic_row_cost(

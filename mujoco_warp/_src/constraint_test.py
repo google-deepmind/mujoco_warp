@@ -26,6 +26,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
+from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
 # mostly due to float precision
@@ -776,6 +777,54 @@ class ConstraintTest(parameterized.TestCase):
     self.assertEqual(d.nefc.numpy()[0], mjd.nefc, "nefc mismatch")
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_interpolated_trilinear_{elastic2d}", m.nv)
 
+  # TODO(team): remove version check once mujoco >= 4.0.2 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=4.0.2"), "Requires MuJoCo >= 4.0.2")
+  def test_flex_interpolated_empty_cell(self):
+    """Test contact Jacobians of interpolated flex vertices redirected from an empty cell."""
+    # cell 1 (x in [0.5, 1]) only contains a 1% sliver and is pruned as empty, so the vertices at
+    # x = 0.5 and x = 0.505 are redirected to cell 0 and extrapolated, also for contact weights
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+        <mujoco>
+          <option solver="CG" tolerance="1e-6" timestep=".001"/>
+          <worldbody>
+            <geom type="plane" size="5 5 .1"/>
+            <flexcomp name="sliver" type="direct" dim="3" dof="trilinear" mass="1"
+                      cellcount="2 1 1" radius="0.001"
+                      point="0.0 0 0  0.5 0 0  0.0 1 0  0.5 1 0
+                             0.0 0 1  0.5 0 1  0.0 1 1  0.5 1 1
+                             0.505 0 0  0.505 1 0  0.505 0 1  0.505 1 1
+                             1.0 0.5 0.5"
+                      element="0 1 2 4  3 2 1 7  5 1 4 7  6 2 4 7  1 2 4 7
+                               1 8 3 5  9 3 8 11  10 8 5 11  7 3 5 11  8 3 5 11">
+              <contact condim="3" selfcollide="none"/>
+              <elasticity young="1e4" poisson="0.3" elastic2d="none"/>
+            </flexcomp>
+          </worldbody>
+        </mujoco>
+      """,
+      overrides={
+        "opt.cone": mujoco.mjtCone.mjCONE_ELLIPTIC,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+      },
+    )
+
+    # some contact vertex is redirected away from its natural cell
+    self.assertGreater(mjm.flex_interp[0], 0)
+    cellnum = mjm.flex_cellnum[0]
+    natcell = np.clip(np.floor(mjm.flex_vert0 * cellnum).astype(int), 0, cellnum - 1)
+    natcell = natcell[:, 0] * cellnum[1] * cellnum[2] + natcell[:, 1] * cellnum[2] + natcell[:, 2]
+    redirected = (mjm.flex_vertcell >= 0) & (mjm.flex_vertcell != natcell)
+    contact_verts = [v for v, f in zip(mjd.contact.vert.flat, mjd.contact.flex.flat) if f == 0 and v >= 0]
+    self.assertTrue(any(redirected[v] for v in contact_verts), "Expected contacts at redirected vertices")
+
+    mjw.kinematics(m, d)
+    mjw.make_constraint(m, d)
+
+    self.assertGreater(mjd.nefc, 0, "Expected active contacts in MuJoCo")
+    self.assertEqual(d.nefc.numpy()[0], mjd.nefc, "nefc mismatch")
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc_flex_interpolated_empty_cell", m.nv)
+
   def test_weld_coriolis(self):
     """Test weld Coriolis term Jdotv_r with default torquescale and high velocity."""
     xml = """
@@ -1007,6 +1056,58 @@ class ConstraintTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(d.efc.aref.numpy()[0], d.efc.aref.numpy()[1]))
+
+  # TODO(team): remove version check once mujoco >= 4.0.2 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=4.0.2"), "Requires MuJoCo >= 4.0.2")
+  @parameterized.product(
+    nworld=(1, 2),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_discrete_refsafe_elliptic_friction(self, nworld, jacobian):
+    """Elliptic friction rows use the unclamped normal regularization under discrete refsafe."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.02" integrator="discrete" cone="elliptic" impratio="10">
+          <flag warmstart="disable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="2 2 0.1" euler="0 20 0" friction="0.5 0.5 0.01" solref="0.002 1"/>
+          <body pos="0 0 0.0995">
+            <freejoint/>
+            <geom size="0.1" mass="1" friction="0.5 0.5 0.01" solref="0.002 1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.jacobian": jacobian},
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qvel = d.qvel.numpy()
+      qvel[1, :3] = [0.3, -0.2, -0.5]
+      d.qvel.assign(qvel)
+      mjd1.qvel[:] = qvel[1]
+      mjds.append(mjd1)
+
+    d.efc.D.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      nefc = mjds[w].nefc
+      self.assertEqual(nefc, 3)
+      # refsafe clamps the normal row, so the friction-to-normal ratio is no longer 1/impratio
+      self.assertGreater(mjds[w].efc_R[0] / mjds[w].efc_R[1], 2.0 * mjm.opt.impratio)
+      _assert_eq(d.efc.D.numpy()[w, :nefc], mjds[w].efc_D[:nefc], f"efc_D_world_{w}")
+      _assert_eq(d.qacc.numpy()[w], mjds[w].qacc, f"qacc_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
   @parameterized.parameters(1, 2)
   def test_regularize_constraint_ceiling(self, nworld):
