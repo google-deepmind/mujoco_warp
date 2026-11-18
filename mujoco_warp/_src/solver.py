@@ -5481,11 +5481,12 @@ def _noslip_minv_jt(is_sparse: bool, sleep: bool):
         # backward substitution: L' z = J'
         for ii in range(start, end):
           i = start + end - 1 - ii
-          rowadr = M_rowadr[i]
           yi = y[i]
-          for k in range(M_rownnz[i] - 1):
-            colind = M_colind[rowadr + k]
-            y[colind] = y[colind] - L[qLD_block_total + rowadr + k] * yi
+          if yi != 0.0:
+            rowadr = M_rowadr[i]
+            for k in range(M_rownnz[i] - 1):
+              colind = M_colind[rowadr + k]
+              y[colind] = y[colind] - L[qLD_block_total + rowadr + k] * yi
         # forward substitution: L y = D^-1 z
         for i in range(start, end):
           rowadr = M_rowadr[i]
