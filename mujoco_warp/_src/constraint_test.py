@@ -962,6 +962,58 @@ class ConstraintTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.efc.aref.numpy()[0], d.efc.aref.numpy()[1]))
 
+  # TODO(team): remove version check once mujoco >= 4.0.2 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=4.0.2"), "Requires MuJoCo >= 4.0.2")
+  @parameterized.product(
+    nworld=(1, 2),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_discrete_refsafe_elliptic_friction(self, nworld, jacobian):
+    """Elliptic friction rows use the unclamped normal regularization under discrete refsafe."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.02" integrator="discrete" cone="elliptic" impratio="10">
+          <flag warmstart="disable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="2 2 0.1" euler="0 20 0" friction="0.5 0.5 0.01" solref="0.002 1"/>
+          <body pos="0 0 0.0995">
+            <freejoint/>
+            <geom size="0.1" mass="1" friction="0.5 0.5 0.01" solref="0.002 1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.jacobian": jacobian},
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qvel = d.qvel.numpy()
+      qvel[1, :3] = [0.3, -0.2, -0.5]
+      d.qvel.assign(qvel)
+      mjd1.qvel[:] = qvel[1]
+      mjds.append(mjd1)
+
+    d.efc.D.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      nefc = mjds[w].nefc
+      self.assertEqual(nefc, 3)
+      # refsafe clamps the normal row, so the friction-to-normal ratio is no longer 1/impratio
+      self.assertGreater(mjds[w].efc_R[0] / mjds[w].efc_R[1], 2.0 * mjm.opt.impratio)
+      _assert_eq(d.efc.D.numpy()[w, :nefc], mjds[w].efc_D[:nefc], f"efc_D_world_{w}")
+      _assert_eq(d.qacc.numpy()[w], mjds[w].qacc, f"qacc_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
   @parameterized.parameters(1, 2)
   def test_regularize_constraint_ceiling(self, nworld):
     """Verifies that regularize_constraint clamps D within the impedance ceiling."""
