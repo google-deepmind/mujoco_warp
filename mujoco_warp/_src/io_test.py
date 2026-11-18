@@ -3232,6 +3232,146 @@ class IOTest(parameterized.TestCase):
       self.assertEqual(d_put.tree_awake.numpy()[1, 0], 1)
       self.assertFalse(np.allclose(d_put.qpos.numpy()[0], d_put.qpos.numpy()[1]))
 
+  @parameterized.parameters(1, 2)
+  def test_plastic_io_and_reset(self, nworld):
+    """Tests tendon_tree*, plastic I/O roundtrip, reset_data, and reset_data_keyframe."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" timestep="0.005"/>
+        <worldbody>
+          <site name="sw"/>
+          <body name="m0" mocap="true">
+            <site name="sm"/>
+          </body>
+          <body name="b0">
+            <joint name="j_slide" type="slide" axis="1 0 0" stiffness="20" springref="0.1" springyield="0.05"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+          <body name="b1" pos="0 1 0">
+            <joint name="j_hinge" stiffness="15" springref="-0.2" springyield="0.08"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+          <body name="b2" pos="0 2 0">
+            <joint name="j_ball" type="ball" stiffness="12" springyield="0.06"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+          <body name="b3" pos="0 3 0">
+            <joint name="j_slide2" type="slide" axis="1 0 0"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+          <flexcomp name="tet" type="direct" dim="3" mass="1"
+                    point="2 0 0  3 0 0  2 1 0  2 0 1" element="0 1 2 3">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.25" yield="0.04"/>
+            <pin id="0 1 2"/>
+          </flexcomp>
+        </worldbody>
+        <tendon>
+          <spatial name="t0" stiffness="20" springlength="0 0.05" springyield="0.02">
+            <site site="sw"/>
+            <site site="sm"/>
+          </spatial>
+          <fixed name="t1" stiffness="20" springlength="0.02 0.08" springyield="0.02">
+            <joint joint="j_slide" coef="1"/>
+          </fixed>
+          <fixed name="t2" stiffness="20" springlength="0.03 0.09" springyield="0.02">
+            <joint joint="j_slide" coef="1"/>
+            <joint joint="j_hinge" coef="1"/>
+          </fixed>
+          <fixed name="t3" stiffness="20" springlength="0.04 0.1" springyield="0.02">
+            <joint joint="j_slide" coef="1"/>
+            <joint joint="j_hinge" coef="1"/>
+            <joint joint="j_slide2" coef="0.5"/>
+          </fixed>
+        </tendon>
+        <keyframe>
+          <key qpos="0.25 -0.3 0.98 0.15 0.12 -0.05  0.1  0.1 -0.15 0.25"
+               plastic="0.2 -0.25 1 0 0 0  0 0.06  0.03 0.09  0.04 0.1  0.05 0.11  0.01 0.02 -0.01 0.0 0.01 -0.02"/>
+          <key qpos="0.0 0.0 1 0 0 0  0  0 0 0"/>
+        </keyframe>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    # Verify tendon_treenum and tendon_treeid match MuJoCo across 0/1/2/3-tree tendons.
+    np.testing.assert_array_equal(m.tendon_treenum.numpy(), [0, 1, 2, 3])
+    np.testing.assert_array_equal(m.tendon_treenum.numpy(), mjm.tendon_treenum)
+    np.testing.assert_array_equal(m.tendon_treeid.numpy(), mjm.tendon_treeid)
+
+    # make_data initializes plastic identically to MjData(mjm).
+    mjd_fresh = mujoco.MjData(mjm)
+    d_make = mjwarp.make_data(mjm, nworld=nworld)
+    p_make = d_make.plastic.numpy()
+    for w in range(nworld):
+      _assert_eq(p_make[w], mjd_fresh.plastic, f"make_data_plastic_w{w}")
+
+    # put_data and get_data_into roundtrip distinct per-world plastic states.
+    custom = np.zeros((nworld, mjm.nplastic), dtype=np.float32)
+    for w in range(nworld):
+      custom[w] = 0.05 * (w + 1) + 0.01 * np.arange(mjm.nplastic, dtype=np.float32)
+    d.plastic.assign(custom)
+    for w in range(nworld):
+      mjd_dst = mujoco.MjData(mjm)
+      mjd_dst.plastic[:] = np.inf
+      mjwarp.get_data_into(mjd_dst, mjm, d, world_id=w)
+      _assert_eq(mjd_dst.plastic, custom[w], f"get_data_into_plastic_w{w}")
+
+    # Full reset_data overwrites poisoned plastic with MuJoCo reset values.
+    d.plastic.fill_(wp.inf)
+    mujoco.mj_resetData(mjm, mjd)
+    mjwarp.reset_data(m, d)
+    p_reset = d.plastic.numpy()
+    for w in range(nworld):
+      _assert_eq(p_reset[w], mjd.plastic, f"reset_data_plastic_w{w}")
+
+    # Per-world reset mask resets only world 0 and leaves world 1 untouched.
+    if nworld == 2:
+      d.plastic.assign(custom)
+      mjwarp.reset_data(m, d, reset=wp.array([True, False], dtype=bool))
+      p_masked = d.plastic.numpy()
+      _assert_eq(p_masked[0], mjd.plastic, "reset_mask_w0")
+      _assert_eq(p_masked[1], custom[1], "reset_mask_w1_untouched")
+
+    # reset_data_keyframe handles explicit, default, and out-of-bounds keys.
+    for key in (0, 1):
+      d.plastic.fill_(wp.inf)
+      mujoco.mj_resetDataKeyframe(mjm, mjd, key)
+      mjwarp.reset_data_keyframe(m, d, key)
+      p_key = d.plastic.numpy()
+      for w in range(nworld):
+        _assert_eq(p_key[w], mjd.plastic, f"reset_keyframe_{key}_w{w}")
+
+    if nworld == 2:
+      d.plastic.assign(custom)
+      mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+      mjwarp.reset_data_keyframe(m, d, wp.array([0, -1], dtype=int))
+      p_key_arr = d.plastic.numpy()
+      _assert_eq(p_key_arr[0], mjd.plastic, "reset_keyframe_array_w0")
+      _assert_eq(p_key_arr[1], custom[1], "reset_keyframe_array_w1_untouched")
+
+      # Batched qpos_spring and tendon_lengthspring initialize distinct per-world plastic on reset.
+      m_batched = mjwarp.put_model(mjm, batch_sizes={"qpos_spring": 2, "tendon_lengthspring": 2})
+      qpos_spring = m_batched.qpos_spring.numpy().copy()
+      qpos_spring[1, 0] = 0.42
+      qpos_spring[1, 1] = -0.37
+      m_batched.qpos_spring.assign(qpos_spring)
+      ten_ls = m_batched.tendon_lengthspring.numpy().copy()
+      ten_ls[1, 1] = [0.15, 0.25]
+      m_batched.tendon_lengthspring.assign(ten_ls)
+
+      d_batched = mjwarp.make_data(mjm, nworld=2)
+      d_batched.plastic.fill_(wp.inf)
+      mjwarp.reset_data(m_batched, d_batched)
+      p_batched = d_batched.plastic.numpy()
+      _assert_eq(p_batched[0, 0], qpos_spring[0, 0], "batched_reset_jnt0_w0")
+      _assert_eq(p_batched[1, 0], 0.42, "batched_reset_jnt0_w1")
+      _assert_eq(p_batched[1, 1], -0.37, "batched_reset_jnt1_w1")
+      t1_adr = int(mjm.tendon_plasticadr[1])
+      _assert_eq(p_batched[1, t1_adr : t1_adr + 2], np.array([0.15, 0.25]), "batched_reset_ten1_w1")
+      self.assertFalse(np.allclose(p_batched[0], p_batched[1]))
+
 
 if __name__ == "__main__":
   wp.init()

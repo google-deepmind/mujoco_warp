@@ -1692,6 +1692,323 @@ class SleepTest(parameterized.TestCase):
     mjwarp.step(m, d_tight)
     self.assertNotEqual(int(d_tight.overflow.numpy()[0]) & int(types.OverflowType.BROADPHASE), 0)
 
+  @parameterized.parameters(1, 2)
+  def test_plastic_sleep_joints_and_tendons(self, nworld):
+    """Verify sleep filtering parity for plastic joints and 0/1/2/3-tree tendons."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" timestep="0.005">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <site name="sw"/>
+          <body name="m0" mocap="true">
+            <site name="sm"/>
+          </body>
+          <body name="b0">
+            <joint name="j0" type="slide" axis="1 0 0" stiffness="20" springyield="0.05"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+          <body name="b1" pos="0 1 0">
+            <joint name="j1" type="slide" axis="1 0 0" stiffness="20" springyield="0.05"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+          <body name="b2" pos="0 2 0">
+            <joint name="j2" type="slide" axis="1 0 0" stiffness="20" springyield="0.05"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="t0" stiffness="20" springlength="0 0.05" springyield="0.02">
+            <site site="sw"/>
+            <site site="sm"/>
+          </spatial>
+          <fixed name="t1" stiffness="20" springlength="0 0.05" springyield="0.02">
+            <joint joint="j0" coef="1"/>
+          </fixed>
+          <fixed name="t2" stiffness="20" springlength="0 0.05" springyield="0.02">
+            <joint joint="j0" coef="1"/>
+            <joint joint="j1" coef="1"/>
+          </fixed>
+          <fixed name="t3" stiffness="20" springlength="0 0.05" springyield="0.02">
+            <joint joint="j0" coef="1"/>
+            <joint joint="j1" coef="1"/>
+            <joint joint="j2" coef="1"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    np.testing.assert_array_equal(m.tendon_treenum.numpy(), [0, 1, 2, 3])
+    np.testing.assert_array_equal(m.tendon_treeid.numpy(), mjm.tendon_treeid)
+
+    # Displace joints and mocap site past yield.
+    mjd.qpos[:] = [0.3, 0.3, 0.3]
+    mjd.mocap_pos[0] = [0.3, 0.0, 0.0]
+    mujoco.mj_forward(mjm, mjd)
+    d = mjwarp.put_data(mjm, mjd, nworld=nworld)
+    mjwarp.forward(m, d)
+
+    # World 0: all 3 trees asleep -> j0..j2 and t0..t2 frozen, 3-tree tendon t3 still yields.
+    # World 1: tree 0 awake, trees 1 & 2 asleep -> j0, t1, t2, t3 yield; j1, j2, t0 frozen.
+    mjds = [copy.deepcopy(mjd) for _ in range(nworld)]
+    tree_asleep = np.zeros((nworld, mjm.ntree), dtype=np.int32)
+    tree_asleep[0] = [0, 1, 2]
+    if nworld == 2:
+      tree_asleep[1] = [sleep.K_AWAKE_VAL, 1, 2]
+    d.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d)
+    tree_awake = d.tree_awake.numpy()
+    body_awake = d.body_awake.numpy()
+    ntree_awake = d.ntree_awake.numpy()
+    nbody_awake = d.nbody_awake.numpy()
+    nv_awake = d.nv_awake.numpy()
+    body_awake_ind = d.body_awake_ind.numpy()
+    dof_awake_ind = d.dof_awake_ind.numpy()
+    for w in range(nworld):
+      mjds[w].tree_asleep[:] = tree_asleep[w]
+      mjds[w].tree_awake[:] = tree_awake[w]
+      mjds[w].body_awake[:] = body_awake[w]
+      mjds[w].ntree_awake = int(ntree_awake[w])
+      mjds[w].nbody_awake = int(nbody_awake[w])
+      mjds[w].nv_awake = int(nv_awake[w])
+      mjds[w].body_awake_ind[:] = body_awake_ind[w]
+      mjds[w].dof_awake_ind[:] = dof_awake_ind[w]
+      mujoco.mj_Euler(mjm, mjds[w])
+    forward.euler(m, d)
+
+    plastic_before = mjd.plastic.copy()
+    p_out = d.plastic.numpy()
+    p0 = p_out[0]
+    np.testing.assert_allclose(p0, mjds[0].plastic, atol=5e-4, rtol=5e-4)
+    # Joints (0..2) and 0/1/2-tree tendons (3..8) stay frozen; 3-tree tendon (9..10) yields.
+    np.testing.assert_allclose(p0[:9], plastic_before[:9], atol=1e-6)
+    self.assertGreater(p0[10], plastic_before[10] + 0.1)
+    if nworld == 2:
+      p1 = p_out[1]
+      np.testing.assert_allclose(p1, mjds[1].plastic, atol=5e-4, rtol=5e-4)
+      self.assertGreater(p1[0], plastic_before[0] + 0.1)
+      np.testing.assert_allclose(p1[1:5], plastic_before[1:5], atol=1e-6)
+      self.assertGreater(p1[6], plastic_before[6] + 0.1)
+      self.assertGreater(p1[8], plastic_before[8] + 0.1)
+      self.assertGreater(p1[10], plastic_before[10] + 0.1)
+      self.assertFalse(np.allclose(p0, p1))
+
+    # All trees awake (ntree_awake == ntree): sleep filter bypassed, so 0-tree tendon t0 yields.
+    mjd_all = copy.deepcopy(mjd)
+    d_all = mjwarp.put_data(mjm, mjd_all, nworld=nworld)
+    mjwarp.forward(m, d_all)
+    mujoco.mj_Euler(mjm, mjd_all)
+    forward.euler(m, d_all)
+    p_all = d_all.plastic.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(p_all[w], mjd_all.plastic, atol=5e-4, rtol=5e-4)
+      self.assertGreater(p_all[w, 4], plastic_before[4] + 0.1)
+
+    # Natural multi-step rollout with sleeping body vs awake yielding body.
+    mjm_nat, mjd_nat, m_nat, d_nat = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" timestep="0.005" sleep_tolerance="0.05">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <body name="b_sleep">
+            <joint name="j_sleep" type="slide" axis="1 0 0" stiffness="10" springyield="0.05" damping="1"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+          <body name="b_awake" pos="0 1 0">
+            <joint name="j_awake" type="slide" axis="1 0 0" stiffness="10" springyield="0.05" damping="0.1"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.0 0.25" qvel="0.0 0.5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+    mjds_nat = [copy.deepcopy(mjd_nat) for _ in range(nworld)]
+    asleep_nat = np.tile(np.array([[0, sleep.K_AWAKE_VAL]], dtype=np.int32), (nworld, 1))
+    if nworld == 2:
+      qvel_nat = d_nat.qvel.numpy().copy()
+      mjds_nat[1].qvel[1] = -0.7
+      qvel_nat[1] = mjds_nat[1].qvel
+      d_nat.qvel.assign(qvel_nat)
+      mjwarp.forward(m_nat, d_nat)
+    d_nat.tree_asleep.assign(asleep_nat)
+    sleep.update_sleep(m_nat, d_nat)
+    for w in range(nworld):
+      mjds_nat[w].tree_asleep[:] = asleep_nat[w]
+      mujoco.mj_forward(mjm_nat, mjds_nat[w])
+    with wp.ScopedCapture() as capture:
+      mjwarp.step(m_nat, d_nat)
+    for _ in range(10):
+      wp.capture_launch(capture.graph)
+    p_nat = d_nat.plastic.numpy()
+    ta_nat = d_nat.tree_awake.numpy()
+    for w in range(nworld):
+      mujoco.mj_step(mjm_nat, mjds_nat[w], 10)
+      np.testing.assert_allclose(p_nat[w], mjds_nat[w].plastic, atol=5e-4, rtol=5e-4)
+      self.assertEqual(ta_nat[w, 0], 0)
+      self.assertEqual(ta_nat[w, 1], 1)
+    if nworld == 2:
+      self.assertFalse(np.allclose(p_nat[0], p_nat[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_plastic_sleep_flex(self, nworld):
+    """Verify whole-flex sleep parity for 2D/3D stretch+bend, interp, mocap, and 1D rod twist."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" timestep="0.005">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <flexcomp name="shell" type="direct" dim="2" mass="1"
+                    point="0 0 0  1 0 0  0.5 0.5 0  0.5 -0.5 0  1.5 -0.5 0"
+                    element="0 1 2  0 3 1  1 3 4">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.3" thickness="0.02" elastic2d="both" damping="0.05" yield="0.002"/>
+            <pin id="0"/>
+          </flexcomp>
+          <flexcomp name="tet" type="direct" dim="3" mass="1"
+                    point="3 0 0  4 0 0  3 1 0  3 0 1" element="0 1 2 3">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.25" damping="0.05" yield="0.04"/>
+            <pin id="0 1 2"/>
+          </flexcomp>
+          <flexcomp name="box" type="grid" dim="3" pos="6 0 0" dof="trilinear"
+                    count="2 2 2" cellcount="1 1 1" spacing="0.5 0.5 0.5" mass="1">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.25" damping="0.05" yield="0.02"/>
+            <pin id="0 1 2 3"/>
+          </flexcomp>
+          <flexcomp name="rod" type="grid" count="4 1 1" spacing="0.1 0.1 0.1" pos="0 2 0"
+                    radius="0.008" dim="1" mass="0.08">
+            <pin id="0 1"/>
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="5e5" damping="0.05"/>
+          </flexcomp>
+          <body name="mocap_root" mocap="true" pos="0 4 0">
+            <flexcomp name="mocap_rod" type="grid" count="4 1 1" spacing="0.1 0.1 0.1"
+                      radius="0.008" dim="1" mass="0.08">
+              <pin id="0"/>
+              <contact contype="0" conaffinity="0" selfcollide="none"/>
+              <elasticity young="1e5"/>
+            </flexcomp>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    shell_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "shell")
+    tet_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "tet")
+    box_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "box")
+    rod_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "rod")
+    mocap_rod_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "mocap_rod")
+    self.assertGreaterEqual(mjm.flex_plasticadr[mocap_rod_id], 0)
+
+    # Deform every flex past yield and rotate the 1D rod vertices so rod twist updates when awake.
+    for v_local, disp in ((1, [0.1, 0.05, 0.0]), (2, [0.0, 0.15, 0.0]), (3, [0.05, -0.15, 0.25])):
+      b = mjm.flex_vertbodyid[mjm.flex_vertadr[shell_id] + v_local]
+      mjd.qpos[mjm.body_dofadr[b] : mjm.body_dofadr[b] + 3] = disp
+    tet_b = mjm.flex_vertbodyid[mjm.flex_vertadr[tet_id] + 3]
+    mjd.qpos[mjm.body_dofadr[tet_b] : mjm.body_dofadr[tet_b] + 3] = [0.15, -0.15, 0.25]
+    for i in range(4, 8):
+      nb = mjm.flex_nodebodyid[mjm.flex_nodeadr[box_id] + i]
+      mjd.qpos[mjm.body_dofadr[nb] : mjm.body_dofadr[nb] + 3] = [0.2, 0.1, 0.15]
+    rod_b = mjm.flex_vertbodyid[mjm.flex_vertadr[rod_id] + 3]
+    mjd.qpos[mjm.body_dofadr[rod_b] : mjm.body_dofadr[rod_b] + 3] = [0.0, 0.05, 0.06]
+    mjd.qvel[mjm.body_dofadr[rod_b] : mjm.body_dofadr[rod_b] + 3] = [0.0, 1.0, 1.5]
+    # Also move mocap_root so mocap_rod would transport if mocap body erroneously woke the flex.
+    mjd.mocap_pos[0] = [0.0, 4.03, 0.04]
+    mujoco.mj_forward(mjm, mjd)
+    d = mjwarp.put_data(mjm, mjd, nworld=nworld)
+    mjwarp.forward(m, d)
+
+    # Identify trees: shell vertex 4, tet vertex 3, box node 7, and rod twist joint.
+    shell_v4_tree = int(mjm.body_treeid[mjm.flex_vertbodyid[mjm.flex_vertadr[shell_id] + 4]])
+    tet_v3_tree = int(mjm.body_treeid[mjm.flex_vertbodyid[mjm.flex_vertadr[tet_id] + 3]])
+    box_n7_tree = int(mjm.body_treeid[mjm.flex_nodebodyid[mjm.flex_nodeadr[box_id] + 7]])
+    rod_eadr = int(m.flex_rod_edgeadr.numpy()[rod_id])
+    rod_nedge = int(m.flex_rod_edgenum.numpy()[rod_id])
+    rod_jnts = m.flex_rodedge_jnt.numpy()[rod_eadr : rod_eadr + rod_nedge]
+    rod_twist_jnt = int(rod_jnts[rod_jnts >= 0][0])
+    rod_twist_tree = int(mjm.body_treeid[mjm.jnt_bodyid[rod_twist_jnt]])
+
+    # World 0: all dynamic trees asleep (mocap_root has body_treeid == -1 and body_awake == AWAKE).
+    # World 1: only one vertex/node/twist tree awake per flex -> whole flex wakes (mjOBJ_FLEX).
+    mjds = [copy.deepcopy(mjd) for _ in range(nworld)]
+    tree_asleep = np.tile(np.arange(mjm.ntree, dtype=np.int32), (nworld, 1))
+    if nworld == 2:
+      for t in (shell_v4_tree, tet_v3_tree, box_n7_tree, rod_twist_tree):
+        tree_asleep[1, t] = sleep.K_AWAKE_VAL
+    d.tree_asleep.assign(tree_asleep)
+    sleep.update_sleep(m, d)
+    tree_awake = d.tree_awake.numpy()
+    body_awake = d.body_awake.numpy()
+    ntree_awake = d.ntree_awake.numpy()
+    nbody_awake = d.nbody_awake.numpy()
+    nv_awake = d.nv_awake.numpy()
+    body_awake_ind = d.body_awake_ind.numpy()
+    dof_awake_ind = d.dof_awake_ind.numpy()
+    for w in range(nworld):
+      mjds[w].tree_asleep[:] = tree_asleep[w]
+      mjds[w].tree_awake[:] = tree_awake[w]
+      mjds[w].body_awake[:] = body_awake[w]
+      mjds[w].ntree_awake = int(ntree_awake[w])
+      mjds[w].nbody_awake = int(nbody_awake[w])
+      mjds[w].nv_awake = int(nv_awake[w])
+      mjds[w].body_awake_ind[:] = body_awake_ind[w]
+      mjds[w].dof_awake_ind[:] = dof_awake_ind[w]
+      mujoco.mj_Euler(mjm, mjds[w])
+    forward.euler(m, d)
+
+    # World 0: all flexes stay completely frozen (including mocap-attached rod).
+    plastic_before = mjd.plastic.copy()
+    p_out = d.plastic.numpy()
+    np.testing.assert_allclose(p_out[0], mjds[0].plastic, atol=5e-4, rtol=5e-4)
+    np.testing.assert_allclose(p_out[0], plastic_before, atol=1e-6)
+    mocap_body = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "mocap_root")
+    self.assertEqual(mjm.body_treeid[mocap_body], -1)
+    self.assertEqual(body_awake[0, mocap_body], SleepState.AWAKE)
+    madr = int(mjm.flex_plasticadr[mocap_rod_id])
+    np.testing.assert_allclose(p_out[0, madr:], plastic_before[madr:], atol=1e-6)
+
+    if nworld == 2:
+      p1 = p_out[1]
+      np.testing.assert_allclose(p1, mjds[1].plastic, atol=5e-4, rtol=5e-4)
+      # Shell element 0 (vertices 0, 1, 2 all asleep) still yields because vertex 4 is awake.
+      shell_adr = int(mjm.flex_plasticadr[shell_id])
+      self.assertGreater(np.linalg.norm(p1[shell_adr : shell_adr + 3]), 1e-3)
+      # Tet, box, and rod (woken solely by its twist joint) all update.
+      tet_adr = int(mjm.flex_plasticadr[tet_id])
+      box_adr = int(mjm.flex_plasticadr[box_id])
+      rod_adr = int(mjm.flex_plasticadr[rod_id])
+      self.assertGreater(np.linalg.norm(p1[tet_adr : tet_adr + 6]), 1e-3)
+      self.assertGreater(np.linalg.norm(p1[box_adr : box_adr + 6]), 1e-3)
+      self.assertGreater(madr, rod_adr)
+      self.assertFalse(np.allclose(p1[rod_adr:madr], plastic_before[rod_adr:madr]))
+      self.assertFalse(np.allclose(p_out[0], p1))
+
+    # All trees awake (ntree_awake == ntree): fast-skip path updates all flexes matching C.
+    mjd_all = copy.deepcopy(mjd)
+    d_all = mjwarp.put_data(mjm, mjd_all, nworld=nworld)
+    mjwarp.forward(m, d_all)
+    mujoco.mj_Euler(mjm, mjd_all)
+    forward.euler(m, d_all)
+    p_all = d_all.plastic.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(p_all[w], mjd_all.plastic, atol=5e-4, rtol=5e-4)
+
 
 # An actuated 2-hinge arm (tree 0, dofs 0-1) plus two free bodies
 # (tree 1, dofs 2-7 and tree 2, dofs 8-13).
