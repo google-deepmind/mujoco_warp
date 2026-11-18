@@ -2382,21 +2382,26 @@ def _qfrc_constraint_from_grad(
 
 
 @cache_kernel
-def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool):
+def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool, write_grad: bool = False):
   STABLE_FAST = stable_fast
+  WRITE_GRAD = write_grad
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Data in:
     nefc_in: wp.array[int],
+    qfrc_smooth_in: wp.array2d[float],
     efc_J_in: wp.array3d[float],
     efc_force_in: wp.array2d[float],
+    efc_Ma_in: wp.array2d[float],
     njmax_in: int,
     # In:
     state_changed_count_in: wp.array[int],
     ctx_done_in: wp.array[bool],
     # Data out:
     qfrc_constraint_out: wp.array2d[float],
+    # Out:
+    ctx_grad_out: wp.array2d[float],
   ):
     worldid, dofid = wp.tid()
 
@@ -2415,6 +2420,9 @@ def _update_constraint_init_qfrc_constraint_dense(stable_fast: bool):
       sum_qfrc += efc_J * force
 
     qfrc_constraint_out[worldid, dofid] = sum_qfrc
+
+    if wp.static(WRITE_GRAD):
+      ctx_grad_out[worldid, dofid] = efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid] - sum_qfrc
 
   return kernel
 
@@ -2591,8 +2599,10 @@ def _update_efc_force(m: types.Model, d: types.Data, ctx: SolverContext | Invers
   )
 
 
-def _update_qfrc_constraint(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, stable_fast: bool = False):
-  """Update qfrc_constraint from the constraint forces."""
+def _update_qfrc_constraint(
+  m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, stable_fast: bool = False, write_grad: bool = False
+):
+  """Update qfrc_constraint from the constraint forces, and ctx.grad if write_grad."""
   # qfrc_constraint = efc_J.T @ efc_force. Fast-path worlds with no state flips
   # skip the rebuild; the public value is recovered after the solve.
   changed = ctx.state_changed_count if stable_fast else d.nefc
@@ -2627,12 +2637,19 @@ def _update_qfrc_constraint(m: types.Model, d: types.Data, ctx: SolverContext | 
       ],
       outputs=[d.qfrc_constraint],
     )
+    if write_grad:
+      wp.launch(
+        _update_gradient_grad_cg,
+        dim=(d.nworld, m.nv),
+        inputs=[d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.done],
+        outputs=[ctx.grad],
+      )
   else:
     wp.launch(
-      _update_constraint_init_qfrc_constraint_dense(stable_fast),
+      _update_constraint_init_qfrc_constraint_dense(stable_fast, write_grad),
       dim=(d.nworld, m.nv),
-      inputs=[d.nefc, d.efc.J, d.efc.force, d.njmax, changed, ctx.done],
-      outputs=[d.qfrc_constraint],
+      inputs=[d.nefc, d.qfrc_smooth, d.efc.J, d.efc.force, d.efc.Ma, d.njmax, changed, ctx.done],
+      outputs=[d.qfrc_constraint, ctx.grad if write_grad else None],
     )
 
   if m.opt.integrator == types.IntegratorType.DISCRETE and (m.opt.enableflags & types.EnableBit.SLEEP):
@@ -2728,6 +2745,25 @@ def _update_gradient_grad(stable_fast: bool, deterministic: bool = False):
     wp.atomic_add(ctx_grad_dot_out, worldid, grad * grad)
 
   return kernel
+
+
+@wp.kernel
+def _update_gradient_grad_cg(
+  # Data in:
+  qfrc_smooth_in: wp.array2d[float],
+  qfrc_constraint_in: wp.array2d[float],
+  efc_Ma_in: wp.array2d[float],
+  # In:
+  ctx_done_in: wp.array[bool],
+  # Out:
+  ctx_grad_out: wp.array2d[float],
+):
+  worldid, dofid = wp.tid()
+
+  if ctx_done_in[worldid]:
+    return
+
+  ctx_grad_out[worldid, dofid] = efc_Ma_in[worldid, dofid] - qfrc_smooth_in[worldid, dofid] - qfrc_constraint_in[worldid, dofid]
 
 
 @wp.kernel(module="unique")
@@ -4489,16 +4525,17 @@ def _jtdaj_groups_per_world(nworld: int, max_groups: int, kernel: wp.Kernel, min
   return max(min_groups, min(max_groups, _JTDAJ_OVERSUBSCRIBE_WAVES * device_warps // nworld))
 
 
-def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False):
-  # grad = Ma - qfrc_smooth - qfrc_constraint
+def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = False, grad: bool = True):
+  # grad = Ma - qfrc_smooth - qfrc_constraint (CG iterations set it in _update_qfrc_constraint)
   if m.opt.solver == types.SolverType.CG:
-    wp.launch_tiled(
-      _update_gradient_grad_tiled,
-      dim=d.nworld,
-      inputs=[m.nv, d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.done],
-      outputs=[ctx.grad, ctx.grad_dot],
-      block_dim=m.block_dim.update_gradient_grad,
-    )
+    if grad:
+      wp.launch_tiled(
+        _update_gradient_grad_tiled,
+        dim=d.nworld,
+        inputs=[m.nv, d.qfrc_smooth, d.qfrc_constraint, d.efc.Ma, ctx.done],
+        outputs=[ctx.grad, ctx.grad_dot],
+        block_dim=m.block_dim.update_gradient_grad,
+      )
   else:
     wp.launch(
       _update_gradient_zero_grad_dot(False),
@@ -4836,7 +4873,6 @@ def _solve_search_update_cg_tiled(warn_overflow: int):
     ctx_prev_Mgrad_in: wp.array2d[float],
     ctx_search_in: wp.array2d[float],
     ctx_improvement_in: wp.array[float],
-    ctx_grad_dot_in: wp.array[float],
     ctx_alpha_in: wp.array[float],
     ctx_done_in: wp.array[bool],
     # Data out:
@@ -4858,15 +4894,15 @@ def _solve_search_update_cg_tiled(warn_overflow: int):
     niter = solver_niter_out[worldid] + 1
     BLOCK_DIM = wp.block_dim()
 
-    # Hager-Zhang: d' * y, y' * M * y, y' * Mgrad, d' * grad
-    local_sums = wp.vec4(0.0)
+    # Hager-Zhang: d' * y, y' * M * y, y' * Mgrad, d' * grad, and grad' * grad
+    local_sums = types.vec5(0.0)
     for dofid in range(tid, nv, BLOCK_DIM):
       grad = ctx_grad_in[worldid, dofid]
       Mgrad = ctx_Mgrad_in[worldid, dofid]
       graddif = grad - ctx_prev_grad_in[worldid, dofid]
       mgraddif = Mgrad - ctx_prev_Mgrad_in[worldid, dofid]
       search = ctx_search_in[worldid, dofid]
-      local_sums += wp.vec4(search * graddif, graddif * mgraddif, graddif * Mgrad, search * grad)
+      local_sums += types.vec5(search * graddif, graddif * mgraddif, graddif * Mgrad, search * grad, grad * grad)
 
     # also syncs the block before niter, done, search and prev_grad are written
     sums = wp.tile_reduce(wp.add, wp.tile(local_sums, preserve_type=True))[0]
@@ -4875,7 +4911,7 @@ def _solve_search_update_cg_tiled(warn_overflow: int):
     scale = ctx_inertia_scale_in[worldid]
     alpha = ctx_alpha_in[worldid]
     improvement = scale * ctx_improvement_in[worldid]
-    gradient = scale * wp.sqrt(ctx_grad_dot_in[worldid])
+    gradient = scale * wp.sqrt(sums[4])
     done = (alpha == 0.0) or (improvement > 0.0 and improvement < tolerance) or (gradient < tolerance)
     stop = done or niter == opt_iterations
 
@@ -5097,8 +5133,9 @@ def _solver_iteration(
     _update_gradient_incremental(m, d, ctx, stable_fast=True, compact=compact, h_stream=h_stream)
   else:
     _update_efc_force(m, d, ctx)
-    _update_qfrc_constraint(m, d, ctx)
-    _update_gradient(m, d, ctx, compact=compact)
+    cg = m.opt.solver == types.SolverType.CG
+    _update_qfrc_constraint(m, d, ctx, write_grad=cg)
+    _update_gradient(m, d, ctx, compact=compact, grad=not cg)
 
   # Hager-Zhang conjugate direction update
   if m.opt.solver == types.SolverType.CG:
@@ -5116,7 +5153,6 @@ def _solver_iteration(
         ctx.prev_Mgrad,
         ctx.search,
         ctx.improvement,
-        ctx.grad_dot,
         ctx.alpha,
         ctx.done,
       ],
