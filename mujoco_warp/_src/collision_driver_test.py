@@ -742,6 +742,56 @@ class CollisionTest(parameterized.TestCase):
 
     self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
+  @parameterized.product(
+    nworld=(1, 2),
+    axes=(("0 0 1", ".3 -.2 .9327"), (".4 .3 .866", ".47 .1 .877"), ("0 0 1", "0 0 1")),
+  )
+  def test_plane_capsule_friction_frame(self, nworld, axes):
+    """Match contacts by position and verify the entire orthonormal frame."""
+    plane, capsule = axes
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <default><geom margin="1"/></default>
+        <worldbody>
+          <geom type="plane" size="1 1 .1" zaxis="{plane}"/>
+          <body pos="0 0 .1"><freejoint/>
+            <geom type="capsule" size=".08 .2" zaxis="{capsule}" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    positions = d.qpos.numpy().copy()
+    positions[:, :3] += np.arange(nworld)[:, None] * np.array([0.03, -0.01, 0.01])
+    d.qpos.assign(positions)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    d.nacon.fill_(-1)
+    mjw.forward(m, d)
+    ncon = int(d.nacon.numpy()[0])
+    worlds = d.contact.worldid.numpy()[:ncon]
+    contact_pos, contact_dist, contact_frame = (getattr(d.contact, name).numpy()[:ncon] for name in ("pos", "dist", "frame"))
+    for world in range(nworld):
+      ref = mujoco.MjData(mjm)
+      ref.qpos[:] = positions[world]
+      mujoco.mj_forward(mjm, ref)
+      ids = np.flatnonzero(worlds == world)
+      self.assertEqual(len(ids), ref.ncon)
+      self.assertGreater(len(ids), 0)
+      for index in ids:
+        nearest = min(range(ref.ncon), key=lambda i: np.linalg.norm(ref.contact[i].pos - contact_pos[index]))
+        contact = ref.contact[nearest]
+        np.testing.assert_allclose(contact_dist[index], contact.dist, atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(contact_pos[index], contact.pos, atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(contact_frame[index], contact.frame.reshape(3, 3), atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(contact_frame[index] @ contact_frame[index].T, np.eye(3), atol=1e-5, rtol=1e-5)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(contact_pos[worlds == 0], contact_pos[worlds == 1]))
+
   @parameterized.named_parameters((fixture, fixture) for fixture in _FIXTURES if fixture.startswith("mesh_plane"))
   def test_plane_mesh_contact_selection(self, fixture):
     """Matches MuJoCo's contact face and order; the whole-mesh spread heuristic fails."""
