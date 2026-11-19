@@ -17,6 +17,7 @@
 
 import copy
 import dataclasses
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -640,6 +641,50 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(efc_sorted_state, mjd_sorted_state, "efc_state")
       _assert_eq(efc_sorted_force, mjd_sorted_force, "efc_force")
       _assert_eq(qfrc_constraint, mjd.qfrc_constraint, "qfrc_constraint")
+
+  @parameterized.parameters(*ConeType)
+  def test_qfrc_constraint_sparse_strided(self, cone):
+    """Sparse qfrc_constraint is J' efc_force, reproducible, when a thread strides over rows."""
+    mjm, _, m, _ = test_data.fixture(
+      "constraints.xml",
+      overrides={
+        "opt.cone": cone,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "opt.deterministic": types.DeterminismType.ALL,
+      },
+    )
+    # enough worlds that the scatter records outgrow the minimum deterministic buffer
+    keys = np.resize([1, 2], 16)
+
+    def forward():
+      d = mjw.make_data(mjm, nworld=keys.size, nconmax=64, njmax=256)
+      d.qpos.assign(mjm.key_qpos[keys])
+      d.qvel.assign(mjm.key_qvel[keys])
+      d.qfrc_constraint.fill_(wp.inf)
+      # a device with room for one row slot per world
+      with mock.patch.object(solver, "_jtdaj_groups_per_world", lambda *args, min_groups=1, **kwargs: min_groups):
+        mjw.forward(m, d)
+      return d
+
+    d = forward()
+    nefc = d.nefc.numpy()
+    rownnz = d.efc.J_rownnz.numpy()
+    rowadr = d.efc.J_rowadr.numpy()
+    colind = d.efc.J_colind.numpy()[:, 0]
+    efc_J = d.efc.J.numpy()[:, 0]
+    efc_force = d.efc.force.numpy()
+    qfrc_constraint = d.qfrc_constraint.numpy()
+    for worldid in range(keys.size):
+      expected = np.zeros(m.nv)
+      for row in range(nefc[worldid]):
+        nz = slice(rowadr[worldid, row], rowadr[worldid, row] + rownnz[worldid, row])
+        np.add.at(expected, colind[worldid, nz], efc_J[worldid, nz] * efc_force[worldid, row])
+      # summation order differs; tolerance is relative to the largest entry
+      np.testing.assert_allclose(qfrc_constraint[worldid], expected, rtol=1e-5, atol=1e-5 * np.abs(expected).max())
+    self.assertNotEqual(nefc[0], nefc[1])
+    self.assertFalse(np.allclose(qfrc_constraint[0], qfrc_constraint[1]))
+
+    np.testing.assert_array_equal(forward().qfrc_constraint.numpy(), qfrc_constraint)
 
   @parameterized.product(
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
