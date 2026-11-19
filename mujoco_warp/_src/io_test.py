@@ -546,6 +546,66 @@ class IOTest(parameterized.TestCase):
 
     self.assertEqual(io._default_njmax_nnz(mjm, nconmax=0, njmax=2), 2)
 
+  def test_max_efc_J_rownnz(self):
+    """Bound constraint rows by the dofs that move two bodies, or by two tendon rows."""
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size=".1"/>
+            <replicate count="2" euler="0 0 180">
+              <body pos=".2 0 0">
+                <joint axis="0 1 0"/>
+                <geom size=".05"/>
+                <body pos=".2 0 0">
+                  <joint axis="0 1 0"/>
+                  <geom size=".05"/>
+                </body>
+              </body>
+            </replicate>
+          </body>
+          <body pos="0 0 1">
+            <joint axis="0 1 0"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # the two arm tips share the free joint: 6 + 2 + 2
+    self.assertEqual(io._max_efc_J_rownnz(mjm), 10)
+    pairs = [io._body_pair_nnz(mjm, b1, b2) for b1 in range(mjm.nbody) for b2 in range(b1)]
+    self.assertEqual(io._max_efc_J_rownnz(mjm), max(pairs))
+
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <worldbody>
+          <replicate count="4" offset=".5 0 0">
+            <body>
+              <joint name="hinge" axis="0 1 0"/>
+              <geom size=".1"/>
+            </body>
+          </replicate>
+        </worldbody>
+        <tendon>
+          <fixed>
+            <joint joint="hinge0" coef="1"/>
+            <joint joint="hinge1" coef="1"/>
+          </fixed>
+          <fixed>
+            <joint joint="hinge2" coef="1"/>
+            <joint joint="hinge3" coef="1"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """
+    )
+    # a tendon equality between the two tendons spans all four hinges
+    self.assertEqual(io._max_efc_J_rownnz(mjm), 4)
+
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
     mjm, _, _, d = test_data.fixture("pendula.xml", nvmax=None)
