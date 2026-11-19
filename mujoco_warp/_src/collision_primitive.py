@@ -964,14 +964,11 @@ def plane_cylinder_wrapper(
   nacon_out: wp.array[int],
 ):
   """Calculates contacts between a cylinder and a plane."""
-  # cylinder axis
-  cylinder_axis = wp.vec3(cylinder.rot[0, 2], cylinder.rot[1, 2], cylinder.rot[2, 2])
-
   dist, pos, normal = plane_cylinder(
     plane.normal,
     plane.pos,
     cylinder.pos,
-    cylinder_axis,
+    cylinder.rot,
     cylinder.size[0],  # radius
     cylinder.size[1],  # half_height
   )

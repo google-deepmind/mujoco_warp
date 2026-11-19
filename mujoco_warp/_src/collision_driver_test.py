@@ -792,6 +792,54 @@ class CollisionTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(contact_pos[worlds == 0], contact_pos[worlds == 1]))
 
+  @parameterized.product(euler=((17, 23, 9), (11, 78, 4), (3, 0, 0)), nworld=(1, 2))
+  def test_aligned_plane_cylinder_parity(self, euler, nworld):
+    """Contact depth, position, and frame agree for rotated aligned pairs in each world."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <default><geom condim="1"/></default>
+        <worldbody>
+          <geom type="plane" size="2 2 .1" euler="{" ".join(map(str, euler))}"/>
+          <body><freejoint/><geom type="cylinder" size=".05 .1" mass="1"/></body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=8,
+      njmax=32,
+    )
+    # Align the cylinder axis with the plane normal; world 1 sits higher along it.
+    quat = mjm.geom_quat[0].copy()
+    mat = np.empty(9)
+    mujoco.mju_quat2Mat(mat, quat)
+    qpos = d.qpos.numpy()
+    references = []
+    for w in range(nworld):
+      qpos[w, :3] = 0.015 * w * mat.reshape(3, 3)[:, 2]
+      qpos[w, 3:7] = quat
+      ref = mujoco.MjData(mjm)
+      ref.qpos[:] = qpos[w]
+      # Keep the reference exactly aligned; the float32-rounded quaternion would tilt it slightly.
+      ref.qpos[3:7] = quat
+      mujoco.mj_forward(mjm, ref)
+      references.append((ref.contact.dist.copy(), ref.contact.pos.copy(), ref.contact.frame.copy().reshape(-1, 3, 3)))
+    d.qpos.assign(qpos)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    d.nacon.fill_(-1)
+    mjw.forward(m, d)
+    count = int(d.nacon.numpy()[0])
+    self.assertEqual(count, 3 * nworld)
+    for w, reference in enumerate(references):
+      rows = np.flatnonzero(d.contact.worldid.numpy()[:count] == w)
+      for field, expected in zip((d.contact.dist, d.contact.pos, d.contact.frame), reference, strict=True):
+        np.testing.assert_allclose(field.numpy()[rows], expected, rtol=1e-5, atol=2e-6)
+    if nworld == 2:
+      self.assertFalse(np.allclose(references[0][0], references[1][0]))
+
   @parameterized.named_parameters((fixture, fixture) for fixture in _FIXTURES if fixture.startswith("mesh_plane"))
   def test_plane_mesh_contact_selection(self, fixture):
     """Matches MuJoCo's contact face and order; the whole-mesh spread heuristic fails."""

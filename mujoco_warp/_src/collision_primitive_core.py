@@ -450,7 +450,7 @@ def plane_cylinder(
   plane_normal: wp.vec3,
   plane_pos: wp.vec3,
   cylinder_center: wp.vec3,
-  cylinder_axis: wp.vec3,
+  cylinder_mat: wp.mat33,
   cylinder_radius: float,
   cylinder_half_height: float,
 ) -> Tuple[wp.vec4, mat43, wp.vec3]:
@@ -460,7 +460,7 @@ def plane_cylinder(
     plane_normal: Normal vector of the plane.
     plane_pos: Position point on the plane.
     cylinder_center: Center position of the cylinder.
-    cylinder_axis: Axis direction of the cylinder.
+    cylinder_mat: Orientation matrix of the cylinder.
     cylinder_radius: Radius of the cylinder.
     cylinder_half_height: Half height of the cylinder.
 
@@ -475,7 +475,7 @@ def plane_cylinder(
   contact_count = 0
 
   n = plane_normal
-  axis = cylinder_axis
+  axis = wp.vec3(cylinder_mat[0, 2], cylinder_mat[1, 2], cylinder_mat[2, 2])
 
   # Project, make sure axis points toward plane
   prjaxis = wp.dot(n, axis)
@@ -486,17 +486,16 @@ def plane_cylinder(
   # Compute normal distance from plane to cylinder center
   dist0 = wp.dot(cylinder_center - plane_pos, n)
 
-  # Remove component of -normal along cylinder axis
-  vec = axis * prjaxis - n
+  # Cross products avoid subtracting nearly equal vectors when the cap faces the plane.
+  vec = wp.cross(axis, wp.cross(axis, n))
   len_sqr = wp.dot(vec, vec)
 
   # If vector is nondegenerate, normalize and scale by radius
   # Otherwise use cylinder's x-axis scaled by radius
-  vec = wp.where(
-    len_sqr >= 1e-12,
-    vec * safe_div(cylinder_radius, wp.sqrt(len_sqr)),
-    wp.vec3(1.0, 0.0, 0.0) * cylinder_radius,  # Default x-axis when degenerate
-  )
+  if len_sqr >= 1e-12:
+    vec = vec * safe_div(cylinder_radius, wp.sqrt(len_sqr))
+  else:
+    vec = wp.vec3(cylinder_mat[0, 0], cylinder_mat[1, 0], cylinder_mat[2, 0]) * cylinder_radius
 
   # Project scaled vector on normal
   prjvec = wp.dot(vec, n)
