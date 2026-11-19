@@ -143,6 +143,8 @@ Key capabilities:
 - Heterogeneous multi-camera support (different resolutions/FOV/intrinsics for each camera)
 - Lighting and shadow support
 
+The renderer can optionally use OptiX hardware ray tracing in place of Warp's BVH: install it with `pip install mujoco-warp[optix]` (Python 3.12) and pass `backend="optix"` to `create_render_context`. OptiX rendering cannot be recorded into CUDA graphs.
+
 See the [announcement PR](https://github.com/google-deepmind/mujoco_warp/pull/1113) for more details.
 
 # License

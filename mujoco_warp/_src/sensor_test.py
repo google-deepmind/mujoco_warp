@@ -300,6 +300,53 @@ class SensorTest(parameterized.TestCase):
 
     _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
+  def test_limit_sensor_type(self):
+    """Test joint and tendon limit sensors on a joint and a tendon with the same id."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <site name="anchor" pos="0 0 1"/>
+          <body>
+            <joint name="hinge" axis="1 0 0" range="-1 0"/>
+            <geom size=".1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint type="slide"/>
+            <geom size=".1"/>
+            <site name="end"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="tendon" range="1.42 2">
+            <site site="anchor"/>
+            <site site="end"/>
+          </spatial>
+        </tendon>
+        <sensor>
+          <jointlimitpos joint="hinge"/>
+          <jointlimitvel joint="hinge"/>
+          <jointlimitfrc joint="hinge"/>
+          <tendonlimitpos tendon="tendon"/>
+          <tendonlimitvel tendon="tendon"/>
+          <tendonlimitfrc tendon="tendon"/>
+        </sensor>
+        <keyframe>
+          <key qpos="0.01 0" qvel="0.1 0.2"/>
+        </keyframe>
+      </mujoco>
+    """,
+      keyframe=0,
+    )
+
+    d.sensordata.fill_(wp.inf)
+
+    mjw.sensor_pos(m, d)
+    mjw.sensor_vel(m, d)
+    mjw.sensor_acc(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
   def test_rangefinder(self):
     """Test rangefinder."""
     for keyframe in range(2):
@@ -477,6 +524,46 @@ class SensorTest(parameterized.TestCase):
       mjw.sensor_acc(m, d)
 
       _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
+  def test_acc_sensors_dofless_body(self):
+    """Test acceleration sensors on static and mocap bodies match MuJoCo."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <site name="world" pos=".1 0 0"/>
+          <body name="mocap" mocap="true" pos="0 0 1">
+            <site name="mocap"/>
+          </body>
+          <body name="static" pos="0 1 1">
+            <geom size=".1"/>
+            <site name="static"/>
+          </body>
+          <body pos="1 0 1">
+            <joint axis="0 1 0"/>
+            <geom size=".1" pos=".2 0 0"/>
+            <site name="hinge" pos=".2 0 0"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <accelerometer site="world"/>
+          <accelerometer site="mocap"/>
+          <accelerometer site="static"/>
+          <accelerometer site="hinge"/>
+          <framelinacc objtype="site" objname="world"/>
+          <framelinacc objtype="body" objname="mocap"/>
+          <frameangacc objtype="xbody" objname="static"/>
+          <framelinacc objtype="site" objname="hinge"/>
+        </sensor>
+      </mujoco>
+      """
+    )
+
+    d.sensordata.fill_(wp.inf)
+
+    mjw.sensor_acc(m, d)
+
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
   def test_tendon_sensor(self):
     """Test tendon sensors."""

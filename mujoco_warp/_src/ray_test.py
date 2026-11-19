@@ -396,6 +396,23 @@ class RayTest(parameterized.TestCase):
       _assert_eq(geomid.numpy()[0, 0], mj_geomid[0], f"degenerate geomid ({bad_nrow}, {bad_ncol})")
       _assert_eq(normal.numpy()[0, 0], mj_normal, f"degenerate normal ({bad_nrow}, {bad_ncol})")
 
+  def test_ray_mesh_hfield_unnormalized_vec(self):
+    """Tests ray<>mesh and ray<>hfield match MuJoCo when vec is not unit length."""
+    mjm, mjd, m, d = test_data.fixture("ray.xml")
+
+    # tetrahedron, hfield
+    for pnt_np, vec_np in (((2.0, 2.0, 2.0), (-2.0, -2.0, -2.0)), ((0.35, 2.15, 3.0), (0.2, -0.1, -2.0))):
+      pnt = wp.array([wp.vec3(*pnt_np)], dtype=wp.vec3).reshape((1, 1))
+      vec = wp.array([wp.vec3(*vec_np)], dtype=wp.vec3).reshape((1, 1))
+      dist, geomid, normal = mjw.ray(m, d, pnt, vec)
+
+      mj_geomid = np.zeros(1, dtype=np.int32)
+      mj_normal = np.zeros(3, dtype=np.float64)
+      mj_dist = mujoco.mj_ray(mjm, mjd, np.array(pnt_np), np.array(vec_np), None, 1, -1, mj_geomid, mj_normal)
+      _assert_eq(geomid.numpy()[0, 0], mj_geomid[0], f"geom_id {vec_np}")
+      _assert_eq(dist.numpy()[0, 0], mj_dist, f"dist {vec_np}")
+      _assert_eq(normal.numpy()[0, 0], mj_normal, f"normal {vec_np}")
+
   def test_ray_geomgroup(self):
     """Tests ray geomgroup filter."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")
@@ -719,6 +736,16 @@ class RayTest(parameterized.TestCase):
     _assert_eq(geomid_bvh.numpy(), geomid.numpy(), "bvh geomid")
     _assert_eq(dist_bvh.numpy(), dist.numpy(), "bvh dist")
     _assert_eq(normal_bvh.numpy()[:, :2], normal.numpy()[:, :2], "bvh normal")
+
+  def test_rays_rejects_optix_render_context(self):
+    mjm, _, m, d = test_data.fixture("ray.xml")
+    rc = mjw.create_render_context(mjm, backend="optix")
+    if rc.backend != "optix":
+      self.skipTest("OptiX is unavailable")
+    pnt = wp.array([wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3).reshape((1, 1))
+    vec = wp.array([wp.vec3(0.0, 0.0, -1.0)], dtype=wp.vec3).reshape((1, 1))
+    with self.assertRaisesRegex(ValueError, "backend='warp'"):
+      mjw.ray(m, d, pnt, vec, rc=rc)
 
   def test_ray_module_is_unique(self):
     """Ensure _ray does not share a module with _ray_bvh."""

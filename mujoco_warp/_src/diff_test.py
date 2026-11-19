@@ -283,7 +283,7 @@ class DiffApiTest(parameterized.TestCase):
       (self.d.qpos, True),
       (self.d.site_xpos, True),
       (self.d.xquat, True),
-      (self.d.xmat, True),
+      (self.d.contact.frame, True),
       (self.d.cdof, True),
       (self.d.nefc, False),
       (wp.zeros(1, dtype=wp.vec2i), False),
@@ -607,7 +607,7 @@ class DiffApiTest(parameterized.TestCase):
     # Non-empty float arrays (scalar, nested, vec3, quat, mat33, spatial, vec10) with the input,
     # output, or render role, and array_args, get gradients before execution; integer, empty, and
     # (opt-in) Model arrays do not:
-    float_paths = ("qpos", "efc.pos", "site_xpos", "xquat", "xmat", "cdof", "cinert")
+    float_paths = ("qpos", "efc.pos", "site_xpos", "xquat", "contact.frame", "cdof", "cinert")
     seen, calls = [], []
 
     def promote_roles(m, d, rc, x, y=None, d_out=None):
@@ -1035,7 +1035,6 @@ class DiffApiTest(parameterized.TestCase):
         x0[i] = xi
         np.testing.assert_allclose(grad[i], (loss_plus - loss_minus) / (2.0 * eps), rtol=1e-3, atol=1e-4)
 
-  @absltest.skipIf(not wp.get_device().is_cuda, "CUDA graph capture requires a CUDA device.")
   def test_graph_capture(self):
     # Native and custom rules can be captured in a CUDA graph with their backward, skipping
     # supported while capturing, whether the gradients were allocated by a warm-up or by the first
@@ -1116,6 +1115,7 @@ class DiffApiTest(parameterized.TestCase):
       checkpointed_replay()
 
     for _ in range(2):
+      seed.fill_(wp.inf)  # the eager run above already left 32 in seed
       wp.capture_launch(capture.graph)
       np.testing.assert_allclose(seed.numpy(), 32.0)
 

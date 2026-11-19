@@ -167,6 +167,24 @@ def cache_kernel(func):
   return wrapper
 
 
+_SIDE_STREAMS = {}
+
+
+def side_stream(device: wp.Device) -> wp.Stream | None:
+  """Returns a second stream while the device's stream is capturing a graph, else None.
+
+  Launches under wp.ScopedStream(side) fork the captured node chain until
+  wp.wait_stream(side) joins it, so they run beside the launches issued in between.
+  """
+  if not device.is_cuda or not device.stream.is_capturing:
+    return None
+  # one per capturing stream, so that concurrent captures do not share a branch
+  key = (device.alias, device.stream.cuda_stream)
+  if key not in _SIDE_STREAMS:
+    _SIDE_STREAMS[key] = wp.Stream(device)
+  return _SIDE_STREAMS[key]
+
+
 def check_toolkit_driver():
   wp.init()
   if wp.get_device().is_cuda:

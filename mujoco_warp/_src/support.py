@@ -22,10 +22,13 @@ from mujoco_warp._src.collision_primitive_core import tri_weights
 from mujoco_warp._src.math import motion_cross
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DeterminismType
+from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import DynType
+from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
@@ -370,7 +373,7 @@ def rod_edge_director(
   flex_rodedge_vert: wp.array[wp.vec2i],
   # Data in:
   plastic_in: wp.array2d[float],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
   flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
@@ -409,7 +412,7 @@ def rod_edge_director(
       if wp.dot(t0_loc, t0_loc) < 0.25:
         return False, wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0)
       b0 = flex_vertbodyid[va + verts_k[0]]
-      R_b0 = xmat_in[worldid, b0]
+      R_b0 = math.quat_to_mat(xquat_in[worldid, b0])
       t0 = R_b0 @ t0_loc
       u0 = R_b0 @ flex_rod_frame0_loc_in[worldid, f, 1]
       ok_pt, u_out, v_out = rod_parallel_transport(t0, t_out, u0)
@@ -422,7 +425,7 @@ def rod_edge_director(
       if wp.dot(tT_loc, tT_loc) < 0.25:
         return False, wp.vec3(0.0), wp.vec3(0.0), wp.vec3(0.0)
       bT = flex_vertbodyid[va + verts_k[1]]
-      R_bT = xmat_in[worldid, bT]
+      R_bT = math.quat_to_mat(xquat_in[worldid, bT])
       tT = R_bT @ tT_loc
       uT = R_bT @ flex_rod_tail_loc_in[worldid, f, 1]
       ok_pt, u_out, v_out = rod_parallel_transport(tT, t_out, uT)
@@ -480,7 +483,7 @@ def rod_chain_edge_director(
   flex_rodedge_vert: wp.array[wp.vec2i],
   # Data in:
   plastic_in: wp.array2d[float],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
   flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
@@ -515,7 +518,7 @@ def rod_chain_edge_director(
       if wp.dot(tc_loc, tc_loc) < 0.25:
         return False, False, z3, z3, z3, z3, 0.0
       bc = flex_vertbodyid[va + verts_e[0]]
-      R_bc = xmat_in[worldid, bc]
+      R_bc = math.quat_to_mat(xquat_in[worldid, bc])
       tc = R_bc @ tc_loc
       uc = R_bc @ flex_rod_frame0_loc_in[worldid, f, 1]
     else:
@@ -523,7 +526,7 @@ def rod_chain_edge_director(
       if wp.dot(tc_loc, tc_loc) < 0.25:
         return False, False, z3, z3, z3, z3, 0.0
       bc = flex_vertbodyid[va + verts_e[1]]
-      R_bc = xmat_in[worldid, bc]
+      R_bc = math.quat_to_mat(xquat_in[worldid, bc])
       tc = R_bc @ tc_loc
       uc = R_bc @ flex_rod_tail_loc_in[worldid, f, 1]
     ok_pt, ue, ve = rod_parallel_transport(tc, te, uc)
@@ -576,7 +579,7 @@ def rod_box_elem(
   # Data in:
   qpos_in: wp.array2d[float],
   plastic_in: wp.array2d[float],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexvert_xpos_in: wp.array2d[wp.vec3],
   flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
   flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
@@ -608,7 +611,7 @@ def rod_box_elem(
     flex_rod_edgenum,
     flex_rodedge_vert,
     plastic_in,
-    xmat_in,
+    xquat_in,
     flexvert_xpos_in,
     flex_rod_frame0_loc_in,
     flex_rod_frame0_ref_in,
@@ -852,6 +855,58 @@ def _append_body_weight_zero(
   if nb == 2:
     return wp.vec4i(body_ids[0], body_ids[1], b, -1), 3
   return wp.vec4i(body_ids[0], body_ids[1], body_ids[2], b), 4
+
+
+@wp.func
+def eff_tendon_possible(
+  # Model:
+  opt_disableflags: int,
+  tendon_actuatorid: wp.array[int],
+  tendon_stiffness: wp.array2d[float],
+  tendon_stiffnesspoly: wp.array2d[wp.vec2],
+  tendon_damping: wp.array2d[float],
+  tendon_dampingpoly: wp.array2d[wp.vec2],
+  # In:
+  worldid: int,
+  tenid: int,
+) -> bool:
+  if not (opt_disableflags & DisableBit.SPRING):
+    if tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid] != 0.0:
+      return True
+    spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
+    if spoly[0] != 0.0 or spoly[1] != 0.0:
+      return True
+  if not (opt_disableflags & DisableBit.DAMPER):
+    if tendon_damping[worldid % tendon_damping.shape[0], tenid] != 0.0 or tendon_actuatorid[tenid] != -1:
+      return True
+    dpoly = tendon_dampingpoly[worldid % tendon_dampingpoly.shape[0], tenid]
+    if dpoly[0] != 0.0 or dpoly[1] != 0.0:
+      return True
+  return False
+
+
+@wp.func
+def eff_actuator_possible(
+  # Model:
+  opt_disableflags: int,
+  actuator_gaintype: wp.array[int],
+  actuator_biastype: wp.array[int],
+  # In:
+  actid: int,
+) -> bool:
+  if opt_disableflags & DisableBit.ACTUATION:
+    return False
+  gaintype = actuator_gaintype[actid]
+  biastype = actuator_biastype[actid]
+  return (
+    biastype == BiasType.AFFINE
+    or biastype == BiasType.DCMOTOR
+    or biastype == BiasType.MUSCLE
+    or gaintype == GainType.AFFINE
+    or gaintype == GainType.SO3
+    or gaintype == GainType.MUSCLE
+    or gaintype == GainType.DCMOTOR
+  )
 
 
 @cache_kernel
@@ -1838,8 +1893,10 @@ def add_interp_point_weights(
   # Model:
   body_weldid: wp.array[int],
   flex_nodebodyid: wp.array[int],
+  flex_cellempty: wp.array[bool],
   # In:
   coord: wp.vec3,
+  celladr: int,
   scale: float,
   cn: wp.vec3i,
   nstart: int,
@@ -1849,19 +1906,46 @@ def add_interp_point_weights(
   local_bodies: vec_interp_body,
   local_weights: vec_interp_weight,
 ) -> tuple[int, vec_interp_body, vec_interp_weight]:
-  """Accumulates trilinear cell node body weights at coord (with Coons TFI in shell mode)."""
+  """Accumulates trilinear cell node body weights at reference coord (with Coons TFI in shell mode).
+
+  The weights are evaluated in the active cell of coord (see mju_flexActiveCell): its natural cell,
+  or the nearest non-empty cell if that cell is empty (celladr: address in flex_cellempty,
+  -1: no cells), in which case local coordinates are extrapolated within [-0.02, 1.02]^3
+  (see mju_cellLookup).
+  """
   if scale == 0.0:
     return local_nb, local_bodies, local_weights
   cx = cn[0]
   cy = cn[1]
   cz = cn[2]
-  ci = wp.clamp(int(wp.floor(coord[0] * float(cx))), 0, cx - 1)
-  cj = wp.clamp(int(wp.floor(coord[1] * float(cy))), 0, cy - 1)
-  ck = wp.clamp(int(wp.floor(coord[2] * float(cz))), 0, cz - 1)
+  uc = wp.vec3(coord[0] * float(cx), coord[1] * float(cy), coord[2] * float(cz))
+  ci = wp.clamp(int(wp.floor(uc[0])), 0, cx - 1)
+  cj = wp.clamp(int(wp.floor(uc[1])), 0, cy - 1)
+  ck = wp.clamp(int(wp.floor(uc[2])), 0, cz - 1)
+  lo = float(0.0)
+  hi = float(1.0)
+  if celladr >= 0:
+    if flex_cellempty[celladr + ci * cy * cz + cj * cz + ck]:
+      # nearest non-empty cell (first minimum in cell order), extrapolated
+      best = float(MJ_MAXVAL)
+      for cc in range(cx * cy * cz):
+        if not flex_cellempty[celladr + cc]:
+          d = uc - wp.vec3(
+            wp.clamp(uc[0], float(cc // (cy * cz)), float(cc // (cy * cz) + 1)),
+            wp.clamp(uc[1], float((cc // cz) % cy), float((cc // cz) % cy + 1)),
+            wp.clamp(uc[2], float(cc % cz), float(cc % cz + 1)),
+          )
+          if wp.dot(d, d) < best:
+            best = wp.dot(d, d)
+            ci = cc // (cy * cz)
+            cj = (cc // cz) % cy
+            ck = cc % cz
+            lo = -0.02
+            hi = 1.02
   local = wp.vec3(
-    wp.clamp(coord[0] * float(cx) - float(ci), 0.0, 1.0),
-    wp.clamp(coord[1] * float(cy) - float(cj), 0.0, 1.0),
-    wp.clamp(coord[2] * float(cz) - float(ck), 0.0, 1.0),
+    wp.clamp(uc[0] - float(ci), lo, hi),
+    wp.clamp(uc[1] - float(cj), lo, hi),
+    wp.clamp(uc[2] - float(ck), lo, hi),
   )
   cy1 = cy + 1
   cz1 = cz + 1
@@ -1906,10 +1990,12 @@ def add_flex_interp_weights(
   flex_dim: wp.array[int],
   flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
+  flex_celladr: wp.array[int],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
   flex_elemdataadr: wp.array[int],
   flex_nodebodyid: wp.array[int],
+  flex_cellempty: wp.array[bool],
   flex_elem: wp.array[int],
   flex_vert0: wp.array[wp.vec3],
   # Data in:
@@ -1926,7 +2012,11 @@ def add_flex_interp_weights(
   local_bodies: vec_interp_body,
   local_weights: vec_interp_weight,
 ) -> tuple[int, vec_interp_body, vec_interp_weight]:
-  """Accumulates interpolated flex contact side bodies and weights at blended reference coord."""
+  """Accumulates interpolated flex contact side bodies and weights at the blended reference coord.
+
+  As in mj_contactBodyWeight, the weights are the cell basis at the blended reference coordinates
+  of the contact vertex or element vertices, in their active cell.
+  """
   coord = wp.vec3(0.0)
   if vert_id >= 0:
     coord = flex_vert0[flex_vertadr[f] + vert_id]
@@ -1946,7 +2036,9 @@ def add_flex_interp_weights(
   return add_interp_point_weights(
     body_weldid,
     flex_nodebodyid,
+    flex_cellempty,
     coord,
+    flex_celladr[f],
     scale,
     flex_cellnum[f],
     flex_nodeadr[f],
@@ -2350,6 +2442,7 @@ def contact_bodies_and_weights(
   flex_dim: wp.array[int],
   flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
+  flex_celladr: wp.array[int],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
   flex_elemadr: wp.array[int],
@@ -2357,6 +2450,7 @@ def contact_bodies_and_weights(
   flex_elemdataadr: wp.array[int],
   flex_nodebodyid: wp.array[int],
   flex_vertbodyid: wp.array[int],
+  flex_cellempty: wp.array[bool],
   flex_elem: wp.array[int],
   flex_vert0: wp.array[wp.vec3],
   flex_rod_has_twist: wp.array[bool],
@@ -2396,10 +2490,12 @@ def contact_bodies_and_weights(
       flex_dim,
       flex_interp,
       flex_cellnum,
+      flex_celladr,
       flex_nodeadr,
       flex_vertadr,
       flex_elemdataadr,
       flex_nodebodyid,
+      flex_cellempty,
       flex_elem,
       flex_vert0,
       flexvert_xpos_in,
