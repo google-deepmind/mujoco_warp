@@ -396,7 +396,6 @@ def _pool_seed(
   """
   bid, lane = wp.tid()
   nthread = wp.block_dim()
-  TILE2 = wp.static(_TILE * _TILE)
   for e in range(bid, group_count_in[0], nblock):
     worldid = group_list_in[0, e] // ntree
     g = group_list_in[0, e] % ntree
@@ -418,13 +417,14 @@ def _pool_seed(
         c = idx % size
         H_out[worldid, _TILE * tilebase + r, c] = wp.where(r == c and r >= n, 1.0, 0.0)
     else:
-      for idx in range(lane, ntile * ntile * TILE2, nthread):
-        t = idx // TILE2
+      # the upper tiles the factorization reads, then identity on the padding diagonal
+      for t in range(ntile * ntile):
         if t // ntile <= t % ntile:
-          r = (idx % TILE2) // _TILE
-          c = idx % _TILE
-          la = (t // ntile) * _TILE + r
-          H_out[worldid, _TILE * (tilebase + t) + r, c] = wp.where(la == (t % ntile) * _TILE + c and la >= n, 1.0, 0.0)
+          wp.tile_store(H_out[worldid], wp.tile_zeros(shape=(_TILE, _TILE), dtype=float), offset=(_TILE * (tilebase + t), 0))
+      _sync()
+      for la in range(n + lane, ntile * _TILE, nthread):
+        rc = _pool_rc(tilebase, ntile, la, la)
+        H_out[worldid, rc[0], rc[1]] = 1.0
     _sync()
     col = int(0)
     while col < n:
