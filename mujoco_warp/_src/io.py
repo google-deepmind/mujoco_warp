@@ -1005,6 +1005,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     m.flex_cell_map = np.array(flex_cell_map, dtype=np.int32)
 
   m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
+  m.max_efc_J_rownnz = _max_efc_J_rownnz(mjm)
 
   # body ids grouped by tree level (depth-based traversal)
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
@@ -2146,6 +2147,28 @@ def _body_set_nnz(mjm: mujoco.MjModel, bodies) -> int:
       active_dofs.add(da)
       da = mjm.dof_parentid[da]
   return len(active_dofs)
+
+
+def _max_efc_J_rownnz(mjm: mujoco.MjModel) -> int:
+  """Returns an upper bound on the number of non-zeros in one constraint Jacobian row."""
+  if mjm.nflex:
+    # flex rows can couple the dofs of many vertices
+    return mjm.nv
+  # contact, connect and weld rows span the dofs that move either of two bodies
+  ndof = np.zeros(mjm.nbody, dtype=int)
+  for b in range(1, mjm.nbody):
+    ndof[b] = ndof[mjm.body_parentid[b]] + mjm.body_dofnum[b]
+  rownnz = 0
+  deepest = ndof.copy()  # most dofs moving a body in each subtree seen so far
+  for b in range(mjm.nbody - 1, 0, -1):
+    p = mjm.body_parentid[b]
+    # two bodies in different subtrees of p share the dofs that move p
+    rownnz = max(rownnz, deepest[p] + deepest[b] - ndof[p])
+    deepest[p] = max(deepest[p], deepest[b])
+  if mjm.ntendon:
+    # a tendon equality couples two tendons
+    rownnz = max(rownnz, 2 * int(mjm.ten_J_rownnz.max()))
+  return int(min(rownnz, mjm.nv))
 
 
 def _calculate_max_contact_nnz(mjm: mujoco.MjModel) -> int:
