@@ -1155,16 +1155,14 @@ def _factor(rows: int):
       b = wp.array(ptr=grad_in[worldid].ptr + wp.uint64(vbase * 4), shape=(rows, 1), dtype=float)
       x = wp.array(ptr=search_out[worldid].ptr + wp.uint64(vbase * 4), shape=(rows, 1), dtype=float)
       if changed_out[worldid, islandid] or niter_in[worldid, islandid] == 0:
-        for idx in range(lane, R * R, nthread):
-          r = idx // R
-          c = idx % R
-          h = float(0.0)
-          if r < n and c < n:
-            rc = _pool_rc(tilebase, ntile, r, c)
-            h = H_in[worldid, rc[0], rc[1]]
-          elif r == c:
-            h = 1.0
-          A[r, c] = h
+        # the factorization reads the upper triangle: copy the pool's upper tiles, whole (_pool_seed
+        # set identity on the padding)
+        for t in range(ntile * ntile):
+          ti = t // ntile
+          tj = t % ntile
+          if ti <= tj:
+            tile = wp.tile_load(H_in[worldid], shape=(_TILE, _TILE), offset=(_TILE * (tilebase + t), 0))
+            wp.tile_store(A, tile, offset=(_TILE * ti, _TILE * tj))
         _sync()
         sums = wp.static(factorize)(A, b, size, A, x)
       else:
