@@ -409,6 +409,63 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    "sphere_sphere_coincident": """
+        <mujoco>
+          <worldbody>
+            <body>
+              <joint type="free"/>
+              <geom size="0.1" type="sphere" euler="90 0 0"/>
+            </body>
+            <body>
+              <joint type="free"/>
+              <geom size="0.1" type="sphere" euler="0 90 0"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "sphere_capsule_on_axis": """
+        <mujoco>
+          <worldbody>
+            <body>
+              <joint type="free"/>
+              <geom size="0.05" type="sphere" pos="0 0.1 0" euler="0 90 0"/>
+            </body>
+            <body>
+              <joint type="free"/>
+              <geom size="0.05 0.3" type="capsule" euler="90 0 0"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "capsule_capsule_crossing_axes": """
+        <mujoco>
+          <worldbody>
+            <body>
+              <joint type="free"/>
+              <geom size="0.05 0.3" type="capsule" euler="0 90 0"/>
+            </body>
+            <body>
+              <joint type="free"/>
+              <geom size="0.05 0.3" type="capsule" euler="90 0 0"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "sphere_cylinder_side_on_axis": """
+        <mujoco>
+          <worldbody>
+            <body>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+              <geom size="0.05" type="sphere" euler="90 0 0"/>
+            </body>
+            <body>
+              <geom size="0.1 0.3" type="cylinder" euler="0 90 0"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
     "plane_cylinder_1": """
         <mujoco>
           <worldbody>
