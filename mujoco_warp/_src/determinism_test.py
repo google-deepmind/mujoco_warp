@@ -247,8 +247,7 @@ _TREE_CASES = (
       "smooth._tendon_bias",
       "smooth._transmission",
       "solver._JTDACJ_sparse",
-      "solver._linesearch_jv_fused_kernel",
-      "solver._solve_init_jaref_kernel",
+      "solver._mul_jac_vec_kernel",
       "solver._update_constraint_efc",
       "solver._update_constraint_init_qfrc_constraint_sparse",
       "solver._update_gradient_grad",
@@ -1188,7 +1187,7 @@ class DeterminismTest(parameterized.TestCase):
     self.assertEqual(_RECORDS_ONLY_ARGS["passive._qfrc_adhesion"], ["nv"])
     self.assertEqual(_RECORDS_ONLY_ARGS["derivative._eff_flex_interp_mul"], ["nv"])
     self.assertEqual(_RECORDS_ONLY_ARGS["solver._JTDACJ_sparse"], ["max_records"])
-    self.assertEqual(_RECORDS_ONLY_ARGS["solver._linesearch_jv_fused_kernel"], [])
+    self.assertEqual(_RECORDS_ONLY_ARGS["solver._mul_jac_vec_kernel"], [])
     self.assertEqual(_RECORDS_ONLY_ARGS["smooth._transmission"], [])
 
     # kernel cache keys are (*args, module, name)

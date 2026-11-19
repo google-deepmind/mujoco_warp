@@ -86,6 +86,7 @@ class BlockDim:
     update_gradient_JTDAJ_sparse: update gradient JTDAJ sparse block dimension (solver)
     update_gradient_JTDAJ_dense: update gradient JTDAJ dense block dimension (solver)
     linesearch_iterative: linesearch iterative block dimension (solver)
+    update_constraint_qfrc_gradient_sparse_tiled: sparse gradient block dimension (solver)
     update_gradient_grad: update gradient grad block dimension (solver)
     solve_beta_accumulate: solve beta accumulate block dimension (solver)
     solve_search_update_cg: solve search update CG block dimension (solver)
@@ -126,6 +127,7 @@ class BlockDim:
   update_gradient_JTDAJ_sparse: int = 128
   update_gradient_JTDAJ_dense: int = 128
   linesearch_iterative: int = 32
+  update_constraint_qfrc_gradient_sparse_tiled: int = 32
   update_gradient_grad: int = 256
   solve_beta_accumulate: int = 256
   solve_search_update_cg: int = 256
@@ -416,6 +418,7 @@ class DynType(enum.IntEnum):
     MUSCLE: piece-wise linear filter with two time constants
     USER: user-defined dynamics via act_dyn_callback
     DCMOTOR: DC motor dynamics
+    PID: PID actuator dynamics
   """
 
   NONE = mujoco.mjtDyn.mjDYN_NONE
@@ -425,6 +428,7 @@ class DynType(enum.IntEnum):
   MUSCLE = mujoco.mjtDyn.mjDYN_MUSCLE
   USER = mujoco.mjtDyn.mjDYN_USER
   DCMOTOR = mujoco.mjtDyn.mjDYN_DCMOTOR
+  PID = mujoco.mjtDyn.mjDYN_PID
 
 
 class GainType(enum.IntEnum):
@@ -436,6 +440,8 @@ class GainType(enum.IntEnum):
     MUSCLE: muscle FLV curve computed by muscle_gain
     USER: user-defined gain via act_gain_callback
     DCMOTOR: DC motor gain
+    PID: PID actuator gain
+    SO3: SO(3) orientation servo gain
   """
 
   FIXED = mujoco.mjtGain.mjGAIN_FIXED
@@ -443,6 +449,7 @@ class GainType(enum.IntEnum):
   MUSCLE = mujoco.mjtGain.mjGAIN_MUSCLE
   USER = mujoco.mjtGain.mjGAIN_USER
   DCMOTOR = mujoco.mjtGain.mjGAIN_DCMOTOR
+  PID = mujoco.mjtGain.mjGAIN_PID
   SO3 = mujoco.mjtGain.mjGAIN_SO3
 
 
