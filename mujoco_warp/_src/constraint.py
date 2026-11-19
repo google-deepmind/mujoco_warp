@@ -13,23 +13,39 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import warp as wp
 
+from mujoco_warp._src import island
 from mujoco_warp._src import math
 from mujoco_warp._src import sort
 from mujoco_warp._src import support
 from mujoco_warp._src import types
+from mujoco_warp._src.island import ROW_CLASSES
+from mujoco_warp._src.island import ROW_CONTACT
+from mujoco_warp._src.island import ROW_EQUALITY
+from mujoco_warp._src.island import ROW_FRICTION
+from mujoco_warp._src.island import ROW_LIMIT
+from mujoco_warp._src.island import ROWS_DISCOVER
+from mujoco_warp._src.island import dense_set
+from mujoco_warp._src.island import dense_zero
+from mujoco_warp._src.island import rows_discover
+from mujoco_warp._src.island import rows_discover_tendon
+from mujoco_warp._src.island import rows_island
+from mujoco_warp._src.island import rows_reserve
+from mujoco_warp._src.island import rows_tendon_tree
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import vec5
 from mujoco_warp._src.types import vec12
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import efc_threads_per_world
 from mujoco_warp._src.warp_util import event_scope
+from mujoco_warp._src.warp_util import side_stream
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
@@ -286,7 +302,9 @@ def _efc_row(
 
 
 @cache_kernel
-def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False, rows: int = 0):
+  ROWS = rows
+
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -327,6 +345,12 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
     subtree_linvel_in: wp.array2d[wp.vec3],
     njmax_in: int,
     njmax_nnz_in: int,
+    # In:
+    island_body_treeid_in: wp.array[int],
+    island_dof_treeid_in: wp.array[int],
+    island_rowadr_in: wp.array2d[int],
+    island_dense_in: wp.array2d[wp.vec4i],
+    dof_densecol_in: wp.array2d[int],
     # Data out:
     ne_out: wp.array[int],
     nefc_out: wp.array[int],
@@ -345,14 +369,32 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_vel_out: wp.array2d[float],
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
+    tree_island_out: wp.array2d[int],
     # Out:
     efc_nnz_out: wp.array[int],
+    island_parent_out: wp.array2d[int],
+    tree_nrow_out: wp.array2d[int],
+    island_cursor_out: wp.array2d[int],
+    dense_J_out: wp.array3d[float],
   ):
     """Calculates constraint rows for connect equality constraints."""
     worldid, eqconnectid = wp.tid()
     eqid = eq_connect_adr[eqconnectid]
 
     if not eq_active_in[worldid, eqid]:
+      return
+
+    rows_tree0 = int(-1)
+    rows_tree1 = int(-1)
+    if wp.static(ROWS == ROWS_DISCOVER):
+      rows_body0 = eq_obj1id[eqid]
+      rows_body1 = eq_obj2id[eqid]
+      if eq_objtype[eqid] == ObjType.SITE:
+        rows_body0 = site_bodyid[rows_body0]
+        rows_body1 = site_bodyid[rows_body1]
+      rows_tree0 = island_body_treeid_in[rows_body0]
+      rows_tree1 = island_body_treeid_in[rows_body1]
+      rows_discover(worldid, rows_tree0, rows_tree1, 3, ROW_EQUALITY, tree_island_out, island_parent_out, tree_nrow_out)
       return
 
     data = eq_data[worldid % eq_data.shape[0], eqid]
@@ -394,12 +436,39 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
           pda2 = dof_parentid[pda2]
         rownnz += 1
 
-      rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 3, rownnz, efc_nnz_out)
-      if rowadr < 0:
-        return
+      if not island_cursor_out:
+        rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 3, rownnz, efc_nnz_out)
+        if rowadr < 0:
+          return
 
     wp.atomic_add(ne_out, worldid, 3)  # kernel_analyzer: ignore[atomic]
-    efcid = wp.atomic_add(nefc_out, worldid, 3)  # kernel_analyzer: ignore[atomic]
+    srow = int(-1)
+    if island_cursor_out:
+      rows_body0 = eq_obj1id[eqid]
+      rows_body1 = eq_obj2id[eqid]
+      if eq_objtype[eqid] == ObjType.SITE:
+        rows_body0 = site_bodyid[rows_body0]
+        rows_body1 = site_bodyid[rows_body1]
+      rows_tree0 = island_body_treeid_in[rows_body0]
+      rows_tree1 = island_body_treeid_in[rows_body1]
+      rows = rows_island(
+        tree_island_out,
+        worldid,
+        rows_tree0,
+        rows_tree1,
+        3,
+        ROW_EQUALITY,
+        njmax_in,
+        island_rowadr_in,
+        island_dense_in,
+        nefc_out,
+        island_cursor_out,
+      )
+      efcid = rows[0]
+      srow = rows[1]
+      dense_zero(worldid, srow, 3, dense_J_out)
+    else:
+      efcid = wp.atomic_add(nefc_out, worldid, 3)  # kernel_analyzer: ignore[atomic]
 
     if efcid >= njmax_in:
       return
@@ -407,10 +476,20 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # rows past njmax are dropped
     nrow = wp.min(3, njmax_in - efcid)
 
+    # rows of dense row groups have no sparse entries; in island order, rows without storage stay
+    # empty (their force acts on no DOF)
+    empty = srow >= 0
+    if wp.static(is_sparse):
+      if island_cursor_out:
+        rowadr = rows_reserve(worldid, efcid, 3, wp.where(empty, 0, rownnz), njmax_in, njmax_nnz_in, efc_nnz_out)
+        empty = empty or rowadr < 0
+        rowadr = wp.max(rowadr, 0)
+
     if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = nrow
+      if not empty:
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = nrow
 
     # compute Jacobian difference (opposite of contact: 0 - 1)
     Jqvel = wp.vec3f(0.0, 0.0, 0.0)
@@ -423,7 +502,7 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
       for i in range(3):
         if i < nrow:
           efc_J_rowadr_out[worldid, efcid + i] = rowadr + i * rownnz
-          efc_J_rownnz_out[worldid, efcid + i] = rownnz
+          efc_J_rownnz_out[worldid, efcid + i] = wp.where(empty, 0, rownnz)
 
       # compute J and colind
       nnz = int(0)
@@ -499,9 +578,11 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
         # constant indices keep j1mj2 in registers
         for i in range(3):
           if i < nrow:
-            sparseid = rowadr + i * rownnz + nnz
-            efc_J_colind_out[worldid, 0, sparseid] = da
-            efc_J_out[worldid, 0, sparseid] = j1mj2[i]
+            if not empty:
+              sparseid = rowadr + i * rownnz + nnz
+              efc_J_colind_out[worldid, 0, sparseid] = da
+              efc_J_out[worldid, 0, sparseid] = j1mj2[i]
+            dense_set(worldid, srow, i, da, j1mj2[i], dof_densecol_in, dense_J_out)
 
         qvel = qvel_in[worldid, da]
         Jqvel += j1mj2 * qvel
@@ -623,7 +704,9 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False, rows: int = 0):
+  ROWS = rows
+
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -646,6 +729,12 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
     eq_active_in: wp.array2d[bool],
     njmax_in: int,
     njmax_nnz_in: int,
+    # In:
+    island_body_treeid_in: wp.array[int],
+    island_dof_treeid_in: wp.array[int],
+    island_rowadr_in: wp.array2d[int],
+    island_dense_in: wp.array2d[wp.vec4i],
+    dof_densecol_in: wp.array2d[int],
     # Data out:
     ne_out: wp.array[int],
     nefc_out: wp.array[int],
@@ -664,13 +753,27 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_vel_out: wp.array2d[float],
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
+    tree_island_out: wp.array2d[int],
     # Out:
     efc_nnz_out: wp.array[int],
+    island_parent_out: wp.array2d[int],
+    tree_nrow_out: wp.array2d[int],
+    island_cursor_out: wp.array2d[int],
+    dense_J_out: wp.array3d[float],
   ):
     worldid, eqjntid = wp.tid()
     eqid = eq_jnt_adr[eqjntid]
 
     if not eq_active_in[worldid, eqid]:
+      return
+
+    rows_tree0 = int(-1)
+    rows_tree1 = int(-1)
+    if wp.static(ROWS == ROWS_DISCOVER):
+      rows_tree0 = island_dof_treeid_in[jnt_dofadr[eq_obj1id[eqid]]]
+      if eq_obj2id[eqid] >= 0:
+        rows_tree1 = island_dof_treeid_in[jnt_dofadr[eq_obj2id[eqid]]]
+      rows_discover(worldid, rows_tree0, rows_tree1, 1, ROW_EQUALITY, tree_island_out, island_parent_out, tree_nrow_out)
       return
 
     jntid_1 = eq_obj1id[eqid]
@@ -680,20 +783,53 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
     rowadr = int(0)
     if wp.static(is_sparse):
       rownnz = wp.where(jntid_2 > -1, 2, 1)
-      rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz, efc_nnz_out)
-      if rowadr < 0:
-        return
+      if not island_cursor_out:
+        rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz, efc_nnz_out)
+        if rowadr < 0:
+          return
 
     wp.atomic_add(ne_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-    efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+    srow = int(-1)
+    if island_cursor_out:
+      rows_tree0 = island_dof_treeid_in[jnt_dofadr[eq_obj1id[eqid]]]
+      if eq_obj2id[eqid] >= 0:
+        rows_tree1 = island_dof_treeid_in[jnt_dofadr[eq_obj2id[eqid]]]
+      rows = rows_island(
+        tree_island_out,
+        worldid,
+        rows_tree0,
+        rows_tree1,
+        1,
+        ROW_EQUALITY,
+        njmax_in,
+        island_rowadr_in,
+        island_dense_in,
+        nefc_out,
+        island_cursor_out,
+      )
+      efcid = rows[0]
+      srow = rows[1]
+      dense_zero(worldid, srow, 1, dense_J_out)
+    else:
+      efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
     if efcid >= njmax_in:
       return
 
+    # rows of dense row groups have no sparse entries; in island order, rows without storage stay
+    # empty (their force acts on no DOF)
+    empty = srow >= 0
+    if wp.static(is_sparse):
+      if island_cursor_out:
+        rowadr = rows_reserve(worldid, efcid, 1, wp.where(empty, 0, rownnz), njmax_in, njmax_nnz_in, efc_nnz_out)
+        empty = empty or rowadr < 0
+        rowadr = wp.max(rowadr, 0)
+
     if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = 1
+      if not empty:
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = 1
 
     data = eq_data[worldid % eq_data.shape[0], eqid]
     dofadr1 = jnt_dofadr[jntid_1]
@@ -702,10 +838,12 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
     dof_invweight0_id = worldid % dof_invweight0.shape[0]
 
     if wp.static(is_sparse):
-      efc_J_rownnz_out[worldid, efcid] = rownnz
+      efc_J_rownnz_out[worldid, efcid] = wp.where(empty, 0, rownnz)
       efc_J_rowadr_out[worldid, efcid] = rowadr
-      efc_J_colind_out[worldid, 0, rowadr] = dofadr1
-      efc_J_out[worldid, 0, rowadr] = 1.0
+      if not empty:
+        efc_J_colind_out[worldid, 0, rowadr] = dofadr1
+        efc_J_out[worldid, 0, rowadr] = 1.0
+      dense_set(worldid, srow, 0, dofadr1, 1.0, dof_densecol_in, dense_J_out)
     else:
       for i in range(nv):
         efc_J_out[worldid, efcid, i] = 0.0
@@ -727,8 +865,10 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
       if wp.static(is_sparse):
         sparseid = rowadr + 1
-        efc_J_colind_out[worldid, 0, sparseid] = dofadr2
-        efc_J_out[worldid, 0, sparseid] = -deriv_2
+        if not empty:
+          efc_J_colind_out[worldid, 0, sparseid] = dofadr2
+          efc_J_out[worldid, 0, sparseid] = -deriv_2
+        dense_set(worldid, srow, 0, dofadr2, -deriv_2, dof_densecol_in, dense_J_out)
       else:
         efc_J_out[worldid, efcid, dofadr2] = -deriv_2
     else:
@@ -769,7 +909,9 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False, rows: int = 0):
+  ROWS = rows
+
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -794,6 +936,12 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     ten_length_in: wp.array2d[float],
     njmax_in: int,
     njmax_nnz_in: int,
+    # In:
+    island_body_treeid_in: wp.array[int],
+    island_dof_treeid_in: wp.array[int],
+    island_rowadr_in: wp.array2d[int],
+    island_dense_in: wp.array2d[wp.vec4i],
+    dof_densecol_in: wp.array2d[int],
     # Data out:
     ne_out: wp.array[int],
     nefc_out: wp.array[int],
@@ -812,13 +960,47 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_vel_out: wp.array2d[float],
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
+    tree_island_out: wp.array2d[int],
     # Out:
     efc_nnz_out: wp.array[int],
+    island_parent_out: wp.array2d[int],
+    tree_nrow_out: wp.array2d[int],
+    island_cursor_out: wp.array2d[int],
+    dense_J_out: wp.array3d[float],
   ):
     worldid, eqtenid = wp.tid()
     eqid = eq_ten_adr[eqtenid]
 
     if not eq_active_in[worldid, eqid]:
+      return
+
+    rows_tree0 = int(-1)
+    rows_tree1 = int(-1)
+    if wp.static(ROWS == ROWS_DISCOVER):
+      rows_tree0 = rows_tendon_tree(island_dof_treeid_in, ten_J_rownnz, ten_J_rowadr, ten_J_colind, eq_obj1id[eqid])
+      rows_discover_tendon(
+        island_dof_treeid_in,
+        ten_J_rownnz,
+        ten_J_rowadr,
+        ten_J_colind,
+        worldid,
+        rows_tree0,
+        eq_obj1id[eqid],
+        tree_island_out,
+        island_parent_out,
+      )
+      rows_discover_tendon(
+        island_dof_treeid_in,
+        ten_J_rownnz,
+        ten_J_rowadr,
+        ten_J_colind,
+        worldid,
+        rows_tree0,
+        eq_obj2id[eqid],
+        tree_island_out,
+        island_parent_out,
+      )
+      rows_discover(worldid, rows_tree0, rows_tree1, 1, ROW_EQUALITY, tree_island_out, island_parent_out, tree_nrow_out)
       return
 
     obj1id = eq_obj1id[eqid]
@@ -876,20 +1058,53 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
           p2 += 1
         rownnz += 1
 
-      rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz, efc_nnz_out)
-      if rowadr < 0:
-        return
+      if not island_cursor_out:
+        rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz, efc_nnz_out)
+        if rowadr < 0:
+          return
 
     wp.atomic_add(ne_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-    efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+    srow = int(-1)
+    if island_cursor_out:
+      rows_tree0 = rows_tendon_tree(island_dof_treeid_in, ten_J_rownnz, ten_J_rowadr, ten_J_colind, eq_obj1id[eqid])
+      if rows_tree0 < 0:
+        rows_tree0 = rows_tendon_tree(island_dof_treeid_in, ten_J_rownnz, ten_J_rowadr, ten_J_colind, eq_obj2id[eqid])
+      rows = rows_island(
+        tree_island_out,
+        worldid,
+        rows_tree0,
+        rows_tree1,
+        1,
+        ROW_EQUALITY,
+        njmax_in,
+        island_rowadr_in,
+        island_dense_in,
+        nefc_out,
+        island_cursor_out,
+      )
+      efcid = rows[0]
+      srow = rows[1]
+      dense_zero(worldid, srow, 1, dense_J_out)
+    else:
+      efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
     if efcid >= njmax_in:
       return
 
+    # rows of dense row groups have no sparse entries; in island order, rows without storage stay
+    # empty (their force acts on no DOF)
+    empty = srow >= 0
+    if wp.static(is_sparse):
+      if island_cursor_out:
+        rowadr = rows_reserve(worldid, efcid, 1, wp.where(empty, 0, rownnz), njmax_in, njmax_nnz_in, efc_nnz_out)
+        empty = empty or rowadr < 0
+        rowadr = wp.max(rowadr, 0)
+
     if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = 1
+      if not empty:
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = 1
 
     if wp.static(is_sparse):
       efc_J_rowadr_out[worldid, efcid] = rowadr
@@ -921,8 +1136,10 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
       if wp.static(is_sparse):
         if J != 0.0:
           sparseid = rowadr + nnz
-          efc_J_colind_out[worldid, 0, sparseid] = i
-          efc_J_out[worldid, 0, sparseid] = J
+          if not empty:
+            efc_J_colind_out[worldid, 0, sparseid] = i
+            efc_J_out[worldid, 0, sparseid] = J
+          dense_set(worldid, srow, 0, i, J, dof_densecol_in, dense_J_out)
           nnz += 1
       else:
         efc_J_out[worldid, efcid, i] = J
@@ -930,7 +1147,7 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
       Jqvel += J * qvel_in[worldid, i]
 
     if wp.static(is_sparse):
-      efc_J_rownnz_out[worldid, efcid] = nnz
+      efc_J_rownnz_out[worldid, efcid] = wp.where(empty, 0, nnz)
 
     _efc_row(
       opt_disableflags,
@@ -1172,7 +1389,9 @@ def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False, rows: int = 0):
+  ROWS = rows
+
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -1214,6 +1433,12 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     subtree_linvel_in: wp.array2d[wp.vec3],
     njmax_in: int,
     njmax_nnz_in: int,
+    # In:
+    island_body_treeid_in: wp.array[int],
+    island_dof_treeid_in: wp.array[int],
+    island_rowadr_in: wp.array2d[int],
+    island_dense_in: wp.array2d[wp.vec4i],
+    dof_densecol_in: wp.array2d[int],
     # Data out:
     ne_out: wp.array[int],
     nefc_out: wp.array[int],
@@ -1232,13 +1457,31 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_vel_out: wp.array2d[float],
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
+    tree_island_out: wp.array2d[int],
     # Out:
     efc_nnz_out: wp.array[int],
+    island_parent_out: wp.array2d[int],
+    tree_nrow_out: wp.array2d[int],
+    island_cursor_out: wp.array2d[int],
+    dense_J_out: wp.array3d[float],
   ):
     worldid, eqweldid = wp.tid()
     eqid = eq_wld_adr[eqweldid]
 
     if not eq_active_in[worldid, eqid]:
+      return
+
+    rows_tree0 = int(-1)
+    rows_tree1 = int(-1)
+    if wp.static(ROWS == ROWS_DISCOVER):
+      rows_body0 = eq_obj1id[eqid]
+      rows_body1 = eq_obj2id[eqid]
+      if eq_objtype[eqid] == ObjType.SITE:
+        rows_body0 = site_bodyid[rows_body0]
+        rows_body1 = site_bodyid[rows_body1]
+      rows_tree0 = island_body_treeid_in[rows_body0]
+      rows_tree1 = island_body_treeid_in[rows_body1]
+      rows_discover(worldid, rows_tree0, rows_tree1, 6, ROW_EQUALITY, tree_island_out, island_parent_out, tree_nrow_out)
       return
 
     is_site = eq_objtype[eqid] == types.ObjType.SITE and nsite > 0
@@ -1315,12 +1558,39 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
           pda2 = dof_parentid[da]
         rownnz += 1
 
-      rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 6, rownnz, efc_nnz_out)
-      if rowadr < 0:
-        return
+      if not island_cursor_out:
+        rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 6, rownnz, efc_nnz_out)
+        if rowadr < 0:
+          return
 
     wp.atomic_add(ne_out, worldid, 6)  # kernel_analyzer: ignore[atomic]
-    efcid = wp.atomic_add(nefc_out, worldid, 6)  # kernel_analyzer: ignore[atomic]
+    srow = int(-1)
+    if island_cursor_out:
+      rows_body0 = eq_obj1id[eqid]
+      rows_body1 = eq_obj2id[eqid]
+      if eq_objtype[eqid] == ObjType.SITE:
+        rows_body0 = site_bodyid[rows_body0]
+        rows_body1 = site_bodyid[rows_body1]
+      rows_tree0 = island_body_treeid_in[rows_body0]
+      rows_tree1 = island_body_treeid_in[rows_body1]
+      rows = rows_island(
+        tree_island_out,
+        worldid,
+        rows_tree0,
+        rows_tree1,
+        6,
+        ROW_EQUALITY,
+        njmax_in,
+        island_rowadr_in,
+        island_dense_in,
+        nefc_out,
+        island_cursor_out,
+      )
+      efcid = rows[0]
+      srow = rows[1]
+      dense_zero(worldid, srow, 6, dense_J_out)
+    else:
+      efcid = wp.atomic_add(nefc_out, worldid, 6)  # kernel_analyzer: ignore[atomic]
 
     if efcid >= njmax_in:
       return
@@ -1328,10 +1598,20 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # rows past njmax are dropped
     nrow = wp.min(6, njmax_in - efcid)
 
+    # rows of dense row groups have no sparse entries; in island order, rows without storage stay
+    # empty (their force acts on no DOF)
+    empty = srow >= 0
+    if wp.static(is_sparse):
+      if island_cursor_out:
+        rowadr = rows_reserve(worldid, efcid, 6, wp.where(empty, 0, rownnz), njmax_in, njmax_nnz_in, efc_nnz_out)
+        empty = empty or rowadr < 0
+        rowadr = wp.max(rowadr, 0)
+
     if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = nrow
+      if not empty:
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = nrow
 
     # compute Jacobian difference (opposite of contact: 0 - 1)
     Jqvelp = wp.vec3f(0.0, 0.0, 0.0)
@@ -1346,7 +1626,7 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
       for i in range(6):
         if i < nrow:
           efc_J_rowadr_out[worldid, efcid + i] = rowadr + i * rownnz
-          efc_J_rownnz_out[worldid, efcid + i] = rownnz
+          efc_J_rownnz_out[worldid, efcid + i] = wp.where(empty, 0, rownnz)
 
       # compute J and colind
       nnz = int(0)
@@ -1429,13 +1709,17 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
         # constant indices keep jacdifp and jacdifr in registers
         for i in range(3):
           if i < nrow:
-            sparseid = rowadr + i * rownnz + nnz
-            efc_J_colind_out[worldid, 0, sparseid] = da
-            efc_J_out[worldid, 0, sparseid] = jacdifp[i]
+            if not empty:
+              sparseid = rowadr + i * rownnz + nnz
+              efc_J_colind_out[worldid, 0, sparseid] = da
+              efc_J_out[worldid, 0, sparseid] = jacdifp[i]
+            dense_set(worldid, srow, i, da, jacdifp[i], dof_densecol_in, dense_J_out)
           if 3 + i < nrow:
-            sparseid = rowadr + (3 + i) * rownnz + nnz
-            efc_J_colind_out[worldid, 0, sparseid] = da
-            efc_J_out[worldid, 0, sparseid] = jacdifr[i]
+            if not empty:
+              sparseid = rowadr + (3 + i) * rownnz + nnz
+              efc_J_colind_out[worldid, 0, sparseid] = da
+              efc_J_out[worldid, 0, sparseid] = jacdifr[i]
+            dense_set(worldid, srow, 3 + i, da, jacdifr[i], dof_densecol_in, dense_J_out)
 
         Jqvelp += jacdifp * qvel_in[worldid, da]
         Jqvelr += jacdifr * qvel_in[worldid, da]
@@ -1956,8 +2240,10 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
 
 
 @cache_kernel
-def _friction_dof(is_sparse: bool, is_discrete: bool = False):
+def _friction_dof(is_sparse: bool, is_discrete: bool = False, rows: int = 0):
   # sparse Newton adds these rows to the Hessian diagonal directly, so they get no JTDAJ block
+  ROWS = rows
+
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -1972,6 +2258,12 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
     qvel_in: wp.array2d[float],
     njmax_in: int,
     njmax_nnz_in: int,
+    # In:
+    island_body_treeid_in: wp.array[int],
+    island_dof_treeid_in: wp.array[int],
+    island_rowadr_in: wp.array2d[int],
+    island_dense_in: wp.array2d[wp.vec4i],
+    dof_densecol_in: wp.array2d[int],
     # Data out:
     nf_out: wp.array[int],
     nefc_out: wp.array[int],
@@ -1988,8 +2280,13 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
     dof_frictionadr_out: wp.array2d[int],
+    tree_island_out: wp.array2d[int],
     # Out:
     efc_nnz_out: wp.array[int],
+    island_parent_out: wp.array2d[int],
+    tree_nrow_out: wp.array2d[int],
+    island_cursor_out: wp.array2d[int],
+    dense_J_out: wp.array3d[float],
   ):
     worldid, dofid = wp.tid()
 
@@ -1999,25 +2296,64 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
       dof_frictionadr_out[worldid, dofid] = -1
       return
 
+    rows_tree0 = int(-1)
+    rows_tree1 = int(-1)
+    if wp.static(ROWS == ROWS_DISCOVER):
+      rows_tree0 = island_dof_treeid_in[dofid]
+      rows_discover(worldid, rows_tree0, rows_tree1, 1, ROW_FRICTION, tree_island_out, island_parent_out, tree_nrow_out)
+      return
+
     rowadr = int(0)
     if wp.static(is_sparse):
-      rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, 1, efc_nnz_out)
-      if rowadr < 0:
-        dof_frictionadr_out[worldid, dofid] = -1
-        return
+      if not island_cursor_out:
+        rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, 1, efc_nnz_out)
+        if rowadr < 0:
+          dof_frictionadr_out[worldid, dofid] = -1
+          return
 
     wp.atomic_add(nf_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-    efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+    srow = int(-1)
+    if island_cursor_out:
+      rows_tree0 = island_dof_treeid_in[dofid]
+      rows = rows_island(
+        tree_island_out,
+        worldid,
+        rows_tree0,
+        rows_tree1,
+        1,
+        ROW_FRICTION,
+        njmax_in,
+        island_rowadr_in,
+        island_dense_in,
+        nefc_out,
+        island_cursor_out,
+      )
+      efcid = rows[0]
+      srow = rows[1]
+      dense_zero(worldid, srow, 1, dense_J_out)
+    else:
+      efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
     if efcid >= njmax_in:
       dof_frictionadr_out[worldid, dofid] = -1
       return
 
+    # rows of dense row groups have no sparse entries; in island order, rows without storage stay
+    # empty (their force acts on no DOF)
+    empty = srow >= 0
     if wp.static(is_sparse):
-      efc_J_rownnz_out[worldid, efcid] = 1
+      if island_cursor_out:
+        rowadr = rows_reserve(worldid, efcid, 1, wp.where(empty, 0, 1), njmax_in, njmax_nnz_in, efc_nnz_out)
+        empty = empty or rowadr < 0
+        rowadr = wp.max(rowadr, 0)
+
+    if wp.static(is_sparse):
+      efc_J_rownnz_out[worldid, efcid] = wp.where(empty, 0, 1)
       efc_J_rowadr_out[worldid, efcid] = rowadr
-      efc_J_colind_out[worldid, 0, rowadr] = dofid
-      efc_J_out[worldid, 0, rowadr] = 1.0
+      if not empty:
+        efc_J_colind_out[worldid, 0, rowadr] = dofid
+        efc_J_out[worldid, 0, rowadr] = 1.0
+      dense_set(worldid, srow, 0, dofid, 1.0, dof_densecol_in, dense_J_out)
     else:
       for i in range(nv):
         efc_J_out[worldid, efcid, i] = 0.0
@@ -2061,7 +2397,9 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False, rows: int = 0):
+  ROWS = rows
+
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -2080,6 +2418,12 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     ten_J_in: wp.array2d[float],
     njmax_in: int,
     njmax_nnz_in: int,
+    # In:
+    island_body_treeid_in: wp.array[int],
+    island_dof_treeid_in: wp.array[int],
+    island_rowadr_in: wp.array2d[int],
+    island_dense_in: wp.array2d[wp.vec4i],
+    dof_densecol_in: wp.array2d[int],
     # Data out:
     nf_out: wp.array[int],
     nefc_out: wp.array[int],
@@ -2098,8 +2442,13 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_vel_out: wp.array2d[float],
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
+    tree_island_out: wp.array2d[int],
     # Out:
     efc_nnz_out: wp.array[int],
+    island_parent_out: wp.array2d[int],
+    tree_nrow_out: wp.array2d[int],
+    island_cursor_out: wp.array2d[int],
+    dense_J_out: wp.array3d[float],
   ):
     worldid, tenid = wp.tid()
 
@@ -2109,29 +2458,78 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     if frictionloss <= 0.0:
       return
 
+    rows_tree0 = int(-1)
+    rows_tree1 = int(-1)
+    if wp.static(ROWS == ROWS_DISCOVER):
+      rows_tree0 = rows_tendon_tree(island_dof_treeid_in, ten_J_rownnz, ten_J_rowadr, ten_J_colind, tenid)
+      rows_discover_tendon(
+        island_dof_treeid_in,
+        ten_J_rownnz,
+        ten_J_rowadr,
+        ten_J_colind,
+        worldid,
+        rows_tree0,
+        tenid,
+        tree_island_out,
+        island_parent_out,
+      )
+      rows_discover(worldid, rows_tree0, rows_tree1, 1, ROW_FRICTION, tree_island_out, island_parent_out, tree_nrow_out)
+      return
+
     rownnz_tenJ = ten_J_rownnz[tenid]
     rowadr_efc = int(0)
     if wp.static(is_sparse):
-      rowadr_efc = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz_tenJ, efc_nnz_out)
-      if rowadr_efc < 0:
-        return
+      if not island_cursor_out:
+        rowadr_efc = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz_tenJ, efc_nnz_out)
+        if rowadr_efc < 0:
+          return
 
     wp.atomic_add(nf_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-    efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+    srow = int(-1)
+    if island_cursor_out:
+      rows_tree0 = rows_tendon_tree(island_dof_treeid_in, ten_J_rownnz, ten_J_rowadr, ten_J_colind, tenid)
+      rows = rows_island(
+        tree_island_out,
+        worldid,
+        rows_tree0,
+        rows_tree1,
+        1,
+        ROW_FRICTION,
+        njmax_in,
+        island_rowadr_in,
+        island_dense_in,
+        nefc_out,
+        island_cursor_out,
+      )
+      efcid = rows[0]
+      srow = rows[1]
+      dense_zero(worldid, srow, 1, dense_J_out)
+    else:
+      efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
     if efcid >= njmax_in:
       return
 
+    # rows of dense row groups have no sparse entries; in island order, rows without storage stay
+    # empty (their force acts on no DOF)
+    empty = srow >= 0
+    if wp.static(is_sparse):
+      if island_cursor_out:
+        rowadr_efc = rows_reserve(worldid, efcid, 1, wp.where(empty, 0, rownnz_tenJ), njmax_in, njmax_nnz_in, efc_nnz_out)
+        empty = empty or rowadr_efc < 0
+        rowadr_efc = wp.max(rowadr_efc, 0)
+
     if wp.static(is_sparse and newton):
-      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-      efc_jtdaj_adr_out[worldid, jgid] = efcid
-      efc_jtdaj_nrow_out[worldid, jgid] = 1
+      if not empty:
+        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+        efc_jtdaj_adr_out[worldid, jgid] = efcid
+        efc_jtdaj_nrow_out[worldid, jgid] = 1
 
     Jqvel = float(0.0)
 
     rowadr_tenJ = ten_J_rowadr[tenid]
     if wp.static(is_sparse):
-      efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
+      efc_J_rownnz_out[worldid, efcid] = wp.where(empty, 0, rownnz_tenJ)
       efc_J_rowadr_out[worldid, efcid] = rowadr_efc
 
       for i in range(rownnz_tenJ):
@@ -2139,8 +2537,10 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
         sparseid_efc = rowadr_efc + i
         colind = ten_J_colind[sparseid_ten]
         J = ten_J_in[worldid, sparseid_ten]
-        efc_J_colind_out[worldid, 0, sparseid_efc] = colind
-        efc_J_out[worldid, 0, sparseid_efc] = J
+        if not empty:
+          efc_J_colind_out[worldid, 0, sparseid_efc] = colind
+          efc_J_out[worldid, 0, sparseid_efc] = J
+        dense_set(worldid, srow, 0, colind, J, dof_densecol_in, dense_J_out)
         Jqvel += J * qvel_in[worldid, colind]
     else:
       nnz = int(0)
@@ -2190,7 +2590,9 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False, rows: int = 0):
+  ROWS = rows
+
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -2210,6 +2612,12 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
     qvel_in: wp.array2d[float],
     njmax_in: int,
     njmax_nnz_in: int,
+    # In:
+    island_body_treeid_in: wp.array[int],
+    island_dof_treeid_in: wp.array[int],
+    island_rowadr_in: wp.array2d[int],
+    island_dense_in: wp.array2d[wp.vec4i],
+    dof_densecol_in: wp.array2d[int],
     # Data out:
     nl_out: wp.array[int],
     nefc_out: wp.array[int],
@@ -2228,8 +2636,13 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
     efc_vel_out: wp.array2d[float],
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
+    tree_island_out: wp.array2d[int],
     # Out:
     efc_nnz_out: wp.array[int],
+    island_parent_out: wp.array2d[int],
+    tree_nrow_out: wp.array2d[int],
+    island_cursor_out: wp.array2d[int],
+    dense_J_out: wp.array3d[float],
   ):
     worldid, jntlimitedid = wp.tid()
     jntid = jnt_limited_slide_hinge_adr[jntlimitedid]
@@ -2244,32 +2657,72 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
     active = pos < 0
 
     if active:
+      rows_tree0 = int(-1)
+      rows_tree1 = int(-1)
+      if wp.static(ROWS == ROWS_DISCOVER):
+        rows_tree0 = island_dof_treeid_in[jnt_dofadr[jntid]]
+        rows_discover(worldid, rows_tree0, rows_tree1, 1, ROW_LIMIT, tree_island_out, island_parent_out, tree_nrow_out)
+        return
+
       rowadr = int(0)
       if wp.static(is_sparse):
-        rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, 1, efc_nnz_out)
-        if rowadr < 0:
-          return
+        if not island_cursor_out:
+          rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, 1, efc_nnz_out)
+          if rowadr < 0:
+            return
 
       wp.atomic_add(nl_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-      efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+      srow = int(-1)
+      if island_cursor_out:
+        rows_tree0 = island_dof_treeid_in[jnt_dofadr[jntid]]
+        rows = rows_island(
+          tree_island_out,
+          worldid,
+          rows_tree0,
+          rows_tree1,
+          1,
+          ROW_LIMIT,
+          njmax_in,
+          island_rowadr_in,
+          island_dense_in,
+          nefc_out,
+          island_cursor_out,
+        )
+        efcid = rows[0]
+        srow = rows[1]
+        dense_zero(worldid, srow, 1, dense_J_out)
+      else:
+        efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
       if efcid >= njmax_in:
         return
 
+      # rows of dense row groups have no sparse entries; in island order, rows without storage stay
+      # empty (their force acts on no DOF)
+      empty = srow >= 0
+      if wp.static(is_sparse):
+        if island_cursor_out:
+          rowadr = rows_reserve(worldid, efcid, 1, wp.where(empty, 0, 1), njmax_in, njmax_nnz_in, efc_nnz_out)
+          empty = empty or rowadr < 0
+          rowadr = wp.max(rowadr, 0)
+
       if wp.static(is_sparse and newton):
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-        efc_jtdaj_adr_out[worldid, jgid] = efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = 1
+        if not empty:
+          jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+          efc_jtdaj_adr_out[worldid, jgid] = efcid
+          efc_jtdaj_nrow_out[worldid, jgid] = 1
 
       dofadr = jnt_dofadr[jntid]
 
       J = float(dist_min < dist_max) * 2.0 - 1.0
 
       if wp.static(is_sparse):
-        efc_J_rownnz_out[worldid, efcid] = 1
+        efc_J_rownnz_out[worldid, efcid] = wp.where(empty, 0, 1)
         efc_J_rowadr_out[worldid, efcid] = rowadr
-        efc_J_colind_out[worldid, 0, rowadr] = dofadr
-        efc_J_out[worldid, 0, rowadr] = J
+        if not empty:
+          efc_J_colind_out[worldid, 0, rowadr] = dofadr
+          efc_J_out[worldid, 0, rowadr] = J
+        dense_set(worldid, srow, 0, dofadr, J, dof_densecol_in, dense_J_out)
       else:
         for i in range(nv):
           efc_J_out[worldid, efcid, i] = 0.0
@@ -2311,7 +2764,9 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
 
 
 @cache_kernel
-def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False, rows: int = 0):
+  ROWS = rows
+
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -2331,6 +2786,12 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
     qvel_in: wp.array2d[float],
     njmax_in: int,
     njmax_nnz_in: int,
+    # In:
+    island_body_treeid_in: wp.array[int],
+    island_dof_treeid_in: wp.array[int],
+    island_rowadr_in: wp.array2d[int],
+    island_dense_in: wp.array2d[wp.vec4i],
+    dof_densecol_in: wp.array2d[int],
     # Data out:
     nl_out: wp.array[int],
     nefc_out: wp.array[int],
@@ -2349,8 +2810,13 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_vel_out: wp.array2d[float],
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
+    tree_island_out: wp.array2d[int],
     # Out:
     efc_nnz_out: wp.array[int],
+    island_parent_out: wp.array2d[int],
+    tree_nrow_out: wp.array2d[int],
+    island_cursor_out: wp.array2d[int],
+    dense_J_out: wp.array3d[float],
   ):
     worldid, jntlimitedid = wp.tid()
     jntid = jnt_limited_ball_adr[jntlimitedid]
@@ -2370,22 +2836,60 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
     active = pos < 0
 
     if active:
+      rows_tree0 = int(-1)
+      rows_tree1 = int(-1)
+      if wp.static(ROWS == ROWS_DISCOVER):
+        rows_tree0 = island_dof_treeid_in[jnt_dofadr[jntid]]
+        rows_discover(worldid, rows_tree0, rows_tree1, 1, ROW_LIMIT, tree_island_out, island_parent_out, tree_nrow_out)
+        return
+
       rowadr = int(0)
       if wp.static(is_sparse):
-        rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, 3, efc_nnz_out)
-        if rowadr < 0:
-          return
+        if not island_cursor_out:
+          rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, 3, efc_nnz_out)
+          if rowadr < 0:
+            return
 
       wp.atomic_add(nl_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-      efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+      srow = int(-1)
+      if island_cursor_out:
+        rows_tree0 = island_dof_treeid_in[jnt_dofadr[jntid]]
+        rows = rows_island(
+          tree_island_out,
+          worldid,
+          rows_tree0,
+          rows_tree1,
+          1,
+          ROW_LIMIT,
+          njmax_in,
+          island_rowadr_in,
+          island_dense_in,
+          nefc_out,
+          island_cursor_out,
+        )
+        efcid = rows[0]
+        srow = rows[1]
+        dense_zero(worldid, srow, 1, dense_J_out)
+      else:
+        efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
       if efcid >= njmax_in:
         return
 
+      # rows of dense row groups have no sparse entries; in island order, rows without storage stay
+      # empty (their force acts on no DOF)
+      empty = srow >= 0
+      if wp.static(is_sparse):
+        if island_cursor_out:
+          rowadr = rows_reserve(worldid, efcid, 1, wp.where(empty, 0, 3), njmax_in, njmax_nnz_in, efc_nnz_out)
+          empty = empty or rowadr < 0
+          rowadr = wp.max(rowadr, 0)
+
       if wp.static(is_sparse and newton):
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-        efc_jtdaj_adr_out[worldid, jgid] = efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = 1
+        if not empty:
+          jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+          efc_jtdaj_adr_out[worldid, jgid] = efcid
+          efc_jtdaj_nrow_out[worldid, jgid] = 1
 
       dofadr = jnt_dofadr[jntid]
       dof0 = dofadr + 0
@@ -2393,20 +2897,29 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
       dof2 = dofadr + 2
 
       if wp.static(is_sparse):
-        efc_J_rownnz_out[worldid, efcid] = 3
+        efc_J_rownnz_out[worldid, efcid] = wp.where(empty, 0, 3)
         efc_J_rowadr_out[worldid, efcid] = rowadr
 
         sparseid0 = rowadr + 0
         sparseid1 = rowadr + 1
         sparseid2 = rowadr + 2
 
-        efc_J_colind_out[worldid, 0, sparseid0] = dof0
-        efc_J_colind_out[worldid, 0, sparseid1] = dof1
-        efc_J_colind_out[worldid, 0, sparseid2] = dof2
+        if not empty:
+          efc_J_colind_out[worldid, 0, sparseid0] = dof0
+        if not empty:
+          efc_J_colind_out[worldid, 0, sparseid1] = dof1
+        if not empty:
+          efc_J_colind_out[worldid, 0, sparseid2] = dof2
 
-        efc_J_out[worldid, 0, sparseid0] = -axis[0]
-        efc_J_out[worldid, 0, sparseid1] = -axis[1]
-        efc_J_out[worldid, 0, sparseid2] = -axis[2]
+        if not empty:
+          efc_J_out[worldid, 0, sparseid0] = -axis[0]
+        dense_set(worldid, srow, 0, dof0, -axis[0], dof_densecol_in, dense_J_out)
+        if not empty:
+          efc_J_out[worldid, 0, sparseid1] = -axis[1]
+        dense_set(worldid, srow, 0, dof1, -axis[1], dof_densecol_in, dense_J_out)
+        if not empty:
+          efc_J_out[worldid, 0, sparseid2] = -axis[2]
+        dense_set(worldid, srow, 0, dof2, -axis[2], dof_densecol_in, dense_J_out)
       else:
         for i in range(nv):
           efc_J_out[worldid, efcid, i] = 0.0
@@ -2452,7 +2965,9 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
+def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False, rows: int = 0):
+  ROWS = rows
+
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
@@ -2474,6 +2989,12 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     ten_length_in: wp.array2d[float],
     njmax_in: int,
     njmax_nnz_in: int,
+    # In:
+    island_body_treeid_in: wp.array[int],
+    island_dof_treeid_in: wp.array[int],
+    island_rowadr_in: wp.array2d[int],
+    island_dense_in: wp.array2d[wp.vec4i],
+    dof_densecol_in: wp.array2d[int],
     # Data out:
     nl_out: wp.array[int],
     nefc_out: wp.array[int],
@@ -2492,8 +3013,13 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_vel_out: wp.array2d[float],
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
+    tree_island_out: wp.array2d[int],
     # Out:
     efc_nnz_out: wp.array[int],
+    island_parent_out: wp.array2d[int],
+    tree_nrow_out: wp.array2d[int],
+    island_cursor_out: wp.array2d[int],
+    dense_J_out: wp.array3d[float],
   ):
     worldid, tenlimitedid = wp.tid()
     tenid = tendon_limited_adr[tenlimitedid]
@@ -2508,30 +3034,79 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     active = pos < 0
 
     if active:
+      rows_tree0 = int(-1)
+      rows_tree1 = int(-1)
+      if wp.static(ROWS == ROWS_DISCOVER):
+        rows_tree0 = rows_tendon_tree(island_dof_treeid_in, ten_J_rownnz, ten_J_rowadr, ten_J_colind, tenid)
+        rows_discover_tendon(
+          island_dof_treeid_in,
+          ten_J_rownnz,
+          ten_J_rowadr,
+          ten_J_colind,
+          worldid,
+          rows_tree0,
+          tenid,
+          tree_island_out,
+          island_parent_out,
+        )
+        rows_discover(worldid, rows_tree0, rows_tree1, 1, ROW_LIMIT, tree_island_out, island_parent_out, tree_nrow_out)
+        return
+
       rownnz_tenJ = ten_J_rownnz[tenid]
       rowadr_efc = int(0)
       if wp.static(is_sparse):
-        rowadr_efc = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz_tenJ, efc_nnz_out)
-        if rowadr_efc < 0:
-          return
+        if not island_cursor_out:
+          rowadr_efc = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, 1, rownnz_tenJ, efc_nnz_out)
+          if rowadr_efc < 0:
+            return
 
       wp.atomic_add(nl_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-      efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+      srow = int(-1)
+      if island_cursor_out:
+        rows_tree0 = rows_tendon_tree(island_dof_treeid_in, ten_J_rownnz, ten_J_rowadr, ten_J_colind, tenid)
+        rows = rows_island(
+          tree_island_out,
+          worldid,
+          rows_tree0,
+          rows_tree1,
+          1,
+          ROW_LIMIT,
+          njmax_in,
+          island_rowadr_in,
+          island_dense_in,
+          nefc_out,
+          island_cursor_out,
+        )
+        efcid = rows[0]
+        srow = rows[1]
+        dense_zero(worldid, srow, 1, dense_J_out)
+      else:
+        efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
       if efcid >= njmax_in:
         return
 
+      # rows of dense row groups have no sparse entries; in island order, rows without storage stay
+      # empty (their force acts on no DOF)
+      empty = srow >= 0
+      if wp.static(is_sparse):
+        if island_cursor_out:
+          rowadr_efc = rows_reserve(worldid, efcid, 1, wp.where(empty, 0, rownnz_tenJ), njmax_in, njmax_nnz_in, efc_nnz_out)
+          empty = empty or rowadr_efc < 0
+          rowadr_efc = wp.max(rowadr_efc, 0)
+
       if wp.static(is_sparse and newton):
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-        efc_jtdaj_adr_out[worldid, jgid] = efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = 1
+        if not empty:
+          jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+          efc_jtdaj_adr_out[worldid, jgid] = efcid
+          efc_jtdaj_nrow_out[worldid, jgid] = 1
 
       Jqvel = float(0.0)
       scl = float(dist_min < dist_max) * 2.0 - 1.0
 
       rowadr_tenJ = ten_J_rowadr[tenid]
       if wp.static(is_sparse):
-        efc_J_rownnz_out[worldid, efcid] = rownnz_tenJ
+        efc_J_rownnz_out[worldid, efcid] = wp.where(empty, 0, rownnz_tenJ)
         efc_J_rowadr_out[worldid, efcid] = rowadr_efc
 
         for i in range(rownnz_tenJ):
@@ -2539,8 +3114,10 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
           sparseid_efc = rowadr_efc + i
           colind = ten_J_colind[sparseid_ten]
           J = scl * ten_J_in[worldid, sparseid_ten]
-          efc_J_colind_out[worldid, 0, sparseid_efc] = colind
-          efc_J_out[worldid, 0, sparseid_efc] = J
+          if not empty:
+            efc_J_colind_out[worldid, 0, sparseid_efc] = colind
+            efc_J_out[worldid, 0, sparseid_efc] = J
+          dense_set(worldid, srow, 0, colind, J, dof_densecol_in, dense_J_out)
           Jqvel += J * qvel_in[worldid, colind]
       else:
         nnz = int(0)
@@ -2590,7 +3167,8 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, flg_adhesion: bool):
+def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, flg_adhesion: bool, rows: int = 0):
+  ROWS = rows
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
 
@@ -2614,6 +3192,12 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
     worldid_in: wp.array[int],
     geom_in: wp.array[wp.vec2i],
     type_in: wp.array[int],
+    # In:
+    island_body_treeid_in: wp.array[int],
+    island_dof_treeid_in: wp.array[int],
+    island_rowadr_in: wp.array2d[int],
+    island_dense_in: wp.array2d[wp.vec4i],
+    dof_densecol_in: wp.array2d[int],
     # Data out:
     nefc_out: wp.array[int],
     contact_efc_address_out: wp.array2d[int],
@@ -2624,8 +3208,13 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
     efc_Jqvel_out: wp.array2d[float],
+    tree_island_out: wp.array2d[int],
     # Out:
     efc_nnz_out: wp.array[int],
+    island_parent_out: wp.array2d[int],
+    tree_nrow_out: wp.array2d[int],
+    island_cursor_out: wp.array2d[int],
+    dense_J_out: wp.array3d[float],
   ):
     conid = wp.tid()
 
@@ -2662,6 +3251,15 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
 
     worldid = worldid_in[conid]
 
+    rows_tree0 = int(-1)
+    rows_tree1 = int(-1)
+    if wp.static(ROWS == ROWS_DISCOVER):
+      rows_geom = geom_in[conid]
+      rows_tree0 = island_body_treeid_in[geom_bodyid[rows_geom[0]]]
+      rows_tree1 = island_body_treeid_in[geom_bodyid[rows_geom[1]]]
+      rows_discover(worldid, rows_tree0, rows_tree1, ndim, ROW_CONTACT, tree_island_out, island_parent_out, tree_nrow_out)
+      return
+
     rownnz = int(0)
     rowadr = int(0)
     if wp.static(IS_SPARSE):
@@ -2684,14 +3282,36 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
           da2 = dof_parentid[da2]
         rownnz += 1
 
-      rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, ndim, rownnz, efc_nnz_out)
-      if rowadr < 0:
-        for dim in range(ndim):
-          contact_efc_address_out[conid, dim] = -1
-        return
+      if not island_cursor_out:
+        rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, ndim, rownnz, efc_nnz_out)
+        if rowadr < 0:
+          for dim in range(ndim):
+            contact_efc_address_out[conid, dim] = -1
+          return
 
     # Allocate contiguous block of efcids for all dimids
-    base_efcid = wp.atomic_add(nefc_out, worldid, ndim)  # kernel_analyzer: ignore[atomic]
+    srow = int(-1)
+    if island_cursor_out:
+      rows_geom = geom_in[conid]
+      rows_tree0 = island_body_treeid_in[geom_bodyid[rows_geom[0]]]
+      rows_tree1 = island_body_treeid_in[geom_bodyid[rows_geom[1]]]
+      rows = rows_island(
+        tree_island_out,
+        worldid,
+        rows_tree0,
+        rows_tree1,
+        ndim,
+        ROW_CONTACT,
+        njmax_in,
+        island_rowadr_in,
+        island_dense_in,
+        nefc_out,
+        island_cursor_out,
+      )
+      base_efcid = rows[0]
+      srow = rows[1]
+    else:
+      base_efcid = wp.atomic_add(nefc_out, worldid, ndim)  # kernel_analyzer: ignore[atomic]
     for dim in range(ndim):
       efcid = base_efcid + dim
       if efcid >= njmax_in:
@@ -2704,18 +3324,28 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
           # the sparse Jacobian kernel accumulates into this
           efc_Jqvel_out[worldid, efcid] = 0.0
 
+    # rows of dense row groups have no sparse entries; in island order, rows without storage stay
+    # empty (their force acts on no DOF)
+    empty = srow >= 0
+    if wp.static(IS_SPARSE):
+      if island_cursor_out:
+        rowadr = rows_reserve(worldid, base_efcid, ndim, wp.where(empty, 0, rownnz), njmax_in, njmax_nnz_in, efc_nnz_out)
+        empty = empty or rowadr < 0
+        rowadr = wp.max(rowadr, 0)
+
     if wp.static(is_sparse and newton):
       if base_efcid < njmax_in:
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-        efc_jtdaj_adr_out[worldid, jgid] = base_efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = wp.min(ndim, njmax_in - base_efcid)
+        if not empty:
+          jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+          efc_jtdaj_adr_out[worldid, jgid] = base_efcid
+          efc_jtdaj_nrow_out[worldid, jgid] = wp.min(ndim, njmax_in - base_efcid)
 
     if wp.static(IS_SPARSE):
       for dim in range(ndim):
         efcid = base_efcid + dim
         if efcid < njmax_in:
           efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
-          efc_J_rownnz_out[worldid, efcid] = rownnz
+          efc_J_rownnz_out[worldid, efcid] = wp.where(empty, 0, rownnz)
 
   return kernel
 
@@ -4119,11 +4749,19 @@ def _efc_contact_jac_sparse_flex(cone_type: types.ConeType):
   return kernel
 
 
+@wp.func
+def _group_dof(dof: int, col: int, ndof: int) -> int:
+  """A group column's DOF, -1 past the group's DOFs (gathered loads read zero there)."""
+  return wp.where(col < ndof, dof, -1)
+
+
 @cache_kernel
-def _efc_contact_jac_dense(nv_pad: int, cone_type: types.ConeType, nmaxcondim: int):
-  # one tile spans the DOFs (dense Jacobians have at most 60); without DOFs it still writes Jqvel
-  TILE_SIZE = max(nv_pad, 1)
+def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, nmaxcondim: int, island: bool = False):
+  # one tile spans a world's DOFs (dense Jacobians have at most 60) or an island group's (its dense
+  # rows); without DOFs it still writes Jqvel
+  TILE_SIZE = max(tile_size, 1)
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
+  ISLAND = island
 
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
@@ -4141,6 +4779,9 @@ def _efc_contact_jac_dense(nv_pad: int, cone_type: types.ConeType, nmaxcondim: i
     cdof_in: wp.array2d[wp.spatial_vector],
     contact_efc_address_in: wp.array2d[int],
     efc_id_in: wp.array2d[int],
+    island_nefc_in: wp.array2d[int],
+    island_iefcadr_in: wp.array2d[int],
+    map_idof2dof_in: wp.array2d[int],
     njmax_in: int,
     # In:
     condim_in: wp.array[int],
@@ -4148,98 +4789,138 @@ def _efc_contact_jac_dense(nv_pad: int, cone_type: types.ConeType, nmaxcondim: i
     pos_in: wp.array[wp.vec3],
     frame_in: wp.array2d[wp.vec3],
     friction_in: wp.array2d[float],
+    island_rowadr_in: wp.array2d[int],
+    group_dense_in: wp.array2d[wp.vec4i],
+    group_idofadr_in: wp.array2d[int],
+    group_nv_in: wp.array2d[int],
+    group_island0_in: wp.array2d[int],
+    group_nisland_in: wp.array2d[int],
     # Data out:
     efc_J_out: wp.array3d[float],
     efc_Jqvel_out: wp.array2d[float],
   ):
-    worldid = wp.tid()
+    """Dense contact rows of a world, or (island) of an island group with dense rows.
 
-    cdof_tile = wp.tile_load(cdof_in[worldid], shape=TILE_SIZE, bounds_check=True)
-    qvel_tile = wp.tile_load(qvel_in[worldid], shape=TILE_SIZE, bounds_check=True)
+    efc_J_out holds a group's dense rows: a column per group DOF in group order, gathered (columns
+    past the group's DOFs read as zero). Only the contact rows of the group's islands are read: the
+    other rows may be written alongside.
+    """
+    worldid, groupid = wp.tid()
 
-    efcid_start = ne_in[worldid] + nf_in[worldid] + nl_in[worldid]
-    efcid_end = wp.min(nefc_in[worldid], njmax_in)
+    efcid_start = int(0)
+    efcid_end = int(0)
+    island0 = int(0)
+    nisland = int(1)
+    if wp.static(ISLAND):
+      if group_dense_in[worldid, groupid][0] == 0:
+        return
+      island0 = group_island0_in[worldid, groupid]
+      nisland = group_nisland_in[worldid, groupid]
+      dofs = wp.tile_map(
+        _group_dof,
+        wp.tile_load(map_idof2dof_in[worldid], shape=TILE_SIZE, offset=group_idofadr_in[worldid, groupid], bounds_check=True),
+        wp.tile_arange(TILE_SIZE, dtype=int),
+        wp.tile_full(TILE_SIZE, group_nv_in[worldid, groupid], dtype=int),
+      )
+      cdof_tile = wp.tile_load_indexed(cdof_in[worldid], dofs, shape=(TILE_SIZE,))
+      qvel_tile = wp.tile_load_indexed(qvel_in[worldid], dofs, shape=(TILE_SIZE,))
+    else:
+      efcid_start = ne_in[worldid] + nf_in[worldid] + nl_in[worldid]
+      efcid_end = wp.min(nefc_in[worldid], njmax_in)
+      cdof_tile = wp.tile_load(cdof_in[worldid], shape=TILE_SIZE, offset=0, bounds_check=True)
+      qvel_tile = wp.tile_load(qvel_in[worldid], shape=TILE_SIZE, offset=0, bounds_check=True)
 
     prev_conid = int(-1)
     condim = int(0)
 
-    for efcid in range(efcid_start, efcid_end):
-      conid = efc_id_in[worldid, efcid]
+    for k in range(nisland):
+      if wp.static(ISLAND):
+        islandid = island0 + k
+        efcid_start = island_rowadr_in[worldid, islandid * ROW_CLASSES + ROW_CONTACT]
+        efcid_end = wp.min(island_iefcadr_in[worldid, islandid] + island_nefc_in[worldid, islandid], njmax_in)
+      for efcid in range(efcid_start, efcid_end):
+        conid = efc_id_in[worldid, efcid]
 
-      # Recompute per-contact data only when contact changes
-      if conid != prev_conid:
-        prev_conid = conid
-        condim = condim_in[conid]
-        first_efcid = contact_efc_address_in[conid, 0]
+        # Recompute per-contact data only when contact changes
+        if conid != prev_conid:
+          prev_conid = conid
+          condim = condim_in[conid]
+          first_efcid = contact_efc_address_in[conid, 0]
 
-        geom = geom_in[conid]
-        body1 = geom_bodyid[geom[0]]
-        body2 = geom_bodyid[geom[1]]
+          geom = geom_in[conid]
+          body1 = geom_bodyid[geom[0]]
+          body2 = geom_bodyid[geom[1]]
 
-        con_pos = pos_in[conid]
-        offset1 = con_pos - subtree_com_in[worldid, body_rootid[body1]]
-        affects1_tile = wp.tile_load(body_isdofancestor[body1], shape=TILE_SIZE, bounds_check=True)
-        jacp1_tile = wp.tile_map(support._compute_jacp, cdof_tile, offset1, affects1_tile)
-        jacr1_tile = wp.tile_map(support._compute_jacr, cdof_tile, affects1_tile)
+          con_pos = pos_in[conid]
+          offset1 = con_pos - subtree_com_in[worldid, body_rootid[body1]]
+          if wp.static(ISLAND):
+            affects1_tile = wp.tile_load_indexed(body_isdofancestor[body1], dofs, shape=(TILE_SIZE,))
+          else:
+            affects1_tile = wp.tile_load(body_isdofancestor[body1], shape=TILE_SIZE, offset=0, bounds_check=True)
+          jacp1_tile = wp.tile_map(support._compute_jacp, cdof_tile, offset1, affects1_tile)
+          jacr1_tile = wp.tile_map(support._compute_jacr, cdof_tile, affects1_tile)
 
-        offset2 = con_pos - subtree_com_in[worldid, body_rootid[body2]]
-        affects2_tile = wp.tile_load(body_isdofancestor[body2], shape=TILE_SIZE, bounds_check=True)
-        jacp2_tile = wp.tile_map(support._compute_jacp, cdof_tile, offset2, affects2_tile)
-        jacr2_tile = wp.tile_map(support._compute_jacr, cdof_tile, affects2_tile)
+          offset2 = con_pos - subtree_com_in[worldid, body_rootid[body2]]
+          if wp.static(ISLAND):
+            affects2_tile = wp.tile_load_indexed(body_isdofancestor[body2], dofs, shape=(TILE_SIZE,))
+          else:
+            affects2_tile = wp.tile_load(body_isdofancestor[body2], shape=TILE_SIZE, offset=0, bounds_check=True)
+          jacp2_tile = wp.tile_map(support._compute_jacp, cdof_tile, offset2, affects2_tile)
+          jacr2_tile = wp.tile_map(support._compute_jacr, cdof_tile, affects2_tile)
 
-        jacp_dif_tile = wp.tile_map(wp.sub, jacp2_tile, jacp1_tile)
-        jacr_dif_tile = wp.tile_map(wp.sub, jacr2_tile, jacr1_tile)
+          jacp_dif_tile = wp.tile_map(wp.sub, jacp2_tile, jacp1_tile)
+          jacr_dif_tile = wp.tile_map(wp.sub, jacr2_tile, jacr1_tile)
 
-        if not wp.static(IS_ELLIPTIC):
-          frame_0 = frame_in[conid, 0]
-          Ji_0p_tile = wp.tile_map(wp.dot, jacp_dif_tile, frame_0)
+          if not wp.static(IS_ELLIPTIC):
+            frame_0 = frame_in[conid, 0]
+            Ji_0p_tile = wp.tile_map(wp.dot, jacp_dif_tile, frame_0)
 
-          if condim > 1:
-            Ji_0r_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_0)
-            frame_1 = frame_in[conid, 1]
-            Ji_1p_tile = wp.tile_map(wp.dot, jacp_dif_tile, frame_1)
-            Ji_1r_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_1)
-            frame_2 = frame_in[conid, 2]
-            Ji_2p_tile = wp.tile_map(wp.dot, jacp_dif_tile, frame_2)
-            Ji_2r_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_2)
+            if condim > 1:
+              Ji_0r_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_0)
+              frame_1 = frame_in[conid, 1]
+              Ji_1p_tile = wp.tile_map(wp.dot, jacp_dif_tile, frame_1)
+              Ji_1r_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_1)
+              frame_2 = frame_in[conid, 2]
+              Ji_2p_tile = wp.tile_map(wp.dot, jacp_dif_tile, frame_2)
+              Ji_2r_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_2)
 
-      if wp.static(IS_ELLIPTIC):
-        dimid = efcid - first_efcid
-        if wp.static(nmaxcondim <= 3) or dimid < 3:
-          frame_idx = dimid
-        else:
-          frame_idx = dimid - 3
-
-        frame_row = frame_in[conid, frame_idx]
-
-        if wp.static(nmaxcondim <= 3) or dimid < 3:
-          J_tile = wp.tile_map(wp.dot, jacp_dif_tile, frame_row)
-        else:
-          J_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_row)
-      else:
-        J_tile = Ji_0p_tile
-        if wp.static(nmaxcondim > 1) and condim > 1:
+        if wp.static(IS_ELLIPTIC):
           dimid = efcid - first_efcid
-          dimid2 = dimid / 2 + 1
-          frii = friction_in[conid, dimid2 - 1]
-          frii_sign = frii * (1.0 - 2.0 * float(dimid & 1))
+          if wp.static(nmaxcondim <= 3) or dimid < 3:
+            frame_idx = dimid
+          else:
+            frame_idx = dimid - 3
 
-          if dimid2 == 1:
-            J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_1p_tile, frii_sign))
-          elif dimid2 == 2:
-            J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_2p_tile, frii_sign))
-          elif wp.static(nmaxcondim > 3) and dimid2 == 3:
-            J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_0r_tile, frii_sign))
-          elif wp.static(nmaxcondim > 4) and dimid2 == 4:
-            J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_1r_tile, frii_sign))
-          elif wp.static(nmaxcondim > 4):
-            J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_2r_tile, frii_sign))
+          frame_row = frame_in[conid, frame_idx]
 
-      wp.tile_store(efc_J_out[worldid, efcid], J_tile, bounds_check=True)
+          if wp.static(nmaxcondim <= 3) or dimid < 3:
+            J_tile = wp.tile_map(wp.dot, jacp_dif_tile, frame_row)
+          else:
+            J_tile = wp.tile_map(wp.dot, jacr_dif_tile, frame_row)
+        else:
+          J_tile = Ji_0p_tile
+          if wp.static(nmaxcondim > 1) and condim > 1:
+            dimid = efcid - first_efcid
+            dimid2 = dimid / 2 + 1
+            frii = friction_in[conid, dimid2 - 1]
+            frii_sign = frii * (1.0 - 2.0 * float(dimid & 1))
 
-      Jqvel_tile = wp.tile_map(wp.mul, J_tile, qvel_tile)
-      Jqvel_sum = wp.tile_reduce(wp.add, Jqvel_tile)
-      wp.tile_store(efc_Jqvel_out[worldid], Jqvel_sum, offset=efcid)
+            if dimid2 == 1:
+              J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_1p_tile, frii_sign))
+            elif dimid2 == 2:
+              J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_2p_tile, frii_sign))
+            elif wp.static(nmaxcondim > 3) and dimid2 == 3:
+              J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_0r_tile, frii_sign))
+            elif wp.static(nmaxcondim > 4) and dimid2 == 4:
+              J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_1r_tile, frii_sign))
+            elif wp.static(nmaxcondim > 4):
+              J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_2r_tile, frii_sign))
+
+        wp.tile_store(efc_J_out[worldid, efcid], J_tile, bounds_check=True)
+
+        Jqvel_tile = wp.tile_map(wp.mul, J_tile, qvel_tile)
+        Jqvel_sum = wp.tile_reduce(wp.add, Jqvel_tile)
+        wp.tile_store(efc_Jqvel_out[worldid], Jqvel_sum, offset=efcid)
 
   return kernel
 
@@ -4715,8 +5396,11 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discre
     nf_in: wp.array[int],
     nl_in: wp.array[int],
     nefc_in: wp.array[int],
+    nisland_in: wp.array[int],
     contact_efc_address_in: wp.array2d[int],
     efc_Jqvel_in: wp.array2d[float],
+    island_nefc_in: wp.array2d[int],
+    island_iefcadr_in: wp.array2d[int],
     njmax_in: int,
     # In:
     dist_in: wp.array[float],
@@ -4729,6 +5413,7 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discre
     solimp_in: wp.array[vec5],
     adhesion_in: wp.array[float],
     efc_stride_in: int,
+    island_rowadr_in: wp.array2d[int],
     # Data out:
     efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
@@ -4746,108 +5431,116 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discre
     impratio_invsqrt = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
     body_invweight0_id = worldid % body_invweight0.shape[0]
 
-    for efcid in range(efcid_start, efcid_end, efc_stride_in):
-      conid = efc_id_out[worldid, efcid]
-      dimid = efcid - contact_efc_address_in[conid, 0]
-      condim = condim_in[conid]
+    # island order (island_rowadr_in): an island's contact rows end its rows
+    nseg = int(1)
+    if island_rowadr_in:
+      nseg = nisland_in[worldid]
+    for seg in range(nseg):
+      if island_rowadr_in:
+        efcid_start = island_rowadr_in[worldid, seg * ROW_CLASSES + ROW_CONTACT] + tid
+        efcid_end = wp.min(island_iefcadr_in[worldid, seg] + island_nefc_in[worldid, seg], njmax_in)
+      for efcid in range(efcid_start, efcid_end, efc_stride_in):
+        conid = efc_id_out[worldid, efcid]
+        dimid = efcid - contact_efc_address_in[conid, 0]
+        condim = condim_in[conid]
 
-      includemargin = includemargin_in[conid]
-      pos = dist_in[conid] - includemargin
+        includemargin = includemargin_in[conid]
+        pos = dist_in[conid] - includemargin
 
-      geom = geom_in[conid]
-      Jqvel = efc_Jqvel_in[worldid, efcid]
+        geom = geom_in[conid]
+        Jqvel = efc_Jqvel_in[worldid, efcid]
 
-      body1 = geom_bodyid[geom[0]]
-      body2 = geom_bodyid[geom[1]]
+        body1 = geom_bodyid[geom[0]]
+        body2 = geom_bodyid[geom[1]]
 
-      invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
+        invweight = body_invweight0[body_invweight0_id, body1][0] + body_invweight0[body_invweight0_id, body2][0]
 
-      invweight_scale = 1.0
-      solref = solref_in[conid]
-      solimp = solimp_in[conid]
-      ref = solref
-      pos_aref = pos
+        invweight_scale = 1.0
+        solref = solref_in[conid]
+        solimp = solimp_in[conid]
+        ref = solref
+        pos_aref = pos
 
-      if wp.static(IS_ELLIPTIC):
-        if dimid > 0:
-          solreffriction = solreffriction_in[conid]
+        if wp.static(IS_ELLIPTIC):
+          if dimid > 0:
+            solreffriction = solreffriction_in[conid]
 
-          # non-normal directions use solreffriction (if non-zero)
-          if solreffriction[0] or solreffriction[1]:
-            ref = solreffriction
+            # non-normal directions use solreffriction (if non-zero)
+            if solreffriction[0] or solreffriction[1]:
+              ref = solreffriction
 
-          invweight_scale = impratio_invsqrt * impratio_invsqrt
-          if dimid > 1:
+            invweight_scale = impratio_invsqrt * impratio_invsqrt
+            if dimid > 1:
+              friction = friction_in[conid]
+              fri0 = friction[0]
+              frii = friction[dimid - 1]
+              fri = fri0 * fri0 / (frii * frii)
+              invweight_scale *= fri
+
+            pos_aref = 0.0
+        else:
+          if condim > 1:
             friction = friction_in[conid]
             fri0 = friction[0]
-            frii = friction[dimid - 1]
-            fri = fri0 * fri0 / (frii * frii)
-            invweight_scale *= fri
+            invweight = invweight + fri0 * fri0 * invweight
+            invweight = invweight * 2.0 * fri0 * fri0 * impratio_invsqrt * impratio_invsqrt
 
-          pos_aref = 0.0
-      else:
-        if condim > 1:
-          friction = friction_in[conid]
-          fri0 = friction[0]
-          invweight = invweight + fri0 * fri0 * invweight
-          invweight = invweight * 2.0 * fri0 * fri0 * impratio_invsqrt * impratio_invsqrt
+        if condim == 1:
+          efc_type = ConstraintType.CONTACT_FRICTIONLESS
+        elif wp.static(IS_ELLIPTIC):
+          efc_type = ConstraintType.CONTACT_ELLIPTIC
+        else:
+          efc_type = ConstraintType.CONTACT_PYRAMIDAL
 
-      if condim == 1:
-        efc_type = ConstraintType.CONTACT_FRICTIONLESS
-      elif wp.static(IS_ELLIPTIC):
-        efc_type = ConstraintType.CONTACT_ELLIPTIC
-      else:
-        efc_type = ConstraintType.CONTACT_PYRAMIDAL
+        row_disableflags = opt_disableflags
+        if wp.static(IS_ELLIPTIC and is_discrete):
+          if dimid > 0:
+            row_disableflags = opt_disableflags | DisableBit.REFSAFE
 
-      row_disableflags = opt_disableflags
-      if wp.static(IS_ELLIPTIC and is_discrete):
-        if dimid > 0:
-          row_disableflags = opt_disableflags | DisableBit.REFSAFE
+        _efc_row(
+          row_disableflags,
+          worldid,
+          timestep,
+          efcid,
+          pos_aref,
+          pos,
+          invweight,
+          solref,
+          solimp,
+          includemargin,
+          Jqvel,
+          0.0,
+          efc_type,
+          conid,
+          is_discrete,
+          0.0,
+          efc_type_out,
+          efc_id_out,
+          efc_pos_out,
+          efc_margin_out,
+          efc_D_out,
+          efc_vel_out,
+          efc_aref_out,
+          efc_frictionloss_out,
+        )
 
-      _efc_row(
-        row_disableflags,
-        worldid,
-        timestep,
-        efcid,
-        pos_aref,
-        pos,
-        invweight,
-        solref,
-        solimp,
-        includemargin,
-        Jqvel,
-        0.0,
-        efc_type,
-        conid,
-        is_discrete,
-        0.0,
-        efc_type_out,
-        efc_id_out,
-        efc_pos_out,
-        efc_margin_out,
-        efc_D_out,
-        efc_vel_out,
-        efc_aref_out,
-        efc_frictionloss_out,
-      )
+        if wp.static(IS_ELLIPTIC):
+          if dimid > 0:
+            # Preserve elliptic friction ratios after _efc_row floors normal regularization.
+            efc_D_out[worldid, efcid] /= invweight_scale
 
-      if wp.static(IS_ELLIPTIC):
-        if dimid > 0:
-          # Preserve elliptic friction ratios after _efc_row floors normal regularization.
-          efc_D_out[worldid, efcid] /= invweight_scale
+            b_fri = _contact_kbimp(opt_disableflags, timestep, ref, solimp, pos, is_discrete)[1]
+            f_fri = 1.0 + timestep * b_fri if is_discrete else 1.0
+            efc_aref_out[worldid, efcid] = -b_fri * Jqvel / f_fri
 
-          b_fri = _contact_kbimp(opt_disableflags, timestep, ref, solimp, pos, is_discrete)[1]
-          f_fri = 1.0 + timestep * b_fri if is_discrete else 1.0
-          efc_aref_out[worldid, efcid] = -b_fri * Jqvel / f_fri
-
-      if wp.static(flg_adhesion):
-        adhesion = adhesion_in[conid]
-        if adhesion != 0.0 and (dimid == 0 or not wp.static(IS_ELLIPTIC)):
-          efc_D = efc_D_out[worldid, efcid]
-          if efc_D > 0.0:
-            if not wp.static(IS_ELLIPTIC) and condim > 1:
-              adhesion = adhesion / float(2 * (condim - 1))
-            efc_aref_out[worldid, efcid] += (1.0 / efc_D) * adhesion
+        if wp.static(flg_adhesion):
+          adhesion = adhesion_in[conid]
+          if adhesion != 0.0 and (dimid == 0 or not wp.static(IS_ELLIPTIC)):
+            efc_D = efc_D_out[worldid, efcid]
+            if efc_D > 0.0:
+              if not wp.static(IS_ELLIPTIC) and condim > 1:
+                adhesion = adhesion / float(2 * (condim - 1))
+              efc_aref_out[worldid, efcid] += (1.0 / efc_D) * adhesion
 
   return kernel
 
@@ -5317,23 +6010,32 @@ def _add_surface_vel(is_pyramidal: bool):
   return kernel
 
 
-@event_scope
-def make_constraint(m: types.Model, d: types.Data):
-  """Creates constraint jacobians and other supporting data."""
+def _make_rows(
+  m: types.Model,
+  d: types.Data,
+  rows: int,
+  efc_nnz: wp.array,
+  island_parent: Optional[wp.array] = None,
+  tree_nrow: Optional[wp.array] = None,
+  island_rowadr: Optional[wp.array] = None,
+  island_cursor: Optional[wp.array] = None,
+  tree_island: Optional[wp.array] = None,
+  island_dense: Optional[wp.array] = None,
+  dof_densecol: Optional[wp.array] = None,
+  dense_J: Optional[wp.array] = None,
+  contacts: Optional[bool] = None,
+):
+  """make_constraint's row kernels in one row mode (island.ROWS_*).
+
+  Without island arrays, rows are in class order per world; ROWS_DISCOVER has no dense arrays.
+  contacts: only the contact rows (True) or only the others (False); None: all.
+  """
   newton = m.opt.solver == types.SolverType.NEWTON
   is_discrete = m.opt.integrator == types.IntegratorType.DISCRETE
-  efc_nnz = wp.empty((d.nworld,), dtype=int)
-
-  wp.launch(
-    _zero_constraint_counts,
-    dim=d.nworld,
-    inputs=[d.ne, d.nf, d.nl, d.nefc, d.efc.jtdaj_nblock, efc_nnz],
-  )
-
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
-    if not (m.opt.disableflags & types.DisableBit.EQUALITY):
+    if contacts is not True and not (m.opt.disableflags & types.DisableBit.EQUALITY):
       wp.launch(
-        _equality_connect(m.is_sparse, newton, is_discrete),
+        _equality_connect(m.is_sparse, newton, is_discrete, rows),
         dim=(d.nworld, m.eq_connect_adr.size),
         inputs=[
           m.nv,
@@ -5372,6 +6074,11 @@ def make_constraint(m: types.Model, d: types.Data):
           d.subtree_linvel,
           d.njmax,
           d.njmax_nnz,
+          m.body_treeid,
+          m.dof_treeid,
+          island_rowadr,
+          island_dense,
+          dof_densecol,
         ],
         outputs=[
           d.ne,
@@ -5391,11 +6098,16 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
+          tree_island,
           efc_nnz,
+          island_parent,
+          tree_nrow,
+          island_cursor,
+          dense_J,
         ],
       )
       wp.launch(
-        _equality_weld(m.is_sparse, newton, is_discrete),
+        _equality_weld(m.is_sparse, newton, is_discrete, rows),
         dim=(d.nworld, m.eq_wld_adr.size),
         inputs=[
           m.nv,
@@ -5435,6 +6147,11 @@ def make_constraint(m: types.Model, d: types.Data):
           d.subtree_linvel,
           d.njmax,
           d.njmax_nnz,
+          m.body_treeid,
+          m.dof_treeid,
+          island_rowadr,
+          island_dense,
+          dof_densecol,
         ],
         outputs=[
           d.ne,
@@ -5454,11 +6171,16 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
+          tree_island,
           efc_nnz,
+          island_parent,
+          tree_nrow,
+          island_cursor,
+          dense_J,
         ],
       )
       wp.launch(
-        _equality_joint(m.is_sparse, newton, is_discrete),
+        _equality_joint(m.is_sparse, newton, is_discrete, rows),
         dim=(d.nworld, m.eq_jnt_adr.size),
         inputs=[
           m.nv,
@@ -5479,6 +6201,11 @@ def make_constraint(m: types.Model, d: types.Data):
           d.eq_active,
           d.njmax,
           d.njmax_nnz,
+          m.body_treeid,
+          m.dof_treeid,
+          island_rowadr,
+          island_dense,
+          dof_densecol,
         ],
         outputs=[
           d.ne,
@@ -5498,11 +6225,16 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
+          tree_island,
           efc_nnz,
+          island_parent,
+          tree_nrow,
+          island_cursor,
+          dense_J,
         ],
       )
       wp.launch(
-        _equality_tendon(m.is_sparse, newton, is_discrete),
+        _equality_tendon(m.is_sparse, newton, is_discrete, rows),
         dim=(d.nworld, m.eq_ten_adr.size),
         inputs=[
           m.nv,
@@ -5525,6 +6257,11 @@ def make_constraint(m: types.Model, d: types.Data):
           d.ten_length,
           d.njmax,
           d.njmax_nnz,
+          m.body_treeid,
+          m.dof_treeid,
+          island_rowadr,
+          island_dense,
+          dof_densecol,
         ],
         outputs=[
           d.ne,
@@ -5544,7 +6281,12 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
+          tree_island,
           efc_nnz,
+          island_parent,
+          tree_nrow,
+          island_cursor,
+          dense_J,
         ],
       )
 
@@ -5676,9 +6418,9 @@ def make_constraint(m: types.Model, d: types.Data):
             ],
           )
 
-    if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS):
+    if contacts is not True and not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS):
       wp.launch(
-        _friction_dof(m.is_sparse, is_discrete),
+        _friction_dof(m.is_sparse, is_discrete, rows),
         dim=(d.nworld, m.nv),
         inputs=[
           m.nv,
@@ -5691,6 +6433,11 @@ def make_constraint(m: types.Model, d: types.Data):
           d.qvel,
           d.njmax,
           d.njmax_nnz,
+          m.body_treeid,
+          m.dof_treeid,
+          island_rowadr,
+          island_dense,
+          dof_densecol,
         ],
         outputs=[
           d.nf,
@@ -5708,12 +6455,17 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.aref,
           d.efc.frictionloss,
           d.dof_frictionadr,
+          tree_island,
           efc_nnz,
+          island_parent,
+          tree_nrow,
+          island_cursor,
+          dense_J,
         ],
       )
 
       wp.launch(
-        _friction_tendon(m.is_sparse, newton, is_discrete),
+        _friction_tendon(m.is_sparse, newton, is_discrete, rows),
         dim=(d.nworld, m.ntendon),
         inputs=[
           m.nv,
@@ -5730,6 +6482,11 @@ def make_constraint(m: types.Model, d: types.Data):
           d.ten_J,
           d.njmax,
           d.njmax_nnz,
+          m.body_treeid,
+          m.dof_treeid,
+          island_rowadr,
+          island_dense,
+          dof_densecol,
         ],
         outputs=[
           d.nf,
@@ -5749,14 +6506,19 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
+          tree_island,
           efc_nnz,
+          island_parent,
+          tree_nrow,
+          island_cursor,
+          dense_J,
         ],
       )
 
     # limit
-    if not (m.opt.disableflags & types.DisableBit.LIMIT):
+    if contacts is not True and not (m.opt.disableflags & types.DisableBit.LIMIT):
       wp.launch(
-        _limit_ball(m.is_sparse, newton, is_discrete),
+        _limit_ball(m.is_sparse, newton, is_discrete, rows),
         dim=(d.nworld, m.jnt_limited_ball_adr.size),
         inputs=[
           m.nv,
@@ -5774,6 +6536,11 @@ def make_constraint(m: types.Model, d: types.Data):
           d.qvel,
           d.njmax,
           d.njmax_nnz,
+          m.body_treeid,
+          m.dof_treeid,
+          island_rowadr,
+          island_dense,
+          dof_densecol,
         ],
         outputs=[
           d.nl,
@@ -5793,12 +6560,17 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
+          tree_island,
           efc_nnz,
+          island_parent,
+          tree_nrow,
+          island_cursor,
+          dense_J,
         ],
       )
 
       wp.launch(
-        _limit_slide_hinge(m.is_sparse, newton, is_discrete),
+        _limit_slide_hinge(m.is_sparse, newton, is_discrete, rows),
         dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
         inputs=[
           m.nv,
@@ -5816,6 +6588,11 @@ def make_constraint(m: types.Model, d: types.Data):
           d.qvel,
           d.njmax,
           d.njmax_nnz,
+          m.body_treeid,
+          m.dof_treeid,
+          island_rowadr,
+          island_dense,
+          dof_densecol,
         ],
         outputs=[
           d.nl,
@@ -5835,12 +6612,17 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
+          tree_island,
           efc_nnz,
+          island_parent,
+          tree_nrow,
+          island_cursor,
+          dense_J,
         ],
       )
 
       wp.launch(
-        _limit_tendon(m.is_sparse, newton, is_discrete),
+        _limit_tendon(m.is_sparse, newton, is_discrete, rows),
         dim=(d.nworld, m.tendon_limited_adr.size),
         inputs=[
           m.nv,
@@ -5860,6 +6642,11 @@ def make_constraint(m: types.Model, d: types.Data):
           d.ten_length,
           d.njmax,
           d.njmax_nnz,
+          m.body_treeid,
+          m.dof_treeid,
+          island_rowadr,
+          island_dense,
+          dof_densecol,
         ],
         outputs=[
           d.nl,
@@ -5879,12 +6666,17 @@ def make_constraint(m: types.Model, d: types.Data):
           d.efc.vel,
           d.efc.aref,
           d.efc.frictionloss,
+          tree_island,
           efc_nnz,
+          island_parent,
+          tree_nrow,
+          island_cursor,
+          dense_J,
         ],
       )
 
     # contact
-    if not (m.opt.disableflags & types.DisableBit.CONTACT):
+    if contacts is not False and not (m.opt.disableflags & types.DisableBit.CONTACT):
       nmaxdim = int(m.nmaxpyramid) if m.opt.cone == types.ConeType.PYRAMIDAL else int(m.nmaxcondim)
 
       # Reinterpret to avoid unnecessary loads
@@ -5966,7 +6758,7 @@ def make_constraint(m: types.Model, d: types.Data):
         )
       else:
         wp.launch(
-          _efc_contact_init(m.opt.cone, m.is_sparse, newton, m.flg_adhesion),
+          _efc_contact_init(m.opt.cone, m.is_sparse, newton, m.flg_adhesion, rows),
           dim=d.naconmax,
           inputs=[
             m.body_weldid,
@@ -5984,6 +6776,11 @@ def make_constraint(m: types.Model, d: types.Data):
             d.contact.worldid,
             d.contact.geom,
             d.contact.type,
+            m.body_treeid,
+            m.dof_treeid,
+            island_rowadr,
+            island_dense,
+            dof_densecol,
           ],
           outputs=[
             d.nefc,
@@ -5995,127 +6792,290 @@ def make_constraint(m: types.Model, d: types.Data):
             d.efc.J_rownnz,
             d.efc.J_rowadr,
             d.efc.Jqvel,
+            tree_island,
             efc_nnz,
+            island_parent,
+            tree_nrow,
+            island_cursor,
+            dense_J,
           ],
         )
 
-      det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
-      if m.is_sparse:
-        if has_flex:
-          wp.launch(
-            _efc_contact_jac_sparse_flex(m.opt.cone),
-            dim=(d.naconmax, nmaxdim),
-            inputs=[
-              m.body_parentid,
-              m.body_rootid,
-              m.body_weldid,
-              m.body_dofnum,
-              m.body_dofadr,
-              m.jnt_dofadr,
-              m.jnt_bodyid,
-              m.dof_bodyid,
-              m.dof_parentid,
-              m.geom_type,
-              m.geom_bodyid,
-              m.flex_dim,
-              m.flex_interp,
-              m.flex_cellnum,
-              m.flex_celladr,
-              m.flex_nodeadr,
-              m.flex_vertadr,
-              m.flex_elemadr,
-              m.flex_elemnum,
-              m.flex_elemdataadr,
-              m.flex_plasticadr,
-              m.flex_nodebodyid,
-              m.flex_vertbodyid,
-              m.flex_cellempty,
-              m.flex_elem,
-              m.flex_vert0,
-              m.body_isdofancestor,
-              m.flex_rod_has_twist,
-              m.flex_rod_edgeadr,
-              m.flex_rod_edgenum,
-              m.flex_rodedge_jnt,
-              m.flex_elem_rodedge,
-              m.flex_vert_rodelem,
-              d.qvel,
-              d.plastic,
-              d.subtree_com,
-              d.cdof,
-              d.flexvert_xpos,
-              d.contact.efc_address,
-              d.efc.J_rownnz,
-              d.efc.J_rowadr,
-              d.nacon,
-              d.contact.dist,
-              d.contact.dim,
-              d.contact.geom,
-              d.contact.flex,
-              d.contact.elem,
-              d.contact.vert,
-              d.contact.pos,
-              contact_frame_2d,
-              contact_friction_2d,
-              d.contact.worldid,
-            ],
-            outputs=[
-              d.efc.J_colind,
-              d.efc.J,
-              d.efc.Jqvel,
-            ],
-          )
+      if rows != island.ROWS_DISCOVER:
+        det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+        if m.is_sparse:
+          if has_flex:
+            wp.launch(
+              _efc_contact_jac_sparse_flex(m.opt.cone),
+              dim=(d.naconmax, nmaxdim),
+              inputs=[
+                m.body_parentid,
+                m.body_rootid,
+                m.body_weldid,
+                m.body_dofnum,
+                m.body_dofadr,
+                m.jnt_dofadr,
+                m.jnt_bodyid,
+                m.dof_bodyid,
+                m.dof_parentid,
+                m.geom_type,
+                m.geom_bodyid,
+                m.flex_dim,
+                m.flex_interp,
+                m.flex_cellnum,
+                m.flex_celladr,
+                m.flex_nodeadr,
+                m.flex_vertadr,
+                m.flex_elemadr,
+                m.flex_elemnum,
+                m.flex_elemdataadr,
+                m.flex_plasticadr,
+                m.flex_nodebodyid,
+                m.flex_vertbodyid,
+                m.flex_cellempty,
+                m.flex_elem,
+                m.flex_vert0,
+                m.body_isdofancestor,
+                m.flex_rod_has_twist,
+                m.flex_rod_edgeadr,
+                m.flex_rod_edgenum,
+                m.flex_rodedge_jnt,
+                m.flex_elem_rodedge,
+                m.flex_vert_rodelem,
+                d.qvel,
+                d.plastic,
+                d.subtree_com,
+                d.cdof,
+                d.flexvert_xpos,
+                d.contact.efc_address,
+                d.efc.J_rownnz,
+                d.efc.J_rowadr,
+                d.nacon,
+                d.contact.dist,
+                d.contact.dim,
+                d.contact.geom,
+                d.contact.flex,
+                d.contact.elem,
+                d.contact.vert,
+                d.contact.pos,
+                contact_frame_2d,
+                contact_friction_2d,
+                d.contact.worldid,
+              ],
+              outputs=[
+                d.efc.J_colind,
+                d.efc.J,
+                d.efc.Jqvel,
+              ],
+            )
+          else:
+            # Loop over the active contacts with a GPU-sized grid rather than launching naconmax
+            # threads; several waves, since longer per-thread loops over contacts are slower.
+            ncontact_per_pass = d.naconmax
+            if wp.get_device().is_cuda:
+              ncontact_per_pass = min(ncontact_per_pass, 1024 * wp.get_device().sm_count)
+            ncontact_stride = max(ncontact_per_pass, 1)
+            max_records = ((d.naconmax + ncontact_stride - 1) // ncontact_stride) * nmaxdim if det_atomics else 0
+            wp.launch(
+              _efc_contact_jac_sparse(m.opt.cone, nmaxdim, max_records, det_atomics),
+              dim=ncontact_stride * _CONTACT_JAC_LANES,
+              block_dim=m.block_dim.contact_jac_sparse,
+              inputs=[
+                m.body_rootid,
+                m.body_weldid,
+                m.body_dofnum,
+                m.body_dofadr,
+                m.dof_parentid,
+                m.geom_bodyid,
+                d.qvel,
+                d.subtree_com,
+                d.cdof,
+                d.contact.efc_address,
+                d.efc.J_rownnz,
+                d.efc.J_rowadr,
+                d.naconmax,
+                d.nacon,
+                d.contact.dim,
+                d.contact.geom,
+                d.contact.pos,
+                contact_frame_2d,
+                contact_friction_2d,
+                d.contact.worldid,
+                ncontact_per_pass,
+              ],
+              outputs=[
+                d.efc.J_colind,
+                d.efc.J,
+                d.efc.Jqvel,
+              ],
+            )
+            if island_dense is not None:
+              g = island.group_buffers(m, d)
+              wp.launch_tiled(
+                _efc_contact_jac_dense(dense_J.shape[2], m.opt.cone, int(m.nmaxcondim), True),
+                dim=(d.nworld, m.ntree),
+                inputs=[
+                  m.body_rootid,
+                  m.geom_bodyid,
+                  m.body_isdofancestor,
+                  d.ne,
+                  d.nf,
+                  d.nl,
+                  d.nefc,
+                  d.qvel,
+                  d.subtree_com,
+                  d.cdof,
+                  d.contact.efc_address,
+                  d.efc.id,
+                  d.island_nefc,
+                  d.island_iefcadr,
+                  d.map_idof2dof,
+                  d.njmax,
+                  d.contact.dim,
+                  d.contact.geom,
+                  d.contact.pos,
+                  contact_frame_2d,
+                  contact_friction_2d,
+                  island_rowadr,
+                  g.group_dense,
+                  g.group_idofadr,
+                  g.group_nv,
+                  g.group_island0,
+                  g.group_nisland,
+                ],
+                outputs=[dense_J, d.efc.Jqvel],
+                block_dim=m.block_dim.contact_jac_tiled,
+              )
         else:
-          # Loop over the active contacts with a GPU-sized grid rather than launching naconmax
-          # threads; several waves, since longer per-thread loops over contacts are slower.
-          ncontact_per_pass = d.naconmax
-          if wp.get_device().is_cuda:
-            ncontact_per_pass = min(ncontact_per_pass, 1024 * wp.get_device().sm_count)
-          ncontact_stride = max(ncontact_per_pass, 1)
-          max_records = ((d.naconmax + ncontact_stride - 1) // ncontact_stride) * nmaxdim if det_atomics else 0
+          if has_flex:
+            wp.launch_tiled(
+              _efc_contact_jac_dense_flex(m.nv_pad, m.opt.cone, int(m.nmaxcondim)),
+              dim=d.nworld,
+              inputs=[
+                m.body_rootid,
+                m.jnt_dofadr,
+                m.jnt_bodyid,
+                m.geom_type,
+                m.geom_bodyid,
+                m.flex_dim,
+                m.flex_interp,
+                m.flex_cellnum,
+                m.flex_celladr,
+                m.flex_nodeadr,
+                m.flex_vertadr,
+                m.flex_elemadr,
+                m.flex_elemnum,
+                m.flex_elemdataadr,
+                m.flex_plasticadr,
+                m.flex_nodebodyid,
+                m.flex_vertbodyid,
+                m.flex_cellempty,
+                m.flex_elem,
+                m.flex_vert0,
+                m.body_isdofancestor,
+                m.flex_rod_has_twist,
+                m.flex_rod_edgeadr,
+                m.flex_rod_edgenum,
+                m.flex_rodedge_jnt,
+                m.flex_elem_rodedge,
+                m.flex_vert_rodelem,
+                d.ne,
+                d.nf,
+                d.nl,
+                d.nefc,
+                d.qvel,
+                d.plastic,
+                d.subtree_com,
+                d.cdof,
+                d.flexvert_xpos,
+                d.contact.efc_address,
+                d.efc.id,
+                d.njmax,
+                d.contact.dist,
+                d.contact.dim,
+                d.contact.geom,
+                d.contact.flex,
+                d.contact.elem,
+                d.contact.vert,
+                d.contact.pos,
+                contact_frame_2d,
+                contact_friction_2d,
+              ],
+              outputs=[
+                d.efc.J,
+                d.efc.Jqvel,
+              ],
+              block_dim=m.block_dim.contact_jac_tiled,
+            )
+          else:
+            wp.launch_tiled(
+              _efc_contact_jac_dense(m.nv_pad, m.opt.cone, int(m.nmaxcondim)),
+              dim=(d.nworld, 1),
+              inputs=[
+                m.body_rootid,
+                m.geom_bodyid,
+                m.body_isdofancestor,
+                d.ne,
+                d.nf,
+                d.nl,
+                d.nefc,
+                d.qvel,
+                d.subtree_com,
+                d.cdof,
+                d.contact.efc_address,
+                d.efc.id,
+                None,
+                None,
+                None,
+                d.njmax,
+                d.contact.dim,
+                d.contact.geom,
+                d.contact.pos,
+                contact_frame_2d,
+                contact_friction_2d,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+              ],
+              outputs=[
+                d.efc.J,
+                d.efc.Jqvel,
+              ],
+              block_dim=m.block_dim.contact_jac_tiled,
+            )
+
+        if m.flg_surfacevel:
           wp.launch(
-            _efc_contact_jac_sparse(m.opt.cone, nmaxdim, max_records, det_atomics),
-            dim=ncontact_stride * _CONTACT_JAC_LANES,
-            block_dim=m.block_dim.contact_jac_sparse,
+            _add_surface_vel(m.opt.cone == types.ConeType.PYRAMIDAL),
+            dim=d.naconmax,
             inputs=[
-              m.body_rootid,
-              m.body_weldid,
-              m.body_dofnum,
-              m.body_dofadr,
-              m.dof_parentid,
-              m.geom_bodyid,
-              d.qvel,
-              d.subtree_com,
-              d.cdof,
+              d.contact.friction,
+              d.contact.dim,
               d.contact.efc_address,
-              d.efc.J_rownnz,
-              d.efc.J_rowadr,
+              d.contact.worldid,
+              d.contact.type,
+              d.contact.surfacevel,
               d.naconmax,
               d.nacon,
-              d.contact.dim,
-              d.contact.geom,
-              d.contact.pos,
-              contact_frame_2d,
-              contact_friction_2d,
-              d.contact.worldid,
-              ncontact_per_pass,
             ],
             outputs=[
-              d.efc.J_colind,
-              d.efc.J,
               d.efc.Jqvel,
             ],
           )
-      else:
+
         if has_flex:
-          wp.launch_tiled(
-            _efc_contact_jac_dense_flex(m.nv_pad, m.opt.cone, int(m.nmaxcondim)),
-            dim=d.nworld,
+          wp.launch(
+            _efc_contact_update_flex(m.opt.cone, m.flg_adhesion, is_discrete),
+            dim=(d.naconmax, nmaxdim),
             inputs=[
-              m.body_rootid,
-              m.jnt_dofadr,
+              m.opt.timestep,
+              m.opt.disableflags,
+              m.opt.impratio_invsqrt,
+              m.body_invweight0,
               m.jnt_bodyid,
-              m.geom_type,
               m.geom_bodyid,
               m.flex_dim,
               m.flex_interp,
@@ -6126,200 +7086,132 @@ def make_constraint(m: types.Model, d: types.Data):
               m.flex_elemadr,
               m.flex_elemnum,
               m.flex_elemdataadr,
-              m.flex_plasticadr,
               m.flex_nodebodyid,
               m.flex_vertbodyid,
               m.flex_cellempty,
               m.flex_elem,
               m.flex_vert0,
-              m.body_isdofancestor,
               m.flex_rod_has_twist,
               m.flex_rod_edgeadr,
               m.flex_rod_edgenum,
               m.flex_rodedge_jnt,
               m.flex_elem_rodedge,
               m.flex_vert_rodelem,
-              d.ne,
-              d.nf,
-              d.nl,
-              d.nefc,
-              d.qvel,
-              d.plastic,
-              d.subtree_com,
-              d.cdof,
               d.flexvert_xpos,
               d.contact.efc_address,
-              d.efc.id,
-              d.njmax,
+              d.efc.Jqvel,
+              d.nacon,
               d.contact.dist,
+              d.contact.pos,
               d.contact.dim,
+              d.contact.includemargin,
+              d.contact.worldid,
               d.contact.geom,
               d.contact.flex,
               d.contact.elem,
               d.contact.vert,
-              d.contact.pos,
-              contact_frame_2d,
-              contact_friction_2d,
+              d.contact.friction,
+              d.contact.solref,
+              d.contact.solreffriction,
+              d.contact.solimp,
+              d.contact.adhesion,
+              d.contact.type,
             ],
             outputs=[
-              d.efc.J,
-              d.efc.Jqvel,
+              d.efc.type,
+              d.efc.id,
+              d.efc.pos,
+              d.efc.margin,
+              d.efc.D,
+              d.efc.vel,
+              d.efc.aref,
+              d.efc.frictionloss,
             ],
-            block_dim=m.block_dim.contact_jac_tiled,
           )
         else:
-          wp.launch_tiled(
-            _efc_contact_jac_dense(m.nv_pad, m.opt.cone, int(m.nmaxcondim)),
-            dim=d.nworld,
+          kernel = _efc_contact_update(m.opt.cone, m.flg_adhesion, is_discrete)
+          efc_threads = efc_threads_per_world(d.nworld, d.njmax, d.qvel.device, kernel, num_waves=1)
+          isl = island_dense is not None
+          wp.launch(
+            kernel,
+            dim=(d.nworld, efc_threads),
             inputs=[
-              m.body_rootid,
+              m.opt.timestep,
+              m.opt.disableflags,
+              m.opt.impratio_invsqrt,
+              m.body_invweight0,
               m.geom_bodyid,
-              m.body_isdofancestor,
               d.ne,
               d.nf,
               d.nl,
               d.nefc,
-              d.qvel,
-              d.subtree_com,
-              d.cdof,
+              d.nisland if isl else None,
               d.contact.efc_address,
-              d.efc.id,
+              d.efc.Jqvel,
+              d.island_nefc if isl else None,
+              d.island_iefcadr if isl else None,
               d.njmax,
+              d.contact.dist,
               d.contact.dim,
+              d.contact.includemargin,
               d.contact.geom,
-              d.contact.pos,
-              contact_frame_2d,
-              contact_friction_2d,
+              d.contact.friction,
+              d.contact.solref,
+              d.contact.solreffriction,
+              d.contact.solimp,
+              d.contact.adhesion,
+              efc_threads,
+              island_rowadr if isl else None,
             ],
             outputs=[
-              d.efc.J,
-              d.efc.Jqvel,
+              d.efc.type,
+              d.efc.id,
+              d.efc.pos,
+              d.efc.margin,
+              d.efc.D,
+              d.efc.vel,
+              d.efc.aref,
+              d.efc.frictionloss,
             ],
-            block_dim=m.block_dim.contact_jac_tiled,
           )
 
-      if m.flg_surfacevel:
-        wp.launch(
-          _add_surface_vel(m.opt.cone == types.ConeType.PYRAMIDAL),
-          dim=d.naconmax,
-          inputs=[
-            d.contact.friction,
-            d.contact.dim,
-            d.contact.efc_address,
-            d.contact.worldid,
-            d.contact.type,
-            d.contact.surfacevel,
-            d.naconmax,
-            d.nacon,
-          ],
-          outputs=[
-            d.efc.Jqvel,
-          ],
-        )
 
-      if has_flex:
-        wp.launch(
-          _efc_contact_update_flex(m.opt.cone, m.flg_adhesion, is_discrete),
-          dim=(d.naconmax, nmaxdim),
-          inputs=[
-            m.opt.timestep,
-            m.opt.disableflags,
-            m.opt.impratio_invsqrt,
-            m.body_invweight0,
-            m.jnt_bodyid,
-            m.geom_bodyid,
-            m.flex_dim,
-            m.flex_interp,
-            m.flex_cellnum,
-            m.flex_celladr,
-            m.flex_nodeadr,
-            m.flex_vertadr,
-            m.flex_elemadr,
-            m.flex_elemnum,
-            m.flex_elemdataadr,
-            m.flex_nodebodyid,
-            m.flex_vertbodyid,
-            m.flex_cellempty,
-            m.flex_elem,
-            m.flex_vert0,
-            m.flex_rod_has_twist,
-            m.flex_rod_edgeadr,
-            m.flex_rod_edgenum,
-            m.flex_rodedge_jnt,
-            m.flex_elem_rodedge,
-            m.flex_vert_rodelem,
-            d.flexvert_xpos,
-            d.contact.efc_address,
-            d.efc.Jqvel,
-            d.nacon,
-            d.contact.dist,
-            d.contact.pos,
-            d.contact.dim,
-            d.contact.includemargin,
-            d.contact.worldid,
-            d.contact.geom,
-            d.contact.flex,
-            d.contact.elem,
-            d.contact.vert,
-            d.contact.friction,
-            d.contact.solref,
-            d.contact.solreffriction,
-            d.contact.solimp,
-            d.contact.adhesion,
-            d.contact.type,
-          ],
-          outputs=[
-            d.efc.type,
-            d.efc.id,
-            d.efc.pos,
-            d.efc.margin,
-            d.efc.D,
-            d.efc.vel,
-            d.efc.aref,
-            d.efc.frictionloss,
-          ],
-        )
-      else:
-        kernel = _efc_contact_update(m.opt.cone, m.flg_adhesion, is_discrete)
-        efc_threads = efc_threads_per_world(d.nworld, d.njmax, d.qvel.device, kernel, num_waves=1)
-        wp.launch(
-          kernel,
-          dim=(d.nworld, efc_threads),
-          inputs=[
-            m.opt.timestep,
-            m.opt.disableflags,
-            m.opt.impratio_invsqrt,
-            m.body_invweight0,
-            m.geom_bodyid,
-            d.ne,
-            d.nf,
-            d.nl,
-            d.nefc,
-            d.contact.efc_address,
-            d.efc.Jqvel,
-            d.njmax,
-            d.contact.dist,
-            d.contact.dim,
-            d.contact.includemargin,
-            d.contact.geom,
-            d.contact.friction,
-            d.contact.solref,
-            d.contact.solreffriction,
-            d.contact.solimp,
-            d.contact.adhesion,
-            efc_threads,
-          ],
-          outputs=[
-            d.efc.type,
-            d.efc.id,
-            d.efc.pos,
-            d.efc.margin,
-            d.efc.D,
-            d.efc.vel,
-            d.efc.aref,
-            d.efc.frictionloss,
-          ],
-        )
+def make_constraint(m: types.Model, d: types.Data):
+  """Creates constraint jacobians and other supporting data."""
+  efc_nnz = wp.empty((d.nworld,), dtype=int)
+
+  wp.launch(
+    _zero_constraint_counts,
+    dim=d.nworld,
+    inputs=[d.ne, d.nf, d.nl, d.nefc, d.efc.jtdaj_nblock, efc_nnz],
+  )
+
+  island_order = island.island_rows(m)
+  d.__dict__["_island_rows"] = island_order
+  if island_order:
+    # islands from the active constraints' trees, then rows written in island order
+    g = island.group_buffers(m, d)
+    island_parent, tree_nrow, island_rowadr, island_cursor = g.island_parent, g.tree_nrow, g.island_rowadr, g.island_cursor
+    wp.launch(island._island_reset, dim=(d.nworld, m.ntree), outputs=[d.nisland, d.tree_island, island_parent, tree_nrow])
+    rows = (island_parent, tree_nrow, island_rowadr, island_cursor, d.tree_island)
+    # contact rows beside the others (a second stream while capturing)
+    discover_stream = side_stream(d.qacc.device)
+    with wp.ScopedStream(discover_stream):
+      _make_rows(m, d, island.ROWS_DISCOVER, efc_nnz, *rows, contacts=True)
+    _make_rows(m, d, island.ROWS_DISCOVER, efc_nnz, *rows, contacts=False)
+    if discover_stream is not None:
+      wp.wait_stream(discover_stream)
+    groups = island.island_layout(m, d, island_parent, tree_nrow, island_rowadr, island_cursor)
+    dense = (groups.island_dense, groups.dof_densecol, groups.J)
+    # an island's rows of each class take places from its cursor: any launch order
+    with wp.ScopedStream(discover_stream):
+      _make_rows(m, d, island.ROWS_WRITE, efc_nnz, *rows, *dense, contacts=True)
+    _make_rows(m, d, island.ROWS_WRITE, efc_nnz, *rows, *dense, contacts=False)
+    if discover_stream is not None:
+      wp.wait_stream(discover_stream)
+    island.island_rows_done(m, d)
+  else:
+    _make_rows(m, d, island.ROWS_WRITE, efc_nnz)
 
   if m.is_sparse:
     wp.launch(

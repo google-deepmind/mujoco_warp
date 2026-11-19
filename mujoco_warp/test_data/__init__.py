@@ -58,7 +58,6 @@ def fixture(
   nworld: int = 1,
   nconmax: Optional[int] = None,
   njmax: Optional[int] = None,
-  nvmax: Optional[int] = -1,
   njmax_nnz: Optional[int] = None,
   batch_sizes: Optional[dict[str, int]] = None,
 ) -> Tuple[mujoco.MjModel, mujoco.MjData, mjw.Model, mjw.Data]:
@@ -76,7 +75,6 @@ def fixture(
     mocap_noise: initialize `mocap_pos` and `mocap_quat` will be initialized with uniform noise.
     overrides: a dict (or sequence of "foo=bar" strings) of model fields to override.
     nworld: number of worlds to create in mjw.Data.
-    nvmax: maximum active DOFs per world.
     batch_sizes: optional per-field leading batch sizes for Model fields.
 
   Returns:
@@ -133,7 +131,6 @@ def fixture(
     nworld=nworld,
     nconmax=nconmax,
     njmax=njmax,
-    nvmax=mjm.nv if nvmax == -1 else nvmax,
     njmax_nnz=njmax_nnz,
   )
 

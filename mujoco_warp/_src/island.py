@@ -13,11 +13,13 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Tuple
+import warnings
+from typing import Any, Tuple
 
 import warp as wp
 
 from mujoco_warp._src import passive
+from mujoco_warp._src import smooth
 from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src.types import ConstraintType
@@ -25,7 +27,6 @@ from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import EqType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import ObjType
-from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
@@ -942,6 +943,10 @@ def _zero_island_counts(
 @event_scope
 def island(m: types.Model, d: types.Data):
   """Discover constraint islands."""
+  if rows_in_island_order(d):
+    # make_constraint found them from the constraints' trees (dense rows have no sparse entries)
+    return
+
   if m.ntree == 0:
     wp.launch(
       _zero_island_counts,
@@ -971,37 +976,38 @@ def _island_count_dofs(
     wp.atomic_add(island_nv_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
 
 
-@wp.kernel
-def _island_scan_sizes(
-  # Data in:
-  nisland_in: wp.array[int],
-  island_nv_in: wp.array2d[int],
-  # Data out:
-  nidof_out: wp.array[int],
-  island_idofadr_out: wp.array2d[int],
-  island_nefc_out: wp.array2d[int],
-  island_iefcadr_out: wp.array2d[int],
-):
-  worldid = wp.tid()
+# Islands per tile of the island size scans: any number of trees is scanned in chunks.
+_SCAN_CHUNK = 1024
 
-  nisland = nisland_in[worldid]
-  if nisland == 0:
-    nidof_out[worldid] = 0
-    return
 
-  # Scan DOFs and Constraints
-  island_idofadr_out[worldid, 0] = 0
-  island_iefcadr_out[worldid, 0] = 0
-  for i in range(1, nisland):
-    island_idofadr_out[worldid, i] = island_idofadr_out[worldid, i - 1] + island_nv_in[worldid, i - 1]
-    island_iefcadr_out[worldid, i] = island_iefcadr_out[worldid, i - 1] + island_nefc_out[worldid, i - 1]
+@cache_kernel
+def _island_scan_sizes(chunk: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    island_nv_in: wp.array2d[int],
+    island_nefc_in: wp.array2d[int],
+    # Data out:
+    nidof_out: wp.array[int],
+    island_idofadr_out: wp.array2d[int],
+    island_iefcadr_out: wp.array2d[int],
+  ):
+    """Block-wide exclusive scans of island sizes (entries past nisland are zero)."""
+    worldid = wp.tid()
+    nv_adr = int(0)
+    nefc_adr = int(0)
+    for base in range(0, island_nv_in.shape[1], chunk):
+      nv_tile = wp.tile_load(island_nv_in[worldid], shape=chunk, offset=base)
+      nefc_tile = wp.tile_load(island_nefc_in[worldid], shape=chunk, offset=base)
+      nv_scan = wp.tile_map(wp.add, wp.tile_scan_exclusive(nv_tile), wp.tile_full(chunk, nv_adr, dtype=int))
+      nefc_scan = wp.tile_map(wp.add, wp.tile_scan_exclusive(nefc_tile), wp.tile_full(chunk, nefc_adr, dtype=int))
+      wp.tile_store(island_idofadr_out[worldid], nv_scan, offset=base)
+      wp.tile_store(island_iefcadr_out[worldid], nefc_scan, offset=base)
+      nv_adr += wp.tile_sum(nv_tile)[0]
+      nefc_adr += wp.tile_sum(nefc_tile)[0]
+    nidof_out[worldid] = nv_adr
 
-  nidof = island_idofadr_out[worldid, nisland - 1] + island_nv_in[worldid, nisland - 1]
-  nidof_out[worldid] = nidof
-
-  # Reset for recount ( island_nv is final after _island_count_dofs and stays put )
-  for i in range(nisland):
-    island_nefc_out[worldid, i] = 0
+  return kernel
 
 
 @wp.kernel
@@ -1051,64 +1057,64 @@ def _island_map_dofs(
 
 
 @wp.kernel
-def _island_map_constraints(
+def _island_chunk_offsets(
   # Data in:
   nefc_in: wp.array[int],
   nisland_in: wp.array[int],
-  efc_type_in: wp.array2d[int],
-  efc_island_in: wp.array2d[int],
-  island_ne_in: wp.array2d[int],
-  island_nf_in: wp.array2d[int],
-  island_iefcadr_in: wp.array2d[int],
-  # In:
   njmax_in: int,
+  # In:
+  chunk_size: int,
+  # Out:
+  chunk_adr_out: wp.array3d[int],
+):
+  """Turn per-chunk row counts of an island into its rows' offsets from island_iefcadr."""
+  worldid, islandid = wp.tid()
+  if islandid >= nisland_in[worldid]:
+    return
+
+  nchunk = (wp.min(njmax_in, nefc_in[worldid]) + chunk_size - 1) // chunk_size
+  adr = int(0)
+  for chunk in range(nchunk):
+    count = chunk_adr_out[worldid, chunk, islandid]
+    chunk_adr_out[worldid, chunk, islandid] = adr
+    adr += count
+
+
+@wp.kernel
+def _island_map_constraints(
+  # Data in:
+  nefc_in: wp.array[int],
+  efc_island_in: wp.array2d[int],
+  island_iefcadr_in: wp.array2d[int],
+  njmax_in: int,
+  # In:
+  chunk_size: int,
+  chunk_adr_in: wp.array3d[int],
   # Data out:
-  island_nefc_out: wp.array2d[int],
   map_efc2iefc_out: wp.array2d[int],
   map_iefc2efc_out: wp.array2d[int],
   # Out:
   iefc_islandid_out: wp.array2d[int],
 ):
-  """Map constraints in ascending EFC order within each MuJoCo category.
-
-  One thread owns one island and keeps its three category counters in registers, so the
-  ascending scan stays serial per island (and therefore reproducible) while different
-  islands and worlds advance in parallel.
-  """
-  worldid, islandid = wp.tid()
-  if islandid >= nisland_in[worldid]:
+  """Stable counting sort of rows by island: each island keeps MuJoCo's row layout."""
+  worldid, efcid = wp.tid()
+  if efcid >= wp.min(njmax_in, nefc_in[worldid]):
     return
 
-  iefcadr = island_iefcadr_in[worldid, islandid]
-  fadr = iefcadr + island_ne_in[worldid, islandid]
-  oadr = fadr + island_nf_in[worldid, islandid]
-  ne_mapped = int(0)
-  nf_mapped = int(0)
-  nother_mapped = int(0)
+  islandid = efc_island_in[worldid, efcid]
+  if islandid < 0:
+    return
 
-  nefc = wp.min(njmax_in, nefc_in[worldid])
-  for efcid in range(nefc):
-    if efc_island_in[worldid, efcid] == islandid:
-      efc_type = efc_type_in[worldid, efcid]
+  chunk = efcid // chunk_size
+  rank = int(0)
+  for prev in range(chunk * chunk_size, efcid):
+    if efc_island_in[worldid, prev] == islandid:
+      rank += 1
 
-      # 1. Determine absolute index ic based on category
-      if efc_type == ConstraintType.EQUALITY:
-        ic = iefcadr + ne_mapped
-        ne_mapped += 1
-      elif efc_type == ConstraintType.FRICTION_DOF or efc_type == ConstraintType.FRICTION_TENDON:
-        ic = fadr + nf_mapped
-        nf_mapped += 1
-      else:
-        ic = oadr + nother_mapped
-        nother_mapped += 1
-
-      # 2. Store mappings
-      map_efc2iefc_out[worldid, efcid] = ic
-      map_iefc2efc_out[worldid, ic] = efcid
-      iefc_islandid_out[worldid, ic] = islandid
-
-  # 3. Reconstruct d.island_nefc from the three category counts
-  island_nefc_out[worldid, islandid] = ne_mapped + nf_mapped + nother_mapped
+  ic = island_iefcadr_in[worldid, islandid] + chunk_adr_in[worldid, chunk, islandid] + rank
+  map_efc2iefc_out[worldid, efcid] = ic
+  map_iefc2efc_out[worldid, ic] = efcid
+  iefc_islandid_out[worldid, ic] = islandid
 
 
 @wp.kernel
@@ -1162,13 +1168,17 @@ def _island_count_constraints(
   efc_J_in: wp.array3d[float],
   tree_island_in: wp.array2d[int],
   njmax_in: int,
+  # In:
+  chunk_size: int,
   # Data out:
   efc_island_out: wp.array2d[int],
   island_nefc_out: wp.array2d[int],
   island_ne_out: wp.array2d[int],
   island_nf_out: wp.array2d[int],
+  # Out:
+  chunk_adr_out: wp.array3d[int],
 ):
-  """Compute the first non-negative tree for each constraint and count constraints per island."""
+  """Compute the first non-negative tree for each constraint; count rows per island and chunk."""
   worldid, efcid = wp.tid()
 
   if efcid >= wp.min(njmax_in, nefc_in[worldid]):
@@ -1305,6 +1315,7 @@ def _island_count_constraints(
 
   if island_id >= 0:
     wp.atomic_add(island_nefc_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
+    wp.atomic_add(chunk_adr_out, worldid, efcid // chunk_size, island_id, 1)  # kernel_analyzer: ignore[atomic]
 
     if efc_type == ConstraintType.EQUALITY:
       wp.atomic_add(island_ne_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
@@ -1370,6 +1381,10 @@ def _init_efc_arrays(
   iefc_islandid_out[worldid, efcid] = -1
 
 
+# Constraint rows per chunk of the island counting sort: a row scans at most this many predecessors.
+_MAP_CHUNK = 64
+
+
 @event_scope
 def compute_island_mapping(m: types.Model, d: types.Data):
   """Compute DOF/constraint island mappings after island discovery.
@@ -1427,7 +1442,9 @@ def compute_island_mapping(m: types.Model, d: types.Data):
     outputs=[d.dof_island, d.island_nv],
   )
 
-  # Count Constraints per island
+  # Count Constraints per island, and per (chunk, island) for the counting sort
+  nchunk = max(1, -(-d.njmax // _MAP_CHUNK))
+  chunk_adr = wp.zeros((d.nworld, nchunk, m.ntree), dtype=int)
   wp.launch(
     _island_count_constraints,
     dim=(d.nworld, d.njmax),
@@ -1479,16 +1496,18 @@ def compute_island_mapping(m: types.Model, d: types.Data):
       d.efc.J,
       d.tree_island,
       d.njmax,
+      _MAP_CHUNK,
     ],
-    outputs=[d.efc.island, d.island_nefc, d.island_ne, d.island_nf],
+    outputs=[d.efc.island, d.island_nefc, d.island_ne, d.island_nf, chunk_adr],
   )
 
-  # 3. Scan sizes and reset counters for mapping
-  wp.launch(
-    _island_scan_sizes,
+  # 3. Scan sizes
+  wp.launch_tiled(
+    _island_scan_sizes(min(m.ntree, _SCAN_CHUNK)),
     dim=d.nworld,
-    inputs=[d.nisland, d.island_nv],
-    outputs=[d.nidof, d.island_idofadr, d.island_nefc, d.island_iefcadr],
+    inputs=[d.island_nv, d.island_nefc],
+    outputs=[d.nidof, d.island_idofadr, d.island_iefcadr],
+    block_dim=types.BlockDim.island_scan_sizes,
   )
 
   # 4. Map DOFs
@@ -1501,99 +1520,798 @@ def compute_island_mapping(m: types.Model, d: types.Data):
 
   # 5. Map Constraints
   wp.launch(
-    _island_map_constraints,
+    _island_chunk_offsets,
     dim=(d.nworld, m.ntree),
-    inputs=[d.nefc, d.nisland, d.efc.type, d.efc.island, d.island_ne, d.island_nf, d.island_iefcadr, d.njmax],
-    outputs=[d.island_nefc, d.map_efc2iefc, d.map_iefc2efc, d.efc_islandid],
+    inputs=[d.nefc, d.nisland, d.njmax, _MAP_CHUNK],
+    outputs=[chunk_adr],
+  )
+  wp.launch(
+    _island_map_constraints,
+    dim=(d.nworld, d.njmax),
+    inputs=[d.nefc, d.efc.island, d.island_iefcadr, d.njmax, _MAP_CHUNK, chunk_adr],
+    outputs=[d.map_efc2iefc, d.map_iefc2efc, d.efc_islandid],
   )
 
 
-# Active-DOF compaction (nvmax < nv).
-#
-# The active set is tracked per kinematic tree (the unit of coupling in the mass matrix)
-# via the same tree_awake bookkeeping used by the sleep solver. Each step the active trees'
-# DOFs are packed into a contiguous [0, ncdof) range so the dense factor/solve can run at
-# size nvmax instead of nv. This is the active-set analog of compute_island_mapping.
+# make_constraint's row kernels write rows (ROWS_WRITE): in class order per world, or with the
+# island layout (opt.island_solve) at their island's address, an island's rows contiguous and in
+# class order as in MuJoCo's island arrays. The layout comes from a first pass (ROWS_DISCOVER) that
+# merges each active constraint's trees and counts its rows per tree and class.
+ROWS_WRITE = 0
+ROWS_DISCOVER = 1
+ROW_CLASSES = 4
+ROW_EQUALITY = 0
+ROW_FRICTION = 1
+ROW_LIMIT = 2
+ROW_CONTACT = 3
+
+# Groups of up to dense_width(m) DOFs (a humanoid, a few resting boxes) write their Jacobian rows
+# only to GroupBuffers.J, dense and in group-local columns; their sparse rows are empty.
+# DENSE_NV < 32 turns dense rows off.
+DENSE_NV = 32
+# Groups are runs of consecutive islands of up to MERGE_NV DOFs (e.g. resting boxes); their rows
+# are not in class order, so the island solver classifies rows by type.
+MERGE = True
+MERGE_NV = 32
+# models of up to MIN_NV DOFs are one group, the world solver's problem
+MIN_NV = MERGE_NV
+# models of more trees are the world solver's: _island_world's shared memory grows with ntree
+MAX_NTREE = 1024
+
+
+@wp.func
+def rows_dense(
+  # Data in:
+  tree_island_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  tree: int,
+  efcid: int,
+  island_dense_in: wp.array2d[wp.vec4i],
+) -> int:
+  """A constraint's first dense row: efcid in a group with dense rows, else -1 (sparse rows)."""
+  if tree < 0:
+    return -1
+  if island_dense_in[worldid, tree_island_in[worldid, tree]][0] == 0:
+    return -1
+  return efcid
+
+
+@wp.func
+def dense_zero(
+  # In:
+  worldid: int,
+  srow: int,
+  nrow: int,
+  # Out:
+  dense_J_out: wp.array3d[float],
+):
+  if srow >= 0:
+    # whole rows, past narrower groups' columns too: rows with gaps are expensive to write
+    for r in range(nrow):
+      for c in range(dense_J_out.shape[2]):
+        dense_J_out[worldid, srow + r, c] = 0.0
+
+
+@wp.func
+def dense_set(
+  # In:
+  worldid: int,
+  srow: int,
+  k: int,
+  dofid: int,
+  value: float,
+  dof_densecol_in: wp.array2d[int],
+  # Out:
+  dense_J_out: wp.array3d[float],
+):
+  """Value of dense row srow + k at a DOF's column (srow < 0: sparse)."""
+  if srow >= 0:
+    dense_J_out[worldid, srow + k, dof_densecol_in[worldid, dofid]] = value
+
+
+@wp.func
+def _dense_width(ndof: int, wide: int) -> int:
+  return wp.where(ndof <= wide, wide, 0)
+
+
+class GroupBuffers:
+  """Island groups and their dense rows, shared by make_constraint and the island solve."""
+
+  def __init__(self, m: types.Model, d: types.Data):
+    self.key = (d.nworld, m.ntree, m.nv, d.njmax, dense_width(m))
+    shape = (d.nworld, m.ntree)
+    self.ngroup = wp.empty(d.nworld, dtype=int)
+    self.island_group = wp.empty(shape, dtype=int)
+    self.group_idofadr = wp.empty(shape, dtype=int)
+    self.group_nv = wp.empty(shape, dtype=int)
+    self.group_nefc = wp.empty(shape, dtype=int)
+    self.group_iefcadr = wp.empty(shape, dtype=int)
+    self.group_ne = wp.empty(shape, dtype=int)
+    self.group_nf = wp.empty(shape, dtype=int)
+    self.group_island0 = wp.empty(shape, dtype=int)
+    self.group_nisland = wp.empty(shape, dtype=int)
+    self.group_dense = wp.empty(shape, dtype=wp.vec4i)
+    self.group_asleep = wp.empty(shape, dtype=bool)
+    self.island_dense = wp.empty(shape, dtype=wp.vec4i)
+    self.dof_group = wp.empty((d.nworld, m.nv), dtype=int)
+    self.dof_densecol = wp.empty((d.nworld, m.nv), dtype=int)
+    self.efc_group = wp.empty((d.nworld, d.njmax), dtype=int)
+    # per world scratch of _island_world
+    self.tree_iofs = wp.empty(shape, dtype=int)
+    # make_constraint's discovery and island layout (allocated once: in a graph capture,
+    # allocations and frees are nodes)
+    self.island_parent = wp.empty(shape, dtype=int)
+    self.tree_nrow = wp.empty((d.nworld, m.ntree * ROW_CLASSES), dtype=int)
+    self.island_rowadr = wp.empty((d.nworld, m.ntree * ROW_CLASSES), dtype=int)
+    self.island_cursor = wp.empty((d.nworld, m.ntree * ROW_CLASSES), dtype=int)
+    self.tree_group = wp.empty(shape, dtype=int)
+    self.island_root = wp.empty(shape, dtype=int)
+    self.island_acc = wp.empty(shape, dtype=int)
+    # dense rows by world row, plus a tile of rows tile kernels read past the last; not zeroed (in a
+    # graph capture a fill would run every step)
+    self.J = wp.empty((d.nworld, d.njmax + types.TILE_SIZE_JTDAJ_DENSE, dense_width(m)), dtype=float)
+
+
+def dense_width(m: types.Model) -> int:
+  """Width of the dense rows: the model's largest tree of 17 to 32 DOFs, or 16 (see DENSE_NV)."""
+  return m.island_tree_nv
+
+
+def rows_in_island_order(d: types.Data) -> bool:
+  """Whether make_constraint last wrote d's rows in island order (put_data loads MuJoCo's)."""
+  return d.__dict__.get("_island_rows", False)
+
+
+def group_buffers(m: types.Model, d: types.Data) -> GroupBuffers:
+  buf = d.__dict__.get("_island_groups")
+  if buf is None or buf.key != (d.nworld, m.ntree, m.nv, d.njmax, dense_width(m)):
+    buf = GroupBuffers(m, d)
+    d.__dict__["_island_groups"] = buf
+  return buf
+
+
+@wp.func_native(snippet="WP_TILE_SYNC();")
+def _block_sync(): ...
+
+
+# a shared tile's element, without the barrier that tile element assignment ends with
+@wp.func_native(snippet="t.data(wp::tile_coord(i)) = v;")
+def _tile_set(t: Any, i: int, v: int): ...
 
 
 @wp.kernel
-def _reset_compact_maps(
-  # Model:
-  nv: int,
-  # Data in:
-  nvmax_pad_in: int,
+def _island_reset(
   # Data out:
-  dof_cdof_out: wp.array2d[int],
-  cdof_dof_out: wp.array2d[int],
+  nisland_out: wp.array[int],
+  tree_island_out: wp.array2d[int],
+  # Out:
+  island_parent_out: wp.array2d[int],
+  tree_nrow_out: wp.array2d[int],
 ):
-  worldid, idx = wp.tid()
-  if idx < nv:
-    dof_cdof_out[worldid, idx] = -1
-  # cdof_dof is nvmax_pad-wide: clear the whole row so the padded tail [ncdof, nvmax_pad)
-  # reads as -1 (the gather/solve run over nvmax_pad, not just the active ncdof).
-  if idx < nvmax_pad_in:
-    cdof_dof_out[worldid, idx] = -1
+  """Union-find and row counts before the constraints discover the islands."""
+  worldid, treeid = wp.tid()
+  island_parent_out[worldid, treeid] = treeid
+  tree_island_out[worldid, treeid] = -1
+  for c in range(ROW_CLASSES):
+    tree_nrow_out[worldid, treeid * ROW_CLASSES + c] = 0
+  if treeid == 0:
+    nisland_out[worldid] = 0
+
+
+@wp.func
+def _is_root(active: int, parent: int, tree: int) -> int:
+  return wp.where(active >= 0 and parent == tree, 1, 0)
+
+
+@wp.func
+def _island_rows_fit(neq: int, nfrc: int, nrow: int, rowadr: int, rowmax: int) -> wp.vec3i:
+  """An island's (equality, friction, all) rows below rowmax: nefc overflow drops the rest."""
+  nrow = wp.min(nrow, wp.max(rowmax - rowadr, 0))
+  neq = wp.min(neq, nrow)
+  return wp.vec3i(neq, wp.min(nfrc, nrow - neq), nrow)
 
 
 @cache_kernel
-def _compact_dofs_builder(warn_overflow: int):
+def _island_world(ntree: int):
+  NT = ntree * ROW_CLASSES
+
   @wp.kernel(module="unique", enable_backward=False)
-  def _compact_dofs(
+  def kernel(
     # Model:
-    ntree: int,
-    tree_dofadr: wp.array[int],
+    nv: int,
     tree_dofnum: wp.array[int],
     # Data in:
     tree_awake_in: wp.array2d[int],
-    nvmax_in: int,
+    njmax_in: int,
+    # In:
+    tree_nrow_in: wp.array2d[int],
+    merge: bool,
+    merge_nv: int,
+    wide: int,
+    free_groups: bool,
     # Data out:
-    ncdof_out: wp.array[int],
-    dof_cdof_out: wp.array2d[int],
-    cdof_dof_out: wp.array2d[int],
-    overflow_out: wp.array[int],
+    nisland_out: wp.array[int],
+    nidof_out: wp.array[int],
+    tree_island_out: wp.array2d[int],
+    island_dofadr_out: wp.array2d[int],
+    island_idofadr_out: wp.array2d[int],
+    island_nv_out: wp.array2d[int],
+    island_nefc_out: wp.array2d[int],
+    island_ne_out: wp.array2d[int],
+    island_nf_out: wp.array2d[int],
+    island_iefcadr_out: wp.array2d[int],
+    # Out:
+    island_parent_out: wp.array2d[int],
+    island_rowadr_out: wp.array2d[int],
+    island_cursor_out: wp.array2d[int],
+    tree_iofs_out: wp.array2d[int],
+    tree_group_out: wp.array2d[int],
+    island_root_out: wp.array2d[int],
+    island_acc_out: wp.array2d[int],
+    ngroup_out: wp.array[int],
+    island_group_out: wp.array2d[int],
+    group_idofadr_out: wp.array2d[int],
+    group_nv_out: wp.array2d[int],
+    group_nefc_out: wp.array2d[int],
+    group_iefcadr_out: wp.array2d[int],
+    group_ne_out: wp.array2d[int],
+    group_nf_out: wp.array2d[int],
+    group_island0_out: wp.array2d[int],
+    group_nisland_out: wp.array2d[int],
+    group_dense_out: wp.array2d[wp.vec4i],
+    island_dense_out: wp.array2d[wp.vec4i],
+    group_asleep_out: wp.array2d[bool],
   ):
-    worldid = wp.tid()
-    count = int(0)
-    for t in range(ntree):
-      if tree_awake_in[worldid, t] == 1:
-        adr = tree_dofadr[t]
-        num = tree_dofnum[t]
-        for j in range(num):
-          dof = adr + j
-          if count < nvmax_in:
-            dof_cdof_out[worldid, dof] = count
-            cdof_dof_out[worldid, count] = dof
-          count += 1
+    """A world's islands, rows, DOFs and groups (free_groups: also of the trees outside islands)."""
+    worldid, lane = wp.tid()
+    lanes = wp.block_dim()
 
-    if count > nvmax_in:
-      if wp.static(bool(warn_overflow & OverflowType.NVMAX)):
-        wp.printf(
-          "nvmax overflow: world %d needs %d active DOFs but nvmax = %d (behavior undefined)\n"
-          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.NVMAX (or = 0 for all)\n",
-          worldid,
-          count,
-          nvmax_in,
-        )
-      overflow_out[worldid] = overflow_out[worldid] | OverflowType.NVMAX
-      ncdof_out[worldid] = nvmax_in
+    # roots: point every active tree at its component's minimum tree
+    for t in range(lane, ntree, lanes):
+      if tree_island_out[worldid, t] >= 0:
+        island_parent_out[worldid, t] = _dsu_find(island_parent_out, worldid, t)
+    _block_sync()
+
+    # labels: roots numbered in tree order
+    roots = wp.tile_map(
+      _is_root,
+      wp.tile_load(tree_island_out[worldid], shape=ntree),
+      wp.tile_load(island_parent_out[worldid], shape=ntree),
+      wp.tile_arange(ntree, dtype=int),
+    )
+    wp.tile_store(island_acc_out[worldid], wp.tile_scan_exclusive(roots))
+    nisland = wp.tile_sum(roots)[0]
+    _block_sync()
+    for t in range(lane, ntree, lanes):
+      if tree_island_out[worldid, t] >= 0:
+        root = island_parent_out[worldid, t]
+        label = island_acc_out[worldid, root]
+        tree_island_out[worldid, t] = label
+        if root == t:
+          island_root_out[worldid, label] = t
+    # nefc overflow: one island, whose rows in class order lose the last contacts past njmax as the
+    # world solver's do (cutting at an island boundary drops whole islands, limits included)
+    if wp.tile_sum(wp.tile_load(tree_nrow_in[worldid], shape=NT))[0] > njmax_in and nisland > 1:
+      nisland = 1
+      for t in range(lane, ntree, lanes):
+        if tree_island_out[worldid, t] >= 0:
+          tree_island_out[worldid, t] = 0
+    if lane == 0:
+      nisland_out[worldid] = nisland
+    _block_sync()
+
+    # rows per island and class, and DOFs per island (every lane takes part in each scatter)
+    counts = wp.tile_zeros(shape=NT, dtype=int, storage="shared")
+    for it in range((NT + lanes - 1) // lanes):
+      e = it * lanes + lane
+      valid = e < NT
+      ec = wp.where(valid, e, 0)
+      islandid = tree_island_out[worldid, ec // ROW_CLASSES]
+      valid = valid and islandid >= 0
+      pos = wp.where(valid, islandid * ROW_CLASSES + ec % ROW_CLASSES, 0)
+      wp.tile_scatter_add(counts, pos, wp.where(valid, tree_nrow_in[worldid, ec], 0), valid)
+    ndof = wp.tile_zeros(shape=ntree, dtype=int, storage="shared")
+    for it in range((ntree + lanes - 1) // lanes):
+      t = it * lanes + lane
+      valid = t < ntree
+      tc = wp.where(valid, t, 0)
+      islandid = tree_island_out[worldid, tc]
+      valid = valid and islandid >= 0
+      wp.tile_scatter_add(ndof, wp.where(valid, islandid, 0), wp.where(valid, tree_dofnum[tc], 0), valid)
+    wp.tile_store(island_rowadr_out[worldid], wp.tile_scan_exclusive(counts))
+    wp.tile_store(island_cursor_out[worldid], wp.tile_zeros(shape=NT, dtype=int))
+    wp.tile_store(island_nv_out[worldid], ndof)
+    wp.tile_store(island_idofadr_out[worldid], wp.tile_scan_exclusive(ndof))
+    nidof = wp.tile_sum(ndof)[0]
+    _block_sync()
+    for i in range(lane, ntree, lanes):
+      ne = counts[i * ROW_CLASSES + ROW_EQUALITY]
+      nf = counts[i * ROW_CLASSES + ROW_FRICTION]
+      nefc = ne + nf + counts[i * ROW_CLASSES + ROW_LIMIT] + counts[i * ROW_CLASSES + ROW_CONTACT]
+      iefcadr = island_rowadr_out[worldid, i * ROW_CLASSES]
+      fit = _island_rows_fit(ne, nf, nefc, iefcadr, njmax_in)
+      island_ne_out[worldid, i] = fit[0]
+      island_nf_out[worldid, i] = fit[1]
+      island_nefc_out[worldid, i] = fit[2]
+      island_iefcadr_out[worldid, i] = iefcadr
+      # the first DOF of each island is set per DOF (_island_dof_maps)
+      island_dofadr_out[worldid, i] = nv
+    if lane == 0:
+      nidof_out[worldid] = nidof
+    _block_sync()
+
+    # the serial passes read and write shared memory and registers: global writes followed by reads
+    # would each wait for a round trip
+    tisland = wp.tile_load(tree_island_out[worldid], shape=ntree, storage="shared")
+    tdofnum = wp.tile_load(tree_dofnum, shape=ntree, storage="shared")
+    acc = wp.tile_zeros(shape=ntree, dtype=int, storage="shared")
+    if lane == 0:
+      # each tree's DOF offset in its island (DOFs in tree order), or among the free trees
+      free = int(0)
+      for t in range(ntree):
+        islandid = tisland[t]
+        n = tdofnum[t]
+        if islandid >= 0:
+          a = acc[islandid]
+          tree_iofs_out[worldid, t] = a
+          _tile_set(acc, islandid, a + n)
+        else:
+          tree_iofs_out[worldid, t] = free
+          tree_group_out[worldid, t] = -1
+          free += n
+
+      # groups: runs of consecutive islands, then free trees, up to merge_nv DOFs that sleep
+      # together (an island's trees sleep together: constraints to sleeping trees wake them);
+      # islands of up to wide DOFs merge only up to wide: their group keeps dense rows
+      g = int(-1)
+      gasleep = bool(False)
+      gnv = int(0)
+      gmax = int(0)
+      gnefc = int(0)
+      gnisland = int(0)
+      idofadr = int(0)
+      iefcadr = int(0)
+      for u in range(nisland + wp.where(free_groups, ntree, 0)):
+        island = u < nisland
+        i = wp.where(island, u, 0)
+        t = u - nisland
+        n = int(0)
+        nrow = int(0)
+        ne = int(0)
+        nf = int(0)
+        nefc = int(0)
+        asleep = bool(False)
+        if island:
+          n = ndof[i]
+          nrow = (
+            counts[i * ROW_CLASSES + ROW_EQUALITY]
+            + counts[i * ROW_CLASSES + ROW_FRICTION]
+            + counts[i * ROW_CLASSES + ROW_LIMIT]
+            + counts[i * ROW_CLASSES + ROW_CONTACT]
+          )
+          fit = _island_rows_fit(
+            counts[i * ROW_CLASSES + ROW_EQUALITY], counts[i * ROW_CLASSES + ROW_FRICTION], nrow, iefcadr, njmax_in
+          )
+          ne = fit[0]
+          nf = fit[1]
+          nefc = fit[2]
+          if tree_awake_in:
+            asleep = tree_awake_in[worldid, island_root_out[worldid, i]] == 0
+        else:
+          if tisland[t] >= 0:
+            continue
+          n = tdofnum[t]
+          if tree_awake_in:
+            asleep = tree_awake_in[worldid, t] == 0
+        cap = wp.where(wide > 0 and wp.max(gmax, n) <= wide, wide, merge_nv)
+        if g >= 0 and merge and gnv + n <= cap and asleep == gasleep:
+          gnv += n
+          gmax = wp.max(gmax, n)
+          gnefc += nefc
+          gnisland += int(island)
+        else:
+          if g >= 0:
+            group_nv_out[worldid, g] = gnv
+            group_nefc_out[worldid, g] = gnefc
+            group_nisland_out[worldid, g] = gnisland
+          g += 1
+          gnv = n
+          gmax = n
+          gnefc = nefc
+          gnisland = int(island)
+          gasleep = asleep
+          group_asleep_out[worldid, g] = asleep
+          group_idofadr_out[worldid, g] = idofadr
+          group_iefcadr_out[worldid, g] = iefcadr
+          group_ne_out[worldid, g] = ne
+          group_nf_out[worldid, g] = nf
+          group_island0_out[worldid, g] = wp.where(island, i, nisland)
+        if island:
+          island_group_out[worldid, i] = g
+        else:
+          tree_group_out[worldid, t] = g
+        idofadr += n
+        iefcadr += nrow
+      if g >= 0:
+        group_nv_out[worldid, g] = gnv
+        group_nefc_out[worldid, g] = gnefc
+        group_nisland_out[worldid, g] = gnisland
+      ngroup_out[worldid] = g + 1
+      # the tiled kernels read all ntree entries
+      for k in range(g + 1, ntree):
+        group_nv_out[worldid, k] = 0
+        group_nefc_out[worldid, k] = 0
+        group_idofadr_out[worldid, k] = 0
+        group_iefcadr_out[worldid, k] = 0
+        group_asleep_out[worldid, k] = False
+      for i in range(nisland, ntree):
+        island_group_out[worldid, i] = -1
+    _block_sync()
+
+    # dense rows: groups of islands up to wide DOFs (a tile per group gathers their H)
+    ngroup = ngroup_out[worldid]
+    for i in range(lane, ntree, lanes):
+      block = wp.vec4i(0)
+      if i < ngroup:
+        width = _dense_width(group_nv_out[worldid, i], wide)
+        if group_nisland_out[worldid, i] == 0:
+          width = 0
+        block = wp.vec4i(width, 0, group_nefc_out[worldid, i], group_iefcadr_out[worldid, i])
+      group_dense_out[worldid, i] = block
+    _block_sync()
+    for i in range(lane, ntree, lanes):
+      g = island_group_out[worldid, i]
+      if g >= 0:
+        island_dense_out[worldid, i] = group_dense_out[worldid, g]
+
+  return kernel
+
+
+@wp.kernel
+def _island_dof_maps(
+  # Model:
+  dof_treeid: wp.array[int],
+  tree_dofadr: wp.array[int],
+  # Data in:
+  nidof_in: wp.array[int],
+  tree_island_in: wp.array2d[int],
+  island_idofadr_in: wp.array2d[int],
+  # In:
+  tree_iofs_in: wp.array2d[int],
+  tree_group_in: wp.array2d[int],
+  island_group_in: wp.array2d[int],
+  group_idofadr_in: wp.array2d[int],
+  # Data out:
+  dof_island_out: wp.array2d[int],
+  island_dofadr_out: wp.array2d[int],
+  map_dof2idof_out: wp.array2d[int],
+  map_idof2dof_out: wp.array2d[int],
+  # Out:
+  idof_islandid_out: wp.array2d[int],
+  dof_group_out: wp.array2d[int],
+  dof_densecol_out: wp.array2d[int],
+):
+  """A DOF's island, island-ordered index (islands in order, DOFs ascending), group and column."""
+  worldid, dofid = wp.tid()
+  tree = dof_treeid[dofid]
+  islandid = tree_island_in[worldid, tree]
+  local = tree_iofs_in[worldid, tree] + dofid - tree_dofadr[tree]
+  g = int(-1)
+  col = int(0)
+  if islandid >= 0:
+    idof = island_idofadr_in[worldid, islandid] + local
+    if local == 0:
+      island_dofadr_out[worldid, islandid] = dofid
+    g = island_group_in[worldid, islandid]
+    col = idof - group_idofadr_in[worldid, g]
+  else:
+    idof = nidof_in[worldid] + local
+    g = tree_group_in[worldid, tree]
+  dof_island_out[worldid, dofid] = islandid
+  map_dof2idof_out[worldid, dofid] = idof
+  map_idof2dof_out[worldid, idof] = dofid
+  idof_islandid_out[worldid, idof] = islandid
+  dof_group_out[worldid, dofid] = g
+  dof_densecol_out[worldid, dofid] = col
+
+
+@wp.kernel
+def _island_rows(
+  # Data in:
+  nefc_in: wp.array[int],
+  nisland_in: wp.array[int],
+  island_iefcadr_in: wp.array2d[int],
+  # In:
+  island_group_in: wp.array2d[int],
+  group_asleep_in: wp.array2d[bool],
+  # Data out:
+  efc_force_out: wp.array2d[float],
+  efc_state_out: wp.array2d[int],
+  efc_island_out: wp.array2d[int],
+  map_efc2iefc_out: wp.array2d[int],
+  map_iefc2efc_out: wp.array2d[int],
+  # Out:
+  efc_group_out: wp.array2d[int],
+):
+  """Rows are in island order: identity maps, and each row's island and group.
+
+  Rows of sleeping groups are not solved: no force. Slots past nefc are left alone: no reader
+  goes past nefc, and writing all njmax slots leaves dirty lines the next kernels pay to evict.
+  """
+  worldid, efcid = wp.tid()
+  if efcid >= nefc_in[worldid]:
+    return
+  lo = int(0)
+  hi = nisland_in[worldid]
+  while hi - lo > 1:
+    mid = (lo + hi) // 2
+    if island_iefcadr_in[worldid, mid] <= efcid:
+      lo = mid
     else:
-      ncdof_out[worldid] = count
+      hi = mid
+  efc_island_out[worldid, efcid] = lo
+  map_efc2iefc_out[worldid, efcid] = efcid
+  map_iefc2efc_out[worldid, efcid] = efcid
+  g = island_group_in[worldid, lo]
+  efc_group_out[worldid, efcid] = g
+  if group_asleep_in[worldid, g]:
+    efc_force_out[worldid, efcid] = 0.0
+    efc_state_out[worldid, efcid] = types.ConstraintState.SATISFIED
 
-  return _compact_dofs
 
-
-@event_scope
-def update_active_dofs(m: types.Model, d: types.Data):
-  """Rebuild the compaction maps (dof_cdof / cdof_dof) from tree_awake."""
-  wp.launch(
-    _reset_compact_maps,
-    dim=(d.nworld, max(m.nv, d.nvmax_pad)),
-    inputs=[m.nv, d.nvmax_pad],
-    outputs=[d.dof_cdof, d.cdof_dof],
+def island_layout(
+  m: types.Model,
+  d: types.Data,
+  island_parent: wp.array2d[int],
+  tree_nrow: wp.array2d[int],
+  island_rowadr: wp.array2d[int],
+  island_cursor: wp.array2d[int],
+) -> GroupBuffers:
+  """Islands, their row layout, DOF maps and groups, after the constraints discovered them."""
+  buf = group_buffers(m, d)
+  wp.launch_tiled(
+    _island_world(m.ntree),
+    dim=d.nworld,
+    inputs=[
+      m.nv,
+      m.tree_dofnum,
+      d.tree_awake if m.opt.enableflags & types.EnableBit.SLEEP else None,
+      d.njmax,
+      tree_nrow,
+      MERGE,
+      MERGE_NV,
+      dense_width(m) if DENSE_NV >= 32 else 0,
+      # without qacc_smooth, the island solver solves the free trees
+      smooth.skip_qacc_smooth(m, d),
+    ],
+    outputs=[
+      d.nisland,
+      d.nidof,
+      d.tree_island,
+      d.island_dofadr,
+      d.island_idofadr,
+      d.island_nv,
+      d.island_nefc,
+      d.island_ne,
+      d.island_nf,
+      d.island_iefcadr,
+      island_parent,
+      island_rowadr,
+      island_cursor,
+      buf.tree_iofs,
+      buf.tree_group,
+      buf.island_root,
+      buf.island_acc,
+      buf.ngroup,
+      buf.island_group,
+      buf.group_idofadr,
+      buf.group_nv,
+      buf.group_nefc,
+      buf.group_iefcadr,
+      buf.group_ne,
+      buf.group_nf,
+      buf.group_island0,
+      buf.group_nisland,
+      buf.group_dense,
+      buf.island_dense,
+      buf.group_asleep,
+    ],
+    # whole warps of trees: its passes are bound by the block's barriers
+    block_dim=min(types.BlockDim.island_scan_sizes, -(-m.ntree // 32) * 32),
   )
   wp.launch(
-    _compact_dofs_builder(int(m.opt.warn_overflow)),
-    dim=(d.nworld,),
-    inputs=[m.ntree, m.tree_dofadr, m.tree_dofnum, d.tree_awake, d.nvmax],
-    outputs=[d.ncdof, d.dof_cdof, d.cdof_dof, d.overflow],
+    _island_dof_maps,
+    dim=(d.nworld, m.nv),
+    inputs=[
+      m.dof_treeid,
+      m.tree_dofadr,
+      d.nidof,
+      d.tree_island,
+      d.island_idofadr,
+      buf.tree_iofs,
+      buf.tree_group,
+      buf.island_group,
+      buf.group_idofadr,
+    ],
+    outputs=[d.dof_island, d.island_dofadr, d.map_dof2idof, d.map_idof2dof, d.dof_islandid, buf.dof_group, buf.dof_densecol],
   )
+  return buf
+
+
+def island_rows_done(m: types.Model, d: types.Data):
+  """Row maps and groups, after the rows are written in island order."""
+  buf = group_buffers(m, d)
+  wp.launch(
+    _island_rows,
+    dim=(d.nworld, d.njmax),
+    inputs=[d.nefc, d.nisland, d.island_iefcadr, buf.island_group, buf.group_asleep],
+    outputs=[d.efc.force, d.efc.state, d.efc.island, d.map_efc2iefc, d.map_iefc2efc, buf.efc_group],
+  )
+
+
+def _island_solve_unsupported(m: types.Model) -> str:
+  """The first feature of m the island solver does not support, or ''."""
+  unsupported = (
+    (m.opt.solver != types.SolverType.NEWTON, "the CG solver"),
+    (not m.is_sparse, "a dense Jacobian"),
+    (m.nflex > 0, "flex"),
+    (m.opt.integrator == types.IntegratorType.DISCRETE, "the discrete integrator"),
+    # these read the sparse Jacobian, which groups with dense rows leave empty
+    (m.actuator_trntype_body_adr.shape[0] > 0, "body transmissions"),
+    (m.opt.noslip_iterations > 0, "noslip"),
+    # the island solver's atomic sums are not ordered, and sorted rows lose island order
+    (m.opt.deterministic, "opt.deterministic"),
+  )
+  return next((name for cond, name in unsupported if cond), "")
+
+
+def island_rows(m: types.Model) -> bool:
+  """Whether rows are built in island order for the island solver (opt.island_solve, or sleep).
+
+  Sleep solves the awake islands of models of any size up to MAX_NTREE trees; otherwise the world
+  solver holds the sleeping DOFs. Unsupported features warn if opt.island_solve asks for islands.
+  """
+  if m.opt.disableflags & types.DisableBit.ISLAND or m.ntree > MAX_NTREE:
+    return False
+  sleep = bool(m.opt.enableflags & types.EnableBit.SLEEP)
+  if not (m.opt.island_solve or sleep):
+    return False
+  if not sleep and (m.nv <= MIN_NV or m.ntree <= 1):
+    return False
+  unsupported = _island_solve_unsupported(m)
+  if unsupported and m.opt.island_solve:
+    warnings.warn(f"opt.island_solve does not support {unsupported}: the world solver solves this model.")
+  return not unsupported
+
+
+@wp.func
+def rows_discover(
+  # In:
+  worldid: int,
+  tree0: int,
+  tree1: int,
+  nrow: int,
+  rowclass: int,
+  # Data out:
+  tree_island_out: wp.array2d[int],
+  # Out:
+  island_parent_out: wp.array2d[int],
+  tree_nrow_out: wp.array2d[int],
+):
+  """Merge a constraint's trees and count its rows on one of them."""
+  _dsu_union(island_parent_out, worldid, tree0, tree1, tree_island_out)
+  tree = wp.where(tree0 >= 0, tree0, tree1)
+  if tree >= 0:
+    wp.atomic_add(tree_nrow_out, worldid, tree * ROW_CLASSES + rowclass, nrow)  # kernel_analyzer: ignore[atomic]
+
+
+@wp.func
+def rows_tendon_tree(
+  # Model:
+  dof_treeid: wp.array[int],
+  ten_J_rownnz: wp.array[int],
+  ten_J_rowadr: wp.array[int],
+  ten_J_colind: wp.array[int],
+  # In:
+  tenid: int,
+) -> int:
+  """A tree the tendon spans (its first DOF's)."""
+  if tenid < 0 or ten_J_rownnz[tenid] == 0:
+    return -1
+  return dof_treeid[ten_J_colind[ten_J_rowadr[tenid]]]
+
+
+@wp.func
+def rows_discover_tendon(
+  # Model:
+  dof_treeid: wp.array[int],
+  ten_J_rownnz: wp.array[int],
+  ten_J_rowadr: wp.array[int],
+  ten_J_colind: wp.array[int],
+  # In:
+  worldid: int,
+  tree: int,
+  tenid: int,
+  # Data out:
+  tree_island_out: wp.array2d[int],
+  # Out:
+  island_parent_out: wp.array2d[int],
+):
+  """Merge every tree a tendon spans with tree."""
+  if tenid < 0:
+    return
+  rowadr = ten_J_rowadr[tenid]
+  for k in range(ten_J_rownnz[tenid]):
+    _dsu_union(island_parent_out, worldid, tree, dof_treeid[ten_J_colind[rowadr + k]], tree_island_out)
+
+
+@wp.func
+def rows_write(
+  # Data in:
+  tree_island_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  tree: int,
+  nrow: int,
+  rowclass: int,
+  nrow_max: int,
+  island_rowadr_in: wp.array2d[int],
+  # Out:
+  island_cursor_out: wp.array2d[int],
+) -> int:
+  """Address of a constraint's first row in its island (nrow_max if it has no tree)."""
+  if tree < 0:
+    return nrow_max
+  slot = tree_island_in[worldid, tree] * ROW_CLASSES + rowclass
+  return island_rowadr_in[worldid, slot] + wp.atomic_add(
+    island_cursor_out, worldid, slot, nrow
+  )  # kernel_analyzer: ignore[atomic]
+
+
+@wp.func
+def rows_island(
+  # Data in:
+  tree_island_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  tree0: int,
+  tree1: int,
+  nrow: int,
+  rowclass: int,
+  nrow_max: int,
+  island_rowadr_in: wp.array2d[int],
+  island_dense_in: wp.array2d[wp.vec4i],
+  # Data out:
+  nefc_out: wp.array[int],
+  # Out:
+  island_cursor_out: wp.array2d[int],
+) -> wp.vec2i:
+  """A constraint's rows in island order (counted in nefc): its first row and first dense row."""
+  wp.atomic_add(nefc_out, worldid, nrow)  # kernel_analyzer: ignore[atomic]
+  tree = wp.where(tree0 >= 0, tree0, tree1)
+  efcid = rows_write(tree_island_in, worldid, tree, nrow, rowclass, nrow_max, island_rowadr_in, island_cursor_out)
+  return wp.vec2i(efcid, rows_dense(tree_island_in, worldid, tree, efcid, island_dense_in))
+
+
+@wp.func
+def rows_reserve(
+  # In:
+  worldid: int,
+  efcid: int,
+  nrow: int,
+  rownnz: int,
+  nrow_max: int,
+  nnz_max: int,
+  # Out:
+  efc_nnz_out: wp.array[int],
+) -> int:
+  """Sparse storage of a block of rows, as constraint._reserve_efc_nnz (-1: does not fit)."""
+  nrow = wp.min(nrow, nrow_max - efcid)
+  if nrow <= 0 or rownnz == 0:
+    return 0
+  nnz = nrow * rownnz
+  rowadr = wp.atomic_add(efc_nnz_out, worldid, nnz)  # kernel_analyzer: ignore[atomic]
+  if rowadr + nnz > nnz_max:
+    return -1
+  return rowadr

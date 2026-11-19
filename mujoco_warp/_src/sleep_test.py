@@ -16,6 +16,7 @@
 """Tests for sleep and wake features."""
 
 import copy
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -26,7 +27,6 @@ from absl.testing import parameterized
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
 from mujoco_warp._src import forward
-from mujoco_warp._src import island
 from mujoco_warp._src import sleep
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
@@ -37,8 +37,8 @@ wp.set_module_options({"enable_backward": False})
 
 class SleepTest(parameterized.TestCase):
   @parameterized.parameters("pyramidal", "elliptic")
-  def test_compact_solve_unconstrained_zeros_qfrc_constraint(self, cone):
-    """An unconstrained sparse compact solve zeroes the constraint force."""
+  def test_unconstrained_solve_zeros_qfrc_constraint(self, cone):
+    """An unconstrained sleeping solve zeroes the constraint force."""
     _, mjd, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
@@ -60,12 +60,38 @@ class SleepTest(parameterized.TestCase):
       """
     )
     self.assertEqual(mjd.nefc, 0)
-    d.cqfrc_constraint.fill_(wp.inf)
     d.qacc.fill_(wp.inf)
     d.qfrc_constraint.fill_(wp.inf)
     mjwarp.solve(m, d)
     np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-5, atol=1e-5)
     np.testing.assert_allclose(d.qfrc_constraint.numpy()[0], 0.0, atol=1e-5)
+
+  def test_solve_initial_state(self):
+    """The sleeping solve reads only workspace put_data initializes (fresh memory is NaN)."""
+    mjm, mjd, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse"><flag sleep="enable"/></option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body pos="0 0 .1"><freejoint/><geom type="box" size=".1 .1 .1"/></body>
+          <body pos="1 0 .1"><freejoint/><geom type="box" size=".1 .1 .1"/></body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    empty = wp.empty
+
+    def nan_empty(*args, **kwargs):
+      arr = empty(*args, **kwargs)
+      if arr.size and arr.dtype == wp.float32:
+        arr.fill_(float("nan"))
+      return arr
+
+    with mock.patch.object(wp, "empty", nan_empty):
+      d = mjwarp.put_data(mjm, mjd, nconmax=16, njmax=64)
+    mjwarp.step(m, d)
+    self.assertTrue(np.isfinite(d.qacc.numpy()).all())
 
   @parameterized.parameters(1, 2)
   def test_sleep_initiation(self, nworld):
@@ -740,7 +766,6 @@ class SleepTest(parameterized.TestCase):
       </mujoco>
       """,
       nworld=nworld,
-      nvmax=4,
     )
 
     # Enable sleep programmatically
@@ -1838,21 +1863,14 @@ _ARM_XML = """
 """
 
 
-class ActiveDofTest(absltest.TestCase):
-  """Tests that the sleep/wake state drives island.update_active_dofs (the active-DOF maps)."""
+def _awake_dofs(m, d):
+  """The DOFs of awake trees: a mask per world and their count."""
+  awake = d.tree_awake.numpy()[:, m.dof_treeid.numpy()] == 1
+  return awake, awake.sum(axis=1)
 
-  def test_actuated_tree_seeded(self):
-    """Only the actuated arm tree is active at construction; maps are compact."""
-    _, _, m, d = test_data.fixture(xml=_ARM_XML)
-    d.tree_awake = wp.array([[1, 0, 0]], dtype=int)
-    island.update_active_dofs(m, d)
 
-    self.assertEqual(d.ncdof.numpy()[0], 2)
-    # arm dofs 0,1 map to compacted 0,1; the rest are inactive (-1).
-    dof_cdof = d.dof_cdof.numpy()[0]
-    np.testing.assert_array_equal(dof_cdof[:2], [0, 1])
-    self.assertTrue((dof_cdof[2:] == -1).all())
-    np.testing.assert_array_equal(d.cdof_dof.numpy()[0][:2], [0, 1])
+class WakeTest(absltest.TestCase):
+  """Forces and contacts wake the trees they involve."""
 
   def test_applied_force_wakes_tree_per_world(self):
     """qfrc_applied on a free-body DOF wakes its whole tree, independently per world."""
@@ -1871,12 +1889,11 @@ class ActiveDofTest(absltest.TestCase):
     sleep.wake(m, d)
     sleep.update_sleep(m, d)
 
-    island.update_active_dofs(m, d)
-
     # world 0: arm (2) + free body 1 (6) = 8; world 1: arm only = 2
-    np.testing.assert_array_equal(d.ncdof.numpy(), [8, 2])
-    np.testing.assert_array_equal(d.dof_cdof.numpy()[0][:8], np.arange(8))
-    self.assertTrue((d.dof_cdof.numpy()[1][2:] == -1).all())
+    awake, nawake = _awake_dofs(m, d)
+    np.testing.assert_array_equal(nawake, [8, 2])
+    self.assertTrue(awake[0, :8].all())
+    self.assertFalse(awake[1, 2:].any())
 
   def _fake_contact(self, d, g0, g1):
     d.nacon = wp.array([1], dtype=int)
@@ -1907,10 +1924,8 @@ class ActiveDofTest(absltest.TestCase):
     sleep.wake_collision(m, d)
     sleep.update_sleep(m, d)
 
-    island.update_active_dofs(m, d)
-
     # both free bodies awake = 6 + 6 = 12 DOFs
-    self.assertEqual(d.ncdof.numpy()[0], 12)
+    self.assertEqual(_awake_dofs(m, d)[1][0], 12)
 
   def test_resting_contact_does_not_wake(self):
     """A contact where both bodies are at rest does not wake them."""
@@ -1928,10 +1943,8 @@ class ActiveDofTest(absltest.TestCase):
     sleep.wake_collision(m, d)
     sleep.update_sleep(m, d)
 
-    island.update_active_dofs(m, d)
-
     # both stay asleep
-    self.assertEqual(d.ncdof.numpy()[0], 0)
+    self.assertEqual(_awake_dofs(m, d)[1][0], 0)
 
   def test_static_geom_does_not_wake(self):
     """A contact with a static (world) geom only wakes the dynamic side."""
@@ -1949,23 +1962,8 @@ class ActiveDofTest(absltest.TestCase):
     sleep.wake_collision(m, d)
     sleep.update_sleep(m, d)
 
-    island.update_active_dofs(m, d)
-
     # only tree 1 (ball0) wakes -> 6 DOFs
-    self.assertEqual(d.ncdof.numpy()[0], 6)
-
-  def test_overflow_clamps_and_warns(self):
-    """When active DOFs exceed nvmax, ncdof is clamped to nvmax."""
-    mjm = mujoco.MjModel.from_xml_string(_ARM_XML)
-    mjd = mujoco.MjData(mjm)
-    mujoco.mj_forward(mjm, mjd)
-    m = mjwarp.put_model(mjm)
-    d = mjwarp.put_data(mjm, mjd, nvmax=4)
-    d.tree_awake = wp.array([[1, 1, 1]], dtype=int)
-
-    island.update_active_dofs(m, d)
-
-    self.assertEqual(d.ncdof.numpy()[0], 4)
+    self.assertEqual(_awake_dofs(m, d)[1][0], 6)
 
 
 if __name__ == "__main__":

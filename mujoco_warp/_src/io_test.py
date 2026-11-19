@@ -523,10 +523,6 @@ class IOTest(parameterized.TestCase):
     np.testing.assert_array_equal(m.M_tile_offdiag.numpy()[:3], [1, 1, 1])
     self.assertFalse(m.M_tile_full)  # tile 2 never couples to tile 0
 
-  @parameterized.parameters((15, 16), (16, 16), (31, 32), (32, 32), (33, 48), (47, 48), (48, 48), (49, 64), (63, 64), (64, 80))
-  def test_augmented_cholesky_nvmax_padding(self, nvmax, expected):
-    self.assertEqual(io._nvmax_pad(nvmax), expected)
-
   def test_default_njmax_nnz_includes_scalar_joint_limits(self):
     """Include slide and hinge limits in the sparse Jacobian capacity."""
     mjm = mujoco.MjModel.from_xml_string(
@@ -546,9 +542,17 @@ class IOTest(parameterized.TestCase):
 
     self.assertEqual(io._default_njmax_nnz(mjm, nconmax=0, njmax=2), 2)
 
+  def test_nvmax_deprecated(self):
+    """Nvmax is accepted and ignored with a deprecation warning."""
+    mjm = mujoco.MjModel.from_xml_string("<mujoco><worldbody><body><freejoint/><geom size='.1'/></body></worldbody></mujoco>")
+    with self.assertWarns(DeprecationWarning):
+      mjwarp.make_data(mjm, nvmax=4)
+    with self.assertWarns(DeprecationWarning):
+      mjwarp.put_data(mjm, mujoco.MjData(mjm), nvmax=4)
+
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
-    mjm, _, _, d = test_data.fixture("pendula.xml", nvmax=None)
+    mjm, _, _, d = test_data.fixture("pendula.xml")
     md = mjwarp.make_data(mjm)
 
     # same number of fields
