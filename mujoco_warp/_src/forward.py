@@ -37,6 +37,7 @@ from mujoco_warp._src.support import xfrc_accumulate
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import BroadphaseType
+from mujoco_warp._src.types import CtrlInput
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import DisableBit
@@ -224,7 +225,7 @@ def _wrap_period(
       dyntype == DynType.NONE or dyntype == DynType.INTEGRATOR or dyntype == DynType.FILTER or dyntype == DynType.FILTEREXACT
     )
   )
-  if not is_servo:
+  if not is_servo and gaintype != GainType.PID:
     return 0.0
 
   # site transmission with refsite and purely rotational gear
@@ -239,6 +240,23 @@ def _wrap_period(
       return wp.static(2.0 * wp.pi) * wp.length(lin_gear)
 
   return 0.0
+
+
+@wp.func
+def _slew_limit(
+  # In:
+  u: float,
+  u_prev: float,
+  slew_s: float,
+  dt: float,
+  period: float,
+) -> Tuple[float, float]:
+  # wrap setpoint nearest previous state before clamping rate
+  if period > 0.0:
+    u -= period * wp.round((u - u_prev) / period)
+  slew = slew_s * dt
+  u_eff = wp.clamp(u, u_prev - slew, u_prev + slew)
+  return u_eff, (u_eff - u_prev) / dt
 
 
 @wp.kernel
@@ -3027,16 +3045,11 @@ def _actuator_force(
 ):
   worldid, uid = wp.tid()
 
-  actuator_ctrlrange_id = worldid % actuator_ctrlrange.shape[0]
-
   uadr = actuator_ctrladr[uid]
   ctrlnum = actuator_ctrlnum[uid]
   ctrl = 0.0
   if ctrlnum > 0:
-    ctrl = ctrl_in[worldid, uadr]
-    if actuator_ctrllimited[uadr] and not dsbl_clampctrl:
-      ctrlrange = actuator_ctrlrange[actuator_ctrlrange_id, uadr]
-      ctrl = wp.clamp(ctrl, ctrlrange[0], ctrlrange[1])
+    ctrl = util_misc.clamp_ctrl(actuator_ctrllimited, actuator_ctrlrange, ctrl_in, worldid, uadr, dsbl_clampctrl)
   ctrl_act = ctrl
   u_first = ctrl
 
@@ -3086,13 +3099,18 @@ def _actuator_force(
 
       # slew rate
       if slots[0] >= 0:
-        u_prev = act_in[worldid, adr]
-        slew_s = dynprm[7]
-        slew = slew_s * opt_timestep[worldid % opt_timestep.shape[0]]
-        u_eff = wp.clamp(u_first, u_prev - slew, u_prev + slew)
-        act_dot = (u_eff - u_prev) / opt_timestep[worldid % opt_timestep.shape[0]]
+        if ctrlnum > 0:
+          u_first, act_dot = _slew_limit(
+            u_first,
+            act_in[worldid, adr],
+            dynprm[7],
+            opt_timestep[worldid % opt_timestep.shape[0]],
+            0.0,
+          )
+        else:
+          u_first = 0.0
+          act_dot = 0.0
         act_dot_out[worldid, adr] = act_dot
-        u_first = u_eff
         adr += 1
 
       # integral
@@ -3115,6 +3133,8 @@ def _actuator_force(
       V = 0.0
       if ctrlnum > 0:
         V = util_misc.dcmotor_voltage(
+          actuator_ctrllimited,
+          actuator_ctrlrange,
           ctrl_in,
           worldid,
           uadr,
@@ -3124,6 +3144,7 @@ def _actuator_force(
           actuator_velocity_in[worldid, uid],
           x_I,
           gainprm,
+          dsbl_clampctrl,
         )
 
       # temperature
@@ -3171,6 +3192,43 @@ def _actuator_force(
           act_dot = wp.clamp(act_dot, -dimax, dimax)
         act_dot_out[worldid, act_last] = act_dot
 
+    elif dyntype == DynType.PID:
+      actnum = actuator_actnum[uid]
+      act_dot = 0.0
+
+      # slew rate limit on position setpoint (slot 0 when actnum == 2)
+      if actnum == 2 or dynprm[1] > 0.0:
+        slew_dot = 0.0
+        if dynprm[1] > 0.0:
+          if ctrlnum > 0:
+            u_first, slew_dot = _slew_limit(
+              u_first,
+              act_in[worldid, act_first],
+              dynprm[1],
+              opt_timestep[worldid % opt_timestep.shape[0]],
+              period,
+            )
+          else:
+            u_first = 0.0
+        if actnum == 2:
+          act_dot_out[worldid, act_first] = slew_dot
+        else:
+          act_dot = slew_dot
+
+      # integral of position error (kept in act_last even if slewmax == 0 in batch)
+      if gainprm[0] > 0.0 and (actnum == 2 or dynprm[1] <= 0.0):
+        err = u_first - actuator_length_in[worldid, uid]
+        if period > 0.0:
+          err -= period * wp.round(err / period)
+        imax = dynprm[0]
+        if imax > 0.0:
+          z = act_in[worldid, act_last]
+          if z >= imax:
+            err = wp.min(err, 0.0)
+          elif z <= -imax:
+            err = wp.max(err, 0.0)
+        act_dot = err
+
     elif dyntype == DynType.USER:
       act_dot = 0.0  # set by act_dyn_callback
     else:  # DynType.NONE
@@ -3179,7 +3237,7 @@ def _actuator_force(
     act_dot_out[worldid, act_last] = act_dot
 
     if actuator_actearly[uid]:
-      if dyntype == DynType.INTEGRATOR or dyntype == DynType.NONE or dyntype == DynType.DCMOTOR:
+      if dyntype == DynType.INTEGRATOR or dyntype == DynType.NONE or dyntype == DynType.DCMOTOR or dyntype == DynType.PID:
         act = act_in[worldid, act_last]
 
       if dyntype == DynType.DCMOTOR:
@@ -3251,13 +3309,15 @@ def _actuator_force(
     if te <= 0.0:
       if ctrlnum == 0:
         ctrl_act = 0.0
-      elif (actuator_ctrlspec[uid] & 7) != 0:
+      elif (actuator_ctrlspec[uid] & (CtrlInput.POS | CtrlInput.VEL | CtrlInput.FF)) != 0:
         x_I = 0.0
         if na and act_first >= 0:
           slots = util_misc.dcmotor_slots(dynprm, gainprm)
           if slots[1] >= 0:
             x_I = act_in[worldid, act_first + slots[1]]
         ctrl_act = util_misc.dcmotor_voltage(
+          actuator_ctrllimited,
+          actuator_ctrlrange,
           ctrl_in,
           worldid,
           uadr,
@@ -3267,6 +3327,7 @@ def _actuator_force(
           velocity,
           x_I,
           gainprm,
+          dsbl_clampctrl,
         )
       else:
         ctrl_act = u_first
@@ -3285,11 +3346,30 @@ def _actuator_force(
       K = gainprm[1]
       bias -= gain * K * velocity
 
-  if period > 0.0:
-    err = ctrl_act - length
-    ctrl_act -= period * wp.round(err / period)
+  if gaintype == GainType.PID:
+    u4 = util_misc.unpack_servo_inputs(
+      actuator_ctrllimited,
+      actuator_ctrlrange,
+      ctrl_in,
+      worldid,
+      uadr,
+      actuator_ctrlspec[uid],
+      u_first,
+      dsbl_clampctrl,
+    )
+    qref = u4[0]
+    if period > 0.0:
+      qref -= period * wp.round((qref - length) / period)
+    force = -biasprm[1] * qref - biasprm[2] * u4[1] + u4[2]
+    if na and act_first >= 0 and gainprm[0] > 0.0 and (actuator_actnum[uid] == 2 or dynprm[1] <= 0.0):
+      force += gainprm[0] * ctrl_act
+    force += bias
+  else:
+    if period > 0.0:
+      err = ctrl_act - length
+      ctrl_act -= period * wp.round(err / period)
 
-  force = gain * ctrl_act + bias
+    force = gain * ctrl_act + bias
 
   if not (ntendon > 0 and trntype == TrnType.TENDON):
     if actuator_forcelimited[uid]:
