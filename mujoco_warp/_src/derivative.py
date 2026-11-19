@@ -35,6 +35,7 @@ from mujoco_warp._src.types import FLEX_INTERP_MAX_NODES
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ROD_HINGE_SIZE
 from mujoco_warp._src.types import BiasType
+from mujoco_warp._src.types import CtrlInput
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import DisableBit
@@ -44,6 +45,7 @@ from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
+from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import mat43
 from mujoco_warp._src.types import vec6
@@ -182,10 +184,14 @@ def _dcmotor_saturation(
   spec = actuator_ctrlspec[actid]
   u_first = float(0.0)
   if ctrlnum > 0:
-    u_first = ctrl_in[worldid, uadr]
-    if actuator_ctrllimited[uadr] and not (opt_disableflags & DisableBit.CLAMPCTRL):
-      ctrlrange = actuator_ctrlrange[worldid % actuator_ctrlrange.shape[0], uadr]
-      u_first = wp.clamp(u_first, ctrlrange[0], ctrlrange[1])
+    u_first = util_misc.clamp_ctrl(
+      actuator_ctrllimited,
+      actuator_ctrlrange,
+      ctrl_in,
+      worldid,
+      uadr,
+      opt_disableflags & DisableBit.CLAMPCTRL,
+    )
     if actadr >= 0 and slots[0] >= 0:
       u_prev = act_in[worldid, actadr + slots[0]]
       slew = dynprm[7] * h
@@ -194,11 +200,20 @@ def _dcmotor_saturation(
   # terminal voltage, with controller Vmax saturation
   V = float(0.0)
   if ctrlnum > 0:
-    if (spec & 7) != 0:
+    if (spec & (CtrlInput.POS | CtrlInput.VEL | CtrlInput.FF)) != 0:
       x_I = float(0.0)
       if actadr >= 0 and slots[1] >= 0:
         x_I = act_in[worldid, actadr + slots[1]]
-      u4 = util_misc.unpack_servo_inputs(ctrl_in, worldid, uadr, spec, u_first)
+      u4 = util_misc.unpack_servo_inputs(
+        actuator_ctrllimited,
+        actuator_ctrlrange,
+        ctrl_in,
+        worldid,
+        uadr,
+        spec,
+        u_first,
+        opt_disableflags & DisableBit.CLAMPCTRL,
+      )
       length = actuator_length_in[worldid, actid]
       torque = gainprm[4] * (u4[0] - length) + gainprm[6] * (u4[1] - velocity) + gainprm[5] * x_I + u4[2]
       V = gainprm[0] / K * torque + K * velocity
@@ -369,7 +384,7 @@ def _qderiv_actuator_passive_vel(
     if (sat_dcmotor & 1) == 0:
       # controller velocity derivative dV/dω using nameplate resistance, zero under Vmax
       dVdw = 0.0
-      if (actuator_ctrlspec[actid] & 7) != 0 and (sat_dcmotor & 2) == 0:
+      if (actuator_ctrlspec[actid] & (CtrlInput.POS | CtrlInput.VEL | CtrlInput.FF)) != 0 and (sat_dcmotor & 2) == 0:
         R0 = wp.max(MJ_MINVAL, gainprm[0])
         dVdw = -gainprm[6] * R0 / K + K
 
@@ -473,12 +488,15 @@ def _qderiv_actuator_passive_vel(
       vel += gain * act
   else:
     if gain != 0.0 and actuator_ctrlnum[actid] > 0:
-      ctrladr = actuator_ctrladr[actid]
-      ctrl = ctrl_in[worldid, ctrladr]
-      if not (opt_disableflags & DisableBit.CLAMPCTRL) and actuator_ctrllimited[ctrladr]:
-        bounds = actuator_ctrlrange[worldid % actuator_ctrlrange.shape[0], ctrladr]
-        ctrl = wp.clamp(ctrl, bounds[0], bounds[1])
-      vel += gain * ctrl
+      u_val = util_misc.clamp_ctrl(
+        actuator_ctrllimited,
+        actuator_ctrlrange,
+        ctrl_in,
+        worldid,
+        actuator_ctrladr[actid],
+        opt_disableflags & DisableBit.CLAMPCTRL,
+      )
+      vel += gain * u_val
 
   vel_out[worldid, actid] = vel
 
@@ -2525,7 +2543,7 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
         # controller derivatives through the tau->V map, zero under Vmax
         dVdl = float(0.0)
         dVdw = float(0.0)
-        if (actuator_ctrlspec[actid] & 7) != 0 and (sat_dc & 2) == 0:
+        if (actuator_ctrlspec[actid] & (CtrlInput.POS | CtrlInput.VEL | CtrlInput.FF)) != 0 and (sat_dc & 2) == 0:
           dVdl = math.safe_div(-gainprm[4] * R0, K)
           dVdw = math.safe_div(-gainprm[6] * R0, K) + K
 
@@ -2565,10 +2583,14 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
       else:
         cadr = actuator_ctrladr[actid]
         if cadr >= 0:
-          u_val = ctrl_in[worldid, cadr]
-          if not (opt_disableflags & DisableBit.CLAMPCTRL) and actuator_ctrllimited[cadr]:
-            crange = actuator_ctrlrange[worldid % actuator_ctrlrange.shape[0], cadr]
-            u_val = wp.clamp(u_val, crange[0], crange[1])
+          u_val = util_misc.clamp_ctrl(
+            actuator_ctrllimited,
+            actuator_ctrlrange,
+            ctrl_in,
+            worldid,
+            cadr,
+            opt_disableflags & DisableBit.CLAMPCTRL,
+          )
       bias_len += gain_len * u_val
       bias_vel += gain_vel * u_val
 
@@ -3178,6 +3200,10 @@ def _eff_flex_bend_stiff(deterministic: bool = False):
 
     verts = wp.vec4i(edge[0], edge[1], flap[0], flap[1])
     bend_offset = bendingadr + 17 * local_edgeid
+
+    # keep only convex stencils so the metric stays SPD
+    if not passive.flex_bend_convex(flex_bending, bend_offset):
+      return
 
     dofs = wp.vec4i(-1, -1, -1, -1)
     bodies = wp.vec4i(-1, -1, -1, -1)
@@ -3833,7 +3859,7 @@ def _eff_chol_solve(check_skip: bool):
 
 
 @wp.kernel
-def _zero_sleeping_dofs(
+def zero_sleeping_dofs(
   # Model:
   dof_treeid: wp.array[int],
   # Data in:
@@ -4208,6 +4234,28 @@ def _pcg_beta_and_p_update_tiled(
 
   for dofid in range(tid, nv, BLOCK_DIM):
     efm_p_out[worldid, dofid] = efm_z_in[worldid, dofid] + beta * efm_p_out[worldid, dofid]
+
+
+@cache_kernel
+def _pcg_check_convergence_warning(warn_overflow: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # In:
+    efm_done_in: wp.array[bool],
+    # Data out:
+    overflow_out: wp.array[int],
+  ):
+    worldid = wp.tid()
+    if not efm_done_in[worldid]:
+      if wp.static(bool(warn_overflow & OverflowType.ITERATIONS)):
+        wp.printf(
+          "eff_solve PCG did not converge (world %d)\n"
+          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.ITERATIONS (or = 0 for all)\n",
+          worldid,
+        )
+      overflow_out[worldid] = overflow_out[worldid] | wp.static(OverflowType.ITERATIONS)
+
+  return kernel
 
 
 @cache_kernel
@@ -4625,7 +4673,7 @@ def eff_shift(m: Model, d: Data):
       outputs=[d.efm_c],
     )
 
-  if m.has_flex_passive and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)):
+  if passive.flex_passive_contact(m):
     efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = build_efm_contact(m, d)
     wp.launch(
       _eff_contact_shift(m.efm_con_max_dof if det_atomics else 0, det_atomics),
@@ -4914,7 +4962,7 @@ def eff_mul_m_scratch(m: Model, d: Data) -> tuple[Optional[tuple], Optional[tupl
   eff_mul_m allocates them on each call if they are not passed, which is not allowed inside
   wp.capture_while: build them before the loop instead.
   """
-  efm_con = build_efm_contact(m, d) if m.has_flex_passive else None
+  efm_con = build_efm_contact(m, d) if passive.flex_passive_contact(m) else None
   flex_scratch = passive.flex_stretch_scratch(m, d) if m.nflex and m.nflexvert else None
   return efm_con, flex_scratch
 
@@ -5010,7 +5058,7 @@ def eff_mul_m(
         ],
         outputs=[res],
       )
-    if m.has_flex_passive:
+    if passive.flex_passive_contact(m):
       if efm_con is None:
         efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = build_efm_contact(m, d)
       else:
@@ -5097,7 +5145,7 @@ def eff_mul_m(
       )
     if m.opt.enableflags & EnableBit.SLEEP:
       wp.launch(
-        _zero_sleeping_dofs,
+        zero_sleeping_dofs,
         dim=(d.nworld, m.nv),
         inputs=[m.dof_treeid, d.tree_awake],
         outputs=[res],
@@ -5262,6 +5310,7 @@ def eff_prec_fold(
   m: Model,
   d: Data,
   tw_diag: Optional[wp.array] = None,
+  efm_con: Optional[tuple] = None,
 ):
   """Folds efc and passive-contact diagonals into tw_diag for flex triples and rod twist."""
   if tw_diag is None:
@@ -5291,8 +5340,9 @@ def eff_prec_fold(
       outputs=[tw_diag],
     )
 
-  if m.has_flex_passive and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)):
-    efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = build_efm_contact(m, d)
+  if passive.flex_passive_contact(m):
+    con_tuple = efm_con if efm_con is not None else build_efm_contact(m, d)
+    efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = con_tuple
     wp.launch(
       _eff_fold_contact_rank1(m.efm_con_max_dof if det_atomics else 0, det_atomics),
       dim=d.naconmax,
@@ -5395,7 +5445,7 @@ def eff_prec(
     )
     if m.opt.enableflags & EnableBit.SLEEP:
       wp.launch(
-        _zero_sleeping_dofs,
+        zero_sleeping_dofs,
         dim=(d.nworld, m.nv),
         inputs=[m.dof_treeid, d.tree_awake],
         outputs=[res],
@@ -5425,7 +5475,7 @@ def eff_prec(
       )
       if m.opt.enableflags & EnableBit.SLEEP:
         wp.launch(
-          _zero_sleeping_dofs,
+          zero_sleeping_dofs,
           dim=(d.nworld, m.nv),
           inputs=[m.dof_treeid, d.tree_awake],
           outputs=[res],
@@ -5485,7 +5535,7 @@ def eff_prec(
     )
     if m.opt.enableflags & EnableBit.SLEEP:
       wp.launch(
-        _zero_sleeping_dofs,
+        zero_sleeping_dofs,
         dim=(d.nworld, m.nv),
         inputs=[m.dof_treeid, d.tree_awake],
         outputs=[res],
@@ -5502,7 +5552,7 @@ def eff_prec(
       )
       if m.opt.enableflags & EnableBit.SLEEP:
         wp.launch(
-          _zero_sleeping_dofs,
+          zero_sleeping_dofs,
           dim=(d.nworld, m.nv),
           inputs=[m.dof_treeid, d.tree_awake],
           outputs=[res],
@@ -5553,7 +5603,7 @@ def eff_prec(
     )
     if m.opt.enableflags & EnableBit.SLEEP:
       wp.launch(
-        _zero_sleeping_dofs,
+        zero_sleeping_dofs,
         dim=(d.nworld, m.nv),
         inputs=[m.dof_treeid, d.tree_awake],
         outputs=[res],
@@ -5589,7 +5639,7 @@ def eff_prec(
     )
   if m.opt.enableflags & EnableBit.SLEEP:
     wp.launch(
-      _zero_sleeping_dofs,
+      zero_sleeping_dofs,
       dim=(d.nworld, m.nv),
       inputs=[m.dof_treeid, d.tree_awake],
       outputs=[res],
@@ -5628,14 +5678,14 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
     or m.nflexrodhinge > 0
     or m.has_non_simple_flex
     or m.efm0_active
-    or m.has_flex_passive
+    or passive.flex_passive_contact(m)
     or not m.flex_interp_assemblable
   )
   if not has_flex_any and not has_efm_tendon and not has_efm_actuator:
     smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, qacc, rhs)
     if m.opt.enableflags & EnableBit.SLEEP:
       wp.launch(
-        _zero_sleeping_dofs,
+        zero_sleeping_dofs,
         dim=(d.nworld, m.nv),
         inputs=[m.dof_treeid, d.tree_awake],
         outputs=[qacc],
@@ -5737,8 +5787,15 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
     )
 
   if max_it > 0:
-    if m.opt.graph_conditional and wp.get_device().is_cuda:
+    if m.opt.graph_conditional:
       wp.capture_while(efm_nsolving, while_body=_pcg_iteration)
     else:
       for _ in range(max_it):
         _pcg_iteration()
+
+    wp.launch(
+      _pcg_check_convergence_warning(int(m.opt.warn_overflow)),
+      dim=d.nworld,
+      inputs=[efm_done],
+      outputs=[d.overflow],
+    )

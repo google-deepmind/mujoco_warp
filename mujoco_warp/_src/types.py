@@ -87,14 +87,17 @@ class BlockDim:
     update_gradient_JTDAJ_sparse: update gradient JTDAJ sparse block dimension (solver)
     update_gradient_JTDAJ_dense: update gradient JTDAJ dense block dimension (solver)
     linesearch_iterative: linesearch iterative block dimension (solver)
+    update_constraint_qfrc_gradient_sparse_tiled: sparse gradient block dimension (solver)
     update_gradient_grad: update gradient grad block dimension (solver)
     solve_beta_accumulate: solve beta accumulate block dimension (solver)
     solve_search_update_cg: solve search update CG block dimension (solver)
     solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
     noslip_solve: noslip solve block dimension, one thread per world (solver)
+    warmstart_cost: discrete warmstart cost comparison block dimension (solver)
     contact_jac_sparse: sparse contact Jacobian block dimension (constraint)
     eff_pcg: effective-metric PCG block dimension (derivative)
+    discrete_free_gyro: discrete free-body gyroscopic solve block dimension (forward)
     render: render block dimension (render)
   """
 
@@ -126,16 +129,19 @@ class BlockDim:
   update_gradient_JTDAJ_sparse: int = 128
   update_gradient_JTDAJ_dense: int = 128
   linesearch_iterative: int = 32
+  update_constraint_qfrc_gradient_sparse_tiled: int = 32
   update_gradient_grad: int = 256
   solve_beta_accumulate: int = 256
   solve_search_update_cg: int = 256
   solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
   noslip_solve: int = 32
+  warmstart_cost: int = 256
   # constraint
   contact_jac_sparse: int = 128
   # derivative
   eff_pcg: int = 128
+  discrete_free_gyro: int = 128
   # render
   render: int = 64
 
@@ -414,6 +420,7 @@ class DynType(enum.IntEnum):
     MUSCLE: piece-wise linear filter with two time constants
     USER: user-defined dynamics via act_dyn_callback
     DCMOTOR: DC motor dynamics
+    PID: PID actuator dynamics
   """
 
   NONE = mujoco.mjtDyn.mjDYN_NONE
@@ -423,6 +430,7 @@ class DynType(enum.IntEnum):
   MUSCLE = mujoco.mjtDyn.mjDYN_MUSCLE
   USER = mujoco.mjtDyn.mjDYN_USER
   DCMOTOR = mujoco.mjtDyn.mjDYN_DCMOTOR
+  PID = mujoco.mjtDyn.mjDYN_PID
 
 
 class GainType(enum.IntEnum):
@@ -434,6 +442,8 @@ class GainType(enum.IntEnum):
     MUSCLE: muscle FLV curve computed by muscle_gain
     USER: user-defined gain via act_gain_callback
     DCMOTOR: DC motor gain
+    PID: PID actuator gain
+    SO3: SO(3) orientation servo gain
   """
 
   FIXED = mujoco.mjtGain.mjGAIN_FIXED
@@ -441,6 +451,7 @@ class GainType(enum.IntEnum):
   MUSCLE = mujoco.mjtGain.mjGAIN_MUSCLE
   USER = mujoco.mjtGain.mjGAIN_USER
   DCMOTOR = mujoco.mjtGain.mjGAIN_DCMOTOR
+  PID = mujoco.mjtGain.mjGAIN_PID
   SO3 = mujoco.mjtGain.mjGAIN_SO3
 
 
@@ -1255,6 +1266,7 @@ class Model:
     nefm0L: number of non-zeros in zero-mass flex Cholesky factor
     nflexelemedge: number of element edge ids in all flexes
     nflexshelldata: number of shell fragment vertex ids in all flexes
+    nflexcell: number of finite cells in all interpolated flexes
     nJfe: number of non-zeros in sparse flexedge Jacobian
     nmesh: number of meshes
     nmeshvert: number of vertices for all meshes
@@ -1424,6 +1436,7 @@ class Model:
     flex_dim: 1: lines, 2: triangles, 3: tetrahedra          (nflex,)
     flex_interp: interpolation order (0: vertex, 1+: nodes)  (nflex,)
     flex_cellnum: cell count per dimension                   (nflex, 3)
+    flex_celladr: first cell address; -1: not interpolated   (nflex,)
     flex_nodeadr: first node address                         (nflex,)
     flex_nodenum: number of nodes                            (nflex,)
     flex_vertadr: first vertex address                       (nflex,)
@@ -1443,6 +1456,7 @@ class Model:
     flex_nodebodyid: node body ids                           (nflexnode,)
     flex_vertbodyid: vertex body ids                         (nflexvert,)
     flex_vertcell: finite cell index for vertex; -1: none    (nflexvert,)
+    flex_cellempty: is finite cell empty (pruned)            (nflexcell,)
     flex_edge: edge vertex ids (2 per edge)                  (nflexedge, 2)
     flex_edgeflap: adjacent vertex ids (dim=2 only)          (nflexedge, 2)
     flex_elem: element vertex ids (dim+1 per elem)           (nflexelemdata,)
@@ -1671,6 +1685,7 @@ class Model:
     has_flex_snh: whether any flex uses 3D SNH elasticity
     has_non_simple_flex: whether any flex has non-simple vertex bodies
     has_flex_edge_stiff_damp: whether any non-rigid flex has edge stiffness or damping
+    has_flex_stiff: whether any flex contributes elastic stiffness
     has_tendon_stiffness: whether any tendon has positive stiffness
     has_tendon_damping: whether any tendon has positive damping
     has_efm_actuator: whether any actuator contributes effective metric coupling
@@ -1683,6 +1698,7 @@ class Model:
     flex_interp_assemblable: whether interpolated flex stiffness can be assembled into efm_K
     has_unsupported_flex_interp: whether model has unsupported flex interpolation orders
     has_ellipsoid_geom: whether the model contains ellipsoid geoms
+    has_cylinder_geom: whether the model contains cylinder geoms
     has_plane_geom: whether the model contains plane geoms
     has_1d_flex: whether the model contains 1D flexes
     has_2d_flex: whether the model contains 2D flexes
@@ -1789,6 +1805,7 @@ class Model:
     flex_shelladr: maps each flex to its start shell index                  (nflex,)
     flex_faceadr: maps each flex to its start face index                    (nflex,)
     flex_simple: whether all vertices of flex are on simple bodies          (nflex,)
+    flex_stiff_possible: whether flex contributes elastic stiffness         (nflex,)
     flex_efcnum: number of edge equality rows (non-rigid edges)             (nflex,)
     flex_efcnnz: number of Jacobian nonzeros in edge equality rows          (nflex,)
     flexedge_efcadr: row of the edge among its flex's edge equality rows,   (nflexedge,)
@@ -1856,6 +1873,7 @@ class Model:
   nefm0L: int
   nflexelemedge: int
   nflexshelldata: int
+  nflexcell: int
   nJfe: int
   nmesh: int
   nmeshvert: int
@@ -2025,6 +2043,7 @@ class Model:
   flex_dim: array("nflex", int)
   flex_interp: array("nflex", int)
   flex_cellnum: array("nflex", wp.vec3i)
+  flex_celladr: array("nflex", int)
   flex_nodeadr: array("nflex", int)
   flex_nodenum: array("nflex", int)
   flex_vertadr: array("nflex", int)
@@ -2044,6 +2063,7 @@ class Model:
   flex_nodebodyid: array("nflexnode", int)
   flex_vertbodyid: array("nflexvert", int)
   flex_vertcell: array("nflexvert", int)
+  flex_cellempty: array("nflexcell", bool)
   flex_edge: array("nflexedge", wp.vec2i)
   flex_edgeflap: array("nflexedge", wp.vec2i)
   flex_elem: array("nflexelemdata", int)
@@ -2268,6 +2288,7 @@ class Model:
   has_flex_snh: bool
   has_non_simple_flex: bool
   has_flex_edge_stiff_damp: bool
+  has_flex_stiff: bool
   has_tendon_stiffness: bool
   has_tendon_damping: bool
   has_efm_actuator: bool
@@ -2280,6 +2301,7 @@ class Model:
   flex_interp_assemblable: bool
   has_unsupported_flex_interp: bool
   has_ellipsoid_geom: bool
+  has_cylinder_geom: bool
   has_plane_geom: bool
   has_1d_flex: bool
   has_2d_flex: bool
@@ -2380,6 +2402,7 @@ class Model:
   flex_shelladr: array("nflex", int)
   flex_faceadr: array("nflex", int)
   flex_simple: array("nflex", bool)
+  flex_stiff_possible: array("nflex", bool)
   flex_efcnum: array("nflex", int)
   flex_efcnnz: array("nflex", int)
   flexedge_efcadr: array("nflexedge", int)
@@ -2904,6 +2927,8 @@ class SolverContext:
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
   inertia_scale: wp.array[float]
+  nsolving: Optional[wp.array] = None
+  qfrc_smooth_eff: Optional[wp.array] = None
   # discrete integrator effective-metric scratch built before the solver loop, which may run
   # inside wp.capture_while where memory cannot be allocated (None otherwise)
   efm_con: Optional[tuple] = None

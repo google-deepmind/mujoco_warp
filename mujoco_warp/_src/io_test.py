@@ -2914,6 +2914,8 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(m.nflexrodhinge, 2)
     np.testing.assert_array_equal(m.flex_rodhinge_map.numpy(), [[rod, adr + 1], [rod, adr + 1 + types.ROD_HINGE_SIZE]])
     self.assertFalse(m.has_flex_edge_stiff_damp)
+    self.assertTrue(m.has_flex_stiff)
+    np.testing.assert_array_equal(m.flex_stiff_possible.numpy(), [True, False, True])
 
   @parameterized.parameters(
     # quadratic flexes are rejected before the self-collision check
@@ -3235,6 +3237,32 @@ class IOTest(parameterized.TestCase):
     if nworld == 2:
       self.assertEqual(d_put.tree_awake.numpy()[1, 0], 1)
       self.assertFalse(np.allclose(d_put.qpos.numpy()[0], d_put.qpos.numpy()[1]))
+
+  def test_get_data_into_nu_zero_nJmom(self):
+    """get_data_into copies actuator_moment when nu == 0 and nJmom > 0."""
+    mjm, mjd, _, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0"/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <dcmotor joint="j0" gear="2" motorconst="1" resistance="1" input="none"/>
+        </actuator>
+      </mujoco>
+      """
+    )
+    self.assertEqual(mjm.nu, 0)
+    self.assertEqual(mjm.nactuator, 1)
+    self.assertEqual(mjm.nJmom, 1)
+
+    result = mujoco.MjData(mjm)
+    mjwarp.get_data_into(result, mjm, d)
+    _assert_eq(result.moment_colind, mjd.moment_colind, "moment_colind")
+    _assert_eq(result.actuator_moment, mjd.actuator_moment, "actuator_moment")
 
 
 if __name__ == "__main__":

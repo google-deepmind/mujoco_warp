@@ -1841,7 +1841,7 @@ def _iteration(m: types.Model, d: types.Data, ctx: IslandContext, g: island.Grou
   wp.launch_tiled(
     # incremental as the world solver's: a noise-sized step rebuilds the group (_ALPHA_NOISE_EPS)
     _linesearch_iterative_kernel(
-      m.opt.ls_iterations, m.opt.cone, False, True, m.opt.cone != types.ConeType.ELLIPTIC, int(m.opt.warn_overflow), True
+      m.opt.ls_iterations, m.opt.cone, False, True, m.opt.cone != types.ConeType.ELLIPTIC, int(m.opt.warn_overflow), False, True
     ),
     dim=problems.nblock,
     inputs=[
