@@ -584,7 +584,7 @@ def ray_hfield(
   lpnt, lvec = _ray_map(pos, mat, pnt, vec)
 
   # construct basis vectors of normal plane
-  b0, b1 = _orthogonal_basis(lvec)
+  b0, b1 = _orthogonal_basis(wp.normalize(lvec))
 
   # find ray segment intersecting top box
   seg = wp.vec2(0.0, top_intersect)
@@ -713,7 +713,7 @@ def ray_mesh(
   pnt, vec = _ray_map(pos, mat, pnt, vec)
 
   # compute orthogonal basis vectors
-  b0, b1 = _orthogonal_basis(vec)
+  b0, b1 = _orthogonal_basis(wp.normalize(vec))
 
   x = float(-1.0)
   normal = wp.vec3()

@@ -28,6 +28,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src import smooth
 from mujoco_warp._src import solver
 from mujoco_warp._src import types
 
@@ -312,6 +313,72 @@ class SmoothTest(parameterized.TestCase):
       _assert_eq(test_data.quat_to_mat(d.site_xquat.numpy()[i]), mjd.site_xmat.reshape((-1, 3, 3)), "site_xmat")
       _assert_eq(d.mocap_pos.numpy()[i], mjd.mocap_pos, "mocap_pos")
       _assert_eq(d.mocap_quat.numpy()[i], mjd.mocap_quat, "mocap_quat")
+
+  @parameterized.parameters(1, 2)
+  def test_kinematics_phases(self, nworld):
+    """Tests kinematics1 and kinematics2 phases."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body pos=".2 -.3 .4" euler="10 20 -15">
+            <joint pos=".03 .02 .01" axis=".2 .7 .5"/>
+            <inertial pos=".1 .03 -.02" euler="20 -10 30" mass="1" diaginertia=".02 .03 .04"/>
+            <geom type="box" size=".05 .1 .15" pos=".1 -.1 .2" euler="5 10 15"/>
+            <site pos=".2 .1 -.1" euler="-10 20 5"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    qpos = np.array([[0.35], [-0.45]], dtype=np.float32)[:nworld]
+    d.qpos.assign(qpos)
+
+    refs = []
+    for world in range(nworld):
+      ref = mujoco.MjData(mjm)
+      ref.qpos[:] = qpos[world]
+      mujoco.mj_kinematics(mjm, ref)
+      refs.append(ref)
+
+    # Skip constant worldbody frames initialized by make_data.
+    for arr in (d.xpos, d.xquat, d.xipos, d.xiquat):
+      arr[:, 1:].fill_(wp.inf)
+    for arr in (d.xanchor, d.xaxis, d.geom_xpos, d.geom_xquat, d.site_xpos, d.site_xquat):
+      arr.fill_(wp.inf)
+
+    # Phase 1 computes body poses and joint anchors/axes without touching the other frames.
+    smooth.kinematics1(m, d)
+    for arr in (d.xipos[:, 1:], d.xiquat[:, 1:], d.geom_xpos, d.geom_xquat, d.site_xpos, d.site_xquat):
+      self.assertTrue(np.isinf(arr.numpy()).all())
+
+    # Copy the snapshots because numpy() can return a view of CPU arrays.
+    xpos, xquat = d.xpos.numpy().copy(), d.xquat.numpy().copy()
+    xanchor, xaxis = d.xanchor.numpy().copy(), d.xaxis.numpy().copy()
+    np.testing.assert_allclose(xpos, [ref.xpos for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(xquat, [ref.xquat for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(xanchor, [ref.xanchor for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(xaxis, [ref.xaxis for ref in refs], rtol=1e-5, atol=1e-5)
+
+    # Phase 2 computes inertial, geom, and site frames from body poses without reading qpos.
+    d.qpos.fill_(wp.inf)
+    smooth.kinematics2(m, d)
+    for arr, before in ((d.xpos, xpos), (d.xquat, xquat), (d.xanchor, xanchor), (d.xaxis, xaxis)):
+      np.testing.assert_array_equal(arr.numpy(), before)
+
+    xipos, xiquat = d.xipos.numpy(), d.xiquat.numpy()
+    geom_xpos, geom_xquat = d.geom_xpos.numpy(), d.geom_xquat.numpy()
+    site_xpos, site_xquat = d.site_xpos.numpy(), d.site_xquat.numpy()
+    np.testing.assert_allclose(xipos, [ref.xipos for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(xiquat, [ref.xiquat for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(geom_xpos, [ref.geom_xpos for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(geom_xquat, [ref.geom_xquat for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(site_xpos, [ref.site_xpos for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(site_xquat, [ref.site_xquat for ref in refs], rtol=1e-5, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(xquat[0], xquat[1]))
+      self.assertFalse(np.allclose(site_xpos[0], site_xpos[1]))
 
   @parameterized.named_parameters(_tree_cases())
   def test_com_pos(self, model):
@@ -1806,6 +1873,104 @@ class SmoothTest(parameterized.TestCase):
     res = wp.zeros((1, mjm.nv), dtype=float)
     mjw.solve_m(m, d, res, d.qfrc_smooth)
     _assert_eq(res.numpy()[0], ref[0], "M \\ qfrc_smooth (mixed blocks)")
+
+  @parameterized.product(nworld=(1, 2), mode=("separate", "combined", "deterministic", "all_sparse", "wide"))
+  def test_sparse_factor_sleep(self, nworld, mode):
+    def chain(n):
+      return '<body pos="0 0 .05"><joint axis="0 1 0"/><geom size=".02"/>' * n + "</body>" * n
+
+    small = "" if mode == "all_sparse" else chain(4) + chain(7) + '<body><freejoint/><geom size=".1"/></body>'
+    branches = chain(15) * 40 if mode == "wide" else chain(8) * 8
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option><flag contact="disable"/></option>
+        <default><joint armature="1"/></default>
+        <worldbody>
+          <body><freejoint/><geom size=".1"/>{branches}</body>
+          <body><freejoint/><geom size=".1"/>{chain(15) * 5}</body>
+          {small}
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      qpos_noise=0.1,
+    )
+    matrices, expected = [], []
+    rhs = np.random.default_rng(42).normal(size=(nworld, m.nv)).astype(np.float32)
+    for world in range(nworld):
+      if world:
+        mujoco.mj_integratePos(mjm, mjd.qpos, np.ones(m.nv), 0.2)
+        mujoco.mj_forward(mjm, mjd)
+      matrices.append(mjd.M.copy())
+      result = np.empty((1, m.nv))
+      mujoco.mj_solveM(mjm, mjd, result, rhs[world : world + 1])
+      expected.append(result[0])
+    matrices = np.asarray(matrices, dtype=np.float32)
+    expected = np.asarray(expected)
+    d.M.assign(matrices)
+    d.qLD.fill_(wp.inf)
+    d.qLDiagInv.fill_(wp.inf)
+    mjw.factor_m(m, d)
+    block_adr = m.qLD_block_adr.numpy()
+    m.opt.enableflags |= types.EnableBit.SLEEP
+    if mode == "deterministic":
+      m.opt.deterministic |= types.DeterminismType.ATOMICS
+    b = wp.array(rhs)
+    x = wp.full_like(b, wp.inf)
+    scratch = wp.empty_like(x) if mode == "deterministic" else None
+    with wp.ScopedCapture() as capture:
+      if mode in ("combined", "all_sparse", "wide"):
+        mjw._src.smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, x, b)
+      else:
+        mjw.factor_m(m, d)
+        mjw.solve_m(m, d, x, b, x_scratch=scratch)
+    for phase in (0, 1):
+      saved_factor, saved_diagonal = d.qLD.numpy(), d.qLDiagInv.numpy()
+      awake = ((np.indices(d.tree_awake.shape).sum(axis=0) + phase) % 2).astype(np.int32)
+      d.tree_awake.assign(awake)
+      scale = 0.5 if phase == 0 else 2.0
+      values = matrices * scale
+      reference = expected / scale
+      asleep_factor = np.zeros(d.qLD.shape, dtype=bool)
+      for world in range(nworld):
+        for i in range(m.nv):
+          if not awake[world, mjm.dof_treeid[i]]:
+            adr, end = mjm.M_rowadr[i], mjm.M_rowadr[i] + mjm.M_rownnz[i]
+            values[world, adr:end] = np.nan
+            asleep_factor[world, m.qLD_block_total + adr : m.qLD_block_total + end] = True
+            reference[world, i] = 0
+        for start, size in zip(mjm.tree_dofadr, mjm.tree_dofnum):
+          if block_adr[start] >= 0 and not awake[world, mjm.dof_treeid[start]]:
+            asleep_factor[world, block_adr[start] : block_adr[start] + size * size] = True
+      d.M.assign(values)
+      x.fill_(wp.inf)
+      wp.capture_launch(capture.graph)
+      np.testing.assert_allclose(x.numpy(), reference, atol=1e-5, rtol=1e-5)
+      np.testing.assert_array_equal(d.qLD.numpy()[asleep_factor], saved_factor[asleep_factor])
+      asleep_dof = awake[:, mjm.dof_treeid] == 0
+      np.testing.assert_array_equal(d.qLDiagInv.numpy()[asleep_dof], saved_diagonal[asleep_dof])
+      if nworld == 2:
+        self.assertFalse(np.allclose(x.numpy()[0], x.numpy()[1]))
+
+  def test_sparse_factor_strided(self):
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco><default><joint armature="1"/></default><worldbody>
+        {'<body pos="0 0 .05"><joint/><geom size=".02"/>' * 70}{"</body>" * 70}
+      </worldbody></mujoco>
+      """,
+    )
+    storage = wp.full((1, 2 * d.qLD.shape[1]), -123.0, dtype=float)
+    d.qLD = storage[:, ::2]
+    mjw.factor_m(m, d)
+    rhs = wp.ones((1, m.nv), dtype=float)
+    out = wp.full_like(rhs, wp.inf)
+    mjw.solve_m(m, d, out, rhs)
+    expected = np.empty((1, m.nv))
+    mujoco.mj_solveM(mjm, mjd, expected, rhs.numpy())
+    np.testing.assert_allclose(out.numpy(), expected, atol=1e-5, rtol=1e-5)
+    np.testing.assert_array_equal(storage.numpy()[:, 1::2], -123.0)
 
   def test_factor_solve_lu(self):
     """Tests factor_solve_lu with a sparse matrix representing a tree."""
