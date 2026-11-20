@@ -1299,21 +1299,11 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
         m.wrap_jnt_adr.append(adr + j)
 
   # spatial tendon
-  m.tendon_site_pair_adr, m.tendon_geom_adr = [], []
-  m.ten_wrapadr_site, m.ten_wrapnum_site = [0], []
+  m.tendon_site_pair_adr, m.tendon_geom_adr, m.tendon_geom_wrapadr = [], [], []
   for i, tendon_num in enumerate(mjm.tendon_num):
     adr = mjm.tendon_adr[i]
-    # sites
-    if (mjm.wrap_type[adr : adr + tendon_num] == mujoco.mjtWrap.mjWRAP_SITE).all():
-      if i < mjm.ntendon:
-        m.ten_wrapadr_site.append(m.ten_wrapadr_site[-1] + tendon_num)
-      m.ten_wrapnum_site.append(tendon_num)
-    else:
-      if i < mjm.ntendon:
-        m.ten_wrapadr_site.append(m.ten_wrapadr_site[-1])
-      m.ten_wrapnum_site.append(0)
-
-    # geoms
+    # first geom wrap of this tendon, indexing the geom wrap arrays
+    m.tendon_geom_wrapadr.append(len(m.tendon_geom_adr))
     for j in range(tendon_num):
       wrap_type = mjm.wrap_type[adr + j]
       if j < tendon_num - 1:
@@ -1918,7 +1908,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "ntendon_site_pair": len(m.tendon_site_pair_adr),
       "ntendon_geom": len(m.tendon_geom_adr),
       "ntendon_limited": len(m.tendon_limited_adr),
-      "nten_wrapadr_site": len(m.ten_wrapadr_site),
       "nwrap_jnt": len(m.wrap_jnt_adr),
       "nwrap_site": len(m.wrap_site_adr),
       "nwrap_site_pair": len(m.wrap_site_pair_adr),

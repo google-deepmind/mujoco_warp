@@ -1574,14 +1574,10 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   if sleep_enabled:
     nslept = sleep.sleep(m, d)
     can_capture_on_slept = m.opt.graph_conditional and m.nflex == 0 and not m.has_fluid
-    ten_Jdot = wp.empty((d.nworld, m.nJten), dtype=float) if can_capture_on_slept and m.nJten > 0 else None
-    ten_bias_coef = (
-      wp.empty((d.nworld, m.ntendon), dtype=float) if can_capture_on_slept and m.ntendon > 0 and m.nJten > 0 else None
-    )
     cfrc_int_in = wp.empty_like(d.cfrc_int) if can_capture_on_slept else None
 
     def _on_slept():
-      fwd_velocity(m, d, ten_Jdot=ten_Jdot, ten_bias_coef=ten_bias_coef, cfrc_int_in=cfrc_int_in)
+      fwd_velocity(m, d, cfrc_int_in=cfrc_int_in)
       sleep.update_sleep(m, d)
 
     if can_capture_on_slept:
@@ -2972,13 +2968,7 @@ def _tendon_velocity(
 
 
 @event_scope
-def fwd_velocity(
-  m: Model,
-  d: Data,
-  ten_Jdot: Optional[wp.array] = None,
-  ten_bias_coef: Optional[wp.array] = None,
-  cfrc_int_in: Optional[wp.array] = None,
-):
+def fwd_velocity(m: Model, d: Data, cfrc_int_in: Optional[wp.array] = None):
   """Velocity-dependent computations."""
   wp.launch(
     _actuator_velocity,
@@ -2997,7 +2987,7 @@ def fwd_velocity(
   smooth.com_vel(m, d)
   passive.passive(m, d)
   smooth.rne(m, d, cfrc_int_in=cfrc_int_in)
-  smooth.tendon_bias(m, d, d.qfrc_bias, ten_Jdot=ten_Jdot, ten_bias_coef=ten_bias_coef)
+  smooth.tendon_bias(m, d, d.qfrc_bias)
   if m.opt.integrator == IntegratorType.DISCRETE:
     derivative.eff_shift(m, d)
 
