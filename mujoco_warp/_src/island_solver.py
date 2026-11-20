@@ -49,6 +49,7 @@ from mujoco_warp._src.solver import _rewrite_cone_rows
 from mujoco_warp._src.solver import _row_weight
 from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import efc_threads_per_world
 from mujoco_warp._src.warp_util import side_stream
 
 wp.set_module_options({"enable_backward": False})
@@ -281,12 +282,13 @@ def _init_rows(width: int):
     dof2row_in: wp.array2d[int],
     iJ_in: wp.array3d[float],
     iqacc_in: wp.array2d[float],
+    lanes: int,
     # Out:
     row_jaref_out: wp.array2d[float],
   ):
-    """J qacc - aref of a row at the start point, a thread per row as _solve_init_jaref."""
-    worldid, row = wp.tid()
-    if row < wp.min(nefc_in[worldid], efc_aref_in.shape[1]):
+    """J qacc - aref of a row at the start point, as _mul_jac_vec's subtract_aref mode."""
+    worldid, lane = wp.tid()
+    for row in range(lane, wp.min(nefc_in[worldid], efc_aref_in.shape[1]), lanes):
       islandid = efc_island_in[worldid, row]
       block = island_dense_in[worldid, islandid]
       jaref = -efc_aref_in[worldid, row]
@@ -1482,9 +1484,11 @@ def _seed_pool(m: types.Model, d: types.Data, ctx: IslandContext, g: island.Grou
 
 def _evaluate(m: types.Model, d: types.Data, ctx: IslandContext, g: island.GroupBuffers, initial: bool) -> wp.Stream | None:
   """Constraint state at the current point, J'force of sparse islands and the H updates."""
+  rows_kernel = _rows(initial, m.opt.cone == types.ConeType.ELLIPTIC)
+  rows_lanes = efc_threads_per_world(d.nworld, d.njmax, d.qacc.device, rows_kernel)
   wp.launch(
-    _rows(initial, m.opt.cone == types.ConeType.ELLIPTIC),
-    dim=(d.nworld, _lanes(d.nworld, d.njmax)),
+    rows_kernel,
+    dim=(d.nworld, rows_lanes),
     inputs=[
       m.opt.impratio_invsqrt,
       d.nefc,
@@ -1499,7 +1503,7 @@ def _evaluate(m: types.Model, d: types.Data, ctx: IslandContext, g: island.Group
       d.nacon,
       ctx.done,
       ctx.row_jaref,
-      _lanes(d.nworld, d.njmax),
+      rows_lanes,
     ],
     outputs=[
       d.efc.force,
@@ -1626,9 +1630,10 @@ def _evaluate(m: types.Model, d: types.Data, ctx: IslandContext, g: island.Group
     else:
       flips()
 
+  frc_lanes = efc_threads_per_world(d.nworld, d.njmax, d.qacc.device, _frc_rows)
   wp.launch(
     _frc_rows,
-    dim=(d.nworld, _lanes(d.nworld, d.njmax)),
+    dim=(d.nworld, frc_lanes),
     inputs=[
       d.nefc,
       d.efc.J_rownnz,
@@ -1642,7 +1647,7 @@ def _evaluate(m: types.Model, d: types.Data, ctx: IslandContext, g: island.Group
       ctx.niter,
       ctx.state_changed,
       ctx.dof2row,
-      _lanes(d.nworld, d.njmax),
+      frc_lanes,
     ],
     outputs=[ctx.frc],
   )
@@ -1898,9 +1903,11 @@ def _iteration(m: types.Model, d: types.Data, ctx: IslandContext, g: island.Grou
 def _solve_groups(m: types.Model, d: types.Data, ctx: IslandContext, g: island.GroupBuffers):
   """Solve the awake groups: one-tile groups whole, wider ones on the block path."""
   nrow = ctx.qacc.shape[1]
+  init_kernel = _init_rows(g.J.shape[2])
+  init_lanes = efc_threads_per_world(d.nworld, d.njmax, d.qacc.device, init_kernel)
   wp.launch(
-    _init_rows(g.J.shape[2]),
-    dim=(d.nworld, d.njmax),
+    init_kernel,
+    dim=(d.nworld, init_lanes),
     inputs=[
       d.nefc,
       d.efc.J_rownnz,
@@ -1914,6 +1921,7 @@ def _solve_groups(m: types.Model, d: types.Data, ctx: IslandContext, g: island.G
       ctx.dof2row,
       g.J,
       ctx.qacc,
+      init_lanes,
     ],
     outputs=[ctx.row_jaref],
   )
