@@ -744,11 +744,19 @@ class CollisionTest(parameterized.TestCase):
 
   @parameterized.product(
     nworld=(1, 2),
-    axes=(("0 0 1", ".3 -.2 .9327"), (".4 .3 .866", ".47 .1 .877"), ("0 0 1", "0 0 1")),
+    axes=(
+      ("0 0 1", ".3 -.2 .9327"),
+      (".4 .3 .866", ".47 .1 .877"),
+      (".4 .3 .866", ".401 .3 .866"),
+      ("0 0 1", "0 0 1"),
+      ("1 1 1", "1 1 1"),
+    ),
   )
   def test_plane_capsule_friction_frame(self, nworld, axes):
     """Match contacts by position and verify the entire orthonormal frame."""
     plane, capsule = axes
+    # MuJoCo's (1, 0, 0) fallback tangent is not orthogonal to a tilted normal; compare the normal.
+    frame_rows = 1 if axes == ("1 1 1", "1 1 1") else 3
     mjm, _, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
@@ -769,11 +777,14 @@ class CollisionTest(parameterized.TestCase):
     d.contact.pos.fill_(wp.inf)
     d.contact.dist.fill_(wp.inf)
     d.contact.frame.fill_(wp.inf)
+    d.contact.worldid.fill_(-1)
     d.nacon.fill_(-1)
     mjw.forward(m, d)
     ncon = int(d.nacon.numpy()[0])
     worlds = d.contact.worldid.numpy()[:ncon]
-    contact_pos, contact_dist, contact_frame = (getattr(d.contact, name).numpy()[:ncon] for name in ("pos", "dist", "frame"))
+    contact_pos = d.contact.pos.numpy()[:ncon]
+    contact_dist = d.contact.dist.numpy()[:ncon]
+    contact_frame = d.contact.frame.numpy()[:ncon]
     for world in range(nworld):
       ref = mujoco.MjData(mjm)
       ref.qpos[:] = positions[world]
@@ -784,10 +795,11 @@ class CollisionTest(parameterized.TestCase):
       for index in ids:
         nearest = min(range(ref.ncon), key=lambda i: np.linalg.norm(ref.contact[i].pos - contact_pos[index]))
         contact = ref.contact[nearest]
+        frame = contact_frame[index]
         np.testing.assert_allclose(contact_dist[index], contact.dist, atol=1e-5, rtol=1e-5)
         np.testing.assert_allclose(contact_pos[index], contact.pos, atol=1e-5, rtol=1e-5)
-        np.testing.assert_allclose(contact_frame[index], contact.frame.reshape(3, 3), atol=1e-5, rtol=1e-5)
-        np.testing.assert_allclose(contact_frame[index] @ contact_frame[index].T, np.eye(3), atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(frame[:frame_rows], contact.frame.reshape(3, 3)[:frame_rows], atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(frame @ frame.T, np.eye(3), atol=1e-5, rtol=1e-5)
 
     if nworld == 2:
       self.assertFalse(np.allclose(contact_pos[worlds == 0], contact_pos[worlds == 1]))

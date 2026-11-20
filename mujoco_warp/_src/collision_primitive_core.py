@@ -276,14 +276,18 @@ def plane_capsule(
 
   # Match mju_makeFrame: choose the hint before projecting it onto the plane.
   b = axis
-  if wp.length(b) < 0.5:
+  if wp.dot(b, b) < 0.25:
     if -0.5 < n[1] and n[1] < 0.5:
       b = wp.vec3(0.0, 1.0, 0.0)
     else:
       b = wp.vec3(0.0, 0.0, 1.0)
-  b, b_norm = normalize_with_norm(b - n * wp.dot(n, b))
+  # A double cross product avoids float32 cancellation along n when b is nearly parallel to n.
+  b, b_norm = normalize_with_norm(wp.cross(n, wp.cross(b, n)))
   if b_norm < MJ_MINVAL:
-    b = wp.vec3(1.0, 0.0, 0.0)
+    # Unlike mju_makeFrame, project the (1, 0, 0) fallback so the frame stays orthonormal.
+    b, b_norm = normalize_with_norm(wp.cross(n, wp.cross(wp.vec3(1.0, 0.0, 0.0), n)))
+    if b_norm < MJ_MINVAL:
+      b = wp.vec3(0.0, 1.0, 0.0)
 
   c = wp.cross(n, b)
   frame = wp.mat33(n[0], n[1], n[2], b[0], b[1], b[2], c[0], c[1], c[2])
