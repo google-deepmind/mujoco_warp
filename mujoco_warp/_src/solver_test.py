@@ -882,6 +882,7 @@ class SolverTest(parameterized.TestCase):
     ctx.newton_decrement.assign(np.array([np.inf, 8.0, 6.0, np.inf]))
     ctx.grad_scale.assign(np.array([np.inf, 2.0, 7.0, np.inf]))
     ctx.quad_changed_ids.fill_(-1)
+    ctx.quad_changed_delta.fill_(wp.inf)
     ctx.quad_changed_count.fill_(-1)
     ctx.state_changed_count.fill_(-1)
     ctx.search_unchanged.zero_()
