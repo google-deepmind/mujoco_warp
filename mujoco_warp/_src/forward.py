@@ -3742,8 +3742,8 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   if m.opt.integrator == IntegratorType.DISCRETE:
     derivative.eff_solve(m, d, d.qacc_smooth)
   elif factorize:
-    # only the CG solver reads the factor (solve_m for Mgrad)
-    store_factor = m.opt.solver == SolverType.CG
+    # the CG solver (solve_m for Mgrad) and noslip (M^-1 J') read the factor
+    store_factor = (m.opt.solver == SolverType.CG) or (m.opt.noslip_iterations > 0)
     smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth, store_factor=store_factor)
   else:
     smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)

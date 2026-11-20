@@ -203,9 +203,13 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qfrc_smooth.numpy()[0], mjd.qfrc_smooth, "qfrc_smooth")
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
 
-  @parameterized.parameters(SolverType.NEWTON, SolverType.CG)
-  def test_forward_qld_store_factor(self, solver):
-    """Forward stores the dense-block factor of M only for CG, which reads it."""
+  @parameterized.parameters(
+    (SolverType.NEWTON, 0),
+    (SolverType.NEWTON, 1),
+    (SolverType.CG, 0),
+  )
+  def test_forward_qld_store_factor(self, solver, noslip_iterations):
+    """Forward stores the dense-block factor of M only for CG or noslip, which read it."""
     _, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -225,7 +229,7 @@ class ForwardTest(parameterized.TestCase):
         </worldbody>
       </mujoco>
       """,
-      overrides={"opt.solver": solver},
+      overrides={"opt.solver": solver, "opt.noslip_iterations": noslip_iterations},
     )
     self.assertTrue(any(tile.elemid.size for tile in m.M_tiles))
     self.assertGreater(mjd.nefc, 0)
@@ -235,7 +239,7 @@ class ForwardTest(parameterized.TestCase):
     mjw.forward(m, d)
 
     dense = d.qLD.numpy()[0, : m.qLD_block_total]
-    self.assertEqual(np.isinf(dense).all(), solver != SolverType.CG)
+    self.assertEqual(np.isinf(dense).all(), (solver != SolverType.CG) and (noslip_iterations == 0))
     _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
 
   @parameterized.product(
