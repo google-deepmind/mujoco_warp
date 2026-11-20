@@ -1005,7 +1005,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     m.flex_cell_map = np.array(flex_cell_map, dtype=np.int32)
 
   m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
-  m.max_efc_J_rownnz = _max_efc_J_rownnz(mjm)
+  # the contact bound loops over geom pairs and only the sparse solver reads it
+  m.max_efc_J_rownnz = _max_efc_J_rownnz(mjm) if m.is_sparse else mjm.nv
 
   # body ids grouped by tree level (depth-based traversal)
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
@@ -2149,28 +2150,6 @@ def _body_set_nnz(mjm: mujoco.MjModel, bodies) -> int:
   return len(active_dofs)
 
 
-def _max_efc_J_rownnz(mjm: mujoco.MjModel) -> int:
-  """Returns an upper bound on the number of non-zeros in one constraint Jacobian row."""
-  if mjm.nflex:
-    # flex rows can couple the dofs of many vertices
-    return mjm.nv
-  # contact, connect and weld rows span the dofs that move either of two bodies
-  ndof = np.zeros(mjm.nbody, dtype=int)
-  for b in range(1, mjm.nbody):
-    ndof[b] = ndof[mjm.body_parentid[b]] + mjm.body_dofnum[b]
-  rownnz = 0
-  deepest = ndof.copy()  # most dofs moving a body in each subtree seen so far
-  for b in range(mjm.nbody - 1, 0, -1):
-    p = mjm.body_parentid[b]
-    # two bodies in different subtrees of p share the dofs that move p
-    rownnz = max(rownnz, deepest[p] + deepest[b] - ndof[p])
-    deepest[p] = max(deepest[p], deepest[b])
-  if mjm.ntendon:
-    # a tendon equality couples two tendons
-    rownnz = max(rownnz, 2 * int(mjm.ten_J_rownnz.max()))
-  return int(min(rownnz, mjm.nv))
-
-
 def _calculate_max_contact_nnz(mjm: mujoco.MjModel) -> int:
   """Returns the maximum number of non-zeros for a single contact constraint."""
   max_contact_nnz = 0
@@ -2314,6 +2293,98 @@ def _calculate_max_contact_nnz(mjm: mujoco.MjModel) -> int:
   return max_contact_nnz
 
 
+def _efc_rownnz(mjm: mujoco.MjModel) -> list[tuple[int, int]]:
+  """Returns (rows, non-zeros per row) of the equality, friction and limit constraints.
+
+  Assumes all of them are active.
+  """
+  rows = []
+
+  def _eq_bodies(i):
+    """Returns body pair for equality constraint i."""
+    obj1id, obj2id = mjm.eq_obj1id[i], mjm.eq_obj2id[i]
+    if mjm.eq_objtype[i] == mujoco.mjtObj.mjOBJ_SITE:
+      return mjm.site_bodyid[obj1id], mjm.site_bodyid[obj2id]
+    return obj1id, obj2id
+
+  # equality constraints (assume all active)
+  for i in range(mjm.neq):
+    eq_type = mjm.eq_type[i]
+
+    if eq_type == mujoco.mjtEq.mjEQ_CONNECT:
+      rows.append((3, _body_pair_nnz(mjm, *_eq_bodies(i))))
+
+    elif eq_type == mujoco.mjtEq.mjEQ_WELD:
+      rows.append((6, _body_pair_nnz(mjm, *_eq_bodies(i))))
+
+    elif eq_type == mujoco.mjtEq.mjEQ_JOINT:
+      rows.append((1, 2 if mjm.eq_obj2id[i] >= 0 else 1))
+
+    elif eq_type == mujoco.mjtEq.mjEQ_TENDON:
+      obj1id = mjm.eq_obj1id[i]
+      obj2id = mjm.eq_obj2id[i]
+      rownnz1 = mjm.ten_J_rownnz[obj1id] if obj1id < mjm.ntendon else 0
+      if obj2id >= 0 and obj2id < mjm.ntendon:
+        rowadr1 = mjm.ten_J_rowadr[obj1id]
+        rowadr2 = mjm.ten_J_rowadr[obj2id]
+        rownnz2 = mjm.ten_J_rownnz[obj2id]
+        cols = set()
+        for j in range(rownnz1):
+          cols.add(mjm.ten_J_colind[rowadr1 + j])
+        for j in range(rownnz2):
+          cols.add(mjm.ten_J_colind[rowadr2 + j])
+        rows.append((1, len(cols)))
+      else:
+        rows.append((1, rownnz1))
+
+    elif eq_type == mujoco.mjtEq.mjEQ_FLEX:
+      obj1id = mjm.eq_obj1id[i]
+      if obj1id < mjm.nflex:
+        edge_start = mjm.flex_edgeadr[obj1id]
+        edge_count = mjm.flex_edgenum[obj1id]
+        for e in range(edge_count):
+          if mjm.flexedge_rigid is not None and mjm.flexedge_rigid[edge_start + e]:
+            continue
+          rows.append((1, mjm.flexedge_J_rownnz[edge_start + e]))
+
+    elif eq_type == mujoco.mjtEq.mjEQ_FLEXSTRAIN:
+      # strain constraints: each cell produces neig rows, each dense (nv)
+      obj1id = mjm.eq_obj1id[i]
+      if obj1id < mjm.nflex:
+        # estimate neig from stiffness data
+        adr = mjm.flex_stiffnessadr[obj1id]
+        neig = int(mjm.flex_stiffness[adr])
+        rows.append((neig, mjm.nv))
+
+  # friction constraints
+  rows.append(((mjm.dof_frictionloss > 0).sum(), 1))
+  for i in range(mjm.ntendon):
+    if mjm.tendon_frictionloss[i] > 0:
+      rows.append((1, mjm.ten_J_rownnz[i]))
+
+  # limit constraints (assume all active)
+  for i in range(mjm.njnt):
+    if mjm.jnt_limited[i]:
+      jnt_type = int(mjm.jnt_type[i])
+      if jnt_type == mujoco.mjtJoint.mjJNT_BALL:
+        rows.append((1, 3))
+      elif jnt_type in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE):
+        rows.append((1, 1))
+  for i in range(mjm.ntendon):
+    if mjm.tendon_limited[i]:
+      rows.append((1, mjm.ten_J_rownnz[i]))
+
+  return rows
+
+
+def _max_efc_J_rownnz(mjm: mujoco.MjModel) -> int:
+  """Returns an upper bound on the number of non-zeros in one constraint Jacobian row."""
+  rownnz = max([_calculate_max_contact_nnz(mjm)] + [nnz for _, nnz in _efc_rownnz(mjm)])
+  # frictionloss can be set on any dof or tendon after construction
+  rownnz = max(rownnz, 1, int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0)
+  return int(min(rownnz, mjm.nv))
+
+
 def _default_njmax_nnz(mjm: mujoco.MjModel, nconmax: int, njmax: int) -> int:
   """Returns a heuristic estimate for the number of non-zeros in the sparse constraint Jacobian.
 
@@ -2329,81 +2400,7 @@ def _default_njmax_nnz(mjm: mujoco.MjModel, nconmax: int, njmax: int) -> int:
   Returns:
     Estimated number of non-zeros in the constraint Jacobian.
   """
-  total_nnz = 0
-
-  def _eq_bodies(i):
-    """Returns body pair for equality constraint i."""
-    obj1id, obj2id = mjm.eq_obj1id[i], mjm.eq_obj2id[i]
-    if mjm.eq_objtype[i] == mujoco.mjtObj.mjOBJ_SITE:
-      return mjm.site_bodyid[obj1id], mjm.site_bodyid[obj2id]
-    return obj1id, obj2id
-
-  # equality constraints (assume all active)
-  for i in range(mjm.neq):
-    eq_type = mjm.eq_type[i]
-
-    if eq_type == mujoco.mjtEq.mjEQ_CONNECT:
-      total_nnz += 3 * _body_pair_nnz(mjm, *_eq_bodies(i))
-
-    elif eq_type == mujoco.mjtEq.mjEQ_WELD:
-      total_nnz += 6 * _body_pair_nnz(mjm, *_eq_bodies(i))
-
-    elif eq_type == mujoco.mjtEq.mjEQ_JOINT:
-      total_nnz += 2 if mjm.eq_obj2id[i] >= 0 else 1
-
-    elif eq_type == mujoco.mjtEq.mjEQ_TENDON:
-      obj1id = mjm.eq_obj1id[i]
-      obj2id = mjm.eq_obj2id[i]
-      rownnz1 = mjm.ten_J_rownnz[obj1id] if obj1id < mjm.ntendon else 0
-      if obj2id >= 0 and obj2id < mjm.ntendon:
-        rowadr1 = mjm.ten_J_rowadr[obj1id]
-        rowadr2 = mjm.ten_J_rowadr[obj2id]
-        rownnz2 = mjm.ten_J_rownnz[obj2id]
-        cols = set()
-        for j in range(rownnz1):
-          cols.add(mjm.ten_J_colind[rowadr1 + j])
-        for j in range(rownnz2):
-          cols.add(mjm.ten_J_colind[rowadr2 + j])
-        total_nnz += len(cols)
-      else:
-        total_nnz += rownnz1
-
-    elif eq_type == mujoco.mjtEq.mjEQ_FLEX:
-      obj1id = mjm.eq_obj1id[i]
-      if obj1id < mjm.nflex:
-        edge_start = mjm.flex_edgeadr[obj1id]
-        edge_count = mjm.flex_edgenum[obj1id]
-        for e in range(edge_count):
-          if mjm.flexedge_rigid is not None and mjm.flexedge_rigid[edge_start + e]:
-            continue
-          total_nnz += mjm.flexedge_J_rownnz[edge_start + e]
-
-    elif eq_type == mujoco.mjtEq.mjEQ_FLEXSTRAIN:
-      # strain constraints: each cell produces neig rows, each dense (nv)
-      obj1id = mjm.eq_obj1id[i]
-      if obj1id < mjm.nflex:
-        # estimate neig from stiffness data
-        adr = mjm.flex_stiffnessadr[obj1id]
-        neig = int(mjm.flex_stiffness[adr])
-        total_nnz += neig * mjm.nv
-
-  # friction constraints
-  total_nnz += (mjm.dof_frictionloss > 0).sum()
-  for i in range(mjm.ntendon):
-    if mjm.tendon_frictionloss[i] > 0:
-      total_nnz += mjm.ten_J_rownnz[i]
-
-  # limit constraints (assume all active)
-  for i in range(mjm.njnt):
-    if mjm.jnt_limited[i]:
-      jnt_type = int(mjm.jnt_type[i])
-      if jnt_type == mujoco.mjtJoint.mjJNT_BALL:
-        total_nnz += 3
-      elif jnt_type in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE):
-        total_nnz += 1
-  for i in range(mjm.ntendon):
-    if mjm.tendon_limited[i]:
-      total_nnz += mjm.ten_J_rownnz[i]
+  total_nnz = sum(nrow * nnz for nrow, nnz in _efc_rownnz(mjm))
 
   # contact constraints: njmax rows at max contact non-zeros
   max_contact_nnz = _calculate_max_contact_nnz(mjm)
