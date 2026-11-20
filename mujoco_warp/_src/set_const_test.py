@@ -482,6 +482,58 @@ class SetConstTest(parameterized.TestCase):
     for f in ("body_invweight0", "tendon_invweight0", "actuator_acc0"):
       _assert_eq(getattr(m, f).numpy()[0], getattr(mjm, f), f"{f}_nv0")
 
+  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
+  def test_set_const_body_invweight0_components(self, jacobian):
+    """Test a zero translational or rotational body inverse weight stays zero, as in mj_setConst."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body name="hinge">
+          <joint type="hinge"/>
+          <inertial pos="0 0 0" mass="2" diaginertia="1 2 3"/>
+        </body>
+        <body name="ball">
+          <joint type="ball"/>
+          <inertial pos="0 0 0" mass="2" diaginertia="1 2 3"/>
+        </body>
+        <body name="slide">
+          <joint type="slide" axis="1 0 0"/>
+          <joint type="slide" axis="0 1 0"/>
+          <joint type="slide" axis="0 0 1"/>
+          <inertial pos="0 0 0" mass="2" diaginertia="1 2 3"/>
+        </body>
+        <body name="free">
+          <freejoint/>
+          <inertial pos="0 0 0" mass="2" diaginertia="1 2 3"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """,
+      overrides={"opt.jacobian": jacobian},
+      nworld=2,
+    )
+    # centered hinge and ball: no translational weight; three slides: no rotational weight
+    expected = np.array([[0, 0], [0, 1 / 9], [0, 11 / 18], [1 / 2, 0], [1 / 2, 11 / 18]])
+    np.testing.assert_allclose(mjm.body_invweight0, expected, rtol=1e-6, atol=0)
+
+    scales = np.array([1.0, 2.0])
+    body_mass = scales[:, None] * mjm.body_mass[None, :]
+    body_inertia = scales[:, None, None] * mjm.body_inertia[None, :, :]
+    m.body_mass = wp.array(body_mass, dtype=float)
+    m.body_inertia = wp.array(body_inertia, dtype=wp.vec3)
+    m.body_invweight0 = wp.full((2, mjm.nbody), value=wp.vec2(wp.inf, wp.inf), dtype=wp.vec2)
+    mjwarp.set_const(m, d)
+
+    body_invweight0 = m.body_invweight0.numpy()
+    for w in range(2):
+      mjm.body_mass[:] = body_mass[w]
+      mjm.body_inertia[:] = body_inertia[w]
+      mujoco.mj_setConst(mjm, mjd)
+      _assert_eq(body_invweight0[w], mjm.body_invweight0, f"body_invweight0_world_{w}")
+      np.testing.assert_array_equal(body_invweight0[w] == 0.0, expected == 0.0)
+    self.assertFalse(np.allclose(body_invweight0[0], body_invweight0[1]))
+
   def test_set_const_preserves_qpos(self):
     """Test that qpos is restored after set_const."""
     mjm, mjd, m, d = test_data.fixture(
