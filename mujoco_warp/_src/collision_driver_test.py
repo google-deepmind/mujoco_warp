@@ -804,6 +804,39 @@ class CollisionTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(contact_pos[worlds == 0], contact_pos[worlds == 1]))
 
+  def test_plane_capsule_aligned_frame(self):
+    """A capsule along a tilted normal gets MuJoCo's (1, 0, 0) tangent, projected, at any twist."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <default><geom margin="1"/></default>
+        <worldbody>
+          <geom type="plane" size="1 1 .1" zaxis="1 1 1"/>
+          <body><freejoint/><geom type="capsule" size=".08 .2" zaxis="1 1 1" mass="1"/></body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=8,
+    )
+    normal = np.ones(3) / np.sqrt(3)
+    tangent = np.array([2.0, -1.0, -1.0]) / np.sqrt(6)  # (1, 0, 0) projected onto the plane
+    # Twist each world's capsule about its own axis; rounding leaves it parallel to the normal.
+    qpos, quat = d.qpos.numpy(), np.empty(4)
+    for w in range(8):
+      mujoco.mju_axisAngle2Quat(quat, normal, 0.4 * w)
+      qpos[w, 3:7] = quat
+    d.qpos.assign(qpos)
+    d.contact.frame.fill_(wp.inf)
+    d.contact.worldid.fill_(-1)
+    d.nacon.fill_(-1)
+    mjw.forward(m, d)
+    ncon = int(d.nacon.numpy()[0])
+    self.assertEqual(ncon, 16)
+    frame = d.contact.frame.numpy()[:ncon]
+    np.testing.assert_allclose(frame @ np.transpose(frame, (0, 2, 1)), np.broadcast_to(np.eye(3), frame.shape), atol=1e-5)
+    np.testing.assert_allclose(frame[:, 0], np.broadcast_to(normal, (ncon, 3)), atol=1e-5)
+    np.testing.assert_allclose(frame[:, 1], np.broadcast_to(tangent, (ncon, 3)), atol=1e-5)
+
   @parameterized.product(euler=((17, 23, 9), (11, 78, 4), (3, 0, 0)), nworld=(1, 2))
   def test_aligned_plane_cylinder_parity(self, euler, nworld):
     """Contact depth, position, and frame agree for rotated aligned pairs in each world."""

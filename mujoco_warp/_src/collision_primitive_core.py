@@ -33,6 +33,11 @@ from mujoco_warp._src.types import vec11
 
 wp.set_module_options({"enable_backward": False})
 
+# sin^2 of the angle between a geom axis and a plane normal below which plane colliders treat
+# them as parallel. MuJoCo tests sin < MJ_MINVAL, which float32 cannot resolve: axes parallel in
+# double precision leave quat_to_mat with sin^2 up to ~5e-14, and ~7e-13 behind a 40-body chain.
+_PLANE_PAREPS = 1e-12
+
 
 # core
 @wp.func
@@ -282,12 +287,13 @@ def plane_capsule(
     else:
       b = wp.vec3(0.0, 0.0, 1.0)
   # A double cross product avoids float32 cancellation along n when b is nearly parallel to n.
-  b, b_norm = normalize_with_norm(wp.cross(n, wp.cross(b, n)))
-  if b_norm < MJ_MINVAL:
+  b = wp.cross(n, wp.cross(b, n))
+  if wp.dot(b, b) < _PLANE_PAREPS:
     # Unlike mju_makeFrame, project the (1, 0, 0) fallback so the frame stays orthonormal.
-    b, b_norm = normalize_with_norm(wp.cross(n, wp.cross(wp.vec3(1.0, 0.0, 0.0), n)))
-    if b_norm < MJ_MINVAL:
-      b = wp.vec3(0.0, 1.0, 0.0)
+    b = wp.cross(n, wp.cross(wp.vec3(1.0, 0.0, 0.0), n))
+    if wp.dot(b, b) < _PLANE_PAREPS:
+      b = wp.cross(n, wp.cross(wp.vec3(0.0, 1.0, 0.0), n))
+  b = wp.normalize(b)
 
   c = wp.cross(n, b)
   frame = wp.mat33(n[0], n[1], n[2], b[0], b[1], b[2], c[0], c[1], c[2])
@@ -507,8 +513,7 @@ def plane_cylinder(
 
   # If vector is nondegenerate, normalize and scale by radius
   # Otherwise use cylinder's x-axis scaled by radius
-  # Use 1e-12 instead of MJ_MINVAL**2 (1e-30) for float32 quat_to_mat rounding on aligned caps.
-  if len_sqr >= 1e-12:
+  if len_sqr >= _PLANE_PAREPS:
     vec = vec * safe_div(cylinder_radius, wp.sqrt(len_sqr))
   else:
     vec = cylinder_mat[:, 0] * cylinder_radius
