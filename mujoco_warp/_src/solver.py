@@ -2191,12 +2191,12 @@ def _zero_qfrc_constraint_sparse(
 
 
 @cache_kernel
-def _update_constraint_init_qfrc_constraint_sparse(compact: bool, nv: int, deterministic: bool = False):
+def _update_constraint_init_qfrc_constraint_sparse(compact: bool, max_records: int, deterministic: bool = False):
   COMPACT = compact
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = nv
+    module_options["deterministic_max_records"] = max_records
 
   @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
   def kernel(
@@ -2616,8 +2616,9 @@ def _update_qfrc_constraint(
       outputs=[d.qfrc_constraint],
     )
     det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
-    kernel = _update_constraint_init_qfrc_constraint_sparse(sc, m.nv if det_atomics else 0, det_atomics)
-    # a deterministic launch gives each thread one row, within the nv records per thread
+    # a deterministic launch gives each thread one row, which adds one record per non-zero
+    max_records = min(m.nv, m.max_efc_J_rownnz) if det_atomics else 0
+    kernel = _update_constraint_init_qfrc_constraint_sparse(sc, max_records, det_atomics)
     efc_stride = d.njmax if det_atomics else efc_threads_per_world(d.nworld, d.njmax, d.qacc.device, kernel)
     wp.launch(
       kernel,
@@ -4599,7 +4600,9 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
       jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, 0, is_discrete, False)
       groups_per_world = _jtdaj_groups_per_world(d.nworld, d.njmax, jtdaj_kernel)
       if bool(m.opt.deterministic & types.DeterminismType.ATOMICS):
-        entries_per_lane = ceil((mj.nv * (mj.nv + 1) // 2) / threads_per_group)
+        # a group adds the upper triangle over its row support, not over all dofs
+        support = mj.max_efc_J_rownnz
+        entries_per_lane = ceil((support * (support + 1) // 2) / threads_per_group)
         max_records = ceil(d.njmax / groups_per_world) * entries_per_lane
         jtdaj_kernel = _JTDACJ_sparse(sc, m.opt.cone, max_condim, block_dim, max_records, is_discrete, True)
       jtdaj_inputs = [
@@ -4762,7 +4765,8 @@ def _update_h_incremental(m: types.Model, d: types.Data, ctx: SolverContext):
     inc_kernel = _update_gradient_h_incremental_sparse(sc)
     slots = _jtdaj_groups_per_world(d.nworld, ctx.quad_changed_ids.shape[1], inc_kernel)
     if det_atomics:
-      entries_per_lane = ceil((mj.nv * (mj.nv + 1) // 2) / _JTDAJ_THREADS_PER_GROUP)
+      support = mj.max_efc_J_rownnz
+      entries_per_lane = ceil((support * (support + 1) // 2) / _JTDAJ_THREADS_PER_GROUP)
       max_records = ceil(ctx.quad_changed_ids.shape[1] / slots) * entries_per_lane
       inc_kernel = _update_gradient_h_incremental_sparse(sc, max_records, True)
     wp.launch(
