@@ -578,35 +578,28 @@ def _qderiv_actuator_passive(enable_sleep: bool = False):
     actuator_damping: wp.array2d[float],
     actuator_dampingpoly: wp.array2d[wp.vec2],
     actuator_gear: wp.array2d[wp.spatial_vector],
-    M_elemid: wp.array2d[int],
+    M_colind: wp.array[int],
+    M_hinit_i: wp.array[int],
     # Data in:
     qvel_in: wp.array2d[float],
     M_in: wp.array2d[float],
     tree_awake_in: wp.array2d[int],
     # In:
-    Mi: wp.array[int],
-    Mj: wp.array[int],
     qDeriv_in: wp.array2d[float],
     # Out:
     qDeriv_out: wp.array2d[float],
   ):
-    worldid, elemid = wp.tid()
+    worldid, madr = wp.tid()
 
-    dofiid = Mi[elemid]
+    dofiid = M_hinit_i[madr]
     if wp.static(enable_sleep):
       treeid = dof_treeid[dofiid]
       if treeid >= 0 and tree_awake_in[worldid, treeid] == 0:
         return
-    dofjid = Mj[elemid]
-
-    # Off-pattern (dofiid, dofjid) pairs have no CSR entry (madr < 0).
-    madr = M_elemid[dofiid, dofjid]
-    if madr < 0:
-      return
 
     qderiv = qDeriv_in[worldid, madr]
 
-    if not (opt_disableflags & DisableBit.DAMPER) and dofiid == dofjid:
+    if not (opt_disableflags & DisableBit.DAMPER) and dofiid == M_colind[madr]:
       damping, dpoly = util_misc.dof_damping_total(
         jnt_actuatorid,
         dof_jntid,
@@ -650,29 +643,22 @@ def _qderiv_tendon_damping(enable_sleep: bool = False):
     actuator_damping: wp.array2d[float],
     actuator_dampingpoly: wp.array2d[wp.vec2],
     actuator_gear: wp.array2d[wp.spatial_vector],
-    M_elemid: wp.array2d[int],
+    M_colind: wp.array[int],
+    M_hinit_i: wp.array[int],
     # Data in:
     ten_J_in: wp.array2d[float],
     tree_awake_in: wp.array2d[int],
     ten_velocity_in: wp.array2d[float],
-    # In:
-    Mi: wp.array[int],
-    Mj: wp.array[int],
     # Out:
     qDeriv_out: wp.array2d[float],
   ):
-    worldid, elemid = wp.tid()
-    dofiid = Mi[elemid]
+    worldid, madr = wp.tid()
+    dofiid = M_hinit_i[madr]
     if wp.static(enable_sleep):
       treeid = dof_treeid[dofiid]
       if treeid >= 0 and tree_awake_in[worldid, treeid] == 0:
         return
-    dofjid = Mj[elemid]
-
-    # Off-pattern (dofiid, dofjid) pairs have no CSR entry (madr < 0).
-    madr = M_elemid[dofiid, dofjid]
-    if madr < 0:
-      return
+    dofjid = M_colind[madr]
 
     qderiv = float(0.0)
     for tenid in range(ntendon):
@@ -1354,9 +1340,10 @@ def _qderiv_ellipsoid_fluid(deterministic: bool = False):
     geom_type: wp.array[int],
     geom_size: wp.array2d[wp.vec3],
     geom_fluid: wp.array2d[float],
+    M_colind: wp.array[int],
     body_fluid_ellipsoid_adr: wp.array[int],
     body_isdofancestor: wp.array2d[int],
-    M_elemid: wp.array2d[int],
+    M_hinit_i: wp.array[int],
     # Data in:
     xipos_in: wp.array2d[wp.vec3],
     geom_xpos_in: wp.array2d[wp.vec3],
@@ -1364,30 +1351,20 @@ def _qderiv_ellipsoid_fluid(deterministic: bool = False):
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     cvel_in: wp.array2d[wp.spatial_vector],
-    # In:
-    Mi: wp.array[int],
-    Mj: wp.array[int],
     # Out:
     qDeriv_out: wp.array2d[float],
   ):
     """Compute ellipsoid fluid force derivative contribution to qDeriv.
 
-    Parallelized over (world, fluid_body, elem). For each fluid body and DOF
-    pair, computes the 6x6 derivative matrix B in local geom frame via
-    _deriv_ellipsoid_fluid and accumulates J_i^T @ B @ J_j into qDeriv.
+    Accumulates J_i^T @ B @ J_j per fluid body and stored M entry, with B in the local geom frame.
     """
-    worldid, fluid_idx, elemid = wp.tid()
+    worldid, fluid_idx, madr = wp.tid()
 
     bodyid = body_fluid_ellipsoid_adr[fluid_idx]
 
-    dofiid = Mi[elemid]
-    dofjid = Mj[elemid]
+    dofiid = M_hinit_i[madr]
 
-    madr = M_elemid[dofiid, dofjid]
-    if madr < 0:
-      return
-
-    # dofiid is the "deeper" DOF (Mi >= Mj in tree ordering).
+    # dofiid is the "deeper" DOF.
     # Any body that has dofiid in its chain also has dofjid.
     bodyid_i = dof_bodyid[dofiid]
 
@@ -1406,7 +1383,7 @@ def _qderiv_ellipsoid_fluid(deterministic: bool = False):
       return
 
     cdof_i = cdof_in[worldid, dofiid]
-    cdof_j = cdof_in[worldid, dofjid]
+    cdof_j = cdof_in[worldid, M_colind[madr]]
 
     contrib = _deriv_ellipsoid_fluid(
       opt_integrator,
@@ -1550,31 +1527,24 @@ def _qderiv_box_fluid(deterministic: bool = False):
     body_mass: wp.array2d[float],
     body_inertia: wp.array2d[wp.vec3],
     dof_bodyid: wp.array[int],
+    M_colind: wp.array[int],
     body_fluid_box_adr: wp.array[int],
     body_isdofancestor: wp.array2d[int],
-    M_elemid: wp.array2d[int],
+    M_hinit_i: wp.array[int],
     # Data in:
     xipos_in: wp.array2d[wp.vec3],
     xiquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     cvel_in: wp.array2d[wp.spatial_vector],
-    # In:
-    Mi: wp.array[int],
-    Mj: wp.array[int],
     # Out:
     qDeriv_out: wp.array2d[float],
   ):
-    worldid, fluid_idx, elemid = wp.tid()
+    worldid, fluid_idx, madr = wp.tid()
 
     bodyid = body_fluid_box_adr[fluid_idx]
 
-    dofiid = Mi[elemid]
-    dofjid = Mj[elemid]
-
-    madr = M_elemid[dofiid, dofjid]
-    if madr < 0:
-      return
+    dofiid = M_hinit_i[madr]
 
     bodyid_i = dof_bodyid[dofiid]
 
@@ -1625,7 +1595,7 @@ def _qderiv_box_fluid(deterministic: bool = False):
       body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dofiid, worldid, b_imat
     )
     J_j = _get_jac_column_local(
-      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dofjid, worldid, b_imat
+      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, M_colind[madr], worldid, b_imat
     )
 
     contrib = wp.dot(J_i, B @ J_j) * timestep
@@ -1645,8 +1615,6 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
     d: The data object containing the current state and output arrays (device).
     out: M - dt * qDeriv (derivatives of smooth forces w.r.t velocities).
   """
-  Mi = m.M_fullm_i
-  Mj = m.M_fullm_j
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
 
   flags = DisableBit.ACTUATION | DisableBit.DAMPER
@@ -1720,7 +1688,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
       )
     wp.launch(
       _qderiv_actuator_passive(enable_sleep),
-      dim=(d.nworld, Mi.size),
+      dim=(d.nworld, m.nC),
       inputs=[
         m.opt.timestep,
         m.opt.disableflags,
@@ -1734,12 +1702,11 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         m.actuator_damping,
         m.actuator_dampingpoly,
         m.actuator_gear,
-        m.M_elemid,
+        m.M_colind,
+        m.M_hinit_i,
         d.qvel,
         d.M,
         d.tree_awake,
-        Mi,
-        Mj,
         out,
       ],
       outputs=[out],
@@ -1755,7 +1722,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
     # flex_edgedamping is omitted: tree-only M sparsity drops inter-tree flexcomp blocks
     wp.launch(
       _qderiv_tendon_damping(enable_sleep),
-      dim=(d.nworld, Mi.size),
+      dim=(d.nworld, m.nC),
       inputs=[
         m.ntendon,
         m.opt.timestep,
@@ -1771,19 +1738,18 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         m.actuator_damping,
         m.actuator_dampingpoly,
         m.actuator_gear,
-        m.M_elemid,
+        m.M_colind,
+        m.M_hinit_i,
         d.ten_J,
         d.tree_awake,
         d.ten_velocity,
-        Mi,
-        Mj,
       ],
       outputs=[out],
     )
   if m.has_fluid:
     wp.launch(
       _qderiv_ellipsoid_fluid(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-      dim=(d.nworld, m.body_fluid_ellipsoid_adr.size, Mi.size),
+      dim=(d.nworld, m.body_fluid_ellipsoid_adr.size, m.nC),
       inputs=[
         m.opt.timestep,
         m.opt.wind,
@@ -1798,23 +1764,22 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         m.geom_type,
         m.geom_size,
         m.geom_fluid,
+        m.M_colind,
         m.body_fluid_ellipsoid_adr,
         m.body_isdofancestor,
-        m.M_elemid,
+        m.M_hinit_i,
         d.xipos,
         d.geom_xpos,
         d.geom_xquat,
         d.subtree_com,
         d.cdof,
         d.cvel,
-        Mi,
-        Mj,
       ],
       outputs=[out],
     )
     wp.launch(
       _qderiv_box_fluid(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-      dim=(d.nworld, m.body_fluid_box_adr.size, Mi.size),
+      dim=(d.nworld, m.body_fluid_box_adr.size, m.nC),
       inputs=[
         m.opt.timestep,
         m.opt.wind,
@@ -1826,16 +1791,15 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         m.body_mass,
         m.body_inertia,
         m.dof_bodyid,
+        m.M_colind,
         m.body_fluid_box_adr,
         m.body_isdofancestor,
-        m.M_elemid,
+        m.M_hinit_i,
         d.xipos,
         d.xiquat,
         d.subtree_com,
         d.cdof,
         d.cvel,
-        Mi,
-        Mj,
       ],
       outputs=[out],
     )
@@ -4692,11 +4656,9 @@ def eff_shift(m: Model, d: Data):
 
   d.efm_fluid.zero_()
   if m.has_fluid and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)):
-    Mi = m.M_fullm_i
-    Mj = m.M_fullm_j
     wp.launch(
       _qderiv_ellipsoid_fluid(det_atomics),
-      dim=(d.nworld, m.body_fluid_ellipsoid_adr.size, Mi.size),
+      dim=(d.nworld, m.body_fluid_ellipsoid_adr.size, m.nC),
       inputs=[
         m.opt.timestep,
         m.opt.wind,
@@ -4711,23 +4673,22 @@ def eff_shift(m: Model, d: Data):
         m.geom_type,
         m.geom_size,
         m.geom_fluid,
+        m.M_colind,
         m.body_fluid_ellipsoid_adr,
         m.body_isdofancestor,
-        m.M_elemid,
+        m.M_hinit_i,
         d.xipos,
         d.geom_xpos,
         d.geom_xquat,
         d.subtree_com,
         d.cdof,
         d.cvel,
-        Mi,
-        Mj,
       ],
       outputs=[d.efm_fluid],
     )
     wp.launch(
       _qderiv_box_fluid(det_atomics),
-      dim=(d.nworld, m.body_fluid_box_adr.size, Mi.size),
+      dim=(d.nworld, m.body_fluid_box_adr.size, m.nC),
       inputs=[
         m.opt.timestep,
         m.opt.wind,
@@ -4739,16 +4700,15 @@ def eff_shift(m: Model, d: Data):
         m.body_mass,
         m.body_inertia,
         m.dof_bodyid,
+        m.M_colind,
         m.body_fluid_box_adr,
         m.body_isdofancestor,
-        m.M_elemid,
+        m.M_hinit_i,
         d.xipos,
         d.xiquat,
         d.subtree_com,
         d.cdof,
         d.cvel,
-        Mi,
-        Mj,
       ],
       outputs=[d.efm_fluid],
     )

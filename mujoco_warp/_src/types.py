@@ -1772,8 +1772,6 @@ class Model:
     qLD_updates: sparse factor updates grouped by tree level
     qLD_all_updates: tuple of all levels concatenated
     qLD_level_offsets: tuple of start offsets for each level
-    M_fullm_i: sparse mass matrix addressing
-    M_fullm_j: sparse mass matrix addressing
     M_elemid: (row, col) -> CSR madr addresses; -1 if not a chain ancestor
     M_hinit_i: row index of each CSR M entry; for densifying M into the dense Newton H (nC,)
     M_tile_colmask: per Newton H tile, bitmask of the tiles above it coupled by M; read by the
@@ -2366,10 +2364,6 @@ class Model:
   qLD_updates: tuple[array("nqLD_all_updates", wp.vec3i), ...]
   qLD_all_updates: array("nqLD_all_updates", wp.vec3i)
   qLD_level_offsets: array("nqLD_level_offsets", int)
-  # TODO(team): Remove M_fullm_i/j and M_elemid by iterating the M CSR layout
-  # directly in the solver/derivative kernels
-  M_fullm_i: array("nM_fullm", int)
-  M_fullm_j: array("nM_fullm", int)
   M_elemid: array("nv", "nv", int)  # (row, col) -> CSR madr address; -1 if col is not a chain ancestor of row
   M_hinit_i: array("nC", int)  # row index of each CSR M entry (for densifying M into the dense Newton H)
   M_tile_colmask: array("nv_tile", "nv_tile_word", wp.uint64)  # per Newton H tile, bitmask of the tiles above it coupled by M
