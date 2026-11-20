@@ -2940,6 +2940,8 @@ class SolverContext:
   hfactor: wp.array3d[float]
   quad_changed_ids: wp.array2d[int]
   quad_changed_count: wp.array[int]
+  quad_changed_delta: wp.array2d[float]
+  hessian_weight: wp.array2d[float]
   inertia_scale: wp.array[float]
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
@@ -2954,7 +2956,6 @@ class SolverContext:
   tw_diag: Optional[wp.array] = None
   # dense elliptic Newton: virtual Hessian rows of cone-state rows (solver._cone_virtual_row)
   cone_coef: Optional[wp.array] = None
-  cone_weight: Optional[wp.array] = None
   cone_base: Optional[wp.array] = None
   # only allocated when the sparse-tile pattern is detected from the values of H
   h_tile_nz: Optional[wp.array3d[int]] = None

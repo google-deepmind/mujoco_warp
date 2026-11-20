@@ -811,7 +811,7 @@ class SolverTest(parameterized.TestCase):
         mock.patch.object(wp, "launch_tiled") as tiled,
       ):
         solver._solver_iteration(m, d, ctx, nsolving)
-      update_force.assert_called_once_with(m, d, ctx, track_changes=True)
+      update_force.assert_called_once_with(m, d, ctx, track_changes=True, band_jump=True)
       update_qfrc.assert_called_once_with(m, d, ctx, stable_fast=True)
       tiled.assert_not_called()
 
@@ -855,8 +855,17 @@ class SolverTest(parameterized.TestCase):
     expected_state = np.where(jaref < 0, types.ConstraintState.QUADRATIC, types.ConstraintState.SATISFIED)
     expected_state[:, 1] = types.ConstraintState.LINEARPOS
     old_state = expected_state.copy()
-    old_state[0, 1] = types.ConstraintState.LINEARNEG  # force changes without a quadratic flip
+    old_state[0, 1] = types.ConstraintState.LINEARNEG  # band jump: a new weight without a quadratic flip
     old_state[0, 2:] = types.ConstraintState.SATISFIED
+    m.dof_invweight0.fill_(4.0)  # friction can stop the jump
+    d.efc.type.fill_(types.ConstraintType.FRICTION_DOF)
+    d.efc.id.zero_()
+    old_weight = np.where(old_state == types.ConstraintState.QUADRATIC, 2.0, 0.0)
+    expected_weight = np.where(expected_state == types.ConstraintState.QUADRATIC, 2.0, 0.0)
+    expected_weight[0, 1] = 0.5  # frictionloss / |Jaref|
+    padded_weight = np.zeros(ctx.hessian_weight.shape)
+    padded_weight[:, : d.njmax] = old_weight
+    ctx.hessian_weight.assign(padded_weight)
     padded_state = np.full(d.efc.state.shape, -1, dtype=int)
     padded_state[:, : d.njmax] = old_state
     d.efc.state.assign(padded_state)
@@ -873,6 +882,7 @@ class SolverTest(parameterized.TestCase):
     ctx.newton_decrement.assign(np.array([np.inf, 8.0, 6.0, np.inf]))
     ctx.grad_scale.assign(np.array([np.inf, 2.0, 7.0, np.inf]))
     ctx.quad_changed_ids.fill_(-1)
+    ctx.quad_changed_delta.fill_(wp.inf)
     ctx.quad_changed_count.fill_(-1)
     ctx.state_changed_count.fill_(-1)
     ctx.search_unchanged.zero_()
@@ -881,10 +891,14 @@ class SolverTest(parameterized.TestCase):
       solver._update_constraint_qfrc_gradient_sparse_tiled(m.nv),
       dim=d.nworld,
       inputs=[
+        m.dof_invweight0,
+        m.tendon_invweight0,
         d.ne,
         d.nf,
         d.nefc,
         d.qfrc_smooth,
+        d.efc.type,
+        d.efc.id,
         d.efc.J_rownnz,
         d.efc.J_rowadr,
         d.efc.J_colind,
@@ -905,6 +919,8 @@ class SolverTest(parameterized.TestCase):
         ctx.quad_changed_ids,
         ctx.quad_changed_count,
         ctx.state_changed_count,
+        ctx.quad_changed_delta,
+        ctx.hessian_weight,
         ctx.grad,
         ctx.grad_dot,
         ctx.newton_decrement,
@@ -931,11 +947,16 @@ class SolverTest(parameterized.TestCase):
     np.testing.assert_array_equal(
       ctx.state_changed_count.numpy(), [np.count_nonzero(old_state[0] != expected_state[0]), 0, 0, 1]
     )
-    flipped = np.flatnonzero(
-      (old_state[0] == types.ConstraintState.QUADRATIC) != (expected_state[0] == types.ConstraintState.QUADRATIC)
-    )
+    flipped = np.flatnonzero(old_weight[0] != expected_weight[0])
+    self.assertIn(1, flipped)
     np.testing.assert_array_equal(ctx.quad_changed_count.numpy(), [len(flipped), 0, 0, 0])
-    np.testing.assert_array_equal(np.sort(ctx.quad_changed_ids.numpy()[0, : len(flipped)]), flipped)
+    changed_ids = ctx.quad_changed_ids.numpy()[0, : len(flipped)]
+    np.testing.assert_array_equal(np.sort(changed_ids), flipped)
+    np.testing.assert_array_equal(
+      ctx.quad_changed_delta.numpy()[0, : len(flipped)], (expected_weight - old_weight)[0, changed_ids]
+    )
+    np.testing.assert_array_equal(ctx.hessian_weight.numpy()[0, : d.njmax], expected_weight[0])
+    np.testing.assert_array_equal(ctx.hessian_weight.numpy()[1:, : d.njmax], old_weight[1:])
     for worldid in (0, 1, 3):
       np.testing.assert_array_equal(d.efc.state.numpy()[worldid, : d.njmax], expected_state[worldid])
       np.testing.assert_allclose(d.efc.force.numpy()[worldid], expected_force[worldid])
@@ -1645,7 +1666,7 @@ class SolverTest(parameterized.TestCase):
     wp.launch(
       solver._update_gradient_init_h_sparse(False),
       dim=(d.nworld, m.nv_pad, solver._INIT_H_SECTOR),
-      inputs=[m.nv, m.M_elemid, d.nf, d.M, d.efc.D, d.efc.state, d.dof_frictionadr, d.cdof_dof, ctx.done],
+      inputs=[m.nv, m.M_elemid, d.nf, d.M, d.dof_frictionadr, d.cdof_dof, ctx.hessian_weight, ctx.done],
       outputs=[ctx.h],
     )
     jtdaj_kernel = solver._JTDACJ_sparse(False, ConeType.PYRAMIDAL, 3, m.block_dim.update_gradient_JTDAJ_sparse)
@@ -1669,6 +1690,7 @@ class SolverTest(parameterized.TestCase):
         d.efc.state,
         d.dof_cdof,
         ctx.Jaref,
+        ctx.hessian_weight,
         ctx.done,
         groups_per_world,
       ],
@@ -1739,6 +1761,10 @@ class SolverTest(parameterized.TestCase):
             <freejoint/>
             <geom type="box" size="0.04 0.05 0.03" mass="0.5" condim="6"/>
           </body>
+          <body pos="0 0.5 0.5">
+            <joint type="slide" axis="1 0 0" frictionloss="0.3"/>
+            <geom type="sphere" size="0.05" mass="1" contype="0" conaffinity="0"/>
+          </body>
         </worldbody>
       </mujoco>
       """,
@@ -1748,7 +1774,8 @@ class SolverTest(parameterized.TestCase):
 
     # slide the boxes so their contacts are in the cone state, differently per world
     qvel = np.zeros((nworld, mjm.nv))
-    qvel[:, 0::6] = 1.5
+    qvel[:, 0:18:6] = 1.5
+    qvel[:, 18] = 1.5  # the friction joint slides
     if nworld == 2:
       qvel[1, 1::6] = -0.8
     d.qvel.assign(qvel)
@@ -1758,6 +1785,12 @@ class SolverTest(parameterized.TestCase):
     ctx = solver.create_solver_context(m, d)
     solver.init_context(m, d, ctx, grad=True)
     ctx.done.fill_(False)
+
+    # a sliding friction row with a band-jump weight
+    np.testing.assert_array_equal(d.efc.state.numpy()[:, 0], types.ConstraintState.LINEARPOS.value)
+    weight = ctx.hessian_weight.numpy()
+    weight[:, 0] = 0.5 * d.efc.D.numpy()[:, 0]
+    ctx.hessian_weight.assign(weight)
 
     def dense_hessian(elliptic):
       ctx.h.fill_(wp.inf)
@@ -1773,11 +1806,10 @@ class SolverTest(parameterized.TestCase):
           d.nefc,
           d.M,
           d.efc.J,
-          d.efc.D,
           d.efc.state,
+          ctx.hessian_weight,
           ctx.done,
           ctx.cone_coef,
-          ctx.cone_weight,
           ctx.cone_base,
         ],
         outputs=[ctx.h],
@@ -1785,8 +1817,11 @@ class SolverTest(parameterized.TestCase):
       )
       return np.triu(ctx.h.numpy()[:, : m.nv, : m.nv])
 
-    # the elliptic variant adds exactly the cone curvature to M + J'DJ
-    cone = dense_hessian(True) - dense_hessian(False)
+    # the virtual rows of the cone-state rows add exactly the cone curvature to M + J'WJ
+    h = dense_hessian(True)
+    weight[d.efc.state.numpy() == types.ConstraintState.CONE.value] = 0.0
+    ctx.hessian_weight.assign(weight)
+    cone = h - dense_hessian(False)
     for worldid in range(nworld):
       self.assertTrue(np.any(cone[worldid] != 0.0))
     np.testing.assert_allclose(cone, _elliptic_dense_hessian_reference(m, d, ctx), rtol=1e-5, atol=1e-6)
@@ -2590,9 +2625,11 @@ class SolverTest(parameterized.TestCase):
       else:
         self.assertFalse(active[case])
 
-  def test_incremental_vs_full_hessian(self):
+  @parameterized.parameters(0.0, 1.0)
+  def test_incremental_vs_full_hessian(self, frictionloss):
     """Tests that incremental Hessian updates produce same result as full recomputation."""
     total_any_changes = False
+    total_band_jumps = False
     for keyframe in range(3):
       mjm, mjd, m, d = test_data.fixture(
         "humanoid/humanoid.xml",
@@ -2604,6 +2641,10 @@ class SolverTest(parameterized.TestCase):
           "opt.ls_iterations": 10,
         },
       )
+      if frictionloss:
+        mjm.dof_frictionloss[6:] = frictionloss
+        mujoco.mj_forward(mjm, mjd)
+        m = mjw.put_model(mjm)
 
       def _run_solver(d, update_fn, track=False):
         """Run solver iterations with a given gradient update function."""
@@ -2613,26 +2654,153 @@ class SolverTest(parameterized.TestCase):
         ctx = solver.create_solver_context(m, d)
         solver.init_context(m, d, ctx, grad=True)
         any_changes = False
+        band_jumps = False
         ctx.search_unchanged.fill_(False)
+        D = d.efc.D.numpy()
+        rows = np.arange(D.shape[1]) < d.nefc.numpy()[:, None]
         for _ in range(m.opt.iterations):
           solver._linesearch(m, d, ctx)
           if track:
             ctx.quad_changed_count.zero_()
-          solver._update_constraint(m, d, ctx, track_changes=track)
+          solver._update_efc_force(m, d, ctx, track_changes=track, band_jump=True)
+          solver._update_qfrc_constraint(m, d, ctx)
+          weight = ctx.hessian_weight.numpy()
+          band_jumps |= bool(np.any(rows & (weight != 0.0) & (weight != D)))
           if track:
             wp.synchronize()
             if np.any(ctx.quad_changed_count.numpy() > 0):
               any_changes = True
           update_fn(m, d, ctx)
-        return d.qacc.numpy().copy(), any_changes
+        return d.qacc.numpy().copy(), any_changes, band_jumps
 
-      qacc_full, _ = _run_solver(mjw.put_data(mjm, mjd), solver._update_gradient)
-      qacc_inc, any_changes = _run_solver(mjw.put_data(mjm, mjd), solver._update_gradient_incremental, track=True)
+      qacc_full, _, _ = _run_solver(mjw.put_data(mjm, mjd), solver._update_gradient)
+      qacc_inc, any_changes, band_jumps = _run_solver(mjw.put_data(mjm, mjd), solver._update_gradient_incremental, track=True)
       total_any_changes = total_any_changes or any_changes
+      total_band_jumps = total_band_jumps or band_jumps
 
       _assert_eq(qacc_inc, qacc_full, f"qacc keyframe={keyframe}")
 
     self.assertTrue(total_any_changes, "no state changes detected across any keyframe")
+    self.assertEqual(total_band_jumps, bool(frictionloss))
+
+  @parameterized.parameters(1, 2)
+  def test_friction_band_jump_weight(self, nworld):
+    """A friction row that jumps across its band gets curvature f / |x| if friction can stop it."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0" axis="0 1 0" frictionloss="0.5"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+            <body pos=".3 0 0">
+              <joint name="j1" type="slide" axis="1 0 0"/>
+              <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed frictionloss="2">
+            <joint joint="j0" coef="1"/>
+            <joint joint="j1" coef="-0.5"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"dof_invweight0": nworld, "tendon_invweight0": nworld},
+    )
+    ctx = solver.create_solver_context(m, d)
+    solver.init_context(m, d, ctx, grad=False)
+
+    efc_type, efc_id = d.efc.type.numpy()[0], d.efc.id.numpy()[0]
+    dof_row = np.flatnonzero(efc_type == types.ConstraintType.FRICTION_DOF)[0]
+    tendon_row = np.flatnonzero(efc_type == types.ConstraintType.FRICTION_TENDON)[0]
+    rows = [dof_row, tendon_row]
+    D = d.efc.D.numpy()[:, rows]
+    f = d.efc.frictionloss.numpy()[:, rows]
+    band = f / D
+
+    dof_invweight0 = m.dof_invweight0.numpy()
+    tendon_invweight0 = m.tendon_invweight0.numpy()
+    if nworld == 2:
+      # friction cannot stop a jump of two band widths in world 1
+      dof_invweight0[1, efc_id[dof_row]] = 1.0 / D[1, 0]
+      tendon_invweight0[1, efc_id[tendon_row]] = 1.0 / D[1, 1]
+      m.dof_invweight0.assign(dof_invweight0)
+      m.tendon_invweight0.assign(tendon_invweight0)
+    stop = f * np.stack([dof_invweight0[:, efc_id[dof_row]], tendon_invweight0[:, efc_id[tendon_row]]], axis=1)
+    can_stop = 2.0 * band <= stop
+    self.assertTrue(np.all(can_stop[0]))
+
+    lneg, lpos = types.ConstraintState.LINEARNEG.value, types.ConstraintState.LINEARPOS.value
+    cases = (
+      (lneg, 2.0 * band, np.where(can_stop, f / (2.0 * band), 0.0)),  # jump across the band
+      (lneg, 2.0 * np.maximum(stop, band), 0.0),  # jump that friction cannot stop
+      (lpos, 2.0 * band, 0.0),  # no jump
+      (lneg, 0.5 * band, D),  # quadratic
+    )
+    for old_state, jaref, weight in cases:
+      state = d.efc.state.numpy()
+      state[:, rows] = old_state
+      d.efc.state.assign(state)
+      Jaref = ctx.Jaref.numpy()
+      Jaref[:, rows] = jaref
+      ctx.Jaref.assign(Jaref)
+      ctx.hessian_weight.fill_(wp.inf)
+      solver._update_efc_force(m, d, ctx, band_jump=True)
+      _assert_eq(ctx.hessian_weight.numpy()[:, rows], np.broadcast_to(weight, D.shape), "hessian_weight")
+
+    if nworld == 2:
+      self.assertFalse(np.all(can_stop[1]))
+
+  def test_friction_band_jump_tile_pattern(self):
+    """The structural H tile pattern includes a friction row with a band-jump weight."""
+    # 110 slide joints (nv > 96, diagonal M); the tendon couples tiles 0 and 3
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <replicate count="110" offset="1 0 0">
+            <body>
+              <joint name="j" type="slide"/>
+              <geom size=".05"/>
+            </body>
+          </replicate>
+        </worldbody>
+        <tendon>
+          <fixed frictionloss="2">
+            <joint joint="j000" coef="1"/>
+            <joint joint="j050" coef="-0.5"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """
+    )
+    ctx = solver.create_solver_context(m, d)
+    self.assertIsNotNone(ctx.h_col_mask)
+    self.assertIsNone(ctx.h_tile_nz)
+    solver.init_context(m, d, ctx, grad=False)
+
+    # the tendon friction row jumps across its band
+    row = np.flatnonzero(d.efc.type.numpy()[0] == types.ConstraintType.FRICTION_TENDON)[0]
+    D = d.efc.D.numpy()[0, row]
+    state = d.efc.state.numpy()
+    state[0, row] = types.ConstraintState.LINEARNEG.value
+    d.efc.state.assign(state)
+    Jaref = ctx.Jaref.numpy()
+    Jaref[0, row] = 2.0 * d.efc.frictionloss.numpy()[0, row] / D
+    ctx.Jaref.assign(Jaref)
+    solver._update_efc_force(m, d, ctx, band_jump=True)
+    self.assertNotIn(ctx.hessian_weight.numpy()[0, row], (0.0, D))
+
+    ctx.done.fill_(False)
+    solver._update_gradient(m, d, ctx)
+    h = np.triu(ctx.h.numpy()[0, : m.nv, : m.nv])
+    h += np.triu(h, 1).T
+    self.assertNotEqual(h[0, 50], 0.0)
+    _assert_eq(ctx.search.numpy()[0], -np.linalg.solve(h, ctx.grad.numpy()[0, : m.nv]), "search")
 
   @parameterized.parameters(1, 2)
   def test_dense_hessian_incremental_strided(self, nworld):
@@ -2675,21 +2843,26 @@ class SolverTest(parameterized.TestCase):
 
     state = np.full((nworld, d.njmax), types.ConstraintState.QUADRATIC.value, dtype=int)
     state[:, 0] = types.ConstraintState.LINEARPOS.value
+    D = d.efc.D.numpy()
     d.efc.state.assign(state)
+    ctx.hessian_weight.assign(np.where(state == types.ConstraintState.QUADRATIC.value, D, 0.0))
     ctx.done.fill_(False)
     ctx.h.fill_(wp.inf)
     solver._update_gradient(m, d, ctx)
 
     # the last world adds row 0 and removes row 2, world 0 stays idle when nworld == 2
     ids = np.zeros(ctx.quad_changed_ids.shape, dtype=int)
+    deltas = np.zeros(ctx.quad_changed_delta.shape)
     counts = np.zeros(nworld, dtype=int)
     active_world = nworld - 1
     state[active_world, 0] = types.ConstraintState.QUADRATIC.value
     state[active_world, 2] = types.ConstraintState.LINEARPOS.value
     ids[active_world, :2] = [0, 2]
+    deltas[active_world, :2] = [D[active_world, 0], -D[active_world, 2]]
     counts[active_world] = 2
     d.efc.state.assign(state)
     ctx.quad_changed_ids.assign(ids)
+    ctx.quad_changed_delta.assign(deltas)
     ctx.quad_changed_count.assign(counts)
 
     # fewer threads than upper-triangle elements, so each thread strides over several
@@ -2698,13 +2871,12 @@ class SolverTest(parameterized.TestCase):
     wp.launch(
       solver._update_gradient_h_incremental,
       dim=(nworld, threads_per_world),
-      inputs=[m.nv, d.efc.J, d.efc.D, d.efc.state, ctx.quad_changed_ids, ctx.quad_changed_count, threads_per_world],
+      inputs=[m.nv, d.efc.J, ctx.quad_changed_ids, ctx.quad_changed_count, ctx.quad_changed_delta, threads_per_world],
       outputs=[ctx.h],
     )
 
     h_actual = ctx.h.numpy()
     J = d.efc.J.numpy()
-    D = d.efc.D.numpy()
     nefc = d.nefc.numpy()
     m_dense = np.zeros((m.nv, m.nv))
     mujoco.mj_fullM(mjm, mjd, m_dense)
@@ -2803,6 +2975,7 @@ class SolverTest(parameterized.TestCase):
     # full rebuild with every row quadratic
     state = np.full((nworld, d.njmax), types.ConstraintState.QUADRATIC.value, dtype=int)
     d.efc.state.assign(state)
+    ctx.hessian_weight.assign(D)
     ctx.done.fill_(False)
     ctx.h.fill_(wp.inf)
     solver._update_gradient(m, d, ctx)
@@ -2810,15 +2983,19 @@ class SolverTest(parameterized.TestCase):
 
     # incremental update: release the first DOF friction row and the tendon friction row
     ids = np.zeros(ctx.quad_changed_ids.shape, dtype=int)
+    deltas = np.zeros(ctx.quad_changed_delta.shape)
+    efc_D = d.efc.D.numpy()
     counts = np.zeros(nworld, dtype=int)
     for w in range(nworld):
       types_w = efc_type[w, : nefc[w]]
       changed = [np.flatnonzero(types_w == friction_dof)[0], np.flatnonzero(types_w == friction_tendon)[0]]
       state[w, changed] = types.ConstraintState.LINEARPOS.value
       ids[w, : len(changed)] = changed
+      deltas[w, : len(changed)] = -efc_D[w, changed]
       counts[w] = len(changed)
     d.efc.state.assign(state)
     ctx.quad_changed_ids.assign(ids)
+    ctx.quad_changed_delta.assign(deltas)
     ctx.quad_changed_count.assign(counts)
     solver._update_gradient_incremental(m, d, ctx)
     _check_h(state)
@@ -3997,6 +4174,7 @@ class CompactSolverTest(parameterized.TestCase):
             d.efc.J_colind,
             d.efc.J,
             d.efc.state,
+            ctx.hessian_weight,
             ctx.done,
             d.nefc,
             d.nefc,
