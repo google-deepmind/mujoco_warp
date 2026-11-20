@@ -441,10 +441,6 @@ def ccd_hfield_kernel_builder(
 
         # add both triangles from this cell
         for i in range(2):
-          if count >= MJ_MAXCONPAIR:
-            noverflow = 1
-            break
-
           # add vert
           x = dx * float(c) - size[0]
           y = dy * float(r + dr[i]) - size[1]
@@ -495,6 +491,10 @@ def ccd_hfield_kernel_builder(
           # skip prisms not in contact: ccd reports ncontact == 1 for separated geoms
           if ncontact == 0 or dist >= margin + gap:
             continue
+
+          if count >= MJ_MAXCONPAIR:
+            noverflow = 1
+            break
 
           # cache contact information
           hfield_contact_dist[count] = dist
