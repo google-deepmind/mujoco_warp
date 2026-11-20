@@ -2672,7 +2672,7 @@ def _update_efc_force(
   cone_rows = isinstance(ctx, SolverContext) and ctx.cone_coef is not None
   det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
   kernel = _update_constraint_efc(
-    track_changes, hessian, band_jump, cone_rows, m.opt.integrator == types.IntegratorType.DISCRETE, det_atomics
+    track_changes, hessian, hessian and band_jump, cone_rows, m.opt.integrator == types.IntegratorType.DISCRETE, det_atomics
   )
   sparse = m.is_sparse or _sparse_compact(ctx)
   efc_stride = efc_threads_per_world(d.nworld, d.njmax, d.qacc.device, kernel) if sparse and not det_atomics else d.njmax
