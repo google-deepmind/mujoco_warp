@@ -346,6 +346,7 @@ class RenderUtilTest(parameterized.TestCase):
       <mujoco>
         <worldbody>
           <camera/>
+          <geom size="0.1"/>
         </worldbody>
       </mujoco>
     """
@@ -356,11 +357,13 @@ class RenderUtilTest(parameterized.TestCase):
 
     rc = mjw.create_render_context(
       mjm,
-      splat_min_transmittance=0.01,
-      splat_depth_transmittance_threshold=0.25,
+      splat_min_transmittance=np.float32(0.01),
+      splat_depth_transmittance_threshold=np.float32(0.25),
     )
-    self.assertEqual(rc.splat_min_transmittance, 0.01)
-    self.assertEqual(rc.splat_depth_transmittance_threshold, 0.25)
+    self.assertAlmostEqual(rc.splat_min_transmittance, 0.01)
+    self.assertAlmostEqual(rc.splat_depth_transmittance_threshold, 0.25)
+    self.assertIsInstance(rc.splat_min_transmittance, float)
+    self.assertIsInstance(rc.splat_depth_transmittance_threshold, float)
 
     for parameter in ("splat_min_transmittance", "splat_depth_transmittance_threshold"):
       for value in (-0.1, 0.0, 1.0, 1.1, np.nan, np.inf):

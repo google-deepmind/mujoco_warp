@@ -150,6 +150,8 @@ def shade_splats(
       transmittance *= 1.0 - alpha
       if depth < 0.0 and transmittance < depth_transmittance_threshold:
         depth = hit_distances[i]
+      if transmittance <= min_transmittance:
+        break
 
     if num_hits < wp.static(_MAX_SPLAT_HITS):
       break

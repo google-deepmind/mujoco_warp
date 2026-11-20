@@ -455,6 +455,8 @@ def create_render_context(
   Returns:
     The render context containing rendering fields and output arrays on device.
   """
+  splat_min_transmittance = float(splat_min_transmittance)
+  splat_depth_transmittance_threshold = float(splat_depth_transmittance_threshold)
   if not 0.0 < splat_min_transmittance < 1.0:
     raise ValueError("splat_min_transmittance must be strictly between 0 and 1")
   if not 0.0 < splat_depth_transmittance_threshold < 1.0:

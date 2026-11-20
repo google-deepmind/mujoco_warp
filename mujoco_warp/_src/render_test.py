@@ -116,30 +116,55 @@ class RenderTest(parameterized.TestCase):
     rgb = _unpack_rgb(rc.rgb_data.numpy())[0, 4]
     self.assertGreater(int(rgb[0]), int(rgb[1]) + 100)
 
-  def test_configurable_splat_transmittance(self):
+  @parameterized.parameters(
+    (0.01, 0.6, 1.0, True),
+    (0.01, 0.2, 1.5, True),
+    (0.01, 0.1, 1.9, True),
+    (0.4, 0.6, 1.0, False),
+  )
+  def test_configurable_splat_transmittance(
+    self,
+    min_transmittance: float,
+    depth_threshold: float,
+    expected_depth: float,
+    expect_rear_splat: bool,
+  ):
     mjm, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <worldbody>
           <camera/>
-          <geom type="box" pos="0 0 -2" size="10 10 0.1"/>
+          <geom type="box" pos="0 0 -2" size="10 10 0.1" rgba="0 0 0 1"/>
         </worldbody>
       </mujoco>
     """
     )
+    splats = {
+      "splat_position": np.asarray([[0.0, 0.0, -1.0], [0.0, 0.0, -1.5]], dtype=np.float32),
+      "splat_rotation": np.asarray([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+      "splat_scale": np.asarray([[0.2, 0.2, 0.2], [0.2, 0.2, 0.2]], dtype=np.float32),
+      "splat_rgba": np.asarray([[1.0, 0.0, 0.0, 0.7], [0.0, 1.0, 0.0, 0.5]], dtype=np.float32),
+    }
     rc = mjw.create_render_context(
       mjm,
       cam_res=(3, 3),
       render_rgb=True,
       render_depth=True,
-      splat_min_transmittance=0.01,
-      splat_depth_transmittance_threshold=0.6,
-      **_sample_splats([0.0, 0.0, -1.0], [0.2, 0.2, 0.2], [1.0, 0.0, 0.0, 0.5]),
+      enable_specular=False,
+      splat_min_transmittance=np.float32(min_transmittance),
+      splat_depth_transmittance_threshold=np.float32(depth_threshold),
+      **splats,
     )
+    rc.rgb_data.fill_(wp.uint32(0xFFFFFFFF))
     rc.depth_data.fill_(wp.inf)
     mjw.render(m, d, rc)
 
-    np.testing.assert_allclose(rc.depth_data.numpy()[0, 4], 1.0, atol=1e-5)
+    np.testing.assert_allclose(rc.depth_data.numpy()[0, 4], expected_depth, atol=1e-5)
+    rgb = _unpack_rgb(rc.rgb_data.numpy())[0, 4]
+    if expect_rear_splat:
+      self.assertGreater(int(rgb[1]), 30)
+    else:
+      self.assertEqual(int(rgb[1]), 0)
 
   def test_splat_is_occluded_by_geometry(self):
     xml = """
