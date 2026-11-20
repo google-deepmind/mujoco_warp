@@ -2106,9 +2106,6 @@ def _update_constraint_efc(
       if wp.static(TRACK_CHANGES):
         old_state = efc_state_out[worldid, efcid]
 
-      efc_D = efc_D_in[worldid, efcid]
-      Jaref = ctx_Jaref_in[worldid, efcid]
-
       is_equality = efcid < ne
       is_friction = (not is_equality) and (efcid < ne + nf)
       is_elliptic = efc_type_in[worldid, efcid] == types.ConstraintType.CONTACT_ELLIPTIC
@@ -2187,6 +2184,8 @@ def _update_constraint_efc(
             ctx_hessian_weight_out[worldid, efcid] = 0.0
           continue
 
+      efc_D = efc_D_in[worldid, efcid]
+      Jaref = ctx_Jaref_in[worldid, efcid]
       res = _eval_constraint(
         is_equality,
         is_friction,
