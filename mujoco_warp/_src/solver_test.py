@@ -855,8 +855,17 @@ class SolverTest(parameterized.TestCase):
     expected_state = np.where(jaref < 0, types.ConstraintState.QUADRATIC, types.ConstraintState.SATISFIED)
     expected_state[:, 1] = types.ConstraintState.LINEARPOS
     old_state = expected_state.copy()
-    old_state[0, 1] = types.ConstraintState.LINEARNEG  # force changes without a quadratic flip
+    old_state[0, 1] = types.ConstraintState.LINEARNEG  # band jump: a new weight without a quadratic flip
     old_state[0, 2:] = types.ConstraintState.SATISFIED
+    m.dof_invweight0.fill_(4.0)  # friction can stop the jump
+    d.efc.type.fill_(types.ConstraintType.FRICTION_DOF)
+    d.efc.id.zero_()
+    old_weight = np.where(old_state == types.ConstraintState.QUADRATIC, 2.0, 0.0)
+    expected_weight = np.where(expected_state == types.ConstraintState.QUADRATIC, 2.0, 0.0)
+    expected_weight[0, 1] = 0.5  # frictionloss / |Jaref|
+    padded_weight = np.zeros(ctx.hessian_weight.shape)
+    padded_weight[:, : d.njmax] = old_weight
+    ctx.hessian_weight.assign(padded_weight)
     padded_state = np.full(d.efc.state.shape, -1, dtype=int)
     padded_state[:, : d.njmax] = old_state
     d.efc.state.assign(padded_state)
@@ -881,10 +890,14 @@ class SolverTest(parameterized.TestCase):
       solver._update_constraint_qfrc_gradient_sparse_tiled(m.nv),
       dim=d.nworld,
       inputs=[
+        m.dof_invweight0,
+        m.tendon_invweight0,
         d.ne,
         d.nf,
         d.nefc,
         d.qfrc_smooth,
+        d.efc.type,
+        d.efc.id,
         d.efc.J_rownnz,
         d.efc.J_rowadr,
         d.efc.J_colind,
@@ -905,6 +918,8 @@ class SolverTest(parameterized.TestCase):
         ctx.quad_changed_ids,
         ctx.quad_changed_count,
         ctx.state_changed_count,
+        ctx.quad_changed_delta,
+        ctx.hessian_weight,
         ctx.grad,
         ctx.grad_dot,
         ctx.newton_decrement,
@@ -931,11 +946,16 @@ class SolverTest(parameterized.TestCase):
     np.testing.assert_array_equal(
       ctx.state_changed_count.numpy(), [np.count_nonzero(old_state[0] != expected_state[0]), 0, 0, 1]
     )
-    flipped = np.flatnonzero(
-      (old_state[0] == types.ConstraintState.QUADRATIC) != (expected_state[0] == types.ConstraintState.QUADRATIC)
-    )
+    flipped = np.flatnonzero(old_weight[0] != expected_weight[0])
+    self.assertIn(1, flipped)
     np.testing.assert_array_equal(ctx.quad_changed_count.numpy(), [len(flipped), 0, 0, 0])
-    np.testing.assert_array_equal(np.sort(ctx.quad_changed_ids.numpy()[0, : len(flipped)]), flipped)
+    changed_ids = ctx.quad_changed_ids.numpy()[0, : len(flipped)]
+    np.testing.assert_array_equal(np.sort(changed_ids), flipped)
+    np.testing.assert_array_equal(
+      ctx.quad_changed_delta.numpy()[0, : len(flipped)], (expected_weight - old_weight)[0, changed_ids]
+    )
+    np.testing.assert_array_equal(ctx.hessian_weight.numpy()[0, : d.njmax], expected_weight[0])
+    np.testing.assert_array_equal(ctx.hessian_weight.numpy()[1:, : d.njmax], old_weight[1:])
     for worldid in (0, 1, 3):
       np.testing.assert_array_equal(d.efc.state.numpy()[worldid, : d.njmax], expected_state[worldid])
       np.testing.assert_allclose(d.efc.force.numpy()[worldid], expected_force[worldid])

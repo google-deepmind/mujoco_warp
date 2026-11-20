@@ -1997,6 +1997,40 @@ def _solve_init_search_cg_tiled(
         wp.atomic_sub(nsolving_out, 0, 1)  # kernel_analyzer: ignore[atomic]
 
 
+@wp.func
+def _band_jump_weight(
+  # Model:
+  dof_invweight0: wp.array2d[float],
+  tendon_invweight0: wp.array2d[float],
+  # Data in:
+  efc_type_in: wp.array2d[int],
+  efc_id_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  efcid: int,
+  old_state: int,
+  new_state: int,
+  Jaref: float,
+  frictionloss: float,
+  weight: float,
+) -> float:
+  """Weight of a friction row: f / |x| for one iteration after a band jump friction can stop."""
+  lneg = types.ConstraintState.LINEARNEG.value
+  lpos = types.ConstraintState.LINEARPOS.value
+  sliding_old = (old_state == lneg) or (old_state == lpos)
+  sliding_new = (new_state == lneg) or (new_state == lpos)
+  if sliding_old and sliding_new and (old_state != new_state):
+    x = wp.abs(Jaref)
+    objid = efc_id_in[worldid, efcid]
+    if efc_type_in[worldid, efcid] == types.ConstraintType.FRICTION_DOF:
+      invweight = dof_invweight0[worldid % dof_invweight0.shape[0], objid]
+    else:
+      invweight = tendon_invweight0[worldid % tendon_invweight0.shape[0], objid]
+    if x <= frictionloss * invweight:
+      return frictionloss / x
+  return weight
+
+
 @cache_kernel
 def _update_constraint_efc(
   track_changes: bool,
@@ -2077,8 +2111,7 @@ def _update_constraint_efc(
 
       is_equality = efcid < ne
       is_friction = (not is_equality) and (efcid < ne + nf)
-      efc_type = efc_type_in[worldid, efcid]
-      is_elliptic = efc_type == types.ConstraintType.CONTACT_ELLIPTIC
+      is_elliptic = efc_type_in[worldid, efcid] == types.ConstraintType.CONTACT_ELLIPTIC
 
       frictionloss = efc_frictionloss_in[worldid, efcid] if is_friction else 0.0
 
@@ -2186,19 +2219,19 @@ def _update_constraint_efc(
             weight = cone_weight
         if wp.static(BAND_JUMP):
           if is_friction:
-            lneg = types.ConstraintState.LINEARNEG.value
-            lpos = types.ConstraintState.LINEARPOS.value
-            sliding_old = (old_state == lneg) or (old_state == lpos)
-            sliding_new = (new_state == lneg) or (new_state == lpos)
-            if sliding_old and sliding_new and (old_state != new_state):
-              x = wp.abs(Jaref)
-              objid = efc_id_in[worldid, efcid]
-              if efc_type == types.ConstraintType.FRICTION_DOF:
-                invweight = dof_invweight0[worldid % dof_invweight0.shape[0], objid]
-              else:
-                invweight = tendon_invweight0[worldid % tendon_invweight0.shape[0], objid]
-              if x <= frictionloss * invweight:
-                weight = frictionloss / x
+            weight = _band_jump_weight(
+              dof_invweight0,
+              tendon_invweight0,
+              efc_type_in,
+              efc_id_in,
+              worldid,
+              efcid,
+              old_state,
+              new_state,
+              Jaref,
+              frictionloss,
+              weight,
+            )
 
         if wp.static(TRACK_CHANGES):
           # only a friction row can carry a band-jump weight from the previous iteration
@@ -2302,11 +2335,16 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool, nv: int, deter
 def _update_constraint_qfrc_gradient_sparse_tiled(nv: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
+    # Model:
+    dof_invweight0: wp.array2d[float],
+    tendon_invweight0: wp.array2d[float],
     # Data in:
     ne_in: wp.array[int],
     nf_in: wp.array[int],
     nefc_in: wp.array[int],
     qfrc_smooth_in: wp.array2d[float],
+    efc_type_in: wp.array2d[int],
+    efc_id_in: wp.array2d[int],
     efc_J_rownnz_in: wp.array2d[int],
     efc_J_rowadr_in: wp.array2d[int],
     efc_J_colind_in: wp.array3d[int],
@@ -2328,6 +2366,8 @@ def _update_constraint_qfrc_gradient_sparse_tiled(nv: int):
     quad_changed_ids_out: wp.array2d[int],
     quad_changed_count_out: wp.array[int],
     state_changed_count_out: wp.array[int],
+    quad_changed_delta_out: wp.array2d[float],
+    ctx_hessian_weight_out: wp.array2d[float],
     ctx_grad_out: wp.array2d[float],
     ctx_grad_dot_out: wp.array[float],
     ctx_newton_decrement_out: wp.array[float],
@@ -2363,10 +2403,30 @@ def _update_constraint_qfrc_gradient_sparse_tiled(nv: int):
       new_state = int(res[1])
       efc_force_out[worldid, efcid] = res[0]
       efc_state_out[worldid, efcid] = new_state
-      if (old_state == types.ConstraintState.QUADRATIC.value) != (new_state == types.ConstraintState.QUADRATIC.value):
+      # Hessian weights and their changes, as in _update_constraint_efc
+      weight = wp.where(new_state == types.ConstraintState.QUADRATIC.value, D, 0.0)
+      old_weight = wp.where(old_state == types.ConstraintState.QUADRATIC.value, D, 0.0)
+      if is_friction:
+        weight = _band_jump_weight(
+          dof_invweight0,
+          tendon_invweight0,
+          efc_type_in,
+          efc_id_in,
+          worldid,
+          efcid,
+          old_state,
+          new_state,
+          Jaref,
+          frictionloss,
+          weight,
+        )
+        old_weight = ctx_hessian_weight_out[worldid, efcid]
+      if old_weight != weight:
         slot = wp.atomic_add(quad_changed_count_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
         quad_changed_ids_out[worldid, slot] = efcid
-      if old_state != new_state:
+        quad_changed_delta_out[worldid, slot] = weight - old_weight
+        ctx_hessian_weight_out[worldid, efcid] = weight
+      if (old_state != new_state) or (old_weight != weight):
         changed += 1
 
     changed_sum = wp.tile_reduce(wp.add, wp.tile(changed, preserve_type=True))[0]
@@ -5101,10 +5161,14 @@ def _solver_iteration(
       _update_constraint_qfrc_gradient_sparse_tiled(m.nv),
       dim=d.nworld,
       inputs=[
+        m.dof_invweight0,
+        m.tendon_invweight0,
         d.ne,
         d.nf,
         d.nefc,
         d.qfrc_smooth,
+        d.efc.type,
+        d.efc.id,
         d.efc.J_rownnz,
         d.efc.J_rowadr,
         d.efc.J_colind,
@@ -5125,6 +5189,8 @@ def _solver_iteration(
         ctx.quad_changed_ids,
         ctx.quad_changed_count,
         ctx.state_changed_count,
+        ctx.quad_changed_delta,
+        ctx.hessian_weight,
         ctx.grad,
         ctx.grad_dot,
         ctx.newton_decrement,
