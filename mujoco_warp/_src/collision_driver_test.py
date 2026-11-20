@@ -1714,26 +1714,31 @@ class CollisionTest(parameterized.TestCase):
 
     self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
-  def test_hfield_maxconpair(self):
-    _XML = """
-    <mujoco>
-      <asset>
-        <hfield name="hfield" nrow="10" ncol="10" size="1e-1 1e-1 1 1"/>
-      </asset>
-      <worldbody>
-        <body>
-          <joint type="slide" axis="0 0 1"/>
-          <geom type="box" size="1 1 .1"/>
-        </body>
-        <geom type="hfield" hfield="hfield"/>
-      </worldbody>
-      <keyframe>
-        <key qpos=".099"/>
-      </keyframe>
-    </mujoco>
-    """
+  @parameterized.parameters(1e-1, 1e-2)
+  def test_hfield_maxconpair(self, scale):
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <hfield name="hfield" nrow="10" ncol="10" size="{scale} {scale} 1 1"/>
+        </asset>
+        <worldbody>
+          <body>
+            <joint type="slide"/>
+            <geom type="box" size="{10 * scale} {10 * scale} .1"/>
+          </body>
+          <geom type="hfield" hfield="hfield"/>
+        </worldbody>
+        <keyframe>
+          <key qpos=".099"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
 
-    _, _, m, d = test_data.fixture(xml=_XML, keyframe=0)
+    d.nacon.fill_(-1)
+    d.overflow.zero_()
 
     mjw.collision(m, d)
 
