@@ -88,7 +88,6 @@ class BlockDim:
     linesearch_iterative: linesearch iterative block dimension (solver)
     update_constraint_qfrc_gradient_sparse_tiled: sparse gradient block dimension (solver)
     update_gradient_grad: update gradient grad block dimension (solver)
-    solve_beta_accumulate: solve beta accumulate block dimension (solver)
     solve_search_update_cg: solve search update CG block dimension (solver)
     solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
@@ -129,7 +128,6 @@ class BlockDim:
   linesearch_iterative: int = 32
   update_constraint_qfrc_gradient_sparse_tiled: int = 32
   update_gradient_grad: int = 256
-  solve_beta_accumulate: int = 256
   solve_search_update_cg: int = 256
   solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
@@ -2938,7 +2936,6 @@ class SolverContext:
   search_unchanged: wp.array[bool]
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
-  beta: wp.array[float]
   h: wp.array3d[float]
   hfactor: wp.array3d[float]
   quad_changed_ids: wp.array2d[int]

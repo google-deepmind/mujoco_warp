@@ -451,27 +451,34 @@ class SolverTest(parameterized.TestCase):
     nsolving = wp.ones(1, dtype=int)
     done = wp.zeros(1, dtype=bool)
     overflow = wp.zeros(1, dtype=int)
-    beta = wp.zeros(1, dtype=float)
 
     wp.launch(
-      solver._solve_beta_finalize_tiled(types.OverflowType.NONE),
+      solver._solve_search_update_cg_tiled(types.OverflowType.NONE),
       dim=(1, 32),
       inputs=[
         1,
         wp.array([1.0e-6], dtype=float),
         1,
         wp.array([1.0], dtype=float),
+        wp.ones((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
-        wp.zeros((1, 1), dtype=float),
-        wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
         done,
       ],
-      outputs=[solver_niter, overflow, beta, nsolving, done],
+      outputs=[
+        solver_niter,
+        overflow,
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros(1, dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        nsolving,
+        done,
+      ],
     )
 
     self.assertTrue(done.numpy()[0])
@@ -485,27 +492,34 @@ class SolverTest(parameterized.TestCase):
     nsolving = wp.ones(1, dtype=int)
     done = wp.zeros(1, dtype=bool)
     overflow = wp.zeros(1, dtype=int)
-    beta = wp.zeros(1, dtype=float)
 
     wp.launch(
-      solver._solve_beta_finalize_tiled(types.OverflowType.NONE),
+      solver._solve_search_update_cg_tiled(types.OverflowType.NONE),
       dim=(1, 32),
       inputs=[
         1,
         wp.array([1.0e-6], dtype=float),
         100,
         wp.array([1.0], dtype=float),
+        wp.ones((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
-        wp.zeros((1, 1), dtype=float),
-        wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([0.0], dtype=float),
         done,
       ],
-      outputs=[solver_niter, overflow, beta, nsolving, done],
+      outputs=[
+        solver_niter,
+        overflow,
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros(1, dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        nsolving,
+        done,
+      ],
     )
 
     self.assertTrue(done.numpy()[0])
@@ -514,12 +528,12 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(overflow.numpy()[0], 0)
 
   def test_solve_cg_finalize_hager_zhang_beta(self):
-    """CG beta finalize computes Hager-Zhang beta with HZ+ truncation and conjugacy restart."""
+    """CG search update uses Hager-Zhang beta with HZ+ truncation and conjugacy restart."""
     solver_niter = wp.zeros(3, dtype=int)
     nsolving = wp.array([3], dtype=int)
     done = wp.zeros(3, dtype=bool)
     overflow = wp.zeros(3, dtype=int)
-    beta = wp.full(3, wp.inf, dtype=float)
+    search_dot = wp.full(3, wp.inf, dtype=float)
 
     grad = wp.array([[2.0, 2.0], [2.0, 2.0], [2.0, 2.0]], dtype=float)
     prev_grad = wp.array([[1.0, 2.0], [1.0, 2.0], [1.0, 2.0]], dtype=float)
@@ -528,7 +542,7 @@ class SolverTest(parameterized.TestCase):
     search = wp.array([[2.0, -1.5], [2.0, 1.0], [-1.0, -3.0]], dtype=float)
 
     wp.launch_tiled(
-      solver._solve_beta_finalize_tiled(types.OverflowType.NONE),
+      solver._solve_search_update_cg_tiled(types.OverflowType.NONE),
       dim=3,
       inputs=[
         2,
@@ -542,20 +556,21 @@ class SolverTest(parameterized.TestCase):
         search,
         wp.ones(3, dtype=float),
         wp.ones(3, dtype=float),
-        wp.ones(3, dtype=float),
         done,
       ],
-      outputs=[solver_niter, overflow, beta, nsolving, done],
+      outputs=[solver_niter, overflow, search, search_dot, prev_grad, prev_Mgrad, nsolving, done],
       block_dim=32,
     )
 
-    beta_np = beta.numpy()
+    # search = -Mgrad + beta * search
     # World 0: exact Hager-Zhang beta = (4 - 2 * (2 / 2) * 1) / 2 = 1.0 (distinct from PRP = 0.4)
-    self.assertAlmostEqual(beta_np[0], 1.0, places=5)
     # World 1: negative beta_hz = (4 - 2 * (2 / 2) * 6) / 2 = -4.0 clamped to 0 in float32 (HZ+)
-    self.assertEqual(beta_np[1], 0.0)
     # World 2: d' * y = -1 < MJ_MINVAL restarts to steepest descent (raw beta_hz = 28 > 0)
-    self.assertEqual(beta_np[2], 0.0)
+    np.testing.assert_allclose(search.numpy(), [[-2.0, -5.5], [-4.0, -4.0], [-4.0, -4.0]], rtol=1e-6)
+    np.testing.assert_allclose(search_dot.numpy(), [34.25, 32.0, 32.0], rtol=1e-6)
+    np.testing.assert_array_equal(prev_grad.numpy(), grad.numpy())
+    np.testing.assert_array_equal(prev_Mgrad.numpy(), Mgrad.numpy())
+    self.assertFalse(done.numpy().any())
 
   # Transition cases use powers of two so the exact delta is below the absolute-cost ulp.
   @parameterized.named_parameters(
@@ -1701,7 +1716,7 @@ class SolverTest(parameterized.TestCase):
     shared_module = solver._solve_init_efc.module
     self.assertNotEqual(solver._solve_init_search_cg_tiled.module, shared_module)
     self.assertNotEqual(solver._update_gradient_grad_tiled.module, shared_module)
-    self.assertNotEqual(solver._solve_search_update_cg_tiled.module, shared_module)
+    self.assertNotEqual(solver._solve_search_update_cg_tiled(0).module, shared_module)
 
   @parameterized.parameters(1, 2)
   def test_elliptic_dense_hessian(self, nworld):
