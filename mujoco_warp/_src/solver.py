@@ -2097,6 +2097,131 @@ def _solve_init_search_cg_tiled(
 
 
 @cache_kernel
+def _constraint_row(cone_rows: bool = False, is_discrete: bool = False):
+  """A constraint row's force and state at Jaref, the state returned (-1: the row is dropped).
+
+  The rows of an elliptic contact truncated by an overflow are dropped with zero force and the
+  satisfied state, else they keep a stale force and state. cone_rows: a cone-state row's virtual
+  row for the dense Hessian (_cone_virtual_row). The caller classifies the row: by index in class
+  order, by type in island order.
+  """
+  CONE_ROWS = cone_rows
+  IS_DISCRETE = is_discrete
+
+  @wp.func
+  def func(
+    # Model:
+    opt_impratio_invsqrt: wp.array[float],
+    # Data in:
+    contact_friction_in: wp.array[types.vec5],
+    contact_dim_in: wp.array[int],
+    contact_efc_address_in: wp.array2d[int],
+    efc_type_in: wp.array2d[int],
+    efc_id_in: wp.array2d[int],
+    efc_D_in: wp.array2d[float],
+    efc_frictionloss_in: wp.array2d[float],
+    nacon_in: wp.array[int],
+    # In:
+    worldid: int,
+    efcid: int,
+    is_equality: bool,
+    is_friction: bool,
+    Jaref_in: wp.array2d[float],
+    # Data out:
+    efc_force_out: wp.array2d[float],
+    efc_state_out: wp.array2d[int],
+    # Out:
+    cone_coef_out: wp.array2d[types.vec6],
+    cone_weight_out: wp.array2d[float],
+    cone_base_out: wp.array2d[int],
+  ) -> int:
+    is_elliptic = efc_type_in[worldid, efcid] == types.ConstraintType.CONTACT_ELLIPTIC
+    frictionloss = efc_frictionloss_in[worldid, efcid] if is_friction else 0.0
+
+    efcid0 = -1
+    jaref0 = float(0.0)
+    D0 = float(0.0)
+    mu = float(0.0)
+    ufrictionj = float(0.0)
+    TT = float(0.0)
+    if wp.static(CONE_ROWS):
+      dim = int(0)
+      friction = types.vec5()
+      u = types.vec6()
+
+    if is_elliptic:
+      dropped = bool(False)
+      conid = efc_id_in[worldid, efcid]
+      if conid >= wp.min(nacon_in[0], contact_dim_in.shape[0]):
+        dropped = True
+      else:
+        efcid0 = contact_efc_address_in[conid, 0]
+        if efcid0 < 0:
+          dropped = True
+      if not dropped:
+        dim = contact_dim_in[conid]
+        friction = contact_friction_in[conid]
+        jaref0 = Jaref_in[worldid, efcid0]
+        D0 = efc_D_in[worldid, efcid0]
+        mu_scale = float(0.0)
+        if wp.static(IS_DISCRETE):
+          efcid1 = contact_efc_address_in[conid, 1]
+          if efcid1 < 0:
+            dropped = True
+          else:
+            mu_scale = _elliptic_mu_scale(D0, efc_D_in[worldid, efcid1])
+        else:
+          mu_scale = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
+        mu = friction[0] * mu_scale
+        for j in range(1, dim):
+          efcidj = contact_efc_address_in[conid, j]
+          if efcidj < 0:
+            dropped = True
+            break
+          frictionj = friction[j - 1]
+          uj = Jaref_in[worldid, efcidj] * frictionj
+          if wp.static(CONE_ROWS):
+            u[j] = uj
+          TT += uj * uj
+          if efcid == efcidj:
+            ufrictionj = uj * frictionj
+      if dropped:
+        efc_force_out[worldid, efcid] = 0.0
+        efc_state_out[worldid, efcid] = types.ConstraintState.SATISFIED.value
+        return -1
+
+    res = _eval_constraint(
+      is_equality,
+      is_friction,
+      is_elliptic,
+      Jaref_in[worldid, efcid],
+      efc_D_in[worldid, efcid],
+      frictionloss,
+      efcid,
+      efcid0,
+      jaref0,
+      D0,
+      mu,
+      ufrictionj,
+      TT,
+    )
+
+    new_state = int(res[1])
+    efc_force_out[worldid, efcid] = res[0]
+    efc_state_out[worldid, efcid] = new_state
+
+    if wp.static(CONE_ROWS):
+      if new_state == types.ConstraintState.CONE.value:
+        coef, weight = _cone_virtual_row(efcid - efcid0, dim, mu, D0, jaref0, u, TT, friction)
+        cone_coef_out[worldid, efcid] = coef
+        cone_weight_out[worldid, efcid] = weight
+        cone_base_out[worldid, efcid] = efcid0
+    return new_state
+
+  return func
+
+
+@cache_kernel
 def _update_constraint_efc(
   track_changes: bool,
   cone_rows: bool = False,
@@ -2104,8 +2229,7 @@ def _update_constraint_efc(
   deterministic: bool = False,
 ):
   TRACK_CHANGES = track_changes
-  CONE_ROWS = cone_rows
-  IS_DISCRETE = is_discrete
+  ROW = _constraint_row(cone_rows, is_discrete)
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -2164,96 +2288,29 @@ def _update_constraint_efc(
         old_state = efc_state_out[worldid, efcid]
 
       is_equality = efcid < ne
-      is_friction = (not is_equality) and (efcid < ne + nf)
-      is_elliptic = efc_type_in[worldid, efcid] == types.ConstraintType.CONTACT_ELLIPTIC
-
-      frictionloss = efc_frictionloss_in[worldid, efcid] if is_friction else 0.0
-
-      efcid0 = -1
-      jaref0 = float(0.0)
-      D0 = float(0.0)
-      mu = float(0.0)
-      ufrictionj = float(0.0)
-      TT = float(0.0)
-      if wp.static(CONE_ROWS):
-        dim = int(0)
-        friction = types.vec5()
-        u = types.vec6()
-
-      # rows of a contact truncated by an overflow are dropped, else they keep a stale force/state
-      if is_elliptic:
-        conid = efc_id_in[worldid, efcid]
-        if conid >= wp.min(nacon_in[0], contact_dim_in.shape[0]):
-          efc_force_out[worldid, efcid] = 0.0
-          efc_state_out[worldid, efcid] = types.ConstraintState.SATISFIED.value
-          continue
-        efcid0 = contact_efc_address_in[conid, 0]
-        if efcid0 < 0:
-          efc_force_out[worldid, efcid] = 0.0
-          efc_state_out[worldid, efcid] = types.ConstraintState.SATISFIED.value
-          continue
-
-        dim = contact_dim_in[conid]
-        friction = contact_friction_in[conid]
-        jaref0 = ctx_Jaref_in[worldid, efcid0]
-        D0 = efc_D_in[worldid, efcid0]
-        mu_scale = float(0.0)
-        if wp.static(IS_DISCRETE):
-          efcid1 = contact_efc_address_in[conid, 1]
-          if efcid1 < 0:
-            efc_force_out[worldid, efcid] = 0.0
-            efc_state_out[worldid, efcid] = types.ConstraintState.SATISFIED.value
-            continue
-          mu_scale = _elliptic_mu_scale(D0, efc_D_in[worldid, efcid1])
-        else:
-          mu_scale = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
-        mu = friction[0] * mu_scale
-
-        valid = bool(True)
-        for j in range(1, dim):
-          efcidj = contact_efc_address_in[conid, j]
-          if efcidj < 0:
-            valid = False
-            break
-          else:
-            frictionj = friction[j - 1]
-            uj = ctx_Jaref_in[worldid, efcidj] * frictionj
-            if wp.static(CONE_ROWS):
-              u[j] = uj
-            TT += uj * uj
-            if efcid == efcidj:
-              ufrictionj = uj * frictionj
-        if not valid:
-          efc_force_out[worldid, efcid] = 0.0
-          efc_state_out[worldid, efcid] = types.ConstraintState.SATISFIED.value
-          continue
-
-      res = _eval_constraint(
-        is_equality,
-        is_friction,
-        is_elliptic,
-        ctx_Jaref_in[worldid, efcid],
-        efc_D_in[worldid, efcid],
-        frictionloss,
+      new_state = wp.static(ROW)(
+        opt_impratio_invsqrt,
+        contact_friction_in,
+        contact_dim_in,
+        contact_efc_address_in,
+        efc_type_in,
+        efc_id_in,
+        efc_D_in,
+        efc_frictionloss_in,
+        nacon_in,
+        worldid,
         efcid,
-        efcid0,
-        jaref0,
-        D0,
-        mu,
-        ufrictionj,
-        TT,
+        is_equality,
+        (not is_equality) and (efcid < ne + nf),
+        ctx_Jaref_in,
+        efc_force_out,
+        efc_state_out,
+        ctx_cone_coef_out,
+        ctx_cone_weight_out,
+        ctx_cone_base_out,
       )
-
-      new_state = int(res[1])
-      efc_force_out[worldid, efcid] = res[0]
-      efc_state_out[worldid, efcid] = new_state
-
-      if wp.static(CONE_ROWS):
-        if new_state == types.ConstraintState.CONE.value:
-          coef, weight = _cone_virtual_row(efcid - efcid0, dim, mu, D0, jaref0, u, TT, friction)
-          ctx_cone_coef_out[worldid, efcid] = coef
-          ctx_cone_weight_out[worldid, efcid] = weight
-          ctx_cone_base_out[worldid, efcid] = efcid0
+      if new_state < 0:
+        continue
 
       if wp.static(TRACK_CHANGES):
         if (old_state == types.ConstraintState.QUADRATIC.value) != (new_state == types.ConstraintState.QUADRATIC.value):

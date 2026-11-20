@@ -512,7 +512,7 @@ class IslandSolverTest(parameterized.TestCase):
     self.assertTrue(np.isfinite(d.qacc.numpy()).all())
 
   def test_incomplete_cone(self):
-    """A cone cut by nefc overflow is not evaluated, as the world solver leaves it."""
+    """A cone cut by nefc overflow is dropped (no force, satisfied), as by the world solver."""
     mjm, mjd, m, d = _fixture(cone=ConeType.ELLIPTIC)
     # njmax ends inside a contact's cone (rows drop in class order, so the same in both solvers)
     nefc = int(d.nefc.numpy()[0])
@@ -526,11 +526,16 @@ class IslandSolverTest(parameterized.TestCase):
       d = mjw.put_data(mjm, mujoco.MjData(mjm), nconmax=d.naconmax, njmax=njmax)
       d.qpos.assign(mjd.qpos[None])
       d.qvel.assign(mjd.qvel[None])
+      # a stale force and state, which the dropped rows must not keep
+      d.efc.force.fill_(np.nan)
+      d.efc.state.fill_(int(mujoco.mjtConstraintState.mjCNSTRSTATE_QUADRATIC))
       mjw.step(m, d)
-      t, i, f = (a.numpy()[0, :njmax] for a in (d.efc.type, d.efc.id, d.efc.force))
+      t, i, f, st = (a.numpy()[0, :njmax] for a in (d.efc.type, d.efc.id, d.efc.force, d.efc.state))
       cut = (t == mujoco.mjtConstraint.mjCNSTR_CONTACT_ELLIPTIC) & (i == i[-1])
       force.append(f[cut])
+      np.testing.assert_array_equal(st[cut], mujoco.mjtConstraintState.mjCNSTRSTATE_SATISFIED)
     self.assertEqual(len(force[0]), 2)
+    np.testing.assert_array_equal(force[0], 0.0)
     np.testing.assert_array_equal(force[1], force[0])
 
   def test_sleep_islands(self):

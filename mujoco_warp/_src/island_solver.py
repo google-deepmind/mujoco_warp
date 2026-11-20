@@ -36,9 +36,8 @@ from mujoco_warp._src.block_cholesky import solve_search_sums
 from mujoco_warp._src.solver import _JTDAJ_THREADS_PER_GROUP
 from mujoco_warp._src.solver import IslandProblems
 from mujoco_warp._src.solver import _active_check
-from mujoco_warp._src.solver import _cone_virtual_row
+from mujoco_warp._src.solver import _constraint_row
 from mujoco_warp._src.solver import _converged
-from mujoco_warp._src.solver import _eval_constraint
 from mujoco_warp._src.solver import _is_cone
 from mujoco_warp._src.solver import _is_equality
 from mujoco_warp._src.solver import _is_friction
@@ -504,60 +503,6 @@ def _init_islands(
       scale_out[worldid, g] = 1.0 / wp.max(types.MJ_MINVAL, trace)
 
 
-@wp.struct
-class _Elliptic:
-  """A row's elliptic contact (efcid0 < 0: none), as _update_constraint_efc gathers it."""
-
-  efcid0: int
-  jaref0: float
-  D0: float
-  mu: float
-  ufrictionj: float
-  TT: float
-  condim: int
-  u: types.vec6
-  friction: types.vec5
-
-
-@wp.func
-def _elliptic_row(
-  # Model:
-  opt_impratio_invsqrt: wp.array[float],
-  # Data in:
-  contact_friction_in: wp.array[types.vec5],
-  contact_dim_in: wp.array[int],
-  contact_efc_address_in: wp.array2d[int],
-  efc_D_in: wp.array2d[float],
-  # In:
-  worldid: int,
-  row: int,
-  conid: int,
-  row_jaref_in: wp.array2d[float],
-) -> _Elliptic:
-  cone = _Elliptic()
-  cone.efcid0 = -1
-  efcid0 = contact_efc_address_in[conid, 0]
-  if efcid0 < 0:
-    return cone
-  friction = contact_friction_in[conid]
-  cone.friction = friction
-  cone.condim = contact_dim_in[conid]
-  cone.mu = friction[0] * opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
-  cone.jaref0 = row_jaref_in[worldid, efcid0]
-  cone.D0 = efc_D_in[worldid, efcid0]
-  for j in range(1, cone.condim):
-    efcidj = contact_efc_address_in[conid, j]
-    if efcidj < 0:
-      return cone
-    uj = row_jaref_in[worldid, efcidj] * friction[j - 1]
-    cone.u[j] = uj
-    cone.TT += uj * uj
-    if row == efcidj:
-      cone.ufrictionj = uj * friction[j - 1]
-  cone.efcid0 = efcid0
-  return cone
-
-
 @wp.kernel
 def _mul_m_search(
   # Model:
@@ -604,6 +549,8 @@ def _mul_m_search(
 def _rows(initial: bool, elliptic: bool):
   INITIAL = initial
   ELLIPTIC = elliptic
+  # the world solver's row evaluation; elliptic: the virtual rows of the dense groups' H
+  ROW = _constraint_row(elliptic)
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -649,58 +596,34 @@ def _rows(initial: bool, elliptic: bool):
       if done_in[worldid, islandid]:
         continue
       constraint_type = efc_type_in[worldid, row]
-      D = efc_D_in[worldid, row]
-      cone = _Elliptic()
-      cone.efcid0 = -1
-      if wp.static(ELLIPTIC):
-        if constraint_type == types.ConstraintType.CONTACT_ELLIPTIC:
-          # as _update_constraint_efc, a row of a contact past nacon or of an incomplete cone is
-          # not evaluated
-          conid = efc_id_in[worldid, row]
-          if conid >= nacon_in[0]:
-            continue
-          cone = _elliptic_row(
-            opt_impratio_invsqrt,
-            contact_friction_in,
-            contact_dim_in,
-            contact_efc_address_in,
-            efc_D_in,
-            worldid,
-            row,
-            conid,
-            row_jaref_in,
-          )
-          if cone.efcid0 < 0:
-            continue
-      res = _eval_constraint(
+      old_state = efc_state_out[worldid, row]
+      state = wp.static(ROW)(
+        opt_impratio_invsqrt,
+        contact_friction_in,
+        contact_dim_in,
+        contact_efc_address_in,
+        efc_type_in,
+        efc_id_in,
+        efc_D_in,
+        efc_frictionloss_in,
+        nacon_in,
+        worldid,
+        row,
         _is_equality(constraint_type),
         _is_friction(constraint_type),
-        cone.efcid0 >= 0,
-        row_jaref_in[worldid, row],
-        D,
-        efc_frictionloss_in[worldid, row],
-        row,
-        cone.efcid0,
-        cone.jaref0,
-        cone.D0,
-        cone.mu,
-        cone.ufrictionj,
-        cone.TT,
+        row_jaref_in,
+        efc_force_out,
+        efc_state_out,
+        cone_coef_out,
+        cone_weight_out,
+        cone_base_out,
       )
-      state = int(res[1])
+      if state < 0:
+        continue
       if wp.static(not INITIAL):
-        if efc_state_out[worldid, row] != state:
+        if old_state != state:
           state_changed_out[worldid, islandid] = True
-      efc_force_out[worldid, row] = res[0]
-      efc_state_out[worldid, row] = state
-      if wp.static(ELLIPTIC):
-        if state == types.ConstraintState.CONE.value:
-          coef, weight = _cone_virtual_row(
-            row - cone.efcid0, cone.condim, cone.mu, cone.D0, cone.jaref0, cone.u, cone.TT, cone.friction
-          )
-          cone_coef_out[worldid, row] = coef
-          cone_weight_out[worldid, row] = weight
-          cone_base_out[worldid, row] = cone.efcid0
+      D = efc_D_in[worldid, row]
       quad = state == types.ConstraintState.QUADRATIC.value
       w = float(0.0)
       if wp.static(ELLIPTIC):
