@@ -3109,6 +3109,10 @@ class RenderContext:
     splat_bvh_id: Splat BVH id
     splat_group_root: Per-world selected splat BVH root
     splat_count: Number of splats
+    splat_min_transmittance: Remaining transmittance below which Gaussian splat
+      compositing stops
+    splat_depth_transmittance_threshold: Remaining transmittance below which
+      Gaussian splat depth is recorded
     has_reframed_meshes: True iff any mesh BVH uses its authored frame
     any_rgb: True iff any active camera renders RGB
     any_seg: True iff any active camera renders segmentation
@@ -3196,6 +3200,8 @@ class RenderContext:
   splat_bvh_id: wp.uint64
   splat_group_root: array("nworld", int)
   splat_count: int
+  splat_min_transmittance: float
+  splat_depth_transmittance_threshold: float
   has_reframed_meshes: bool = False
   any_rgb: bool = False
   any_seg: bool = False
