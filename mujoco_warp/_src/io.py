@@ -1005,8 +1005,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     m.flex_cell_map = np.array(flex_cell_map, dtype=np.int32)
 
   m.max_ten_J_rownnz = int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0
-  # the contact bound loops over geom pairs and only the sparse solver reads it
-  m.max_efc_J_rownnz = _max_efc_J_rownnz(mjm) if m.is_sparse else mjm.nv
 
   # body ids grouped by tree level (depth-based traversal)
   bodies, body_depth = {}, np.zeros(mjm.nbody, dtype=int) - 1
@@ -1123,6 +1121,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   for i in range(mjm.npair):
     nxn_pairid_contact[upper_tri_index(mjm.ngeom, mjm.pair_geom1[i], mjm.pair_geom2[i])] = i
+
+  contact = nxn_pairid_contact > -2
+  m.max_efc_J_rownnz = _max_efc_J_rownnz(mjm, body_isdofancestor, weldid1[contact], weldid2[contact])
 
   sensor_collision_adr = np.nonzero(is_collision_sensor)[0]
   collision_sensor_adr = np.full(mjm.nsensor, -1)
@@ -2377,14 +2378,30 @@ def _efc_rownnz(mjm: mujoco.MjModel) -> list[tuple[int, int]]:
   return rows
 
 
-def _max_efc_J_rownnz(mjm: mujoco.MjModel) -> int:
-  """Returns an upper bound on the number of non-zeros in one constraint Jacobian row."""
+def _max_efc_J_rownnz(mjm: mujoco.MjModel, body_isdofancestor: np.ndarray, body1: np.ndarray, body2: np.ndarray) -> int:
+  """Returns an upper bound on the number of non-zeros in one constraint Jacobian row.
+
+  Args:
+    mjm: The model containing kinematic and dynamic information (host).
+    body_isdofancestor: The dofs that move each body (nbody, nv).
+    body1: Weld body of the first geom of each contact pair.
+    body2: Weld body of the second geom of each contact pair.
+  """
   if mjm.nflex:
-    # the flex contact estimate samples one cell of an interpolated flex, so it is not a bound
+    # flex contact rows couple the dofs of several vertices and are not covered by the geom pairs
     return mjm.nv
-  rownnz = max([_calculate_max_contact_nnz(mjm)] + [nnz for _, nnz in _efc_rownnz(mjm)])
-  # frictionloss can be set on any dof or tendon after construction
-  rownnz = max(rownnz, 1, int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0)
+  rownnz = max([1] + [nnz for _, nnz in _efc_rownnz(mjm)])
+  if mjm.ntendon:
+    # frictionloss can be set on any tendon after construction
+    rownnz = max(rownnz, int(mjm.ten_J_rownnz.max()))
+  # a contact row spans the dofs that move either of its bodies
+  weld = np.unique(mjm.body_weldid)
+  index = np.zeros(mjm.nbody, dtype=int)
+  index[weld] = np.arange(weld.size)
+  moves = body_isdofancestor[weld].astype(np.float32)
+  ndof = moves.sum(axis=1)
+  union = ndof[:, None] + ndof[None, :] - moves @ moves.T
+  rownnz = max(rownnz, int(union[index[body1], index[body2]].max(initial=0)))
   return int(min(rownnz, mjm.nv))
 
 

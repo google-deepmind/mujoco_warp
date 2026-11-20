@@ -574,8 +574,8 @@ class IOTest(parameterized.TestCase):
       </mujoco>
       """
     )
-    # the contact estimate counts the dofs that move either arm tip: 6 + 2 + 2
-    self.assertEqual(io._max_efc_J_rownnz(mjm), 10)
+    # a contact between the arm tips spans the dofs that move either of them: 6 + 2 + 2
+    self.assertEqual(mjwarp.put_model(mjm).max_efc_J_rownnz, 10)
 
     mjm = mujoco.MjModel.from_xml_string(
       """
@@ -605,7 +605,7 @@ class IOTest(parameterized.TestCase):
       """
     )
     # the tendon equality spans all four hinges, a contact only two
-    self.assertEqual(io._max_efc_J_rownnz(mjm), 4)
+    self.assertEqual(mjwarp.put_model(mjm).max_efc_J_rownnz, 4)
 
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
