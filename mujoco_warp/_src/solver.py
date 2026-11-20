@@ -5622,8 +5622,7 @@ def _init_compact_inertia(
 def _mul_m_sparse_compact(
   # Model:
   M_mulm_rowadr: wp.array[int],
-  M_mulm_col: wp.array[int],
-  M_mulm_madr: wp.array[int],
+  M_mulm_entry: wp.array[wp.uint64],
   # Data in:
   M_in: wp.array2d[float],
   dof_cdof_in: wp.array2d[int],
@@ -5651,9 +5650,10 @@ def _mul_m_sparse_compact(
   for k in range(start, end):
     # tree-internal columns are awake with the row; guard like _gather_M_sparse
     # in case M ever carries cross-tree entries (their gathered value is zero)
-    cj = dof_cdof_in[worldid, M_mulm_col[k]]
+    col, madr = support.mul_m_indices(M_mulm_entry[k])
+    cj = dof_cdof_in[worldid, col]
     if cj >= 0:
-      acc += M_in[worldid, M_mulm_madr[k]] * vec[worldid, cj]
+      acc += M_in[worldid, madr] * vec[worldid, cj]
   res[worldid, ci] = acc
 
 
@@ -5675,8 +5675,7 @@ def _mul_m_compact_aware(m: types.Model, d: types.Data, ctx: SolverContext | Inv
       dim=(d.nworld, m.nv),
       inputs=[
         mfull.M_mulm_rowadr,
-        mfull.M_mulm_col,
-        mfull.M_mulm_madr,
+        mfull.M_mulm_entry,
         dfull.M,
         dfull.dof_cdof,
         dfull.cdof_dof,

@@ -2772,8 +2772,7 @@ def _eff_mul_fluid(check_skip: bool):
   def kernel(
     # Model:
     M_mulm_rowadr: wp.array[int],
-    M_mulm_col: wp.array[int],
-    M_mulm_madr: wp.array[int],
+    M_mulm_entry: wp.array[wp.uint64],
     # Data in:
     efm_fluid_in: wp.array2d[float],
     # In:
@@ -2791,8 +2790,7 @@ def _eff_mul_fluid(check_skip: bool):
     start = M_mulm_rowadr[dofid]
     end = M_mulm_rowadr[dofid + 1]
     for k in range(start, end):
-      col = M_mulm_col[k]
-      madr = M_mulm_madr[k]
+      col, madr = support.mul_m_indices(M_mulm_entry[k])
       acc += efm_fluid_in[worldid, madr] * vec_in[worldid, col]
 
     res_out[worldid, dofid] += acc
@@ -5083,8 +5081,7 @@ def eff_mul_m(
         dim=(d.nworld, m.nv),
         inputs=[
           m.M_mulm_rowadr,
-          m.M_mulm_col,
-          m.M_mulm_madr,
+          m.M_mulm_entry,
           d.efm_fluid,
           vec,
           skip_arr,
