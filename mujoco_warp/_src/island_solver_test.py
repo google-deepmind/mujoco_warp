@@ -408,6 +408,54 @@ class IslandSolverTest(parameterized.TestCase):
       self.assertGreater(ndense, 0)
     return ctx.niter.numpy()[0, : g.ngroup.numpy()[0]].max()
 
+  def test_blocked_flips(self):
+    """A blocked group whose rows flip is factored again: its factor is that of its Hessian."""
+    spheres = "".join(
+      f'<body pos="{0.09 * i:.2f} {0.09 * j:.2f} {0.049 + 0.09 * k:.3f}"><freejoint/><geom type="sphere" size=".05"/></body>'
+      for i in range(3)
+      for j in range(2)
+      for k in range(2)
+    )
+    # without warmstart, the first steps cross state boundaries
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option jacobian="sparse" cone="pyramidal" tolerance="1e-12"><flag warmstart="disable"/></option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          {spheres}
+          <body pos="3 3 1"><freejoint/><geom type="sphere" size=".05"/></body>
+        </worldbody>
+      </mujoco>
+      """,
+      qvel_noise=1.0,
+      nworld=16,
+    )
+    m.opt.island_solve = True
+    mjw.forward(m, d)
+    ctx = island_solver.solve(m, d)
+    g = island.group_buffers(m, d)
+    H, U, niter = ctx.H.numpy(), ctx.U.numpy(), ctx.niter.numpy()
+    nblocked = 0
+    for w in range(d.nworld):
+      for i in range(g.ngroup.numpy()[w]):
+        n = g.group_nv.numpy()[w, i]
+        if n <= island_solver._ONE_TILE_NV:
+          continue
+        nblocked += 1
+        # U packs the group's factor row-major; H keeps its upper tiles in the pool
+        tile = island_solver._TILE
+        ntile, tilebase = ctx.ntile.numpy()[w, i], ctx.tilebase.numpy()[w, i]
+        size = ntile * tile
+        factor = np.triu(U[w].reshape(-1)[tilebase * tile * tile :][: size * size].reshape(size, size)[:n, :n])
+        r, c = np.triu_indices(n)
+        hess = np.zeros((n, n))
+        hess[r, c] = H[w, tile * (tilebase + (r // tile) * ntile + c // tile) + r % tile, c % tile]
+        hess = hess + np.triu(hess, 1).T
+        np.testing.assert_allclose(factor.T @ factor, hess, atol=1e-5 * np.abs(hess).max(), err_msg=f"world {w}")
+    self.assertGreater(nblocked, 0)
+    self.assertGreater(niter.max(), 1)
+
   def test_gradient_scale(self):
     """The stored gradient times grad_scale is the gradient at the final point.
 
