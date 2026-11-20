@@ -3703,7 +3703,7 @@ def _mark_h_tile_pattern_efc(nwords: int, skip_unchanged: bool = False, skip_nof
     col_mask_out: wp.array3d[wp.uint64],
     tile_offdiag_out: wp.array2d[int],
   ):
-    """Adds the J^T D J tiles of the rows that contribute to H."""
+    """Adds the tiles of the rows that contribute to H: a nonzero Hessian weight or a cone block."""
     worldid, efcid = wp.tid()
 
     if efcid >= nefc_in[worldid] or ctx_done_in[worldid]:
@@ -4656,7 +4656,7 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
     else:
       smooth.solve_m(m, d, ctx.Mgrad, ctx.grad, x_scratch=ctx.solve_ld_scratch)
   elif m.opt.solver == types.SolverType.NEWTON:
-    # h = M + (efc_J.T * efc_D * active) @ efc_J
+    # h = M + (efc_J.T * hessian_weight) @ efc_J
     sc = _sparse_compact(ctx)
     if m.is_sparse or sc:
       mj = ctx.compact_m_full if sc else m
