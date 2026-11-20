@@ -704,10 +704,14 @@ def gjk(
   # set initial guess
   x_k = x1_0 - x2_0
   xnorm = wp.sqrt(wp.dot(x_k, x_k))
+  if xnorm < MINVAL:
+    x_k = wp.vec3(1.0, 0.0, 0.0)
+    xnorm = 1.0
   xnorm_prev = float(0.0)
 
   for k in range(gjk_iterations):
-    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < MINVAL:
+    # a simplex with fewer than two points can't seed EPA, so only stop early if it's at the origin
+    if xnorm < wp.where(n > 1, min_norm, MINVAL) or wp.abs(xnorm_prev - xnorm) < MINVAL:
       break
 
     # compute the support point with direction tuning; the tests below read x_dir, x_k along the
