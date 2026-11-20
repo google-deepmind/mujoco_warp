@@ -948,6 +948,9 @@ def _nxn_broadphase(
         return
 
     pairid = nxn_pairid[elementid]
+    if pairid[0] < -1 and pairid[1] < 0:
+      return
+
     if (
       wp.static(
         _broadphase_filter(
@@ -1185,13 +1188,34 @@ def _accum_ncollision(
   ncollision_out[0] += ncollision_inc_in[0]
 
 
+@wp.kernel
+def _sensor_pairid(
+  # In:
+  pairid_in: wp.array[wp.vec2i],
+  # Out:
+  pairid_out: wp.array[wp.vec2i],
+):
+  pairid = wp.tid()
+  pairid_out[pairid] = wp.vec2i(-2, pairid_in[pairid][1])
+
+
+def _sensor_only(m: Model) -> Model:
+  """Returns a copy of m that only collides collision sensor geom pairs, without contacts."""
+  field = "nxn_pairid_filtered" if m.opt.broadphase == BroadphaseType.NXN else "nxn_pairid"
+  pairid_in = getattr(m, field)
+  pairid_out = wp.empty_like(pairid_in)
+  wp.launch(_sensor_pairid, dim=pairid_in.shape[0], inputs=[pairid_in], outputs=[pairid_out])
+  return dataclasses.replace(m, **{field: pairid_out})
+
+
 def prepare_collision_context(m: Model, d: Data) -> CollisionContext:
   """Creates a CollisionContext with broadphase and narrowphase scratch buffers pre-allocated."""
   ctx = create_collision_context(d.naconmax)
   if m.opt.enableflags & EnableBit.SLEEP:
     ctx.woke = wp.empty(1, dtype=int)
     ctx.awake_prev = wp.empty_like(d.body_awake)
-  if d.naconmax > 0 and not (m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT)):
+  contact_disabled = m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT)
+  if d.naconmax > 0 and (not contact_disabled or m.nsensorcollision):
     convex_pairs, _ = _collision_table_pairs(m)
     prepare_convex_context(m, d, ctx, convex_pairs)
   return ctx
@@ -1232,7 +1256,8 @@ def collision(
   parameter in `io.make_data` or `io.put_data`.
 
   This function will do nothing except zero out arrays if collision detection is disabled
-  via `m.opt.disableflags` or if `d.nacon` is 0.
+  via `m.opt.disableflags` or if `d.nacon` is 0. With contacts disabled, the geom pairs of
+  collision sensors (distance, normal, fromto) are still collided, as in MuJoCo.
 
   Passing `awake_prev` (the awake state snapshotted before the post-collision wake) runs the
   incremental sleeping pass: contacts are appended to the existing buffer and only pairs
@@ -1242,9 +1267,14 @@ def collision(
   once after both sleeping passes, outside the graph conditional body where the sorting
   workspace cannot be allocated.
   """
-  if d.naconmax == 0 or m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT):
+  contact_disabled = m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT)
+  if d.naconmax == 0 or (contact_disabled and not m.nsensorcollision):
     d.nacon.zero_()
     return
+
+  if contact_disabled:
+    # collision sensors do not depend on contacts: collide only their geom pairs
+    m = _sensor_only(m)
 
   if ctx is None:
     ctx = prepare_collision_context(m, d)
@@ -1277,7 +1307,7 @@ def collision(
   # Flex collision is not sleeping-aware: pass 1 emits every flex contact regardless of awake state,
   # so the incremental pass has nothing to add (and re-running it would duplicate those contacts).
   # It therefore only runs on the full pass.
-  if m.nflex > 0 and not incremental:
+  if m.nflex > 0 and not incremental and not contact_disabled:
     flex_collision(m, d, ctx)
 
   if m.flg_surfacevel:
