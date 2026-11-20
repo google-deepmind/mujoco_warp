@@ -1591,13 +1591,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # Flatten into CSR-like arrays
   m.M_mulm_rowadr = [0]
-  m.M_mulm_col = []
-  m.M_mulm_madr = []
-  for i in range(mjm.nv):
-    for col, madr in row_elements[i]:
-      m.M_mulm_col.append(col)
-      m.M_mulm_madr.append(madr)
-    m.M_mulm_rowadr.append(len(m.M_mulm_col))
+  m.M_mulm_entry = []
+  for row in row_elements:
+    m.M_mulm_entry.extend((int(madr) << 32) | col for col, madr in row)
+    m.M_mulm_rowadr.append(len(m.M_mulm_entry))
 
   m.flexedge_J_rownnz = mjm.flexedge_J_rownnz
   m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
@@ -1951,7 +1948,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nv_tile_word": m.M_tile_colmask.shape[1],
       "nqD_fullm": len(m.qD_fullm_i),
       "nv_plus_1": len(m.M_mulm_rowadr),
-      "nM_mulm": len(m.M_mulm_col),
+      "nM_mulm": len(m.M_mulm_entry),
       "nefm_3dof": len(m.efm_L_dofid),
       "nefm_bt_adr": len(m.efm_BT_adr),
     }

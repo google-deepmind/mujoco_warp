@@ -1783,8 +1783,7 @@ class Model:
     qD_fullm_i: D-structure row indices for RNE derivatives
     qD_fullm_j: D-structure column indices for RNE derivatives
     M_mulm_rowadr: sparse matmul row pointers
-    M_mulm_col: sparse matmul column indices
-    M_mulm_madr: sparse matmul matrix addresses
+    M_mulm_entry: sparse matmul column (low 32 bits) and matrix address (high 32 bits)
     flex_elemflexid: maps each element index directly to its flexid         (nflexelem,)
     flex_edgeflexid: maps each edge index directly to its flexid            (nflexedge,)
     flex_shellflexid: maps each shell index directly to its flexid          (nflexshelldata,)
@@ -2379,8 +2378,7 @@ class Model:
   qD_fullm_j: array("nqD_fullm", int)  # D-structure (full square) column indices for RNE derivatives
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
   M_mulm_rowadr: array("nv_plus_1", int)  # start address for each row [nv+1]
-  M_mulm_col: array("nM_mulm", int)  # column index to gather from
-  M_mulm_madr: array("nM_mulm", int)  # matrix address to read
+  M_mulm_entry: array("nM_mulm", wp.uint64)
   flex_elemflexid: array("nflexelem", int)
   flex_edgeflexid: array("nflexedge", int)
   flex_shellflexid: array("nflexshelldata", int)
