@@ -574,7 +574,7 @@ class IOTest(parameterized.TestCase):
       </mujoco>
       """
     )
-    # a contact between the two arm tips shares the free joint: 6 + 2 + 2
+    # the contact estimate counts the dofs that move either arm tip: 6 + 2 + 2
     self.assertEqual(io._max_efc_J_rownnz(mjm), 10)
 
     mjm = mujoco.MjModel.from_xml_string(

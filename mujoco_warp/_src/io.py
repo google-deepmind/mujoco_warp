@@ -2379,6 +2379,9 @@ def _efc_rownnz(mjm: mujoco.MjModel) -> list[tuple[int, int]]:
 
 def _max_efc_J_rownnz(mjm: mujoco.MjModel) -> int:
   """Returns an upper bound on the number of non-zeros in one constraint Jacobian row."""
+  if mjm.nflex:
+    # the flex contact estimate samples one cell of an interpolated flex, so it is not a bound
+    return mjm.nv
   rownnz = max([_calculate_max_contact_nnz(mjm)] + [nnz for _, nnz in _efc_rownnz(mjm)])
   # frictionloss can be set on any dof or tendon after construction
   rownnz = max(rownnz, 1, int(mjm.ten_J_rownnz.max()) if mjm.ntendon else 0)
