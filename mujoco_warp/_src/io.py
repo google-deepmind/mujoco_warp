@@ -1073,57 +1073,13 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   # precompute body_isdofancestor: which DOFs affect each body
   # TODO: Investigate alternative approach such as bitmap
   body_isdofancestor = np.zeros((mjm.nbody, m.nv_pad), dtype=np.int32)
-  for bodyid in range(mjm.nbody):
-    b = bodyid
-    while b > 0 and mjm.body_dofnum[b] == 0:
-      b = mjm.body_parentid[b]
-    if mjm.body_dofnum[b] == 0:
-      continue
-    dofid = mjm.body_dofadr[b] + mjm.body_dofnum[b] - 1
-    while dofid >= 0:
-      body_isdofancestor[bodyid, dofid] = 1
-      dofid = mjm.dof_parentid[dofid]
+  body_isdofancestor[:, : mjm.nv] = _body_isdofancestor(mjm)
   m.body_isdofancestor = body_isdofancestor
 
   # precalculated geom pairs
-  filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT)
-
-  geom1, geom2 = np.triu_indices(mjm.ngeom, k=1)
+  geom1, geom2, nxn_pairid_contact = _nxn_pairid_contact(mjm)
   m.nxn_geom_pair = np.stack((geom1, geom2), axis=1)
-
-  bodyid1 = mjm.geom_bodyid[geom1]
-  bodyid2 = mjm.geom_bodyid[geom2]
-  contype1 = mjm.geom_contype[geom1]
-  contype2 = mjm.geom_contype[geom2]
-  conaffinity1 = mjm.geom_conaffinity[geom1]
-  conaffinity2 = mjm.geom_conaffinity[geom2]
-  weldid1 = mjm.body_weldid[bodyid1]
-  weldid2 = mjm.body_weldid[bodyid2]
-  weld_parentid1 = mjm.body_weldid[mjm.body_parentid[weldid1]]
-  weld_parentid2 = mjm.body_weldid[mjm.body_parentid[weldid2]]
-
-  self_collision = weldid1 == weldid2
-  # both weld bodies dof-less: no forces can act, skip (matches filterBodyPair)
-  no_dofs = (mjm.body_dofnum[weldid1] == 0) & (mjm.body_dofnum[weldid2] == 0)
-  parent_child_collision = (
-    filterparent & (weldid1 != 0) & (weldid2 != 0) & ((weldid1 == weld_parentid2) | (weldid2 == weld_parentid1))
-  )
-  mask = np.array((contype1 & conaffinity2) | (contype2 & conaffinity1), dtype=bool)
-  exclude = np.isin((bodyid1 << 16) + bodyid2, mjm.exclude_signature)
-
-  nxn_pairid_contact = -1 * np.ones(len(geom1), dtype=int)
-  nxn_pairid_contact[~(mask & ~self_collision & ~no_dofs & ~parent_child_collision & ~exclude)] = -2
-
-  # contact pairs
-  def upper_tri_index(n, i, j):
-    i, j = (j, i) if j < i else (i, j)
-    return (i * (2 * n - i - 3)) // 2 + j - 1
-
-  for i in range(mjm.npair):
-    nxn_pairid_contact[upper_tri_index(mjm.ngeom, mjm.pair_geom1[i], mjm.pair_geom2[i])] = i
-
-  contact = nxn_pairid_contact > -2
-  m.max_efc_J_rownnz = _max_efc_J_rownnz(mjm, body_isdofancestor, weldid1[contact], weldid2[contact])
+  m.max_efc_J_rownnz = _max_efc_J_rownnz(mjm, (geom1, geom2, nxn_pairid_contact))
 
   sensor_collision_adr = np.nonzero(is_collision_sensor)[0]
   collision_sensor_adr = np.full(mjm.nsensor, -1)
@@ -1156,7 +1112,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     # collide all pairs
     for geom1id in range(id1, id1 + n1):
       for geom2id in range(id2, id2 + n2):
-        pairid = upper_tri_index(mjm.ngeom, geom1id, geom2id)
+        pairid = _upper_tri_index(mjm.ngeom, geom1id, geom2id)
 
         if pairid in pairids:
           sensor_collision_start_adr.append(nxn_pairid_collision[pairid])
@@ -2122,6 +2078,63 @@ def _calculate_efm_con_max_dof(mjm: mujoco.MjModel) -> int:
   return int(min(max(max_passive + max_other, 1), max(mjm.nv, 1)))
 
 
+def _body_isdofancestor(mjm: mujoco.MjModel) -> np.ndarray:
+  """Returns which dofs move each body (nbody, nv)."""
+  body_isdofancestor = np.zeros((mjm.nbody, mjm.nv), dtype=np.int32)
+  for bodyid in range(mjm.nbody):
+    b = bodyid
+    while b > 0 and mjm.body_dofnum[b] == 0:
+      b = mjm.body_parentid[b]
+    if mjm.body_dofnum[b] == 0:
+      continue
+    dofid = mjm.body_dofadr[b] + mjm.body_dofnum[b] - 1
+    while dofid >= 0:
+      body_isdofancestor[bodyid, dofid] = 1
+      dofid = mjm.dof_parentid[dofid]
+  return body_isdofancestor
+
+
+def _upper_tri_index(n: int, i: int, j: int) -> int:
+  i, j = (j, i) if j < i else (i, j)
+  return (i * (2 * n - i - 3)) // 2 + j - 1
+
+
+def _nxn_pairid_contact(mjm: mujoco.MjModel) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+  """Returns the geom pairs and their contact pair id: -1 without a pair, -2 if filtered."""
+  filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT)
+
+  geom1, geom2 = np.triu_indices(mjm.ngeom, k=1)
+
+  bodyid1 = mjm.geom_bodyid[geom1]
+  bodyid2 = mjm.geom_bodyid[geom2]
+  contype1 = mjm.geom_contype[geom1]
+  contype2 = mjm.geom_contype[geom2]
+  conaffinity1 = mjm.geom_conaffinity[geom1]
+  conaffinity2 = mjm.geom_conaffinity[geom2]
+  weldid1 = mjm.body_weldid[bodyid1]
+  weldid2 = mjm.body_weldid[bodyid2]
+  weld_parentid1 = mjm.body_weldid[mjm.body_parentid[weldid1]]
+  weld_parentid2 = mjm.body_weldid[mjm.body_parentid[weldid2]]
+
+  self_collision = weldid1 == weldid2
+  # both weld bodies dof-less: no forces can act, skip (matches filterBodyPair)
+  no_dofs = (mjm.body_dofnum[weldid1] == 0) & (mjm.body_dofnum[weldid2] == 0)
+  parent_child_collision = (
+    filterparent & (weldid1 != 0) & (weldid2 != 0) & ((weldid1 == weld_parentid2) | (weldid2 == weld_parentid1))
+  )
+  mask = np.array((contype1 & conaffinity2) | (contype2 & conaffinity1), dtype=bool)
+  exclude = np.isin((bodyid1 << 16) + bodyid2, mjm.exclude_signature)
+
+  nxn_pairid_contact = -1 * np.ones(len(geom1), dtype=int)
+  nxn_pairid_contact[~(mask & ~self_collision & ~no_dofs & ~parent_child_collision & ~exclude)] = -2
+
+  # contact pairs
+  for i in range(mjm.npair):
+    nxn_pairid_contact[_upper_tri_index(mjm.ngeom, mjm.pair_geom1[i], mjm.pair_geom2[i])] = i
+
+  return geom1, geom2, nxn_pairid_contact
+
+
 def _body_pair_nnz(mjm: mujoco.MjModel, body1: int, body2: int) -> int:
   """Returns the number of unique DOFs in the kinematic tree union of two bodies."""
   body1 = mjm.body_weldid[body1]
@@ -2151,35 +2164,25 @@ def _body_set_nnz(mjm: mujoco.MjModel, bodies) -> int:
   return len(active_dofs)
 
 
-def _calculate_max_contact_nnz(mjm: mujoco.MjModel) -> int:
-  """Returns the maximum number of non-zeros for a single contact constraint."""
-  max_contact_nnz = 0
+def _calculate_max_contact_nnz(mjm: mujoco.MjModel, nxn_pair: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None) -> int:
+  """Returns the maximum number of non-zeros for a single contact constraint.
 
-  # contact pairs
-  for i in range(mjm.npair):
-    g1, g2 = mjm.pair_geom1[i], mjm.pair_geom2[i]
-    b1, b2 = mjm.geom_bodyid[g1], mjm.geom_bodyid[g2]
-    max_contact_nnz = max(max_contact_nnz, _body_pair_nnz(mjm, b1, b2))
-
-  # filter geom-geom pairs (unique body pairs, filtered)
-  body_pair_seen = set()
-  for i in range(mjm.ngeom):
-    bi = mjm.geom_bodyid[i]
-    cti, cai = mjm.geom_contype[i], mjm.geom_conaffinity[i]
-    for j in range(i + 1, mjm.ngeom):
-      bj = mjm.geom_bodyid[j]
-      if bi == bj:
-        continue
-      if mjm.body_weldid[bi] == 0 and mjm.body_weldid[bj] == 0:
-        continue
-      bp = (min(bi, bj), max(bi, bj))
-      if bp in body_pair_seen:
-        continue
-      ctj, caj = mjm.geom_contype[j], mjm.geom_conaffinity[j]
-      if not ((cti & caj) or (ctj & cai)):
-        continue
-      body_pair_seen.add(bp)
-      max_contact_nnz = max(max_contact_nnz, _body_pair_nnz(mjm, bi, bj))
+  Args:
+    mjm: The model containing kinematic and dynamic information (host).
+    nxn_pair: The result of `_nxn_pairid_contact`, if the caller already has it.
+  """
+  # a rigid contact row spans the dofs that move either body of a geom pair that can collide
+  geom1, geom2, nxn_pairid_contact = nxn_pair or _nxn_pairid_contact(mjm)
+  contact = nxn_pairid_contact > -2
+  weld = np.unique(mjm.body_weldid)
+  index = np.zeros(mjm.nbody, dtype=int)
+  index[weld] = np.arange(weld.size)
+  moves = _body_isdofancestor(mjm)[weld].astype(np.float32)
+  ndof = moves.sum(axis=1)
+  union = ndof[:, None] + ndof[None, :] - moves @ moves.T
+  body1 = index[mjm.body_weldid[mjm.geom_bodyid[geom1[contact]]]]
+  body2 = index[mjm.body_weldid[mjm.geom_bodyid[geom2[contact]]]]
+  max_contact_nnz = int(union[body1, body2].max(initial=0))
 
   if mjm.nflex == 0:
     return max_contact_nnz
@@ -2378,30 +2381,20 @@ def _efc_rownnz(mjm: mujoco.MjModel) -> list[tuple[int, int]]:
   return rows
 
 
-def _max_efc_J_rownnz(mjm: mujoco.MjModel, body_isdofancestor: np.ndarray, body1: np.ndarray, body2: np.ndarray) -> int:
+def _max_efc_J_rownnz(mjm: mujoco.MjModel, nxn_pair: tuple[np.ndarray, np.ndarray, np.ndarray]) -> int:
   """Returns an upper bound on the number of non-zeros in one constraint Jacobian row.
 
   Args:
     mjm: The model containing kinematic and dynamic information (host).
-    body_isdofancestor: The dofs that move each body (nbody, nv).
-    body1: Weld body of the first geom of each contact pair.
-    body2: Weld body of the second geom of each contact pair.
+    nxn_pair: The result of `_nxn_pairid_contact`.
   """
   if mjm.nflex:
-    # flex contact rows couple the dofs of several vertices and are not covered by the geom pairs
+    # the flex contact estimate samples one cell of an interpolated flex, so it is not a bound
     return mjm.nv
-  rownnz = max([1] + [nnz for _, nnz in _efc_rownnz(mjm)])
+  rownnz = max([1, _calculate_max_contact_nnz(mjm, nxn_pair)] + [nnz for _, nnz in _efc_rownnz(mjm)])
   if mjm.ntendon:
     # frictionloss can be set on any tendon after construction
     rownnz = max(rownnz, int(mjm.ten_J_rownnz.max()))
-  # a contact row spans the dofs that move either of its bodies
-  weld = np.unique(mjm.body_weldid)
-  index = np.zeros(mjm.nbody, dtype=int)
-  index[weld] = np.arange(weld.size)
-  moves = body_isdofancestor[weld].astype(np.float32)
-  ndof = moves.sum(axis=1)
-  union = ndof[:, None] + ndof[None, :] - moves @ moves.T
-  rownnz = max(rownnz, int(union[index[body1], index[body2]].max(initial=0)))
   return int(min(rownnz, mjm.nv))
 
 
