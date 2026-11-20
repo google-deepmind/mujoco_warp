@@ -1533,12 +1533,10 @@ def compute_island_mapping(m: types.Model, d: types.Data):
   )
 
 
-# make_constraint's row kernels write rows (ROWS_WRITE): in class order per world, or with the
-# island layout (opt.island_solve) at their island's address, an island's rows contiguous and in
-# class order as in MuJoCo's island arrays. The layout comes from a first pass (ROWS_DISCOVER) that
-# merges each active constraint's trees and counts its rows per tree and class.
-ROWS_WRITE = 0
-ROWS_DISCOVER = 1
+# make_constraint's row kernels write rows in class order per world, or with the island layout
+# (opt.island_solve) at their island's address, an island's rows contiguous and in class order as in
+# MuJoCo's island arrays. The layout comes from constraint._island_discover, which merges each
+# active constraint's trees and counts its rows per tree and class without writing them.
 ROW_CLASSES = 4
 ROW_EQUALITY = 0
 ROW_FRICTION = 1

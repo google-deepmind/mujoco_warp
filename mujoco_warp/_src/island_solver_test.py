@@ -171,15 +171,23 @@ _ROWS_XML = """
     <body pos="5 0 .049"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
     <body pos="6 0 .049"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
     <body pos="6 0 .148"><freejoint/><geom type="box" size=".05 .05 .05"/></body>
+    <body pos="7 0 1"><joint name="g" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 .3 0 0" size=".02"/></body>
+    <body pos="8 0 1"><joint name="h" type="hinge" axis="0 1 0"/><geom type="capsule" fromto="0 0 0 .3 0 0" size=".02"/></body>
+    <body pos="9 0 1"><joint type="ball" range="0 30"/><geom type="capsule" fromto="0 0 0 .3 0 0" size=".02"/></body>
   </worldbody>
   <tendon>
     <fixed name="ab" limited="true" range="-.01 .01" frictionloss=".2"><joint joint="a" coef="1"/><joint joint="b" coef="-1"/></fixed>
+    <fixed name="g"><joint joint="g" coef="1"/></fixed>
+    <fixed name="h"><joint joint="h" coef="1"/></fixed>
   </tendon>
   <equality>
     <joint joint1="c" joint2="d"/>
     <connect body1="e" body2="f" anchor=".1 0 0"/>
+    <tendon tendon1="g" tendon2="h"/>
   </equality>
-  <keyframe><key qpos=".3 .1 0 0 4 0 1 1 0 0 0 4.2 0 1 1 0 0 0 5 0 .049 1 0 0 0 6 0 .049 1 0 0 0 6 0 .148 1 0 0 0"/></keyframe>
+  <keyframe>
+    <key qpos=".3 .1 0 0 4 0 1 1 0 0 0 4.2 0 1 1 0 0 0 5 0 .049 1 0 0 0 6 0 .049 1 0 0 0 6 0 .148 1 0 0 0 .2 -.1 .866 .5 0 0"/>
+  </keyframe>
 </mujoco>
 """
 
@@ -212,8 +220,9 @@ class IslandSolverTest(parameterized.TestCase):
     island.island(m, d)
     np.testing.assert_array_equal(tree_island, d.tree_island.numpy())
     np.testing.assert_array_equal(nisland, d.nisland.numpy())
-    # tendon (a, b), joint equality (c, d), connect (e, f), floor box, stack
-    self.assertEqual(nisland[0], 5)
+    # tendon (a, b), joint equality (c, d), connect (e, f), floor box, stack, tendon equality
+    # (g, h), ball joint at its limit
+    self.assertEqual(nisland[0], 7)
 
     # each island's rows are contiguous and ordered equality, friction, limit, contact
     nefc = d.nefc.numpy()[0]
