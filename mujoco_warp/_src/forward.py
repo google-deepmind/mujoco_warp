@@ -37,6 +37,7 @@ from mujoco_warp._src.support import xfrc_accumulate
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import BroadphaseType
+from mujoco_warp._src.types import CtrlInput
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import DisableBit
@@ -66,9 +67,9 @@ def check_discrete(m: Model):
   if m.opt.integrator != IntegratorType.DISCRETE:
     if m.has_flex_snh:
       raise ValueError("stable Neo-Hookean elasticity requires integrator='discrete'")
-    if m.has_flex_passive:
+    if passive.flex_passive_contact(m):
       raise ValueError("passive flex contact requires an integrator with the effective metric: set integrator='discrete'")
-    if m.opt.integrator in (IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST) and (m.nefmK > 0 or m.has_non_simple_flex):
+    if m.opt.integrator in (IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST) and m.has_flex_stiff:
       raise ValueError(
         "flex elasticity is no longer integrated implicitly under integrator='implicit' and 'implicitfast': "
         "set integrator='discrete', or 'Euler' with a small timestep"
@@ -83,13 +84,17 @@ def check_discrete(m: Model):
   if m.opt.solver == SolverType.NEWTON and m.has_non_simple_flex:
     raise ValueError("discrete integrator: flex with general attachments requires solver='CG'")
   if m.opt.solver == SolverType.NEWTON and not m.flex_interp_assemblable:
-    raise ValueError(
-      "Discrete integrator: Newton solver requires interpolated flex nodes to be on 3-DOF slider bodies; use solver='CG'"
-    )
+    raise ValueError("discrete integrator: interpolated flex with non-simple nodes not yet supported with the Newton solver")
   if m.opt.enableflags & EnableBit.SLEEP:
     if m.opt.disableflags & DisableBit.ISLAND:
       raise ValueError("Discrete integrator: sleep without islands not yet supported")
-    if m.nefmK > 0 or m.nflexrodhinge > 0 or m.has_non_simple_flex or m.has_flex_passive or not m.flex_interp_assemblable:
+    if (
+      m.nefmK > 0
+      or m.nflexrodhinge > 0
+      or m.has_non_simple_flex
+      or passive.flex_passive_contact(m)
+      or not m.flex_interp_assemblable
+    ):
       raise ValueError("Discrete integrator: sleep with flex not yet supported")
 
 
@@ -220,7 +225,7 @@ def _wrap_period(
       dyntype == DynType.NONE or dyntype == DynType.INTEGRATOR or dyntype == DynType.FILTER or dyntype == DynType.FILTEREXACT
     )
   )
-  if not is_servo:
+  if not is_servo and gaintype != GainType.PID:
     return 0.0
 
   # site transmission with refsite and purely rotational gear
@@ -235,6 +240,23 @@ def _wrap_period(
       return wp.static(2.0 * wp.pi) * wp.length(lin_gear)
 
   return 0.0
+
+
+@wp.func
+def _slew_limit(
+  # In:
+  u: float,
+  u_prev: float,
+  slew_s: float,
+  dt: float,
+  period: float,
+) -> Tuple[float, float]:
+  # wrap setpoint nearest previous state before clamping rate
+  if period > 0.0:
+    u -= period * wp.round((u - u_prev) / period)
+  slew = slew_s * dt
+  u_eff = wp.clamp(u, u_prev - slew, u_prev + slew)
+  return u_eff, (u_eff - u_prev) / dt
 
 
 @wp.kernel
@@ -2456,16 +2478,31 @@ def implicit_free_body(m: Model, d: Data, vec_in: wp.array2d[float], vec_out: wp
 
 
 @cache_kernel
-def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inverse: bool, is_sparse: bool):
-  @wp.kernel(module="unique")
+def _discrete_free_gyro_kernel(
+  has_fluid: bool,
+  has_flex_passive: bool,
+  has_flex_stiff: bool,
+  is_inverse: bool,
+  is_sparse: bool,
+):
+  @wp.kernel(module="unique", enable_backward=False)
   def _discrete_free_gyro(
     # Model:
     nactuator: int,
+    nflex: int,
     ntendon: int,
     opt_timestep: wp.array[float],
     opt_enableflags: int,
     body_dofadr: wp.array[int],
+    body_treeid: wp.array[int],
     dof_treeid: wp.array[int],
+    flex_interp: wp.array[int],
+    flex_nodeadr: wp.array[int],
+    flex_nodenum: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_vertnum: wp.array[int],
+    flex_nodebodyid: wp.array[int],
+    flex_vertbodyid: wp.array[int],
     ten_J_rownnz: wp.array[int],
     ten_J_rowadr: wp.array[int],
     ten_J_colind: wp.array[int],
@@ -2474,6 +2511,7 @@ def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inver
     M_colind: wp.array[int],
     efm_K_rownnz: wp.array[int],
     body_freeadr: wp.array[int],
+    flex_stiff_possible: wp.array[bool],
     # Data in:
     nefc_in: wp.array[int],
     qvel_in: wp.array2d[float],
@@ -2507,7 +2545,9 @@ def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inver
     # Out:
     out: wp.array2d[float],
   ):
-    worldid, freeid = wp.tid()
+    """One block per free body: the threads scan the couplings, then one thread solves."""
+    worldid, freeid, tid = wp.tid()
+    nthread = wp.block_dim()
     bodyid = body_freeadr[freeid]
     dof_adr = body_dofadr[bodyid]
 
@@ -2520,8 +2560,19 @@ def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inver
     for r in range(6):
       if efm_K_rownnz[dof_adr + r] != 0:
         return
-    nefc = nefc_in[worldid]
-    for i in range(nefc):
+    coupled = int(0)
+    if wp.static(has_flex_stiff):
+      for f in range(nflex):
+        if flex_stiff_possible[f]:
+          is_interp = flex_interp[f] != 0
+          vadr = flex_nodeadr[f] if is_interp else flex_vertadr[f]
+          vnum = flex_nodenum[f] if is_interp else flex_vertnum[f]
+          for v in range(vadr + tid, vadr + vnum, nthread):
+            b = flex_nodebodyid[v] if is_interp else flex_vertbodyid[v]
+            if b >= 0 and body_treeid[b] == treeid:
+              coupled = 1
+    nefc = wp.min(nefc_in[worldid], efc_J_rownnz_in.shape[1] if wp.static(is_sparse) else efc_J_in.shape[1])
+    for i in range(tid, nefc, nthread):
       if wp.static(is_sparse):
         radr = efc_J_rowadr_in[worldid, i]
         rnnz = efc_J_rownnz_in[worldid, i]
@@ -2529,34 +2580,36 @@ def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inver
           c = efc_J_colind_in[worldid, 0, radr + j]
           if c >= dof_adr and c < dof_adr + 6:
             if efc_J_in[worldid, 0, radr + j] != 0.0:
-              return
+              coupled = 1
       else:
         for r in range(6):
           if efc_J_in[worldid, i, dof_adr + r] != 0.0:
-            return
-    for t in range(ntendon):
+            coupled = 1
+    for t in range(tid, ntendon, nthread):
       if efm_ts_in[worldid, t] != 0.0:
         radr = ten_J_rowadr[t]
         for j in range(ten_J_rownnz[t]):
           c = ten_J_colind[radr + j]
           if c >= dof_adr and c < dof_adr + 6:
-            return
-    for a in range(nactuator):
+            coupled = 1
+    for a in range(tid, nactuator, nthread):
       if efm_as_in[worldid, a] != 0.0:
         radr = moment_rowadr_in[worldid, a]
         for j in range(moment_rownnz_in[worldid, a]):
           c = moment_colind_in[worldid, radr + j]
           if c >= dof_adr and c < dof_adr + 6:
-            return
+            coupled = 1
     if wp.static(has_flex_passive):
-      nacon = nacon_in[0]
-      for cid in range(nacon):
+      nacon = wp.min(nacon_in[0], contact_worldid_in.shape[0])
+      for cid in range(tid, nacon, nthread):
         if contact_worldid_in[cid] == worldid and efm_con_scale_in[cid] != 0.0:
           nnz = efm_con_nnz_in[cid]
           for j in range(nnz):
             c = efm_con_dof_in[cid, j]
             if c >= dof_adr and c < dof_adr + 6:
-              return
+              coupled = 1
+    if wp.tile_max(wp.tile(coupled))[0] != 0 or tid != 0:
+      return
 
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
     crb = crb_in[worldid, bodyid]
@@ -2631,25 +2684,35 @@ def _discrete_free_gyro_kernel(has_fluid: bool, has_flex_passive: bool, is_inver
 
 
 def _launch_discrete_free_gyro(m: Model, d: Data, out: wp.array2d[float], qacc: wp.array2d[float], is_inverse: bool):
-  if m.opt.integrator != IntegratorType.DISCRETE or not m.flex_interp_assemblable or m.has_non_simple_flex:
+  if m.opt.integrator != IntegratorType.DISCRETE:
     return
   has_fluid = m.has_fluid and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER))
-  if m.has_flex_passive and m.body_freeadr.size > 0:
+  if passive.flex_passive_contact(m) and m.body_freeadr.size > 0:
     efm_con_dof, _, efm_con_scale, _, efm_con_nnz = passive.build_efm_contact(m, d)
   else:
     efm_con_dof = wp.empty((0, 0), dtype=int, device=d.qacc.device)
     efm_con_scale = wp.empty(0, dtype=float, device=d.qacc.device)
     efm_con_nnz = wp.empty(0, dtype=int, device=d.qacc.device)
-  wp.launch(
-    _discrete_free_gyro_kernel(has_fluid, m.has_flex_passive, is_inverse, m.is_sparse),
+  wp.launch_tiled(
+    _discrete_free_gyro_kernel(has_fluid, passive.flex_passive_contact(m), m.has_flex_stiff, is_inverse, m.is_sparse),
     dim=(d.nworld, m.body_freeadr.size),
+    block_dim=m.block_dim.discrete_free_gyro,
     inputs=[
       m.nactuator,
+      m.nflex,
       m.ntendon,
       m.opt.timestep,
       m.opt.enableflags,
       m.body_dofadr,
+      m.body_treeid,
       m.dof_treeid,
+      m.flex_interp,
+      m.flex_nodeadr,
+      m.flex_nodenum,
+      m.flex_vertadr,
+      m.flex_vertnum,
+      m.flex_nodebodyid,
+      m.flex_vertbodyid,
       m.ten_J_rownnz,
       m.ten_J_rowadr,
       m.ten_J_colind,
@@ -2658,6 +2721,7 @@ def _launch_discrete_free_gyro(m: Model, d: Data, out: wp.array2d[float], qacc: 
       m.M_colind,
       m.efm_K_rownnz,
       m.body_freeadr,
+      m.flex_stiff_possible,
       d.nefc,
       d.qvel,
       qacc,
@@ -2981,16 +3045,11 @@ def _actuator_force(
 ):
   worldid, uid = wp.tid()
 
-  actuator_ctrlrange_id = worldid % actuator_ctrlrange.shape[0]
-
   uadr = actuator_ctrladr[uid]
   ctrlnum = actuator_ctrlnum[uid]
   ctrl = 0.0
   if ctrlnum > 0:
-    ctrl = ctrl_in[worldid, uadr]
-    if actuator_ctrllimited[uadr] and not dsbl_clampctrl:
-      ctrlrange = actuator_ctrlrange[actuator_ctrlrange_id, uadr]
-      ctrl = wp.clamp(ctrl, ctrlrange[0], ctrlrange[1])
+    ctrl = util_misc.clamp_ctrl(actuator_ctrllimited, actuator_ctrlrange, ctrl_in, worldid, uadr, dsbl_clampctrl)
   ctrl_act = ctrl
   u_first = ctrl
 
@@ -3040,13 +3099,18 @@ def _actuator_force(
 
       # slew rate
       if slots[0] >= 0:
-        u_prev = act_in[worldid, adr]
-        slew_s = dynprm[7]
-        slew = slew_s * opt_timestep[worldid % opt_timestep.shape[0]]
-        u_eff = wp.clamp(u_first, u_prev - slew, u_prev + slew)
-        act_dot = (u_eff - u_prev) / opt_timestep[worldid % opt_timestep.shape[0]]
+        if ctrlnum > 0:
+          u_first, act_dot = _slew_limit(
+            u_first,
+            act_in[worldid, adr],
+            dynprm[7],
+            opt_timestep[worldid % opt_timestep.shape[0]],
+            0.0,
+          )
+        else:
+          u_first = 0.0
+          act_dot = 0.0
         act_dot_out[worldid, adr] = act_dot
-        u_first = u_eff
         adr += 1
 
       # integral
@@ -3069,6 +3133,8 @@ def _actuator_force(
       V = 0.0
       if ctrlnum > 0:
         V = util_misc.dcmotor_voltage(
+          actuator_ctrllimited,
+          actuator_ctrlrange,
           ctrl_in,
           worldid,
           uadr,
@@ -3078,6 +3144,7 @@ def _actuator_force(
           actuator_velocity_in[worldid, uid],
           x_I,
           gainprm,
+          dsbl_clampctrl,
         )
 
       # temperature
@@ -3125,6 +3192,43 @@ def _actuator_force(
           act_dot = wp.clamp(act_dot, -dimax, dimax)
         act_dot_out[worldid, act_last] = act_dot
 
+    elif dyntype == DynType.PID:
+      actnum = actuator_actnum[uid]
+      act_dot = 0.0
+
+      # slew rate limit on position setpoint (slot 0 when actnum == 2)
+      if actnum == 2 or dynprm[1] > 0.0:
+        slew_dot = 0.0
+        if dynprm[1] > 0.0:
+          if ctrlnum > 0:
+            u_first, slew_dot = _slew_limit(
+              u_first,
+              act_in[worldid, act_first],
+              dynprm[1],
+              opt_timestep[worldid % opt_timestep.shape[0]],
+              period,
+            )
+          else:
+            u_first = 0.0
+        if actnum == 2:
+          act_dot_out[worldid, act_first] = slew_dot
+        else:
+          act_dot = slew_dot
+
+      # integral of position error (kept in act_last even if slewmax == 0 in batch)
+      if gainprm[0] > 0.0 and (actnum == 2 or dynprm[1] <= 0.0):
+        err = u_first - actuator_length_in[worldid, uid]
+        if period > 0.0:
+          err -= period * wp.round(err / period)
+        imax = dynprm[0]
+        if imax > 0.0:
+          z = act_in[worldid, act_last]
+          if z >= imax:
+            err = wp.min(err, 0.0)
+          elif z <= -imax:
+            err = wp.max(err, 0.0)
+        act_dot = err
+
     elif dyntype == DynType.USER:
       act_dot = 0.0  # set by act_dyn_callback
     else:  # DynType.NONE
@@ -3133,7 +3237,7 @@ def _actuator_force(
     act_dot_out[worldid, act_last] = act_dot
 
     if actuator_actearly[uid]:
-      if dyntype == DynType.INTEGRATOR or dyntype == DynType.NONE or dyntype == DynType.DCMOTOR:
+      if dyntype == DynType.INTEGRATOR or dyntype == DynType.NONE or dyntype == DynType.DCMOTOR or dyntype == DynType.PID:
         act = act_in[worldid, act_last]
 
       if dyntype == DynType.DCMOTOR:
@@ -3205,13 +3309,15 @@ def _actuator_force(
     if te <= 0.0:
       if ctrlnum == 0:
         ctrl_act = 0.0
-      elif (actuator_ctrlspec[uid] & 7) != 0:
+      elif (actuator_ctrlspec[uid] & (CtrlInput.POS | CtrlInput.VEL | CtrlInput.FF)) != 0:
         x_I = 0.0
         if na and act_first >= 0:
           slots = util_misc.dcmotor_slots(dynprm, gainprm)
           if slots[1] >= 0:
             x_I = act_in[worldid, act_first + slots[1]]
         ctrl_act = util_misc.dcmotor_voltage(
+          actuator_ctrllimited,
+          actuator_ctrlrange,
           ctrl_in,
           worldid,
           uadr,
@@ -3221,6 +3327,7 @@ def _actuator_force(
           velocity,
           x_I,
           gainprm,
+          dsbl_clampctrl,
         )
       else:
         ctrl_act = u_first
@@ -3239,11 +3346,30 @@ def _actuator_force(
       K = gainprm[1]
       bias -= gain * K * velocity
 
-  if period > 0.0:
-    err = ctrl_act - length
-    ctrl_act -= period * wp.round(err / period)
+  if gaintype == GainType.PID:
+    u4 = util_misc.unpack_servo_inputs(
+      actuator_ctrllimited,
+      actuator_ctrlrange,
+      ctrl_in,
+      worldid,
+      uadr,
+      actuator_ctrlspec[uid],
+      u_first,
+      dsbl_clampctrl,
+    )
+    qref = u4[0]
+    if period > 0.0:
+      qref -= period * wp.round((qref - length) / period)
+    force = -biasprm[1] * qref - biasprm[2] * u4[1] + u4[2]
+    if na and act_first >= 0 and gainprm[0] > 0.0 and (actuator_actnum[uid] == 2 or dynprm[1] <= 0.0):
+      force += gainprm[0] * ctrl_act
+    force += bias
+  else:
+    if period > 0.0:
+      err = ctrl_act - length
+      ctrl_act -= period * wp.round(err / period)
 
-  force = gain * ctrl_act + bias
+    force = gain * ctrl_act + bias
 
   if not (ntendon > 0 and trntype == TrnType.TENDON):
     if actuator_forcelimited[uid]:

@@ -187,14 +187,27 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
       while imax != prev:
         prev = imax
         i = geom.graph[vert_edgeadr + imax]
-        subidx = geom.graph[edge_localid + i]
-        while subidx >= 0:
-          idx = geom.graph[vert_globalid + subidx]
-          dist = wp.dot(local_dir, geom.vert[geom.vertadr + idx])
-          imax = wp.where(dist > max_dist, subidx, imax)
-          max_dist = wp.where(dist > max_dist, dist, max_dist)
-          i += 1
-          subidx = geom.graph[edge_localid + i]
+        more = int(1)
+        while more != 0:
+          # load neighbors four at a time so their dependent loads overlap
+          # (face_globalid follows edge_localid, so reads past a list end stay in the graph)
+          near = wp.vec4i()
+          for k in range(4):
+            near[k] = geom.graph[edge_localid + i + k]
+          for k in range(4):
+            # mask entries after the -1 terminator
+            if near[k] < 0:
+              more = 0
+            if more == 0:
+              near[k] = -1
+          near_dist = wp.vec4()
+          for k in range(4):
+            near_dist[k] = wp.dot(local_dir, geom.vert[geom.vertadr + geom.graph[vert_globalid + wp.max(near[k], 0)]])
+          for k in range(4):
+            if near[k] >= 0 and near_dist[k] > max_dist:
+              imax = near[k]
+              max_dist = near_dist[k]
+          i += 4
 
       sp.cached_index = imax
       sp.vertex_index = geom.graph[vert_globalid + imax]
