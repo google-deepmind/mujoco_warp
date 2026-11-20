@@ -2656,14 +2656,15 @@ class SolverTest(parameterized.TestCase):
         any_changes = False
         band_jumps = False
         ctx.search_unchanged.fill_(False)
+        D = d.efc.D.numpy()
+        rows = np.arange(D.shape[1]) < d.nefc.numpy()[:, None]
         for _ in range(m.opt.iterations):
           solver._linesearch(m, d, ctx)
           if track:
             ctx.quad_changed_count.zero_()
           solver._update_efc_force(m, d, ctx, track_changes=track, band_jump=True)
           solver._update_qfrc_constraint(m, d, ctx)
-          weight, D = ctx.hessian_weight.numpy(), d.efc.D.numpy()
-          rows = np.arange(weight.shape[1]) < d.nefc.numpy()[:, None]
+          weight = ctx.hessian_weight.numpy()
           band_jumps |= bool(np.any(rows & (weight != 0.0) & (weight != D)))
           if track:
             wp.synchronize()
@@ -2756,18 +2757,22 @@ class SolverTest(parameterized.TestCase):
   def test_friction_band_jump_tile_pattern(self):
     """The structural H tile pattern includes a friction row with a band-jump weight."""
     # 110 slide joints (nv > 96, diagonal M); the tendon couples tiles 0 and 3
-    bodies = "".join(f'<body pos="{i} 0 0"><joint name="j{i}" type="slide"/><geom size=".05"/></body>' for i in range(110))
     _, _, m, d = test_data.fixture(
-      xml=f"""
+      xml="""
       <mujoco>
         <option jacobian="sparse"/>
         <worldbody>
-          {bodies}
+          <replicate count="110" offset="1 0 0">
+            <body>
+              <joint name="j" type="slide"/>
+              <geom size=".05"/>
+            </body>
+          </replicate>
         </worldbody>
         <tendon>
           <fixed frictionloss="2">
-            <joint joint="j0" coef="1"/>
-            <joint joint="j50" coef="-0.5"/>
+            <joint joint="j000" coef="1"/>
+            <joint joint="j050" coef="-0.5"/>
           </fixed>
         </tendon>
       </mujoco>
