@@ -789,7 +789,7 @@ class DeterminismTest(parameterized.TestCase):
       """,
       overrides={"opt.deterministic": "ATOMICS"},
       nworld=2,
-      njmax=8000,
+      njmax=8000,  # far more rows than the scene has: nv * (nv + 1) / 2 records per row would not fit
     )
     d.qacc.fill_(wp.inf)
     mjw.step(m, d)
