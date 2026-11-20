@@ -841,16 +841,22 @@ class CollisionTest(parameterized.TestCase):
     d.contact.dist.fill_(wp.inf)
     d.contact.pos.fill_(wp.inf)
     d.contact.frame.fill_(wp.inf)
+    d.contact.worldid.fill_(-1)
     d.nacon.fill_(-1)
     mjw.forward(m, d)
     count = int(d.nacon.numpy()[0])
     self.assertEqual(count, 3 * nworld)
-    for w, reference in enumerate(references):
-      rows = np.flatnonzero(d.contact.worldid.numpy()[:count] == w)
-      for field, expected in zip((d.contact.dist, d.contact.pos, d.contact.frame), reference, strict=True):
-        np.testing.assert_allclose(field.numpy()[rows], expected, rtol=1e-5, atol=2e-6)
+    worldid = d.contact.worldid.numpy()[:count]
+    contact_dist = d.contact.dist.numpy()[:count]
+    contact_pos = d.contact.pos.numpy()[:count]
+    contact_frame = d.contact.frame.numpy()[:count]
+    for w, (ref_dist, ref_pos, ref_frame) in enumerate(references):
+      rows = np.flatnonzero(worldid == w)
+      np.testing.assert_allclose(contact_dist[rows], ref_dist, rtol=1e-5, atol=2e-6)
+      np.testing.assert_allclose(contact_pos[rows], ref_pos, rtol=1e-5, atol=2e-6)
+      np.testing.assert_allclose(contact_frame[rows], ref_frame, rtol=1e-5, atol=2e-6)
     if nworld == 2:
-      self.assertFalse(np.allclose(references[0][0], references[1][0]))
+      self.assertFalse(np.allclose(contact_dist[worldid == 0], contact_dist[worldid == 1]))
 
   @parameterized.named_parameters((fixture, fixture) for fixture in _FIXTURES if fixture.startswith("mesh_plane"))
   def test_plane_mesh_contact_selection(self, fixture):

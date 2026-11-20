@@ -490,7 +490,7 @@ def plane_cylinder(
   contact_count = 0
 
   n = plane_normal
-  axis = wp.vec3(cylinder_mat[0, 2], cylinder_mat[1, 2], cylinder_mat[2, 2])
+  axis = cylinder_mat[:, 2]
 
   # Project, make sure axis points toward plane
   prjaxis = wp.dot(n, axis)
@@ -507,10 +507,11 @@ def plane_cylinder(
 
   # If vector is nondegenerate, normalize and scale by radius
   # Otherwise use cylinder's x-axis scaled by radius
+  # Use 1e-12 instead of MJ_MINVAL**2 (1e-30) for float32 quat_to_mat rounding on aligned caps.
   if len_sqr >= 1e-12:
     vec = vec * safe_div(cylinder_radius, wp.sqrt(len_sqr))
   else:
-    vec = wp.vec3(cylinder_mat[0, 0], cylinder_mat[1, 0], cylinder_mat[2, 0]) * cylinder_radius
+    vec = cylinder_mat[:, 0] * cylinder_radius
 
   # Project scaled vector on normal
   prjvec = wp.dot(vec, n)
