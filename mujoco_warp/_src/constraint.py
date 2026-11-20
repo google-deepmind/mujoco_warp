@@ -27,6 +27,8 @@ from mujoco_warp._src.island import ROW_CONTACT
 from mujoco_warp._src.island import ROW_EQUALITY
 from mujoco_warp._src.island import ROW_FRICTION
 from mujoco_warp._src.island import ROW_LIMIT
+from mujoco_warp._src.island import _block_sync
+from mujoco_warp._src.island import _dsu_union
 from mujoco_warp._src.island import dense_set
 from mujoco_warp._src.island import dense_zero
 from mujoco_warp._src.island import rows_discover
@@ -7016,14 +7018,53 @@ _vec9i = wp.types.vector(length=9, dtype=int)
 
 
 @cache_kernel
-def _island_discover(cone_type: types.ConeType, flg_adhesion: bool):
-  """Islands from the active constraints' trees, with their rows counted per tree and class.
-
-  A thread per contact and per world and constraint source (equalities, DOF and tendon friction,
-  joint and tendon limits), with the activity tests of the row kernels and without their rows, as
-  mj_island reads the constraints. The sources a world has are counted by the launch.
-  """
+def _island_discover_contacts(cone_type: types.ConeType, flg_adhesion: bool):
+  """The contacts' trees and rows for island discovery (_island_discover_sources: the others)."""
   NDIM = _contact_ndim(cone_type, flg_adhesion)
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    body_treeid: wp.array[int],
+    geom_bodyid: wp.array[int],
+    # Data in:
+    nacon_in: wp.array[int],
+    # In:
+    dist_in: wp.array[float],
+    condim_in: wp.array[int],
+    includemargin_in: wp.array[float],
+    adhesion_in: wp.array[float],
+    geom_in: wp.array[wp.vec2i],
+    type_in: wp.array[int],
+    worldid_in: wp.array[int],
+    # Data out:
+    tree_island_out: wp.array2d[int],
+    # Out:
+    island_parent_out: wp.array2d[int],
+    tree_nrow_out: wp.array2d[int],
+  ):
+    conid = wp.tid()
+    if conid >= nacon_in[0]:
+      return
+    ndim = wp.static(NDIM)(type_in, condim_in, dist_in, includemargin_in, adhesion_in, conid)
+    if ndim > 0:
+      geom = geom_in[conid]
+      tree0 = body_treeid[geom_bodyid[geom[0]]]
+      tree1 = body_treeid[geom_bodyid[geom[1]]]
+      rows_discover(worldid_in[conid], tree0, tree1, ndim, ROW_CONTACT, tree_island_out, island_parent_out, tree_nrow_out)
+
+  return kernel
+
+
+@cache_kernel
+def _island_discover_sources(ntree: int):
+  """Islands from a world's active non-contact constraints, a block per world, without their rows.
+
+  As mj_island reads the constraints: each active source's trees are merged and its rows counted
+  on a tree, with the row kernels' activity tests. Single-tree sources (most friction and limit
+  rows) count in shared memory, added once per tree.
+  """
+  NCOUNT = ntree * ROW_CLASSES
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
@@ -7035,7 +7076,6 @@ def _island_discover(cone_type: types.ConeType, flg_adhesion: bool):
     jnt_margin: wp.array2d[float],
     dof_treeid: wp.array[int],
     dof_frictionloss: wp.array2d[float],
-    geom_bodyid: wp.array[int],
     site_bodyid: wp.array[int],
     eq_obj1id: wp.array[int],
     eq_obj2id: wp.array[int],
@@ -7057,160 +7097,158 @@ def _island_discover(cone_type: types.ConeType, flg_adhesion: bool):
     qpos_in: wp.array2d[float],
     eq_active_in: wp.array2d[bool],
     ten_length_in: wp.array2d[float],
-    nacon_in: wp.array[int],
     # In:
-    ncontact: int,
     sources: _vec9i,
-    dist_in: wp.array[float],
-    condim_in: wp.array[int],
-    includemargin_in: wp.array[float],
-    adhesion_in: wp.array[float],
-    geom_in: wp.array[wp.vec2i],
-    type_in: wp.array[int],
-    worldid_in: wp.array[int],
     # Data out:
     tree_island_out: wp.array2d[int],
     # Out:
     island_parent_out: wp.array2d[int],
     tree_nrow_out: wp.array2d[int],
-    # Out:
   ):
-    tid = wp.tid()
-    if tid < ncontact:
-      if tid >= nacon_in[0]:
-        return
-      ndim = wp.static(NDIM)(type_in, condim_in, dist_in, includemargin_in, adhesion_in, tid)
-      if ndim > 0:
-        geom = geom_in[tid]
-        tree0 = body_treeid[geom_bodyid[geom[0]]]
-        tree1 = body_treeid[geom_bodyid[geom[1]]]
-        rows_discover(worldid_in[tid], tree0, tree1, ndim, ROW_CONTACT, tree_island_out, island_parent_out, tree_nrow_out)
-      return
-
-    # per world: connect, weld, joint, tendon equalities; DOF, tendon friction; slide and hinge,
-    # ball, tendon limits (sources holds the counts of each, 0 where disabled)
+    worldid, lane = wp.tid()
+    lanes = wp.block_dim()
+    count = wp.tile_zeros(shape=(NCOUNT,), dtype=int, storage="shared")
     nsource = int(0)
     for k in range(9):
       nsource += sources[k]
-    worldid = (tid - ncontact) // nsource
-    i = (tid - ncontact) - worldid * nsource
-    kind = int(0)
-    while i >= sources[kind]:
-      i -= sources[kind]
-      kind += 1
-
-    tree0 = int(-1)
-    tree1 = int(-1)
-    nrow = int(1)
-    rowclass = int(ROW_EQUALITY)
-    if kind <= 1:
-      eqid = int(0)
-      if kind == 0:
-        eqid = eq_connect_adr[i]
-      else:
-        eqid = eq_wld_adr[i]
-      if not eq_active_in[worldid, eqid]:
-        return
-      body0 = eq_obj1id[eqid]
-      body1 = eq_obj2id[eqid]
-      if eq_objtype[eqid] == ObjType.SITE:
-        body0 = site_bodyid[body0]
-        body1 = site_bodyid[body1]
-      tree0 = body_treeid[body0]
-      tree1 = body_treeid[body1]
-      nrow = wp.where(kind == 0, 3, 6)
-    elif kind == 2:
-      eqid = eq_jnt_adr[i]
-      if not eq_active_in[worldid, eqid]:
-        return
-      tree0 = dof_treeid[jnt_dofadr[eq_obj1id[eqid]]]
-      if eq_obj2id[eqid] >= 0:
-        tree1 = dof_treeid[jnt_dofadr[eq_obj2id[eqid]]]
-    elif kind == 3:
-      eqid = eq_ten_adr[i]
-      if not eq_active_in[worldid, eqid]:
-        return
-      tree0 = rows_tendon_tree(dof_treeid, ten_J_rownnz, ten_J_rowadr, ten_J_colind, eq_obj1id[eqid])
-      rows_discover_tendon(
-        dof_treeid,
-        ten_J_rownnz,
-        ten_J_rowadr,
-        ten_J_colind,
-        worldid,
-        tree0,
-        eq_obj1id[eqid],
-        tree_island_out,
-        island_parent_out,
-      )
-      rows_discover_tendon(
-        dof_treeid,
-        ten_J_rownnz,
-        ten_J_rowadr,
-        ten_J_colind,
-        worldid,
-        tree0,
-        eq_obj2id[eqid],
-        tree_island_out,
-        island_parent_out,
-      )
-    elif kind == 4:
-      if dof_frictionloss[worldid % dof_frictionloss.shape[0], i] <= 0.0:
-        return
-      tree0 = dof_treeid[i]
-      rowclass = ROW_FRICTION
-    elif kind == 5:
-      if tendon_frictionloss[worldid % tendon_frictionloss.shape[0], i] <= 0.0:
-        return
-      tree0 = rows_tendon_tree(dof_treeid, ten_J_rownnz, ten_J_rowadr, ten_J_colind, i)
-      rows_discover_tendon(
-        dof_treeid, ten_J_rownnz, ten_J_rowadr, ten_J_colind, worldid, tree0, i, tree_island_out, island_parent_out
-      )
-      rowclass = ROW_FRICTION
-    elif kind == 6:
-      jntid = jnt_limited_slide_hinge_adr[i]
-      lim = _limit_dist(
-        qpos_in[worldid, jnt_qposadr[jntid]],
-        jnt_range[worldid % jnt_range.shape[0], jntid],
-        jnt_margin[worldid % jnt_margin.shape[0], jntid],
-      )
-      if lim[0] >= 0.0:
-        return
-      tree0 = dof_treeid[jnt_dofadr[jntid]]
-      rowclass = ROW_LIMIT
-    elif kind == 7:
-      jntid = jnt_limited_ball_adr[i]
-      qposadr = jnt_qposadr[jntid]
-      quat = wp.quat(
-        qpos_in[worldid, qposadr], qpos_in[worldid, qposadr + 1], qpos_in[worldid, qposadr + 2], qpos_in[worldid, qposadr + 3]
-      )
-      axis, pos = _limit_ball_dist(
-        quat, jnt_range[worldid % jnt_range.shape[0], jntid], jnt_margin[worldid % jnt_margin.shape[0], jntid]
-      )
-      if pos >= 0.0:
-        return
-      tree0 = dof_treeid[jnt_dofadr[jntid]]
-      rowclass = ROW_LIMIT
-    else:
-      tenid = tendon_limited_adr[i]
-      lim = _limit_dist(
-        ten_length_in[worldid, tenid],
-        tendon_range[worldid % tendon_range.shape[0], tenid],
-        tendon_margin[worldid % tendon_margin.shape[0], tenid],
-      )
-      if lim[0] >= 0.0:
-        return
-      tree0 = rows_tendon_tree(dof_treeid, ten_J_rownnz, ten_J_rowadr, ten_J_colind, tenid)
-      rows_discover_tendon(
-        dof_treeid, ten_J_rownnz, ten_J_rowadr, ten_J_colind, worldid, tree0, tenid, tree_island_out, island_parent_out
-      )
-      rowclass = ROW_LIMIT
-    rows_discover(worldid, tree0, tree1, nrow, rowclass, tree_island_out, island_parent_out, tree_nrow_out)
+    # uniform trip counts: the shared scatter is collective
+    for it in range((nsource + lanes - 1) // lanes):
+      i = it * lanes + lane
+      tree0 = int(-1)
+      tree1 = int(-1)
+      nrow = int(1)
+      rowclass = int(ROW_EQUALITY)
+      active = i < nsource
+      kind = int(0)
+      if active:
+        while i >= sources[kind]:
+          i -= sources[kind]
+          kind += 1
+      if active and kind <= 1:
+        eqid = int(0)
+        if kind == 0:
+          eqid = eq_connect_adr[i]
+        else:
+          eqid = eq_wld_adr[i]
+        active = eq_active_in[worldid, eqid]
+        body0 = eq_obj1id[eqid]
+        body1 = eq_obj2id[eqid]
+        if eq_objtype[eqid] == ObjType.SITE:
+          body0 = site_bodyid[body0]
+          body1 = site_bodyid[body1]
+        tree0 = body_treeid[body0]
+        tree1 = body_treeid[body1]
+        nrow = wp.where(kind == 0, 3, 6)
+      elif active and kind == 2:
+        eqid = eq_jnt_adr[i]
+        active = eq_active_in[worldid, eqid]
+        tree0 = dof_treeid[jnt_dofadr[eq_obj1id[eqid]]]
+        if eq_obj2id[eqid] >= 0:
+          tree1 = dof_treeid[jnt_dofadr[eq_obj2id[eqid]]]
+      elif active and kind == 3:
+        eqid = eq_ten_adr[i]
+        active = eq_active_in[worldid, eqid]
+        if active:
+          tree0 = rows_tendon_tree(dof_treeid, ten_J_rownnz, ten_J_rowadr, ten_J_colind, eq_obj1id[eqid])
+          rows_discover_tendon(
+            dof_treeid,
+            ten_J_rownnz,
+            ten_J_rowadr,
+            ten_J_colind,
+            worldid,
+            tree0,
+            eq_obj1id[eqid],
+            tree_island_out,
+            island_parent_out,
+          )
+          rows_discover_tendon(
+            dof_treeid,
+            ten_J_rownnz,
+            ten_J_rowadr,
+            ten_J_colind,
+            worldid,
+            tree0,
+            eq_obj2id[eqid],
+            tree_island_out,
+            island_parent_out,
+          )
+      elif active and kind == 4:
+        active = dof_frictionloss[worldid % dof_frictionloss.shape[0], i] > 0.0
+        tree0 = dof_treeid[i]
+        rowclass = ROW_FRICTION
+      elif active and kind == 5:
+        active = tendon_frictionloss[worldid % tendon_frictionloss.shape[0], i] > 0.0
+        if active:
+          tree0 = rows_tendon_tree(dof_treeid, ten_J_rownnz, ten_J_rowadr, ten_J_colind, i)
+          rows_discover_tendon(
+            dof_treeid, ten_J_rownnz, ten_J_rowadr, ten_J_colind, worldid, tree0, i, tree_island_out, island_parent_out
+          )
+        rowclass = ROW_FRICTION
+      elif active and kind == 6:
+        jntid = jnt_limited_slide_hinge_adr[i]
+        lim = _limit_dist(
+          qpos_in[worldid, jnt_qposadr[jntid]],
+          jnt_range[worldid % jnt_range.shape[0], jntid],
+          jnt_margin[worldid % jnt_margin.shape[0], jntid],
+        )
+        active = lim[0] < 0.0
+        tree0 = dof_treeid[jnt_dofadr[jntid]]
+        rowclass = ROW_LIMIT
+      elif active and kind == 7:
+        jntid = jnt_limited_ball_adr[i]
+        qposadr = jnt_qposadr[jntid]
+        quat = wp.quat(
+          qpos_in[worldid, qposadr], qpos_in[worldid, qposadr + 1], qpos_in[worldid, qposadr + 2], qpos_in[worldid, qposadr + 3]
+        )
+        axis, pos = _limit_ball_dist(
+          quat, jnt_range[worldid % jnt_range.shape[0], jntid], jnt_margin[worldid % jnt_margin.shape[0], jntid]
+        )
+        active = pos < 0.0
+        tree0 = dof_treeid[jnt_dofadr[jntid]]
+        rowclass = ROW_LIMIT
+      elif active:
+        tenid = tendon_limited_adr[i]
+        lim = _limit_dist(
+          ten_length_in[worldid, tenid],
+          tendon_range[worldid % tendon_range.shape[0], tenid],
+          tendon_margin[worldid % tendon_margin.shape[0], tenid],
+        )
+        active = lim[0] < 0.0
+        if active:
+          tree0 = rows_tendon_tree(dof_treeid, ten_J_rownnz, ten_J_rowadr, ten_J_colind, tenid)
+          rows_discover_tendon(
+            dof_treeid, ten_J_rownnz, ten_J_rowadr, ten_J_colind, worldid, tree0, tenid, tree_island_out, island_parent_out
+          )
+        rowclass = ROW_LIMIT
+      if tree0 < 0:
+        tree0 = tree1
+        tree1 = -1
+      active = active and tree0 >= 0
+      # a second tree is merged in global memory; rows count on the first tree in shared memory
+      if active and tree1 >= 0:
+        _dsu_union(island_parent_out, worldid, tree0, tree1, tree_island_out)
+      wp.tile_scatter_add(count, wp.where(active, tree0 * ROW_CLASSES + rowclass, 0), nrow, active)
+    _block_sync()
+    # each tree with rows: its counts, and activated (as rows_discover)
+    for tree in range(lane, ntree, lanes):
+      rows = int(0)
+      for c in range(ROW_CLASSES):
+        n = count[tree * ROW_CLASSES + c]
+        if n > 0:
+          wp.atomic_add(tree_nrow_out, worldid, tree * ROW_CLASSES + c, n)  # kernel_analyzer: ignore[atomic]
+          rows += n
+      if rows > 0:
+        _dsu_union(island_parent_out, worldid, tree, -1, tree_island_out)
 
   return kernel
 
 
 def _launch_island_discover(m: types.Model, d: types.Data, island_parent: wp.array, tree_nrow: wp.array):
-  """Discover the islands of make_constraint's rows (_island_discover), before they are written."""
+  """Discover the islands of make_constraint's rows before they are written.
+
+  The contacts (_island_discover_contacts) beside the other sources (_island_discover_sources), on
+  a second stream while capturing.
+  """
   flags = m.opt.disableflags
   on = not (flags & DisableBit.CONSTRAINT)
   eq = on and not (flags & DisableBit.EQUALITY)
@@ -7227,55 +7265,66 @@ def _launch_island_discover(m: types.Model, d: types.Data, island_parent: wp.arr
     m.jnt_limited_ball_adr.size if lim else 0,
     m.tendon_limited_adr.size if lim else 0,
   )
-  ncontact = d.naconmax if on and not (flags & DisableBit.CONTACT) else 0
-  n = ncontact + d.nworld * sum(int(x) for x in sources)
-  if n == 0:
-    return
-  wp.launch(
-    _island_discover(m.opt.cone, m.flg_adhesion),
-    dim=n,
-    inputs=[
-      m.body_treeid,
-      m.jnt_qposadr,
-      m.jnt_dofadr,
-      m.jnt_range,
-      m.jnt_margin,
-      m.dof_treeid,
-      m.dof_frictionloss,
-      m.geom_bodyid,
-      m.site_bodyid,
-      m.eq_obj1id,
-      m.eq_obj2id,
-      m.eq_objtype,
-      m.ten_J_rownnz,
-      m.ten_J_rowadr,
-      m.ten_J_colind,
-      m.tendon_range,
-      m.tendon_margin,
-      m.tendon_frictionloss,
-      m.jnt_limited_slide_hinge_adr,
-      m.jnt_limited_ball_adr,
-      m.eq_connect_adr,
-      m.eq_wld_adr,
-      m.eq_jnt_adr,
-      m.eq_ten_adr,
-      m.tendon_limited_adr,
-      d.qpos,
-      d.eq_active,
-      d.ten_length,
-      d.nacon,
-      ncontact,
-      sources,
-      d.contact.dist,
-      d.contact.dim,
-      d.contact.includemargin,
-      d.contact.adhesion,
-      d.contact.geom,
-      d.contact.type,
-      d.contact.worldid,
-    ],
-    outputs=[d.tree_island, island_parent, tree_nrow],
-  )
+  outputs = [d.tree_island, island_parent, tree_nrow]
+  contact_stream = side_stream(d.qacc.device)
+  if on and not (flags & DisableBit.CONTACT):
+    with wp.ScopedStream(contact_stream):
+      wp.launch(
+        _island_discover_contacts(m.opt.cone, m.flg_adhesion),
+        dim=d.naconmax,
+        inputs=[
+          m.body_treeid,
+          m.geom_bodyid,
+          d.nacon,
+          d.contact.dist,
+          d.contact.dim,
+          d.contact.includemargin,
+          d.contact.adhesion,
+          d.contact.geom,
+          d.contact.type,
+          d.contact.worldid,
+        ],
+        outputs=outputs,
+      )
+  if sum(int(x) for x in sources):
+    wp.launch_tiled(
+      _island_discover_sources(m.ntree),
+      dim=d.nworld,
+      inputs=[
+        m.body_treeid,
+        m.jnt_qposadr,
+        m.jnt_dofadr,
+        m.jnt_range,
+        m.jnt_margin,
+        m.dof_treeid,
+        m.dof_frictionloss,
+        m.site_bodyid,
+        m.eq_obj1id,
+        m.eq_obj2id,
+        m.eq_objtype,
+        m.ten_J_rownnz,
+        m.ten_J_rowadr,
+        m.ten_J_colind,
+        m.tendon_range,
+        m.tendon_margin,
+        m.tendon_frictionloss,
+        m.jnt_limited_slide_hinge_adr,
+        m.jnt_limited_ball_adr,
+        m.eq_connect_adr,
+        m.eq_wld_adr,
+        m.eq_jnt_adr,
+        m.eq_ten_adr,
+        m.tendon_limited_adr,
+        d.qpos,
+        d.eq_active,
+        d.ten_length,
+        sources,
+      ],
+      outputs=outputs,
+      block_dim=64,
+    )
+  if contact_stream is not None:
+    wp.wait_stream(contact_stream)
 
 
 def make_constraint(m: types.Model, d: types.Data):
