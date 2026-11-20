@@ -300,6 +300,13 @@ def _next_activation(
   dyntype = actuator_dyntype[uid]
 
   if dyntype == DynType.DCMOTOR:
+    if not limit:
+      # rk4 stage: explicit euler with the stage-scaled timestep, as in mj_RungeKutta
+      h = act_dot_scale * opt_timestep[opt_timestep_id]
+      for j in range(actadr, actadr + actnum):
+        act_out[worldid, j] = act_in[worldid, j] + act_dot_in[worldid, j] * h
+      return
+
     dynprm = actuator_dynprm[actuator_dynprm_id, uid]
     gainprm = actuator_gainprm[actuator_gainprm_id, uid]
     biasprm = actuator_biasprm[actuator_biasprm_id, uid]
@@ -1300,7 +1307,7 @@ def _next_plastic_flex_interp(
       plastic_out[worldid, padr + 5] = sp5
 
 
-def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
+def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None, act_dot: Optional[wp.array] = None):
   """Advance state and time given activation derivatives and acceleration."""
   # TODO(team): can we assume static timesteps?
 
@@ -1325,7 +1332,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
       m.actuator_actrange,
       m.actuator_gear,
       d.act,
-      d.act_dot,
+      d.act_dot if act_dot is None else act_dot,
       d.actuator_length,
       d.actuator_velocity,
       1.0,
@@ -1717,6 +1724,20 @@ def euler(m: Model, d: Data):
     _advance(m, d, d.qacc)
 
 
+@wp.kernel
+def _rk_stage_time(
+  # Model:
+  opt_timestep: wp.array[float],
+  # In:
+  time_t0: wp.array[float],
+  scale: float,
+  # Data out:
+  time_out: wp.array[float],
+):
+  worldid = wp.tid()
+  time_out[worldid] = time_t0[worldid] + scale * opt_timestep[worldid % opt_timestep.shape[0]]
+
+
 def _rk_perturb_state(
   m: Model,
   d: Data,
@@ -1725,7 +1746,11 @@ def _rk_perturb_state(
   qvel_t0: wp.array2d[float],
   qvel_pos: wp.array2d[float],
   act_t0: Optional[wp.array] = None,
+  time_t0: Optional[wp.array] = None,
 ):
+  # time
+  if time_t0 is not None:
+    wp.launch(_rk_stage_time, dim=d.nworld, inputs=[m.opt.timestep, time_t0, scale], outputs=[d.time])
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
 
   # position, integrated with the (corrected) previous stage velocity
@@ -1893,6 +1918,7 @@ def rungekutta4(m: Model, d: Data):
 
   qpos_t0 = wp.clone(d.qpos)
   qvel_t0 = wp.clone(d.qvel)
+  time_t0 = wp.clone(d.time)
   qvel_rk = wp.zeros((d.nworld, m.nv), dtype=float)
   qacc_rk = wp.zeros((d.nworld, m.nv), dtype=float)
 
@@ -1938,7 +1964,7 @@ def rungekutta4(m: Model, d: Data):
 
   for i in range(3):
     a, b = float(A[i]), B[i + 1]
-    _rk_perturb_state(m, d, a, qpos_t0, qvel_t0, qvel_stage, act_t0)
+    _rk_perturb_state(m, d, a, qpos_t0, qvel_t0, qvel_stage, act_t0, time_t0)
     # sensors keep their values from the start of the step, as in mj_RungeKutta
     _forward(m, d, skip_sensor=True)
     wp.launch(
@@ -1951,13 +1977,14 @@ def rungekutta4(m: Model, d: Data):
 
   wp.copy(d.qpos, qpos_t0)
   wp.copy(d.qvel, qvel_t0)
+  wp.copy(d.time, time_t0)
 
   # last stage's acceleration, the most recent solve: warm start for the next step
   qacc_last = wp.clone(d.qacc)
 
+  # d.act_dot keeps the last stage's value, as in mj_RungeKutta
   if m.na:
     wp.copy(d.act, act_t0)
-    wp.copy(d.act_dot, act_dot_rk)
 
   if actuator_length_t0 is not None:
     wp.copy(d.actuator_length, actuator_length_t0)
@@ -1977,7 +2004,7 @@ def rungekutta4(m: Model, d: Data):
     wp.copy(d.xpos, xpos_t0)
     wp.copy(d.xquat, xquat_t0)
 
-  _advance(m, d, qacc_rk, qvel_rk)
+  _advance(m, d, qacc_rk, qvel_rk, act_dot_rk)
 
   # effective acceleration of the step (RK weighted combination)
   wp.copy(d.qacc, qacc_rk)
