@@ -574,7 +574,7 @@ class IOTest(parameterized.TestCase):
       </mujoco>
       """
     )
-    # a contact between the arm tips spans the dofs that move either of them: 6 + 2 + 2
+    # the arm tips can collide; the bound counts the dofs that move either, shared or not: 6 + 2 + 2
     self.assertEqual(mjwarp.put_model(mjm).max_efc_J_rownnz, 10)
 
     mjm = mujoco.MjModel.from_xml_string(
