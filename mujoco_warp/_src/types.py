@@ -2364,7 +2364,6 @@ class Model:
   qLD_updates: tuple[array("nqLD_all_updates", wp.vec3i), ...]
   qLD_all_updates: array("nqLD_all_updates", wp.vec3i)
   qLD_level_offsets: array("nqLD_level_offsets", int)
-  # TODO(team): Remove M_elemid by iterating the M CSR layout directly.
   M_elemid: array("nv", "nv", int)  # (row, col) -> CSR madr address; -1 if col is not a chain ancestor of row
   M_hinit_i: array("nC", int)  # row index of each CSR M entry (for densifying M into the dense Newton H)
   M_tile_colmask: array("nv_tile", "nv_tile_word", wp.uint64)  # per Newton H tile, bitmask of the tiles above it coupled by M

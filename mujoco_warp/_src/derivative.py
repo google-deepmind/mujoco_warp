@@ -596,11 +596,10 @@ def _qderiv_actuator_passive(enable_sleep: bool = False):
       treeid = dof_treeid[dofiid]
       if treeid >= 0 and tree_awake_in[worldid, treeid] == 0:
         return
-    dofjid = M_colind[madr]
 
     qderiv = qDeriv_in[worldid, madr]
 
-    if not (opt_disableflags & DisableBit.DAMPER) and dofiid == dofjid:
+    if not (opt_disableflags & DisableBit.DAMPER) and dofiid == M_colind[madr]:
       damping, dpoly = util_misc.dof_damping_total(
         jnt_actuatorid,
         dof_jntid,
@@ -1357,16 +1356,13 @@ def _qderiv_ellipsoid_fluid(deterministic: bool = False):
   ):
     """Compute ellipsoid fluid force derivative contribution to qDeriv.
 
-    Parallelized over (world, fluid_body, elem). For each fluid body and DOF
-    pair, computes the 6x6 derivative matrix B in local geom frame via
-    _deriv_ellipsoid_fluid and accumulates J_i^T @ B @ J_j into qDeriv.
+    Accumulates J_i^T @ B @ J_j per fluid body and stored M entry, with B in the local geom frame.
     """
     worldid, fluid_idx, madr = wp.tid()
 
     bodyid = body_fluid_ellipsoid_adr[fluid_idx]
 
     dofiid = M_hinit_i[madr]
-    dofjid = M_colind[madr]
 
     # dofiid is the "deeper" DOF.
     # Any body that has dofiid in its chain also has dofjid.
@@ -1387,7 +1383,7 @@ def _qderiv_ellipsoid_fluid(deterministic: bool = False):
       return
 
     cdof_i = cdof_in[worldid, dofiid]
-    cdof_j = cdof_in[worldid, dofjid]
+    cdof_j = cdof_in[worldid, M_colind[madr]]
 
     contrib = _deriv_ellipsoid_fluid(
       opt_integrator,
@@ -1549,7 +1545,6 @@ def _qderiv_box_fluid(deterministic: bool = False):
     bodyid = body_fluid_box_adr[fluid_idx]
 
     dofiid = M_hinit_i[madr]
-    dofjid = M_colind[madr]
 
     bodyid_i = dof_bodyid[dofiid]
 
@@ -1600,7 +1595,7 @@ def _qderiv_box_fluid(deterministic: bool = False):
       body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dofiid, worldid, b_imat
     )
     J_j = _get_jac_column_local(
-      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dofjid, worldid, b_imat
+      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, M_colind[madr], worldid, b_imat
     )
 
     contrib = wp.dot(J_i, B @ J_j) * timestep
