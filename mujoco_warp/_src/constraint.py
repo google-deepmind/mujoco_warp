@@ -926,7 +926,7 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
         J += J2 * -deriv
 
       if wp.static(is_sparse):
-        if J != 0.0:
+        if J != 0.0 and nnz < rownnz:
           sparseid = rowadr + nnz
           efc_J_colind_out[worldid, 0, sparseid] = i
           efc_J_out[worldid, 0, sparseid] = J

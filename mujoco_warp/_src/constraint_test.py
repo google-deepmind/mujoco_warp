@@ -700,6 +700,84 @@ class ConstraintTest(parameterized.TestCase):
     _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
 
+  def test_equality_tendon_nan(self):
+    """A NaN tendon equality row stays within its sparse Jacobian storage."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse"/>
+        <default>
+          <geom type="sphere" size=".1" contype="0" conaffinity="0"/>
+        </default>
+        <worldbody>
+          <body>
+            <geom/>
+            <joint name="joint0" type="hinge"/>
+            <body pos=".2 0 0">
+              <geom/>
+              <joint name="joint1" type="hinge"/>
+              <body pos=".2 0 0">
+                <geom/>
+                <joint name="joint2" type="hinge"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="tendon0">
+            <joint joint="joint0" coef=".1"/>
+          </fixed>
+          <fixed name="tendon1">
+            <joint joint="joint1" coef=".2"/>
+          </fixed>
+        </tendon>
+        <equality>
+          <joint joint1="joint2"/>
+          <tendon tendon1="tendon1" tendon2="tendon0"/>
+        </equality>
+        <keyframe>
+          <key qpos=".3 -.2 .1"/>
+        </keyframe>
+      </mujoco>
+    """,
+      keyframe=0,
+      nworld=2,
+    )
+    self.assertTrue(m.is_sparse)
+
+    # world 0 has a NaN state, so every entry of its tendon equality row is NaN
+    mjd_nan = mujoco.MjData(mjm)
+    mjd_nan.qpos[:] = np.nan
+    mujoco.mj_forward(mjm, mjd_nan)
+    d.qpos.assign(np.stack((mjd_nan.qpos, mjd.qpos)))
+
+    for arr in (d.nefc, d.efc.J_rownnz):
+      arr.fill_(-1)
+    for arr in (d.efc.J, d.qacc):
+      arr.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    nefc = d.nefc.numpy()
+    rownnz = d.efc.J_rownnz.numpy()
+    for worldid, mjd_world in enumerate((mjd_nan, mjd)):
+      _assert_eq(nefc[worldid], mjd_world.nefc, f"nefc[{worldid}]")
+      _assert_eq(rownnz[worldid, : nefc[worldid]], mjd_world.efc_J_rownnz, f"J_rownnz[{worldid}]")
+
+    # world 1 is unaffected by world 0
+    J = np.zeros((mjd.nefc, mjm.nv))
+    mujoco.mju_sparse2dense(
+      J,
+      d.efc.J.numpy()[1, 0].astype(np.float64),
+      rownnz[1, : mjd.nefc],
+      d.efc.J_rowadr.numpy()[1, : mjd.nefc],
+      d.efc.J_colind.numpy()[1, 0],
+    )
+    mj_J = np.zeros((mjd.nefc, mjm.nv))
+    mujoco.mju_sparse2dense(mj_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+    _assert_eq(J, mj_J, "J[1]")
+    _assert_eq(d.qacc.numpy()[1], mjd.qacc, "qacc[1]")
+
   def test_efc_address_inactive_contacts(self):
     """Test that efc_address is -1 for inactive contacts in the gap zone."""
     # Sphere at z=0.35 with radius 0.1: dist ~ 0.15 to ground plane.
