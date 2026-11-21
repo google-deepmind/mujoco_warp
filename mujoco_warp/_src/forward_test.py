@@ -56,6 +56,48 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.actuator_velocity.numpy()[0], mjd.actuator_velocity, "actuator_velocity")
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
 
+  @parameterized.product(
+    nworld=(1, 2),
+    stale_velocity=(float("nan"), 37.0),
+    equality=('<weld body1="body"/>', '<connect body1="body" anchor="0.2 0.1 0.3"/>'),
+  )
+  def test_forward_refreshes_equality_velocity(self, nworld, stale_velocity, equality):
+    """Equality acceleration targets must use current velocity kinematics after reset."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option solver="Newton" integrator="implicitfast" gravity="0 0 0"/>
+        <worldbody>
+          <body name="body" pos="0.2 0.1 0.3" quat="0.9 0.1 0.2 0.3">
+            <freejoint/>
+            <geom type="box" size="0.1 0.08 0.05" mass="0.3"/>
+          </body>
+        </worldbody>
+        <equality>{equality}</equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+      qvel_noise=0.1,
+    )
+    velocities = np.stack([mjd.qvel * (world + 1) + world * 0.1 for world in range(nworld)])
+    references = []
+    for velocity in velocities:
+      reference = mujoco.MjData(mjm)
+      reference.qpos[:] = mjd.qpos
+      reference.qvel[:] = velocity
+      mujoco.mj_forward(mjm, reference)
+      references.append(reference.qacc.copy())
+    d.qvel.assign(velocities)
+    d.cvel.fill_(stale_velocity)
+    d.cdof_dot.fill_(stale_velocity)
+    d.qacc.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    _assert_eq(d.qacc.numpy(), np.stack(references), "qacc after velocity reset")
+    if nworld == 2:
+      self.assertFalse(np.allclose(references[0], references[1]))
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_fwd_velocity_tendon(self, jacobian):
     _, mjd, m, d = test_data.fixture("tendon/fixed.xml", overrides={"opt.jacobian": jacobian})
