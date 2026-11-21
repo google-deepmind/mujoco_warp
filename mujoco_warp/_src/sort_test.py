@@ -27,6 +27,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_driver
+from mujoco_warp._src import collision_flex
 from mujoco_warp._src import constraint
 from mujoco_warp._src import sort
 from mujoco_warp._src import types
@@ -224,6 +225,150 @@ class SortTest(parameterized.TestCase):
       overrides={"opt.deterministic": mjw.DeterminismType.ALL, "opt.jacobian": "sparse"},
     )
     _assert_collision_repeat(self, m, d)
+
+  @parameterized.parameters(1, 2)
+  def test_flex_candidate_tie_breaking(self, nworld):
+    """Equal-distance flex proximity deduplication and FPS ties do not depend on candidate order."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="cloth0" type="grid" count="3 3 1" spacing=".1 .1 .1" radius=".02" mass=".5">
+            <edge damping=".1"/>
+            <contact margin=".01" selfcollide="none"/>
+          </flexcomp>
+          <flexcomp name="cloth1" type="grid" count="3 3 1" spacing=".1 .1 .1" pos="0 0 .01" radius=".02" mass=".5">
+            <edge damping=".1"/>
+            <contact margin=".01" selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=256,
+      njmax=512,
+    )
+
+    # Build per-world candidates covering proximity tie-breakers and >MJ_MAXCONPAIR FPS ties.
+    cands = []
+    for w in range(nworld):
+      d_tie = np.float32(-0.015 - 0.002 * w)
+      # Each pair is 0.1 mm apart (< 1 mm dedup), with 200 mm between pairs so FPS keeps all 6.
+      pairs = [
+        # Signed-zero distance tie (-0.0 sorts before +0.0).
+        (np.float32(-0.0), [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0, 1], [0, 0], [0, -1], w),
+        (np.float32(0.0), [1e-4, 0.0, 0.0], [0.0, 0.0, 1.0], [0, 1], [0, 0], [1, -1], w),
+        # Flex pair order tie ((0, 1) vs (1, 0) in the same unordered flex-flex group).
+        (d_tie, [0.0, 0.2, 0.0], [0.0, 0.0, 1.0], [0, 1], [2, 2], [2, -1], w),
+        (d_tie, [1e-4, 0.2, 0.0], [0.0, 0.0, 1.0], [1, 0], [1, 1], [0, -1], w),
+        # Element tie.
+        (d_tie, [0.0, 0.4, 0.0], [0.0, 0.0, 1.0], [0, 1], [1, 2], [5, -1], w),
+        (d_tie, [1e-4, 0.4, 0.0], [0.0, 0.0, 1.0], [0, 1], [1, 5], [1, -1], w),
+        # Vertex tie.
+        (d_tie, [0.0, 0.6, 0.0], [0.0, 0.0, 1.0], [0, 1], [3, 3], [3, -1], w),
+        (d_tie, [1e-4, 0.6, 0.0], [0.0, 0.0, 1.0], [0, 1], [3, 3], [7, -1], w),
+        # Position tie.
+        (d_tie, [0.0, 0.8, 0.0], [0.0, 0.0, 1.0], [0, 1], [4, 4], [4, -1], w),
+        (d_tie, [1e-4, 0.8, 0.0], [0.0, 0.0, 1.0], [0, 1], [4, 4], [4, -1], w),
+        # Normal tie at identical position.
+        (d_tie, [0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [0, 1], [5, 5], [5, -1], w),
+        (d_tie, [0.0, 1.0, 0.0], [0.0, 0.6, -0.8], [0, 1], [5, 5], [5, -1], w),
+      ]
+      cands.extend(pairs)
+      # Add 52 candidates spaced 5 mm apart (> MJ_MAXCONPAIR=50 total) with tied dist and elem.
+      d_fps = np.float32(-0.005 - 0.001 * w)
+      for k in range(52):
+        cands.append((d_fps, [0.5 + 0.005 * k, 0.0, 0.0], [0.0, 0.0, 1.0], [0, 1], [6, 6], [(k // 2) % 8, (k // 16) % 8], w))
+
+    ncand = len(cands)
+    dist_base = np.array([c[0] for c in cands], dtype=np.float32)
+    pos_base = np.array([c[1] for c in cands], dtype=np.float32)
+    nrm_base = np.array([c[2] for c in cands], dtype=np.float32)
+    flex_base = np.array([c[3] for c in cands], dtype=np.int32)
+    elem_base = np.array([c[4] for c in cands], dtype=np.int32)
+    vert_base = np.array([c[5] for c in cands], dtype=np.int32)
+    world_base = np.array([c[6] for c in cands], dtype=np.int32)
+    geom_base = np.full((ncand, 2), -1, dtype=np.int32)
+
+    ws = collision_flex._allocate_flex_workspace(m, d)
+    base_idx = np.arange(ncand)
+    perms = (
+      base_idx,
+      base_idx[::-1],
+      np.roll(base_idx, 17),
+      np.concatenate([base_idx[0::2], base_idx[1::2]]),
+    )
+
+    m.opt.deterministic = mjw.DeterminismType.CONTACTS
+    ref_snapshot = None
+    for block_dim in (32, 256):
+      m.block_dim.flex_fps = block_dim
+      for perm in perms:
+        ws.ncand.fill_(ncand)
+        ws.dist[:ncand].assign(dist_base[perm])
+        ws.pos[:ncand].assign(pos_base[perm])
+        ws.nrm[:ncand].assign(nrm_base[perm])
+        ws.geom[:ncand].assign(geom_base[perm])
+        ws.flex[:ncand].assign(flex_base[perm])
+        ws.elem[:ncand].assign(elem_base[perm])
+        ws.vert[:ncand].assign(vert_base[perm])
+        ws.worldid[:ncand].assign(world_base[perm])
+
+        d.nacon.zero_()
+        d.contact.dist.fill_(wp.inf)
+        collision_flex._filter_and_write_contacts(m, d, ws, enable_fps=True)
+        sort.contacts(d)
+
+        active = int(d.nacon.numpy()[0])
+        self.assertEqual(active, types.MJ_MAXCONPAIR * nworld)
+        snap = {name: arr.numpy()[:active].copy() for name, arr in vars(d.contact).items() if arr.size}
+        if ref_snapshot is None:
+          ref_snapshot = snap
+          # Verify canonical winners of proximity tie-breaking pairs in world 0.
+          w0 = snap["worldid"] == 0
+          self.assertIn(np.uint32(0x80000000), snap["dist"][w0].view(np.uint32))
+          self.assertTrue(np.all(snap["flex"][w0][:, 0] == 0))
+          self.assertIn(2, snap["elem"][w0][snap["elem"][w0][:, 0] == 1, 1])
+          self.assertNotIn(5, snap["elem"][w0][snap["elem"][w0][:, 0] == 1, 1])
+          self.assertIn(3, snap["vert"][w0][snap["elem"][w0][:, 0] == 3, 0])
+          self.assertNotIn(7, snap["vert"][w0][snap["elem"][w0][:, 0] == 3, 0])
+        else:
+          for name, arr in ref_snapshot.items():
+            self.assertEqual(snap[name].tobytes(), arr.tobytes(), msg=f"mismatch in {name} (block_dim={block_dim})")
+
+    if nworld == 2:
+      w0 = ref_snapshot["worldid"] == 0
+      w1 = ref_snapshot["worldid"] == 1
+      self.assertFalse(np.allclose(ref_snapshot["dist"][w0], ref_snapshot["dist"][w1]))
+
+    # Verify end-to-end mjw.step reproducibility under DeterminismType.ALL and graph capture.
+    mjw.reset_data(m, d)
+    if nworld == 2:
+      qpos = d.qpos.numpy().copy()
+      qpos[1, 2::3] += 0.002
+      d.qpos.assign(qpos)
+    init_qpos = d.qpos.numpy().copy()
+    init_qvel = d.qvel.numpy().copy()
+    init_warmstart = d.qacc_warmstart.numpy().copy()
+    m.opt.deterministic = mjw.DeterminismType.ALL
+
+    d.qacc.fill_(wp.inf)
+    mjw.step(m, d)
+    ref_qpos = d.qpos.numpy().copy()
+    ref_qacc = d.qacc.numpy().copy()
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+    for _ in range(2):
+      d.qpos.assign(init_qpos)
+      d.qvel.assign(init_qvel)
+      d.qacc_warmstart.assign(init_warmstart)
+      d.qacc.fill_(wp.inf)
+      wp.capture_launch(capture.graph)
+      self.assertEqual(d.qpos.numpy().tobytes(), ref_qpos.tobytes())
+      self.assertEqual(d.qacc.numpy().tobytes(), ref_qacc.tobytes())
+    if nworld == 2:
+      self.assertFalse(np.allclose(ref_qpos[0], ref_qpos[1]))
 
   @parameterized.product(
     nworld=(1, 2, 4),

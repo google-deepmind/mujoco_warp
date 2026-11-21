@@ -3133,8 +3133,11 @@ class FlexCollisionTest(parameterized.TestCase):
     np.testing.assert_allclose(pos_sat[idx_sat], pos_nosat[idx_nosat], atol=1e-5)
     np.testing.assert_allclose(dist_sat[idx_sat], dist_nosat[idx_nosat], atol=1e-5)
 
-  @parameterized.parameters(32, 256)
-  def test_parallel_fps_numpy_parity(self, block_dim):
+  @parameterized.product(
+    block_dim=(32, 256),
+    deterministic=(types.DeterminismType.NONE, types.DeterminismType.CONTACTS),
+  )
+  def test_parallel_fps_numpy_parity(self, block_dim, deterministic):
     """Test that parallel FPS selects candidates matching a serial NumPy reference."""
     _, _, m, d = test_data.fixture(
       xml="""
@@ -3158,6 +3161,7 @@ class FlexCollisionTest(parameterized.TestCase):
     d.nacon.fill_(-1)
     d.contact.dist.fill_(wp.inf)
 
+    m.opt.deterministic = deterministic
     m.block_dim.flex_fps = block_dim
     mjw.kinematics(m, d)
 
@@ -3172,27 +3176,32 @@ class FlexCollisionTest(parameterized.TestCase):
     sort_val = ws.filter_val.numpy()[:ncand]
     cand_active_sorted = ws.cand_active_sorted.numpy()[:ncand]
     cand_pos = ws.pos.numpy()[:ncand]
+    cand_pos_bits = cand_pos.view(np.uint32)
     cand_dist = ws.dist.numpy()[:ncand]
+    cand_flex = ws.flex.numpy()[:ncand]
     cand_elem = ws.elem.numpy()[:ncand]
     cand_vert = ws.vert.numpy()[:ncand]
     num_groups = int(ws.flex_num_groups.numpy()[0])
     group_starts = ws.flex_group_start_indices.numpy()[:num_groups]
 
+    def _float_key(bits):
+      return (~bits) if (bits & np.uint32(0x80000000)) else (bits ^ np.uint32(0x80000000))
+
     def _tie_break(curr, sel):
       if sel < 0:
         return True
-      e1_c, e2_c = cand_elem[curr]
-      e1_s, e2_s = cand_elem[sel]
-      if e1_c != e1_s:
-        return e1_c < e1_s
-      if e2_c != e2_s:
-        return e2_c < e2_s
-      v1_c, v2_c = cand_vert[curr]
-      v1_s, v2_s = cand_vert[sel]
-      if v1_c != v1_s:
-        return v1_c < v1_s
-      if v2_c != v2_s:
-        return v2_c < v2_s
+      for a, b in ((cand_elem[curr], cand_elem[sel]), (cand_vert[curr], cand_vert[sel])):
+        if a[0] != b[0]:
+          return a[0] < b[0]
+        if a[1] != b[1]:
+          return a[1] < b[1]
+      if deterministic & types.DeterminismType.CONTACTS:
+        for k in range(2):
+          if cand_flex[curr, k] != cand_flex[sel, k]:
+            return cand_flex[curr, k] < cand_flex[sel, k]
+        for k in range(3):
+          if cand_pos_bits[curr, k] != cand_pos_bits[sel, k]:
+            return _float_key(cand_pos_bits[curr, k]) < _float_key(cand_pos_bits[sel, k])
       return curr < sel
 
     self.assertGreater(num_groups, 0)
