@@ -1873,15 +1873,22 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(d.nacon.numpy()[0], 1)
     np.testing.assert_allclose(d.contact.friction.numpy()[0], types.MJ_MINMU)
 
-  @parameterized.parameters(("1", "1"), ("1", "2"), ("2", "1"))
-  def test_contact_parameter_mixing(self, priority1, priority2):
+  @parameterized.product(
+    priority=[("1", "1"), ("1", "2"), ("2", "1")],
+    solref=[(".02 1", ".03 .8"), ("-1000 -10", ".03 .8"), (".02 1", "-500 -20")],
+  )
+  def test_contact_parameter_mixing(self, priority, solref):
+    priority1, priority2 = priority
+    solref1, solref2 = solref
     _, mjd, m, d = test_data.fixture(
       xml=f"""
     <mujoco>
       <worldbody>
-        <geom type="plane" size="10 10 .001" friction=".01 .02 .03" priority="{priority1}" condim="1" margin=".002"/>
+        <geom type="plane" size="10 10 .001" friction=".01 .02 .03" priority="{priority1}" condim="1" margin=".002"
+              solref="{solref1}" solimp=".8 .9 .01"/>
         <body>
-          <geom type="sphere" size=".1" friction=".123 .456 .789" priority="{priority2}" condim="3" margin=".004"/>
+          <geom type="sphere" size=".1" friction=".123 .456 .789" priority="{priority2}" condim="3" margin=".004"
+                solref="{solref2}"/>
           <freejoint/>
         </body>
       </worldbody>
@@ -1893,6 +1900,8 @@ class CollisionTest(parameterized.TestCase):
       keyframe=0,
     )
 
+    d.contact.solref.fill_(wp.inf)
+    d.contact.solimp.fill_(wp.inf)
     mjw.collision(m, d)
 
     nacon = d.nacon.numpy()[0]
