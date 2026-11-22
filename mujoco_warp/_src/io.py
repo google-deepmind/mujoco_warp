@@ -1186,14 +1186,12 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     m.nxn_geom_pair_filtered = m.nxn_geom_pair_filtered[order]
     m.nxn_pairid_filtered = m.nxn_pairid_filtered[order]
 
-  # count contact pair types
-  def geom_trid_index(i, j):
-    i, j = (j, i) if j < i else (i, j)
-    return (i * (2 * len(types.GeomType) - i - 1)) // 2 + j
-
+  # count contact pair types (upper-triangular type index, vectorized over the included pairs)
+  type1, type2 = mjm.geom_type[geom1[nxn_include]], mjm.geom_type[geom2[nxn_include]]
+  type1, type2 = np.minimum(type1, type2).astype(np.int64), np.maximum(type1, type2).astype(np.int64)
   m.geom_pair_type_count = tuple(
     np.bincount(
-      [geom_trid_index(mjm.geom_type[geom1[i]], mjm.geom_type[geom2[i]]) for i in np.arange(len(geom1)) if nxn_include[i]],
+      (type1 * (2 * len(types.GeomType) - type1 - 1)) // 2 + type2,
       minlength=len(types.GeomType) * (len(types.GeomType) + 1) // 2,
     )
   )
