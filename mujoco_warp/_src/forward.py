@@ -1305,34 +1305,35 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   # TODO(team): can we assume static timesteps?
 
   # advance activations
-  wp.launch(
-    _next_activation,
-    dim=(d.nworld, m.nactuator),
-    inputs=[
-      m.opt.timestep,
-      m.jnt_type,
-      m.actuator_trntype,
-      m.actuator_dyntype,
-      m.actuator_gaintype,
-      m.actuator_biastype,
-      m.actuator_actadr,
-      m.actuator_actnum,
-      m.actuator_trnid,
-      m.actuator_dynprm,
-      m.actuator_gainprm,
-      m.actuator_biasprm,
-      m.actuator_actlimited,
-      m.actuator_actrange,
-      m.actuator_gear,
-      d.act,
-      d.act_dot,
-      d.actuator_length,
-      d.actuator_velocity,
-      1.0,
-      True,
-    ],
-    outputs=[d.act],
-  )
+  if m.na:
+    wp.launch(
+      _next_activation,
+      dim=(d.nworld, m.nactuator),
+      inputs=[
+        m.opt.timestep,
+        m.jnt_type,
+        m.actuator_trntype,
+        m.actuator_dyntype,
+        m.actuator_gaintype,
+        m.actuator_biastype,
+        m.actuator_actadr,
+        m.actuator_actnum,
+        m.actuator_trnid,
+        m.actuator_dynprm,
+        m.actuator_gainprm,
+        m.actuator_biasprm,
+        m.actuator_actlimited,
+        m.actuator_actrange,
+        m.actuator_gear,
+        d.act,
+        d.act_dot,
+        d.actuator_length,
+        d.actuator_velocity,
+        1.0,
+        True,
+      ],
+      outputs=[d.act],
+    )
 
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP)
 
