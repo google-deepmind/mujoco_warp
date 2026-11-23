@@ -1268,7 +1268,11 @@ def _dofs(
       ma = float(0.0)
       for k in range(M_mulm_rowadr[dofid], M_mulm_rowadr[dofid + 1]):
         col = M_mulm_col[k]
-        ma += M_in[worldid, M_mulm_madr[k]] * wp.where(warmstart, qacc_warmstart_in[worldid, col], qacc_smooth_in[worldid, col])
+        if warmstart:
+          qacc = qacc_warmstart_in[worldid, col]
+        else:
+          qacc = qacc_smooth_in[worldid, col]
+        ma += M_in[worldid, M_mulm_madr[k]] * qacc
       iMa_out[worldid, row] = ma
   dof2row_out[worldid, dofid] = row
   dof_poolrow_out[worldid, dofid] = poolrow
