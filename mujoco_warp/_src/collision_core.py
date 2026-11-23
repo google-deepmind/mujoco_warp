@@ -499,6 +499,7 @@ class CollisionContext:
     multiccd_idx2: normal index candidates (Geom 2) (naccdmax, nmeshdegmax)
     multiccd_n1: normal candidates (Geom 1)         (naccdmax, nmeshdegmax)
     multiccd_n2: normal candidates (Geom 2)         (naccdmax, nmeshdegmax)
+    multiccd_edge: edge direction candidates        (naccdmax, nmeshdegmax)
     multiccd_endvert: edge vertices candidates      (naccdmax, nmeshdegmax)
     multiccd_face1: contact face                    (naccdmax, npolygonmax)
     multiccd_face2: contact face                    (naccdmax, npolygonmax)
@@ -527,6 +528,7 @@ class CollisionContext:
   multiccd_idx2: wp.array = None
   multiccd_n1: wp.array = None
   multiccd_n2: wp.array = None
+  multiccd_edge: wp.array = None
   multiccd_endvert: wp.array = None
   multiccd_face1: wp.array = None
   multiccd_face2: wp.array = None

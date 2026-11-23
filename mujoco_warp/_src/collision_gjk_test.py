@@ -69,6 +69,7 @@ def _geom_dist(
   multiccd_idx2 = wp.empty(nmeshdegmax, dtype=int)
   multiccd_n1 = wp.empty(nmeshdegmax, dtype=wp.vec3)
   multiccd_n2 = wp.empty(nmeshdegmax, dtype=wp.vec3)
+  multiccd_edge = wp.empty(nmeshdegmax, dtype=wp.vec3)
   multiccd_endvert = wp.empty(nmeshdegmax, dtype=wp.vec3)
   multiccd_face1 = wp.empty(npolygonmax, dtype=wp.vec3)
   multiccd_face2 = wp.empty(npolygonmax, dtype=wp.vec3)
@@ -113,6 +114,7 @@ def _geom_dist(
     idx2: wp.array[int],
     n1: wp.array[wp.vec3],
     n2: wp.array[wp.vec3],
+    edge: wp.array[wp.vec3],
     endvert: wp.array[wp.vec3],
     face1: wp.array[wp.vec3],
     face2: wp.array[wp.vec3],
@@ -228,6 +230,7 @@ def _geom_dist(
         idx2,
         n1,
         n2,
+        edge,
         endvert,
         face1,
         face2,
@@ -304,6 +307,7 @@ def _geom_dist(
       multiccd_idx2,
       multiccd_n1,
       multiccd_n2,
+      multiccd_edge,
       multiccd_endvert,
       multiccd_face1,
       multiccd_face2,

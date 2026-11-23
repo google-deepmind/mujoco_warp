@@ -1453,6 +1453,119 @@ class CollisionTest(parameterized.TestCase):
     np.testing.assert_allclose(pos[~lower, 2], 0.5 * z_upper, atol=1e-5)
     np.testing.assert_allclose(dist[~lower], z_upper, atol=1e-5)
 
+  @parameterized.named_parameters(
+    ("mesh_plate_first", '<geom type="mesh" mesh="plate"/>', True),
+    ("mesh_bar_first", '<geom type="mesh" mesh="plate"/>', False),
+    ("box_plate", '<geom type="box" size=".05 .05 .005"/>', True),
+    ("cylinder_plate", '<geom type="cylinder" size=".05 .005"/>', True),
+  )
+  def test_multiccd_edge_face_either_geom(self, plate_geom, plate_first):
+    """MULTICCD finds an edge-face contact whichever geom has the edge, as MuJoCo does."""
+    # a square bar lies level on one edge across the raised border of a plate tilted by 3
+    # degrees: the two edges cross at the deepest point, and only the edge of the bar lies
+    # along a face
+    plate = f'<body euler="0 -3 0">{plate_geom}</body>'
+    bar = '<body pos=".07 0 .0207" euler="45 0 0"><freejoint/><geom type="mesh" mesh="bar"/></body>'
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <mesh name="plate" scale=".05 .05 .005"
+                vertex="-1 -1 -1  1 -1 -1  -1 1 -1  1 1 -1  -1 -1 1  1 -1 1  -1 1 1  1 1 1"/>
+          <mesh name="bar" scale=".03 .01 .01"
+                vertex="-1 -1 -1  1 -1 -1  -1 1 -1  1 1 -1  -1 -1 1  1 -1 1  -1 1 1  1 1 1"/>
+        </asset>
+        <worldbody>
+          {plate + bar if plate_first else bar + plate}
+        </worldbody>
+      </mujoco>
+      """
+    )
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    # MuJoCo makes one contact where the edges cross and one at the end of the bar
+    self.assertEqual(mjd.ncon, 2)
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, mjd.ncon)
+    order = np.argsort(d.contact.pos.numpy()[:nacon, 0])
+    mj_order = np.argsort(mjd.contact.pos[:, 0])
+    np.testing.assert_allclose(d.contact.dist.numpy()[order], mjd.contact.dist[mj_order], atol=1e-5)
+    np.testing.assert_allclose(d.contact.pos.numpy()[order], mjd.contact.pos[mj_order], atol=1e-5)
+    np.testing.assert_allclose(d.contact.frame.numpy()[order, 0], mjd.contact.frame[mj_order, :3], atol=1e-4)
+
+  @parameterized.named_parameters(
+    ("box_mesh", 'type="box" size=".02 .015 .01"'),
+    ("mesh_mesh", 'type="mesh" mesh="box"'),
+  )
+  def test_multiccd_edge_face_random(self, geom1):
+    """Box-mesh and mesh-mesh MULTICCD contact counts match MuJoCo in random near-aligned poses."""
+    npose = 100
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <mesh name="box" scale=".02 .015 .01"
+                vertex="-1 -1 -1  1 -1 -1  -1 1 -1  1 1 -1  -1 -1 1  1 -1 1  -1 1 1  1 1 1"/>
+        </asset>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom {geom1}/>
+          </body>
+          <body>
+            <freejoint/>
+            <geom type="mesh" mesh="box"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=npose,
+    )
+
+    # rotations by multiples of 90 degrees, tilted by a few degrees, with geom 2 lowered onto
+    # geom 1 until they overlap by 0.1 to 2 mm
+    rng = np.random.default_rng(0)
+    fromto = np.zeros(6)
+    qpos = np.zeros((npose, mjm.nq))
+    ncon = np.zeros(npose, dtype=int)
+    for i in range(npose):
+      for adr in (3, 10):
+        mujoco.mju_mat2Quat(qpos[i, adr : adr + 4], _random_near_aligned_rotation(rng, 3.0).flatten())
+      qpos[i, 7:9] = rng.uniform(-0.01, 0.01, size=2)
+      lo, hi = 0.0, 0.1
+      for _ in range(50):
+        qpos[i, 9] = 0.5 * (lo + hi)
+        mjd.qpos[:] = qpos[i]
+        mujoco.mj_kinematics(mjm, mjd)
+        if mujoco.mj_geomDistance(mjm, mjd, 0, 1, 1.0, fromto) > 0.0:
+          hi = qpos[i, 9]
+        else:
+          lo = qpos[i, 9]
+      qpos[i, 9] = hi - rng.uniform(1e-4, 2e-3)
+      mjd.qpos[:] = qpos[i]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
+      ncon[i] = mjd.ncon
+
+    d.qpos.assign(qpos.astype(np.float32))
+    d.nacon.fill_(-1)
+    d.contact.worldid.fill_(-1)
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+    nacon = int(d.nacon.numpy()[0])
+    worldid = d.contact.worldid.numpy()[:nacon]
+    # about 0.1% of such poses differ from MuJoCo for other reasons, so one pose may differ
+    differ = np.nonzero(np.bincount(worldid, minlength=npose) != ncon)[0]
+    self.assertLessEqual(len(differ), 1, f"contact counts differ from MuJoCo in poses {differ.tolist()}")
+    # the poses include face-face, edge-face and single-point contacts
+    self.assertGreater(np.sum(ncon == 4), 10)
+    self.assertGreater(np.sum(ncon == 2), 10)
+    self.assertGreater(np.sum(ncon == 1), 10)
+
   @parameterized.product(
     broadphase=list(BroadphaseType),
     broadphase_filter=[
