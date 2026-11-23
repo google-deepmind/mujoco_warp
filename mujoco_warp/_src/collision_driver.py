@@ -27,6 +27,7 @@ from mujoco_warp._src.collision_core import sap_binary_search
 from mujoco_warp._src.collision_core import sap_range
 from mujoco_warp._src.collision_flex import flex_collision
 from mujoco_warp._src.collision_primitive import primitive_narrowphase
+from mujoco_warp._src.collision_sdf import prepare_sdf_context
 from mujoco_warp._src.collision_sdf import sdf_narrowphase
 from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.math import upper_tri_index
@@ -1194,6 +1195,8 @@ def prepare_collision_context(m: Model, d: Data) -> CollisionContext:
   if d.naconmax > 0 and not (m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT)):
     convex_pairs, _ = _collision_table_pairs(m)
     prepare_convex_context(m, d, ctx, convex_pairs)
+    if m.has_sdf_geom:
+      prepare_sdf_context(d, ctx)
   return ctx
 
 

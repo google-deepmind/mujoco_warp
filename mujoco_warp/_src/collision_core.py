@@ -482,6 +482,8 @@ class CollisionContext:
     ncollision_inc: incremental pass pair count     (1,)
     woke: wake flag for incremental collision pass  (1,)
     awake_prev: body awake snapshot before wake     (nworld, nbody)
+    sdf_count: number of SDF collision candidates   (1,)
+    sdf_list: collision ids of the SDF candidates   (naconmax,)
     nccd: CCD collider count per geom pair type     (ngeom_types * (ngeom_types + 1) // 2,)
     epa_vert: vertices in EPA polytope              (naccdmax, 10 + 2 * epa_iterations)
     epa_vert_index: vertex indices in EPA polytope  (naccdmax, 10 + 2 * epa_iterations)
@@ -508,6 +510,8 @@ class CollisionContext:
   ncollision_inc: wp.array = None
   woke: wp.array = None
   awake_prev: wp.array = None
+  sdf_count: wp.array = None
+  sdf_list: wp.array = None
   nccd: wp.array = None
   epa_vert: wp.array = None
   epa_vert_index: wp.array = None

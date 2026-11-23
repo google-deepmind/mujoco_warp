@@ -2082,6 +2082,46 @@ class CollisionTest(parameterized.TestCase):
       test_dist = d.contact.dist.numpy()[i]
       self.assertLess(test_dist, 0.1, f"Contact {i} dist={test_dist} not indicating penetration")
 
+  def test_sdf_among_other_candidates(self):
+    """SDF pairs give the same contacts with and without other collision candidates."""
+    cube = '<body pos="{} 0 .9" euler="45 0 0"><freejoint/><geom type="sdf" mesh="cube"/></body>'
+    sphere = '<body pos="{} 5 .9"><freejoint/><geom type="sphere" size="1"/></body>'
+    xml = """
+        <mujoco>
+          <option sdf_iterations="10" sdf_initpoints="12"/>
+          <asset>
+            <mesh name="cube"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            {}
+          </worldbody>
+        </mujoco>
+    """
+    cubes = cube.format(-6) + cube.format(6)
+    spheres = [sphere.format(3 * i - 9) for i in range(7)]
+    nworld = 3
+
+    contacts = []
+    for bodies in (cubes, "".join(spheres[:3]) + cubes + "".join(spheres[3:])):
+      mjm, _, m, d = test_data.fixture(xml=xml.format(bodies), nworld=nworld, nconmax=64)
+      mjw.collision(m, d)
+      nacon = d.nacon.numpy()[0]
+      worldid = d.contact.worldid.numpy()[:nacon]
+      geom = d.contact.geom.numpy()[:nacon, 1]
+      sdf = mjm.geom_type[geom] == GeomType.SDF
+
+      # a sphere on the plane: one contact; a cube in the plane: one per initial point
+      self.assertEqual(nacon - sdf.sum(), nworld * (mjm.ngeom - 3))
+      _, count = np.unique(np.stack([worldid[sdf], geom[sdf]], axis=1), axis=0, return_counts=True)
+      np.testing.assert_array_equal(count, nworld * 2 * [mjm.opt.sdf_initpoints])
+
+      con = np.concatenate([worldid[:, None], d.contact.dist.numpy()[:nacon, None], d.contact.pos.numpy()[:nacon]], axis=1)[sdf]
+      contacts.append(con[np.lexsort(con.T[::-1])])
+
+    np.testing.assert_array_equal(contacts[0], contacts[1])
+
   def test_sdf_volume_gradient_physical_coordinates(self):
     """A linear field's physical gradient is independent of anisotropic cell size."""
     half_size = np.array([0.002, 0.004, 0.008], dtype=np.float32)
