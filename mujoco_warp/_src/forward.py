@@ -2580,7 +2580,7 @@ def _discrete_free_gyro_kernel(
     if (opt_enableflags & EnableBit.SLEEP) and (tree_awake_in[worldid, treeid] == 0):
       return
 
-    # Decoupling guards (mjd_freeGyroPossible): skip if K, constraints, or rank-1 touch DOFs
+    # Decoupling guards (mjd_freeGyroJoints): skip if K, constraints, or rank-1 touch DOFs
     for r in range(6):
       if efm_K_rownnz[dof_adr + r] != 0:
         return
