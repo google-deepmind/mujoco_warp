@@ -1576,22 +1576,6 @@ def rows_dense(
 
 
 @wp.func
-def dense_zero(
-  # In:
-  worldid: int,
-  srow: int,
-  nrow: int,
-  # Out:
-  dense_J_out: wp.array3d[float],
-):
-  if srow >= 0:
-    # whole rows, past narrower groups' columns too: rows with gaps are expensive to write
-    for r in range(nrow):
-      for c in range(dense_J_out.shape[2]):
-        dense_J_out[worldid, srow + r, c] = 0.0
-
-
-@wp.func
 def dense_set(
   # In:
   worldid: int,
@@ -1768,6 +1752,7 @@ def _island_world(ntree: int):
     idof_islandid_out: wp.array2d[int],
     dof_group_out: wp.array2d[int],
     dof_densecol_out: wp.array2d[int],
+    dense_J_out: wp.array3d[float],
   ):
     """A world's islands, rows, DOFs and groups (free_groups: also of the trees outside islands)."""
     worldid, lane = wp.tid()
@@ -1971,6 +1956,15 @@ def _island_world(ntree: int):
       if g >= 0:
         island_dense_out[worldid, i] = group_dense_out[worldid, g]
 
+    # zero dense rows but contacts' (written whole), here rather than a row a thread: coalesced
+    width = dense_J_out.shape[2]
+    for i in range(nisland):
+      if group_dense_out[worldid, island_group_out[worldid, i]][0] > 0:
+        r0 = island_rowadr_out[worldid, i * ROW_CLASSES]
+        n = (wp.min(island_rowadr_out[worldid, i * ROW_CLASSES + ROW_CONTACT], njmax_in) - r0) * width
+        for k in range(lane, n, lanes):
+          dense_J_out[worldid, r0 + k // width, k % width] = 0.0
+
     # a DOF's island, island-ordered index (islands in order, DOFs ascending), group and column
     nidof = nidof_out[worldid]
     for dofid in range(lane, nv, lanes):
@@ -2106,6 +2100,7 @@ def island_layout(
       d.dof_islandid,
       buf.dof_group,
       buf.dof_densecol,
+      buf.J,
     ],
     # whole warps of trees: its passes are bound by the block's barriers
     block_dim=min(types.BlockDim.island_scan_sizes, -(-m.ntree // 32) * 32),

@@ -30,7 +30,6 @@ from mujoco_warp._src.island import ROW_LIMIT
 from mujoco_warp._src.island import _block_sync
 from mujoco_warp._src.island import _dsu_union
 from mujoco_warp._src.island import dense_set
-from mujoco_warp._src.island import dense_zero
 from mujoco_warp._src.island import rows_discover
 from mujoco_warp._src.island import rows_discover_tendon
 from mujoco_warp._src.island import rows_island
@@ -452,7 +451,6 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
       )
       efcid = rows[0]
       srow = rows[1]
-      dense_zero(worldid, srow, 3, dense_J_out)
     else:
       efcid = wp.atomic_add(nefc_out, worldid, 3)  # kernel_analyzer: ignore[atomic]
 
@@ -784,7 +782,6 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
       )
       efcid = rows[0]
       srow = rows[1]
-      dense_zero(worldid, srow, 1, dense_J_out)
     else:
       efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
@@ -1028,7 +1025,6 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
       )
       efcid = rows[0]
       srow = rows[1]
-      dense_zero(worldid, srow, 1, dense_J_out)
     else:
       efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
@@ -1517,7 +1513,6 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
       )
       efcid = rows[0]
       srow = rows[1]
-      dense_zero(worldid, srow, 6, dense_J_out)
     else:
       efcid = wp.atomic_add(nefc_out, worldid, 6)  # kernel_analyzer: ignore[atomic]
 
@@ -2251,7 +2246,6 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
       )
       efcid = rows[0]
       srow = rows[1]
-      dense_zero(worldid, srow, 1, dense_J_out)
     else:
       efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
@@ -2404,7 +2398,6 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
       )
       efcid = rows[0]
       srow = rows[1]
-      dense_zero(worldid, srow, 1, dense_J_out)
     else:
       efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
@@ -2628,7 +2621,6 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
         )
         efcid = rows[0]
         srow = rows[1]
-        dense_zero(worldid, srow, 1, dense_J_out)
       else:
         efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
@@ -2795,7 +2787,6 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
         )
         efcid = rows[0]
         srow = rows[1]
-        dense_zero(worldid, srow, 1, dense_J_out)
       else:
         efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
@@ -2985,7 +2976,6 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
         )
         efcid = rows[0]
         srow = rows[1]
-        dense_zero(worldid, srow, 1, dense_J_out)
       else:
         efcid = wp.atomic_add(nefc_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
 
