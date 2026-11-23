@@ -14,6 +14,8 @@
 # ==============================================================================
 """Tests the collision driver."""
 
+from unittest import mock
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -26,6 +28,7 @@ from mujoco_warp import DisableBit
 from mujoco_warp import GeomType
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_convex
+from mujoco_warp._src import collision_driver
 from mujoco_warp._src import types
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_driver import MJ_COLLISION_TABLE
@@ -1761,6 +1764,80 @@ class CollisionTest(parameterized.TestCase):
 
     np.testing.assert_equal(d.nacon.numpy()[0], 4)
     self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.HFIELD)
+
+  _HFIELD_TERRAIN = """
+    <mujoco>
+      <asset>
+        <hfield name="terrain" nrow="6" ncol="6" size="1 1 .1 .1"
+          elevation="0 .2 .5 .3 .1 0
+                     .3 .6 .4 .8 .2 .1
+                     .1 .5 1 .6 .7 .3
+                     .4 .7 .5 .9 .4 .2
+                     .2 .3 .8 .5 .6 .1
+                     0 .1 .2 .4 .3 0"/>
+      </asset>
+      <worldbody>
+        <geom type="hfield" hfield="terrain"/>
+        <body pos="-.47 -.33 .1">
+          <freejoint/>
+          <geom type="sphere" size=".06"/>
+        </body>
+        <body pos=".33 -.47 .084" euler="0 90 45">
+          <freejoint/>
+          <geom type="capsule" size=".04 .05"/>
+        </body>
+        <body pos="-.4 .45 .162" euler="10 5 40">
+          <freejoint/>
+          <geom type="ellipsoid" size=".35 .25 .1"/>
+        </body>
+        <body pos=".45 .4 .2" euler="5 10 0">
+          <freejoint/>
+          <geom type="cylinder" size=".25 .1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+
+  @parameterized.parameters(16, 4)
+  def test_hfield_distance(self, nccdmax):
+    """Tests height field contact distance with one and with several prisms per CCD slot."""
+    mjm, mjd, m, _ = test_data.fixture(xml=self._HFIELD_TERRAIN)
+    d = mjw.make_data(mjm, nconmax=16, nccdmax=nccdmax)
+
+    ctx = collision_driver.prepare_collision_context(m, d)
+    ctx.hfield_prism_dist.fill_(np.nan)
+
+    mujoco.mj_collision(mjm, mjd)
+    mjw.kinematics(m, d)
+    mjw.collision(m, d, ctx)
+
+    # every listed prism has a result
+    nprism = ctx.nhfieldprism.numpy()[0]
+    self.assertGreater(nprism, 16)
+    self.assertFalse(np.isnan(ctx.hfield_prism_dist.numpy()[:nprism]).any())
+
+    mj_dist = np.full(mjm.ngeom, np.inf)
+    for contact in mjd.contact[: mjd.ncon]:
+      mj_dist[contact.geom[1]] = min(mj_dist[contact.geom[1]], contact.dist)
+
+    nacon = d.nacon.numpy()[0]
+    dist = np.full(mjm.ngeom, np.inf)
+    for geom, contact_dist in zip(d.contact.geom.numpy()[:nacon], d.contact.dist.numpy()[:nacon]):
+      dist[geom[1]] = min(dist[geom[1]], contact_dist)
+
+    self.assertEqual(d.overflow.numpy()[0], 0)
+    np.testing.assert_allclose(dist[1:], mj_dist[1:], atol=1e-5)
+
+  def test_hfield_prism_overflow(self):
+    """Tests overflow of the height field prism list."""
+    mjm, _, m, _ = test_data.fixture(xml=self._HFIELD_TERRAIN)
+    d = mjw.make_data(mjm, nconmax=16)
+
+    mjw.kinematics(m, d)
+    with mock.patch.object(collision_convex, "_HFIELD_PRISMS", 1):
+      mjw.collision(m, d)
+
+    self.assertTrue(d.overflow.numpy()[0] & types.OverflowType.NARROWPHASE)
 
   @parameterized.parameters(1, 2)
   def test_hfield_sparse_subgrid_contacts(self, nworld):

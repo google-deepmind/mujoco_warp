@@ -2677,6 +2677,59 @@ def _gjk_simplex_to_epa(
 
 
 @wp.func
+def gjk_separated_at_start(
+  # In:
+  tolerance: float,
+  cutoff: float,
+  geom1: Geom,
+  geom2: Geom,
+  geomtype1: int,
+  geomtype2: int,
+  x_1: wp.vec3,
+  x_2: wp.vec3,
+) -> bool:
+  """Returns True if the first GJK iteration of gjk_phase finds the geoms separated."""
+  # special handling for sphere, capsule, and margin (see gjk_phase)
+  shrunk = False
+  if geomtype1 == GeomType.SPHERE or geomtype1 == GeomType.CAPSULE:
+    cutoff += geom1.size[0] + 0.5 * geom1.margin
+    geom1.margin = 0.0
+    geom1.size = wp.vec3(0.0, geom1.size[1], geom1.size[2])
+    shrunk = True
+  if geomtype2 == GeomType.SPHERE or geomtype2 == GeomType.CAPSULE:
+    cutoff += geom2.size[0] + 0.5 * geom2.margin
+    geom2.margin = 0.0
+    geom2.size = wp.vec3(0.0, geom2.size[1], geom2.size[2])
+    shrunk = True
+  if _supports_multiccd(geom1, geom2, geomtype1, geomtype2) and (geom1.margin > 0.0 or geom2.margin > 0.0):
+    return False
+  if shrunk and cutoff <= 0.0:
+    return False
+
+  is_discrete = _discrete_geoms(geomtype1, geomtype2) and (geom1.margin == 0.0 and geom2.margin == 0.0)
+  epsilon = wp.where(is_discrete, 0.0, 0.5 * tolerance * tolerance)
+  min_norm = wp.where(is_discrete, MINVAL, tolerance)
+
+  x_k = x_1 - x_2
+  xnorm = wp.sqrt(wp.dot(x_k, x_k))
+  if xnorm < min_norm or xnorm < MINVAL:
+    return False
+  dir_neg = x_k / xnorm
+  sp1 = support(geom1, geomtype1, -dir_neg)
+  sp2 = support(geom2, geomtype2, dir_neg)
+  s = sp1.point - sp2.point
+  # stopping criteria is checked before the lower bound (see gjk)
+  if wp.dot(x_k, x_k - s) < epsilon:
+    return False
+  lower = wp.dot(x_k, s)
+  if cutoff == 0.0:
+    return lower > 0.0
+  if cutoff < FLOAT_MAX:
+    return lower > 0.0 and lower >= cutoff * xnorm
+  return False
+
+
+@wp.func
 def gjk_phase(
   # In:
   tolerance: float,

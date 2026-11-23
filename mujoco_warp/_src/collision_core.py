@@ -482,6 +482,19 @@ class CollisionContext:
     ncollision_inc: incremental pass pair count     (1,)
     woke: wake flag for incremental collision pass  (1,)
     awake_prev: body awake snapshot before wake     (nworld, nbody)
+    hfield_pairid: height field pair id of collision (naconmax,)
+    hfield_pair_collisionid: pair collision id      (nhfieldpairtype * naccdmax,)
+    hfield_pair_grid: pair subgrid (rows, columns)  (nhfieldpairtype * naccdmax,)
+    hfield_pair_margin: pair margin                 (nhfieldpairtype * naccdmax,)
+    hfield_pair_prismid: first listed prism of pair (nhfieldpairtype * naccdmax,)
+    hfield_pair_contact: pair has prism in contact  (nhfieldpairtype * naccdmax,)
+    nhfieldprism: listed prism count                (1,)
+    hfield_prism_pairid: prism pair id              (nhfieldprismmax,)
+    hfield_prism_subgridid: prism id in subgrid     (nhfieldprismmax,)
+    hfield_prism_nextid: next listed prism of pair  (nhfieldprismmax,)
+    hfield_prism_dist: prism distance               (nhfieldprismmax,)
+    hfield_prism_pos: prism contact position        (nhfieldprismmax,)
+    hfield_prism_normal: prism contact normal       (nhfieldprismmax,)
     nccd: CCD collider count per geom pair type     (ngeom_types * (ngeom_types + 1) // 2,)
     epa_vert: vertices in EPA polytope              (naccdmax, 10 + 2 * epa_iterations)
     epa_vert_index: vertex indices in EPA polytope  (naccdmax, 10 + 2 * epa_iterations)
@@ -508,6 +521,19 @@ class CollisionContext:
   ncollision_inc: wp.array = None
   woke: wp.array = None
   awake_prev: wp.array = None
+  hfield_pairid: wp.array = None
+  hfield_pair_collisionid: wp.array = None
+  hfield_pair_grid: wp.array = None
+  hfield_pair_margin: wp.array = None
+  hfield_pair_prismid: wp.array = None
+  hfield_pair_contact: wp.array = None
+  nhfieldprism: wp.array = None
+  hfield_prism_pairid: wp.array = None
+  hfield_prism_subgridid: wp.array = None
+  hfield_prism_nextid: wp.array = None
+  hfield_prism_dist: wp.array = None
+  hfield_prism_pos: wp.array = None
+  hfield_prism_normal: wp.array = None
   nccd: wp.array = None
   epa_vert: wp.array = None
   epa_vert_index: wp.array = None
