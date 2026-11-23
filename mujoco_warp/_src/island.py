@@ -1718,6 +1718,8 @@ def _island_world(ntree: int):
   def kernel(
     # Model:
     nv: int,
+    dof_treeid: wp.array[int],
+    tree_dofadr: wp.array[int],
     tree_dofnum: wp.array[int],
     # Data in:
     tree_awake_in: wp.array2d[int],
@@ -1732,6 +1734,7 @@ def _island_world(ntree: int):
     nisland_out: wp.array[int],
     nidof_out: wp.array[int],
     tree_island_out: wp.array2d[int],
+    dof_island_out: wp.array2d[int],
     island_dofadr_out: wp.array2d[int],
     island_idofadr_out: wp.array2d[int],
     island_nv_out: wp.array2d[int],
@@ -1739,6 +1742,8 @@ def _island_world(ntree: int):
     island_ne_out: wp.array2d[int],
     island_nf_out: wp.array2d[int],
     island_iefcadr_out: wp.array2d[int],
+    map_dof2idof_out: wp.array2d[int],
+    map_idof2dof_out: wp.array2d[int],
     # Out:
     island_parent_out: wp.array2d[int],
     island_rowadr_out: wp.array2d[int],
@@ -1760,6 +1765,9 @@ def _island_world(ntree: int):
     group_dense_out: wp.array2d[wp.vec4i],
     island_dense_out: wp.array2d[wp.vec4i],
     group_asleep_out: wp.array2d[bool],
+    idof_islandid_out: wp.array2d[int],
+    dof_group_out: wp.array2d[int],
+    dof_densecol_out: wp.array2d[int],
   ):
     """A world's islands, rows, DOFs and groups (free_groups: also of the trees outside islands)."""
     worldid, lane = wp.tid()
@@ -1833,7 +1841,7 @@ def _island_world(ntree: int):
       island_nf_out[worldid, i] = fit[1]
       island_nefc_out[worldid, i] = fit[2]
       island_iefcadr_out[worldid, i] = iefcadr
-      # the first DOF of each island is set per DOF (_island_dof_maps)
+      # the first DOF of each island is set per DOF
       island_dofadr_out[worldid, i] = nv
     if lane == 0:
       nidof_out[worldid] = nidof
@@ -1963,55 +1971,31 @@ def _island_world(ntree: int):
       if g >= 0:
         island_dense_out[worldid, i] = group_dense_out[worldid, g]
 
+    # a DOF's island, island-ordered index (islands in order, DOFs ascending), group and column
+    nidof = nidof_out[worldid]
+    for dofid in range(lane, nv, lanes):
+      tree = dof_treeid[dofid]
+      islandid = tree_island_out[worldid, tree]
+      local = tree_iofs_out[worldid, tree] + dofid - tree_dofadr[tree]
+      g = int(-1)
+      col = int(0)
+      if islandid >= 0:
+        idof = island_idofadr_out[worldid, islandid] + local
+        if local == 0:
+          island_dofadr_out[worldid, islandid] = dofid
+        g = island_group_out[worldid, islandid]
+        col = idof - group_idofadr_out[worldid, g]
+      else:
+        idof = nidof + local
+        g = tree_group_out[worldid, tree]
+      dof_island_out[worldid, dofid] = islandid
+      map_dof2idof_out[worldid, dofid] = idof
+      map_idof2dof_out[worldid, idof] = dofid
+      idof_islandid_out[worldid, idof] = islandid
+      dof_group_out[worldid, dofid] = g
+      dof_densecol_out[worldid, dofid] = col
+
   return kernel
-
-
-@wp.kernel
-def _island_dof_maps(
-  # Model:
-  dof_treeid: wp.array[int],
-  tree_dofadr: wp.array[int],
-  # Data in:
-  nidof_in: wp.array[int],
-  tree_island_in: wp.array2d[int],
-  island_idofadr_in: wp.array2d[int],
-  # In:
-  tree_iofs_in: wp.array2d[int],
-  tree_group_in: wp.array2d[int],
-  island_group_in: wp.array2d[int],
-  group_idofadr_in: wp.array2d[int],
-  # Data out:
-  dof_island_out: wp.array2d[int],
-  island_dofadr_out: wp.array2d[int],
-  map_dof2idof_out: wp.array2d[int],
-  map_idof2dof_out: wp.array2d[int],
-  # Out:
-  idof_islandid_out: wp.array2d[int],
-  dof_group_out: wp.array2d[int],
-  dof_densecol_out: wp.array2d[int],
-):
-  """A DOF's island, island-ordered index (islands in order, DOFs ascending), group and column."""
-  worldid, dofid = wp.tid()
-  tree = dof_treeid[dofid]
-  islandid = tree_island_in[worldid, tree]
-  local = tree_iofs_in[worldid, tree] + dofid - tree_dofadr[tree]
-  g = int(-1)
-  col = int(0)
-  if islandid >= 0:
-    idof = island_idofadr_in[worldid, islandid] + local
-    if local == 0:
-      island_dofadr_out[worldid, islandid] = dofid
-    g = island_group_in[worldid, islandid]
-    col = idof - group_idofadr_in[worldid, g]
-  else:
-    idof = nidof_in[worldid] + local
-    g = tree_group_in[worldid, tree]
-  dof_island_out[worldid, dofid] = islandid
-  map_dof2idof_out[worldid, dofid] = idof
-  map_idof2dof_out[worldid, idof] = dofid
-  idof_islandid_out[worldid, idof] = islandid
-  dof_group_out[worldid, dofid] = g
-  dof_densecol_out[worldid, dofid] = col
 
 
 @wp.kernel
@@ -2073,6 +2057,8 @@ def island_layout(
     dim=d.nworld,
     inputs=[
       m.nv,
+      m.dof_treeid,
+      m.tree_dofadr,
       m.tree_dofnum,
       d.tree_awake if m.opt.enableflags & types.EnableBit.SLEEP else None,
       d.njmax,
@@ -2087,6 +2073,7 @@ def island_layout(
       d.nisland,
       d.nidof,
       d.tree_island,
+      d.dof_island,
       d.island_dofadr,
       d.island_idofadr,
       d.island_nv,
@@ -2094,6 +2081,8 @@ def island_layout(
       d.island_ne,
       d.island_nf,
       d.island_iefcadr,
+      d.map_dof2idof,
+      d.map_idof2dof,
       island_parent,
       island_rowadr,
       island_cursor,
@@ -2114,25 +2103,12 @@ def island_layout(
       buf.group_dense,
       buf.island_dense,
       buf.group_asleep,
+      d.dof_islandid,
+      buf.dof_group,
+      buf.dof_densecol,
     ],
     # whole warps of trees: its passes are bound by the block's barriers
     block_dim=min(types.BlockDim.island_scan_sizes, -(-m.ntree // 32) * 32),
-  )
-  wp.launch(
-    _island_dof_maps,
-    dim=(d.nworld, m.nv),
-    inputs=[
-      m.dof_treeid,
-      m.tree_dofadr,
-      d.nidof,
-      d.tree_island,
-      d.island_idofadr,
-      buf.tree_iofs,
-      buf.tree_group,
-      buf.island_group,
-      buf.group_idofadr,
-    ],
-    outputs=[d.dof_island, d.island_dofadr, d.map_dof2idof, d.map_idof2dof, d.dof_islandid, buf.dof_group, buf.dof_densecol],
   )
   return buf
 
