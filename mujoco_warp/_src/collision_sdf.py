@@ -767,16 +767,16 @@ def _sdf_candidates(
   # In:
   collision_pair_in: wp.array[wp.vec2i],
   # Out:
-  sdf_count_out: wp.array[int],
-  sdf_list_out: wp.array[int],
+  nsdf_out: wp.array[int],
+  sdf_collisionid_out: wp.array[int],
 ):
   """Lists the collision candidates that involve an SDF geom."""
   collisionid = wp.tid()
   if collisionid >= wp.min(ncollision_in[0], naconmax_in):
     return
   if geom_type[collision_pair_in[collisionid][1]] == GeomType.SDF:
-    sdfid = wp.atomic_add(sdf_count_out, 0, 1)  # kernel_analyzer: ignore[atomic]
-    sdf_list_out[sdfid] = collisionid
+    sdfid = wp.atomic_add(nsdf_out, 0, 1)  # kernel_analyzer: ignore[atomic]
+    sdf_collisionid_out[sdfid] = collisionid
 
 
 @wp.kernel
@@ -835,8 +835,8 @@ def _sdf_narrowphase(
   collision_pair_in: wp.array[wp.vec2i],
   collision_pairid_in: wp.array[wp.vec2i],
   collision_worldid_in: wp.array[int],
-  sdf_count_in: wp.array[int],
-  sdf_list_in: wp.array[int],
+  nsdf_in: wp.array[int],
+  sdf_collisionid_in: wp.array[int],
   sdf_iterations: int,
   linesearch_alpha0: float,
   # Data out:
@@ -859,9 +859,9 @@ def _sdf_narrowphase(
 ):
   # a candidate's initial points are adjacent threads, so a warp works on one geom pair
   sdfid, i = wp.tid()
-  if sdfid >= sdf_count_in[0]:
+  if sdfid >= nsdf_in[0]:
     return
-  contact_tid = sdf_list_in[sdfid]
+  contact_tid = sdf_collisionid_in[sdfid]
   geoms = collision_pair_in[contact_tid]
   g2 = geoms[1]
   type2 = geom_type[g2]
@@ -1063,22 +1063,22 @@ def _sdf_narrowphase(
 
 def prepare_sdf_context(d: Data, ctx: CollisionContext):
   """Allocates the list of SDF collision candidates."""
-  ctx.sdf_count = wp.empty(1, dtype=int)
-  ctx.sdf_list = wp.empty(d.naconmax, dtype=int)
+  ctx.nsdf = wp.empty(1, dtype=int)
+  ctx.sdf_collisionid = wp.empty(d.naconmax, dtype=int)
 
 
 @event_scope
 def sdf_narrowphase(m: Model, d: Data, ctx: CollisionContext):
-  if ctx.sdf_list is None:
+  if ctx.sdf_collisionid is None:
     prepare_sdf_context(d, ctx)
 
   # list the SDF candidates so that the threads of a warp do not wait for one candidate
-  ctx.sdf_count.zero_()
+  ctx.nsdf.zero_()
   wp.launch(
     _sdf_candidates,
     dim=d.naconmax,
     inputs=[m.geom_type, d.naconmax, d.ncollision, ctx.collision_pair],
-    outputs=[ctx.sdf_count, ctx.sdf_list],
+    outputs=[ctx.nsdf, ctx.sdf_collisionid],
   )
 
   wp.launch(
@@ -1136,8 +1136,8 @@ def sdf_narrowphase(m: Model, d: Data, ctx: CollisionContext):
       ctx.collision_pair,
       ctx.collision_pairid,
       ctx.collision_worldid,
-      ctx.sdf_count,
-      ctx.sdf_list,
+      ctx.nsdf,
+      ctx.sdf_collisionid,
       m.opt.sdf_iterations,
       # initial line-search step; passed at launch so NVRTC 13.1+ cannot unroll the line search
       2.0,
