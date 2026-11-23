@@ -760,10 +760,13 @@ class CollisionTest(parameterized.TestCase):
     mjm, _, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
-        <default><geom margin="1"/></default>
+        <default>
+          <geom margin="1"/>
+        </default>
         <worldbody>
           <geom type="plane" size="1 1 .1" zaxis="{plane}"/>
-          <body pos="0 0 .1"><freejoint/>
+          <body pos="0 0 .1">
+            <freejoint/>
             <geom type="capsule" size=".08 .2" zaxis="{capsule}" mass="1"/>
           </body>
         </worldbody>
@@ -809,10 +812,15 @@ class CollisionTest(parameterized.TestCase):
     mjm, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
-        <default><geom margin="1"/></default>
+        <default>
+          <geom margin="1"/>
+        </default>
         <worldbody>
           <geom type="plane" size="1 1 .1" zaxis="1 1 1"/>
-          <body><freejoint/><geom type="capsule" size=".08 .2" zaxis="1 1 1" mass="1"/></body>
+          <body>
+            <freejoint/>
+            <geom type="capsule" size=".08 .2" zaxis="1 1 1" mass="1"/>
+          </body>
         </worldbody>
       </mujoco>
       """,
@@ -844,10 +852,15 @@ class CollisionTest(parameterized.TestCase):
       xml=f"""
       <mujoco>
         <option gravity="0 0 0"/>
-        <default><geom condim="1"/></default>
+        <default>
+          <geom condim="1"/>
+        </default>
         <worldbody>
           <geom type="plane" size="2 2 .1" euler="{" ".join(map(str, euler))}"/>
-          <body><freejoint/><geom type="cylinder" size=".05 .1" mass="1"/></body>
+          <body>
+            <freejoint/>
+            <geom type="cylinder" size=".05 .1" mass="1"/>
+          </body>
         </worldbody>
       </mujoco>
       """,
