@@ -2847,6 +2847,13 @@ def fwd_kinematics(m: Model, d: Data):
       sleep.update_sleep(m, d)
 
 
+def needs_eq_com_vel(m: Model) -> bool:
+  """Whether connect/weld targets need velocity kinematics during constraint assembly."""
+  return bool(m.eq_connect_adr.size or m.eq_wld_adr.size) and not bool(
+    m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.EQUALITY)
+  )
+
+
 @event_scope
 def fwd_position(m: Model, d: Data, factorize: bool = True):
   """Position-dependent computations.
@@ -2893,7 +2900,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
       collision_driver.collision(m, d)
 
   # Connect/weld Jdot*v reads cvel and cdof_dot while constructing acceleration targets.
-  if m.eq_connect_adr.size or m.eq_wld_adr.size:
+  if needs_eq_com_vel(m):
     smooth.com_vel(m, d)
   constraint.make_constraint(m, d)
 
@@ -3780,9 +3787,7 @@ def _forward(m: Model, d: Data, skip_sensor: bool = False):
     sensor.sensor_pos(m, d)
   _energy_pos(m, d, skip_sensor)
 
-  fwd_velocity(
-    m, d, skip_com_vel=bool(m.eq_connect_adr.size or m.eq_wld_adr.size) and not bool(m.opt.enableflags & EnableBit.SLEEP)
-  )
+  fwd_velocity(m, d, skip_com_vel=needs_eq_com_vel(m) and not bool(m.opt.enableflags & EnableBit.SLEEP))
   if not skip_sensor:
     sensor.sensor_vel(m, d)
   _energy_vel(m, d, skip_sensor)
@@ -3843,9 +3848,7 @@ def step1(m: Model, d: Data):
 
   _energy_pos(m, d)
 
-  fwd_velocity(
-    m, d, skip_com_vel=bool(m.eq_connect_adr.size or m.eq_wld_adr.size) and not bool(m.opt.enableflags & EnableBit.SLEEP)
-  )
+  fwd_velocity(m, d, skip_com_vel=needs_eq_com_vel(m) and not bool(m.opt.enableflags & EnableBit.SLEEP))
   sensor.sensor_vel(m, d)
 
   _energy_vel(m, d)

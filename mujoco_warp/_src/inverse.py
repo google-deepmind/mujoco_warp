@@ -249,11 +249,7 @@ def inverse(m: Model, d: Data):
   forward.check_discrete(m)
   forward.fwd_position(m, d)
   sensor.sensor_pos(m, d)
-  forward.fwd_velocity(
-    m,
-    d,
-    skip_com_vel=bool(m.eq_connect_adr.size or m.eq_wld_adr.size) and not bool(m.opt.enableflags & EnableBit.SLEEP),
-  )
+  forward.fwd_velocity(m, d, skip_com_vel=forward.needs_eq_com_vel(m) and not bool(m.opt.enableflags & EnableBit.SLEEP))
   sensor.sensor_vel(m, d)
 
   is_discrete = m.opt.integrator == IntegratorType.DISCRETE

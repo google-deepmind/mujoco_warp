@@ -59,9 +59,10 @@ class ForwardTest(parameterized.TestCase):
   @parameterized.product(
     nworld=(1, 2),
     stale_velocity=(float("nan"), 37.0),
+    disableflags=(0, DisableBit.CONSTRAINT, DisableBit.EQUALITY),
     equality=('<weld body1="body"/>', '<connect body1="body" anchor="0.2 0.1 0.3"/>'),
   )
-  def test_forward_refreshes_equality_velocity(self, nworld, stale_velocity, equality):
+  def test_forward_refreshes_equality_velocity(self, nworld, stale_velocity, equality, disableflags):
     """Equality acceleration targets must use current velocity kinematics after reset."""
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
@@ -78,6 +79,7 @@ class ForwardTest(parameterized.TestCase):
       """,
       nworld=nworld,
       qvel_noise=0.1,
+      overrides={"opt.disableflags": disableflags},
     )
     velocities = np.stack([mjd.qvel * (world + 1) + world * 0.1 for world in range(nworld)])
     references = []
