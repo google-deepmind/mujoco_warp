@@ -117,6 +117,7 @@ def _main(argv: Sequence[str]) -> None:
     from mujoco.studio import messages
     from mujoco.studio import plugin
     from mujoco.studio import sim
+    from mujoco.studio import sim_history
     from mujoco.studio import viewer_protocol
   except ModuleNotFoundError as e:
     raise ImportError(
@@ -182,6 +183,11 @@ def _main(argv: Sequence[str]) -> None:
       self.single_step = True
 
     @messages.handler
+    def _on_pause(self, event: messages.RequestPauseEvent) -> None:
+      self.paused = event.pause_state != sim.PauseState.UNPAUSED
+      self.handle.send_to_viewer(messages.StepControlSnapshot(pause_state=event.pause_state, speed=self.speed))
+
+    @messages.handler
     def _on_step(self, event: messages.StepEvent) -> None:
       tick = time.perf_counter()
       if not self.paused or self.single_step:
@@ -192,7 +198,7 @@ def _main(argv: Sequence[str]) -> None:
       time.sleep(max(0.001, period - (time.perf_counter() - tick)))
 
   config = viewer_protocol.ViewerConfig(title="MuJoCo Warp", gfx="web", open_browser=True)
-  launch_web.run(config, model=mjm, data=mjd, plugins=[studio_app.App(), _StepPlugin()])
+  launch_web.run(config, model=mjm, data=mjd, plugins=[studio_app.App(), _StepPlugin(), sim_history.SimHistory()])
 
 
 def main():
