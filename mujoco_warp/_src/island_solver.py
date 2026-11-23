@@ -178,15 +178,29 @@ def _group_rows(ntile: int, ndof: int, blocked_rows: int) -> int:
 def _group_layout(ntree: int, blocked_rows: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
+    # Model:
+    tree_dofadr: wp.array[int],
+    tree_dofnum: wp.array[int],
+    M_rownnz: wp.array[int],
+    M_rowadr: wp.array[int],
+    # Data in:
+    M_in: wp.array2d[float],
+    tree_island_in: wp.array2d[int],
     # In:
     ngroup_in: wp.array[int],
     group_nv_in: wp.array2d[int],
     group_dense_in: wp.array2d[wp.vec4i],
     group_asleep_in: wp.array2d[bool],
+    tree_group_in: wp.array2d[int],
+    island_group_in: wp.array2d[int],
     # Out:
     group_count_out: wp.array[int],
     group_list_out: wp.array2d[int],
     done_out: wp.array2d[bool],
+    niter_out: wp.array2d[int],
+    alpha_out: wp.array2d[float],
+    improvement_out: wp.array2d[float],
+    scale_out: wp.array2d[float],
     ntile_out: wp.array2d[int],
     tilebase_out: wp.array2d[int],
     vbase_out: wp.array2d[int],
@@ -206,10 +220,31 @@ def _group_layout(ntree: int, blocked_rows: int):
     quad_changed_count_out: wp.array[int],
     world_done_out: wp.array[bool],
   ):
-    """A world's awake groups by path (all, one tile, blocked), with their pool tiles and rows."""
+    """A world's awake groups by path (all, one tile, blocked), with their pool tiles and rows.
+
+    Starts the awake groups' iterations, with their inverse inertia traces.
+    """
     worldid, lane = wp.tid()
     lanes = wp.block_dim()
     ngroup = ngroup_in[worldid]
+    # a group's inertia trace, tree by tree (a group's DOFs are whole trees)
+    trace = wp.tile_zeros(shape=(ntree,), dtype=float, storage="shared")
+    for it in range((ntree + lanes - 1) // lanes):
+      tree = it * lanes + lane
+      tg = int(-1)
+      tsum = float(0.0)
+      if tree < ntree:
+        island = tree_island_in[worldid, tree]
+        if island >= 0:
+          tg = island_group_in[worldid, island]
+        else:
+          tg = tree_group_in[worldid, tree]
+        if tg >= 0:
+          # the diagonal is the last entry of a row of the lower triangle
+          for dof in range(tree_dofadr[tree], tree_dofadr[tree] + tree_dofnum[tree]):
+            tsum += M_in[worldid, M_rowadr[dof] + M_rownnz[dof] - 1]
+      wp.tile_scatter_add(trace, wp.max(tg, 0), tsum, tg >= 0)
+    _sync()
     for g in range(lane, ntree, lanes):
       ntile = int(0)
       # _done sets the island solver's groups'
@@ -222,6 +257,12 @@ def _group_layout(ntree: int, blocked_rows: int):
         if group_asleep_in[worldid, g]:
           done_out[worldid, g] = True
         else:
+          done_out[worldid, g] = False
+          niter_out[worldid, g] = 0
+          alpha_out[worldid, g] = 0.0
+          improvement_out[worldid, g] = 0.0
+          # MuJoCo scales an island's convergence tests by its inertia trace, not meaninertia * nv
+          scale_out[worldid, g] = 1.0 / wp.max(types.MJ_MINVAL, trace[g])
           group_list_out[0, wp.atomic_add(group_count_out, 0, 1)] = packed  # kernel_analyzer: ignore[atomic]
           ndof = group_nv_in[worldid, g]
           ntile = _ntile(ndof)
@@ -446,61 +487,6 @@ def _pool_seed(
           rc = _pool_rc(tilebase, ntile, la, la)
           H_out[worldid, rc[0], rc[1]] += efc_D_in[worldid, efcid]
     _sync()
-
-
-@wp.kernel(module="unique", enable_backward=False, grid_stride=False)
-def _init_islands(
-  # Model:
-  ntree: int,
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  M_mulm_rowadr: wp.array[int],
-  M_mulm_col: wp.array[int],
-  M_mulm_madr: wp.array[int],
-  # Data in:
-  M_in: wp.array2d[float],
-  island_nv_in: wp.array2d[int],
-  # In:
-  group_count_in: wp.array[int],
-  group_list_in: wp.array2d[int],
-  vbase_in: wp.array2d[int],
-  iqacc_in: wp.array2d[float],
-  row2dof_in: wp.array2d[int],
-  nblock: int,
-  # Out:
-  Ma_out: wp.array2d[float],
-  scale_out: wp.array2d[float],
-  done_out: wp.array2d[bool],
-  niter_out: wp.array2d[int],
-  alpha_out: wp.array2d[float],
-  improvement_out: wp.array2d[float],
-):
-  """Start the groups (persistent blocks over them): M qacc and the inverse inertia trace."""
-  bid, lane = wp.tid()
-  for e in range(bid, group_count_in[0], nblock):
-    worldid = group_list_in[0, e] // ntree
-    g = group_list_in[0, e] % ntree
-    if lane == 0:
-      done_out[worldid, g] = False
-      niter_out[worldid, g] = 0
-      alpha_out[worldid, g] = 0.0
-      improvement_out[worldid, g] = 0.0
-    vbase = vbase_in[worldid, g]
-    trace = float(0.0)
-    for la in range(lane, island_nv_in[worldid, g], wp.block_dim()):
-      # sparse M: a group's DOFs are whole trees in order (column col of DOF dof: row + col - dof)
-      row = vbase + la
-      dof = row2dof_in[worldid, row]
-      ma = float(0.0)
-      for k in range(M_mulm_rowadr[dof], M_mulm_rowadr[dof + 1]):
-        ma += M_in[worldid, M_mulm_madr[k]] * iqacc_in[worldid, row + M_mulm_col[k] - dof]
-      Ma_out[worldid, row] = ma
-      # the diagonal is the last entry of the row of the lower triangle
-      trace += M_in[worldid, M_rowadr[dof] + M_rownnz[dof] - 1]
-    # MuJoCo scales an island's convergence tests by its inertia trace instead of meaninertia * nv
-    trace = wp.tile_reduce(wp.add, wp.tile(trace))[0]
-    if lane == 0:
-      scale_out[worldid, g] = 1.0 / wp.max(types.MJ_MINVAL, trace)
 
 
 @wp.kernel
@@ -1230,8 +1216,12 @@ def _scatter_dofs(
 def _dofs(
   # Model:
   dof_treeid: wp.array[int],
+  M_mulm_rowadr: wp.array[int],
+  M_mulm_col: wp.array[int],
+  M_mulm_madr: wp.array[int],
   # Data in:
   qacc_warmstart_in: wp.array2d[float],
+  M_in: wp.array2d[float],
   tree_awake_in: wp.array2d[int],
   qfrc_smooth_in: wp.array2d[float],
   qacc_smooth_in: wp.array2d[float],
@@ -1254,6 +1244,7 @@ def _dofs(
   dof_local_out: wp.array2d[int],
   iqacc_out: wp.array2d[float],
   iqfrc_smooth_out: wp.array2d[float],
+  iMa_out: wp.array2d[float],
 ):
   """A DOF's aligned row, pool row (first tile column), local index, start point and smooth force.
 
@@ -1273,6 +1264,12 @@ def _dofs(
       row2dof_out[worldid, row] = dofid
       iqacc_out[worldid, row] = wp.where(warmstart, qacc_warmstart_in[worldid, dofid], qacc_smooth_in[worldid, dofid])
       iqfrc_smooth_out[worldid, row] = qfrc_smooth_in[worldid, dofid]
+      # M qacc at the start point (M's columns of a DOF are in its tree)
+      ma = float(0.0)
+      for k in range(M_mulm_rowadr[dofid], M_mulm_rowadr[dofid + 1]):
+        col = M_mulm_col[k]
+        ma += M_in[worldid, M_mulm_madr[k]] * wp.where(warmstart, qacc_warmstart_in[worldid, col], qacc_smooth_in[worldid, col])
+      iMa_out[worldid, row] = ma
   dof2row_out[worldid, dofid] = row
   dof_poolrow_out[worldid, dofid] = poolrow
   dof_local_out[worldid, dofid] = local
@@ -1848,28 +1845,6 @@ def _solve_groups(m: types.Model, d: types.Data, ctx: IslandContext, g: island.G
     ],
     outputs=[ctx.row_jaref],
   )
-  wp.launch_tiled(
-    _init_islands,
-    dim=min(d.nworld * m.ntree, _nblock()),
-    inputs=[
-      m.ntree,
-      m.M_rownnz,
-      m.M_rowadr,
-      m.M_mulm_rowadr,
-      m.M_mulm_col,
-      m.M_mulm_madr,
-      d.M,
-      g.group_nv,
-      ctx.group_count,
-      ctx.group_list,
-      ctx.vbase,
-      ctx.qacc,
-      ctx.row2dof,
-      min(d.nworld * m.ntree, _nblock()),
-    ],
-    outputs=[ctx.Ma, ctx.scale, ctx.done, ctx.niter, ctx.alpha, ctx.improvement],
-    block_dim=_TILE,
-  )
   # initial constraint evaluation (H = M + J'DJ over the quadratic rows), direction and done test
   h_stream = _evaluate(m, d, ctx, g, initial=True)
   _direction(m, d, ctx, g, h_stream)
@@ -1904,11 +1879,28 @@ def solve(m: types.Model, d: types.Data) -> IslandContext:
   wp.launch_tiled(
     _group_layout(m.ntree, _blocked_rows(m.nv)),
     dim=d.nworld,
-    inputs=[g.ngroup, g.group_nv, g.group_dense, g.group_asleep],
+    inputs=[
+      m.tree_dofadr,
+      m.tree_dofnum,
+      m.M_rownnz,
+      m.M_rowadr,
+      d.M,
+      d.tree_island,
+      g.ngroup,
+      g.group_nv,
+      g.group_dense,
+      g.group_asleep,
+      g.tree_group,
+      g.island_group,
+    ],
     outputs=[
       ctx.group_count,
       ctx.group_list,
       ctx.done,
+      ctx.niter,
+      ctx.alpha,
+      ctx.improvement,
+      ctx.scale,
       ctx.ntile,
       ctx.tilebase,
       ctx.vbase,
@@ -1935,7 +1927,11 @@ def solve(m: types.Model, d: types.Data) -> IslandContext:
     dim=(d.nworld, m.nv),
     inputs=[
       m.dof_treeid,
+      m.M_mulm_rowadr,
+      m.M_mulm_col,
+      m.M_mulm_madr,
       d.qacc_warmstart,
+      d.M,
       d.tree_awake if m.opt.enableflags & types.EnableBit.SLEEP else None,
       d.qfrc_smooth,
       d.qacc_smooth,
@@ -1957,6 +1953,7 @@ def solve(m: types.Model, d: types.Data) -> IslandContext:
       ctx.dof_local,
       ctx.qacc,
       ctx.qfrc_smooth,
+      ctx.Ma,
     ],
   )
   # unconditional: entering a conditional body costs more than kernels without groups
