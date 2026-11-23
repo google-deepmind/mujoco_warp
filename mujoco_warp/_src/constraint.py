@@ -908,25 +908,21 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
     nnz = int(0)
     for i in range(nv):
-      J1 = float(0.0)
+      J = float(0.0)
       if ptr1 < rownnz1:
         sparseid1 = rowadr1 + ptr1
         if ten_J_colind[sparseid1] == i:
-          J1 = ten_J_in[worldid, sparseid1]
+          J = ten_J_in[worldid, sparseid1]
           ptr1 += 1
 
-      J = J1
-      if deriv != 0.0:
-        J2 = float(0.0)
-        if ptr2 < rownnz2:
-          sparseid2 = rowadr2 + ptr2
-          if ten_J_colind[sparseid2] == i:
-            J2 = ten_J_in[worldid, sparseid2]
-            ptr2 += 1
-        J += J2 * -deriv
+      if deriv != 0.0 and ptr2 < rownnz2:
+        sparseid2 = rowadr2 + ptr2
+        if ten_J_colind[sparseid2] == i:
+          J += ten_J_in[worldid, sparseid2] * -deriv
+          ptr2 += 1
 
       if wp.static(is_sparse):
-        if J != 0.0 and nnz < rownnz:
+        if J != 0.0:
           sparseid = rowadr + nnz
           efc_J_colind_out[worldid, 0, sparseid] = i
           efc_J_out[worldid, 0, sparseid] = J

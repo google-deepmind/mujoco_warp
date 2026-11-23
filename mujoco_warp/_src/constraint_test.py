@@ -701,7 +701,7 @@ class ConstraintTest(parameterized.TestCase):
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
 
   def test_equality_tendon_nan(self):
-    """A NaN tendon equality row stays within its sparse Jacobian storage."""
+    """A NaN tendon equality row keeps MuJoCo's columns, within its sparse Jacobian storage."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -725,14 +725,14 @@ class ConstraintTest(parameterized.TestCase):
         </worldbody>
         <tendon>
           <fixed name="tendon0">
-            <joint joint="joint0" coef=".1"/>
+            <joint joint="joint1" coef=".1"/>
           </fixed>
           <fixed name="tendon1">
-            <joint joint="joint1" coef=".2"/>
+            <joint joint="joint2" coef=".2"/>
           </fixed>
         </tendon>
         <equality>
-          <joint joint1="joint2"/>
+          <joint joint1="joint0"/>
           <tendon tendon1="tendon1" tendon2="tendon0"/>
         </equality>
         <keyframe>
@@ -745,13 +745,13 @@ class ConstraintTest(parameterized.TestCase):
     )
     self.assertTrue(m.is_sparse)
 
-    # world 0 has a NaN state, so every entry of its tendon equality row is NaN
+    # world 0 has a NaN state, so the coupling derivative of its tendon equality row is NaN
     mjd_nan = mujoco.MjData(mjm)
     mjd_nan.qpos[:] = np.nan
     mujoco.mj_forward(mjm, mjd_nan)
     d.qpos.assign(np.stack((mjd_nan.qpos, mjd.qpos)))
 
-    for arr in (d.nefc, d.efc.J_rownnz):
+    for arr in (d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind):
       arr.fill_(-1)
     for arr in (d.efc.J, d.qacc):
       arr.fill_(wp.inf)
@@ -760,9 +760,21 @@ class ConstraintTest(parameterized.TestCase):
 
     nefc = d.nefc.numpy()
     rownnz = d.efc.J_rownnz.numpy()
+    rowadr = d.efc.J_rowadr.numpy()
+    colind = d.efc.J_colind.numpy()
     for worldid, mjd_world in enumerate((mjd_nan, mjd)):
       _assert_eq(nefc[worldid], mjd_world.nefc, f"nefc[{worldid}]")
       _assert_eq(rownnz[worldid, : nefc[worldid]], mjd_world.efc_J_rownnz, f"J_rownnz[{worldid}]")
+      for r in range(mjd_world.nefc):
+        adr = rowadr[worldid, r]
+        nnz = rownnz[worldid, r]
+        mj_adr = mjd_world.efc_J_rowadr[r]
+        mj_nnz = mjd_world.efc_J_rownnz[r]
+        _assert_eq(
+          colind[worldid, 0, adr : adr + nnz],
+          mjd_world.efc_J_colind[mj_adr : mj_adr + mj_nnz],
+          f"J_colind[{worldid}, {r}]",
+        )
 
     # world 1 is unaffected by world 0
     J = np.zeros((mjd.nefc, mjm.nv))
@@ -770,8 +782,8 @@ class ConstraintTest(parameterized.TestCase):
       J,
       d.efc.J.numpy()[1, 0].astype(np.float64),
       rownnz[1, : mjd.nefc],
-      d.efc.J_rowadr.numpy()[1, : mjd.nefc],
-      d.efc.J_colind.numpy()[1, 0],
+      rowadr[1, : mjd.nefc],
+      colind[1, 0],
     )
     mj_J = np.zeros((mjd.nefc, mjm.nv))
     mujoco.mju_sparse2dense(mj_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
