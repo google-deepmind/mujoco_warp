@@ -28,6 +28,7 @@ import dataclasses
 import warp as wp
 
 from mujoco_warp._src import island
+from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_augmented_factorize_solve_newton_func
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_solve_newton_func
@@ -1216,18 +1217,14 @@ def _scatter_dofs(
 def _dofs(
   # Model:
   dof_treeid: wp.array[int],
-  M_mulm_rowadr: wp.array[int],
-  M_mulm_col: wp.array[int],
-  M_mulm_madr: wp.array[int],
   # Data in:
-  qacc_warmstart_in: wp.array2d[float],
-  M_in: wp.array2d[float],
   tree_awake_in: wp.array2d[int],
   qfrc_smooth_in: wp.array2d[float],
   qacc_smooth_in: wp.array2d[float],
+  efc_Ma_in: wp.array2d[float],
   map_dof2idof_in: wp.array2d[int],
   # In:
-  warmstart: bool,
+  qacc0_in: wp.array2d[float],
   dof_group_in: wp.array2d[int],
   group_idofadr_in: wp.array2d[int],
   tilebase_in: wp.array2d[int],
@@ -1262,18 +1259,9 @@ def _dofs(
       row = vbase_in[worldid, g] + local
       poolrow = _TILE * (tilebase_in[worldid, g] + (local // _TILE) * ntile) + local % _TILE
       row2dof_out[worldid, row] = dofid
-      iqacc_out[worldid, row] = wp.where(warmstart, qacc_warmstart_in[worldid, dofid], qacc_smooth_in[worldid, dofid])
+      iqacc_out[worldid, row] = qacc0_in[worldid, dofid]
       iqfrc_smooth_out[worldid, row] = qfrc_smooth_in[worldid, dofid]
-      # M qacc at the start point (M's columns of a DOF are in its tree)
-      ma = float(0.0)
-      for k in range(M_mulm_rowadr[dofid], M_mulm_rowadr[dofid + 1]):
-        col = M_mulm_col[k]
-        if warmstart:
-          qacc = qacc_warmstart_in[worldid, col]
-        else:
-          qacc = qacc_smooth_in[worldid, col]
-        ma += M_in[worldid, M_mulm_madr[k]] * qacc
-      iMa_out[worldid, row] = ma
+      iMa_out[worldid, row] = efc_Ma_in[worldid, dofid]
   dof2row_out[worldid, dofid] = row
   dof_poolrow_out[worldid, dofid] = poolrow
   dof_local_out[worldid, dofid] = local
@@ -1926,21 +1914,20 @@ def solve(m: types.Model, d: types.Data) -> IslandContext:
     ],
     block_dim=m.block_dim.island_scan_sizes,
   )
+  # the start point (as the world solver: the warmstart, without it qacc_smooth) and M qacc there
+  qacc0 = d.qacc_smooth if m.opt.disableflags & types.DisableBit.WARMSTART else d.qacc_warmstart
+  support.mul_m(m, d, d.efc.Ma, qacc0)
   wp.launch(
     _dofs,
     dim=(d.nworld, m.nv),
     inputs=[
       m.dof_treeid,
-      m.M_mulm_rowadr,
-      m.M_mulm_col,
-      m.M_mulm_madr,
-      d.qacc_warmstart,
-      d.M,
       d.tree_awake if m.opt.enableflags & types.EnableBit.SLEEP else None,
       d.qfrc_smooth,
       d.qacc_smooth,
+      d.efc.Ma,
       d.map_dof2idof,
-      not (m.opt.disableflags & types.DisableBit.WARMSTART),
+      qacc0,
       g.dof_group,
       g.group_idofadr,
       ctx.tilebase,
