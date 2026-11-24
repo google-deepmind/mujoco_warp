@@ -176,7 +176,12 @@ def _next_position(enable_sleep: bool = False):
 
 
 @cache_kernel
-def _next_velocity(enable_sleep: bool = False, check_badqacc: bool = False, warn_badqacc: bool = False):
+def _next_velocity(
+  enable_sleep: bool = False,
+  check_badqacc: bool = False,
+  warn_badqacc: bool = False,
+  separate_qacc: bool = False,
+):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -187,6 +192,7 @@ def _next_velocity(enable_sleep: bool = False, check_badqacc: bool = False, warn
     qacc_in: wp.array2d[float],
     tree_awake_in: wp.array2d[int],
     # In:
+    qacc_step_in: wp.array2d[float],
     qacc_scale_in: float,
     # Data out:
     qvel_out: wp.array2d[float],
@@ -199,10 +205,11 @@ def _next_velocity(enable_sleep: bool = False, check_badqacc: bool = False, warn
         return
 
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-    qacc = qacc_in[worldid, dofid]
+    qacc = qacc_step_in[worldid, dofid] if wp.static(separate_qacc) else qacc_in[worldid, dofid]
     if wp.static(check_badqacc):
-      # check for bad acceleration values (NaN, Inf, or > MJ_MAXVAL)
-      if not wp.isfinite(qacc) or wp.abs(qacc) > MJ_MAXVAL:
+      # check pre-integration d.qacc for bad values (NaN, Inf, or > MJ_MAXVAL)
+      qacc_check = qacc_in[worldid, dofid] if wp.static(separate_qacc) else qacc
+      if not wp.isfinite(qacc_check) or wp.abs(qacc_check) > MJ_MAXVAL:
         prev = wp.atomic_or(overflow_out, worldid, OverflowType.BADQACC)  # kernel_analyzer: ignore[atomic]
         if wp.static(warn_badqacc) and not (prev & OverflowType.BADQACC):
           wp.printf(
@@ -1329,7 +1336,14 @@ def _next_plastic_flex_interp(
       plastic_out[worldid, padr + 5] = sp5
 
 
-def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None, act_dot: Optional[wp.array] = None):
+def _advance(
+  m: Model,
+  d: Data,
+  qacc: wp.array,
+  qvel: Optional[wp.array] = None,
+  act_dot: Optional[wp.array] = None,
+  check_badqacc: bool = True,
+):
   """Advance state and time given activation derivatives and acceleration."""
   # TODO(team): can we assume static timesteps?
 
@@ -1367,9 +1381,14 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None,
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP)
 
   wp.launch(
-    _next_velocity(sleep_enabled, True, bool(int(m.opt.warn_overflow) & OverflowType.BADQACC)),
+    _next_velocity(
+      sleep_enabled,
+      check_badqacc,
+      check_badqacc and bool(int(m.opt.warn_overflow) & OverflowType.BADQACC),
+      qacc is not d.qacc,
+    ),
     dim=(d.nworld, m.nv),
-    inputs=[m.opt.timestep, m.dof_treeid, d.qvel, qacc, d.tree_awake, 1.0],
+    inputs=[m.opt.timestep, m.dof_treeid, d.qvel, d.qacc, d.tree_awake, qacc, 1.0],
     outputs=[d.qvel, d.overflow],
   )
 
@@ -1752,6 +1771,7 @@ def _rk_perturb_state(
   qvel_pos: wp.array2d[float],
   act_t0: Optional[wp.array] = None,
   time_t0: Optional[wp.array] = None,
+  check_badqacc: bool = False,
 ):
   # time
   if time_t0 is not None:
@@ -1779,9 +1799,13 @@ def _rk_perturb_state(
 
   # velocity
   wp.launch(
-    _next_velocity(enable_sleep),
+    _next_velocity(
+      enable_sleep,
+      check_badqacc,
+      check_badqacc and bool(int(m.opt.warn_overflow) & OverflowType.BADQACC),
+    ),
     dim=(d.nworld, m.nv),
-    inputs=[m.opt.timestep, m.dof_treeid, qvel_t0, d.qacc, d.tree_awake, scale],
+    inputs=[m.opt.timestep, m.dof_treeid, qvel_t0, d.qacc, d.tree_awake, d.qacc, scale],
     outputs=[d.qvel, d.overflow],
   )
 
@@ -1969,7 +1993,7 @@ def rungekutta4(m: Model, d: Data):
 
   for i in range(3):
     a, b = float(A[i]), B[i + 1]
-    _rk_perturb_state(m, d, a, qpos_t0, qvel_t0, qvel_stage, act_t0, time_t0)
+    _rk_perturb_state(m, d, a, qpos_t0, qvel_t0, qvel_stage, act_t0, time_t0, check_badqacc=(i == 0))
     # sensors keep their values from the start of the step, as in mj_RungeKutta
     _forward(m, d, skip_sensor=True)
     wp.launch(
@@ -2009,7 +2033,7 @@ def rungekutta4(m: Model, d: Data):
     wp.copy(d.xpos, xpos_t0)
     wp.copy(d.xquat, xquat_t0)
 
-  _advance(m, d, qacc_rk, qvel_rk, act_dot_rk)
+  _advance(m, d, qacc_rk, qvel_rk, act_dot_rk, check_badqacc=False)
 
   # effective acceleration of the step (RK weighted combination)
   wp.copy(d.qacc, qacc_rk)

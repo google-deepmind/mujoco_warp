@@ -4284,6 +4284,41 @@ class ActuatorDampingTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(bool(overflow[1] & OverflowType.BADQACC))
 
+  @parameterized.product(integrator=("Euler", "RK4", "implicit", "implicitfast"), nworld=(1, 2))
+  def test_overflow_badqacc_preintegration(self, integrator, nworld):
+    """Tests that OverflowType.BADQACC checks pre-integration d.qacc, matching MuJoCo C."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option timestep="0.002" integrator="{integrator}"/>
+        <worldbody>
+          <body>
+            <joint name="j" type="hinge" axis="0 1 0" damping="100"/>
+            <geom type="sphere" size="0.001" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjd.qvel[0] = 100.0
+    mujoco.mj_step(mjm, mjd)
+    self.assertGreater(mjd.warning[mujoco.mjtWarning.mjWARN_BADQACC].number, 0)
+
+    qvel = np.zeros((nworld, m.nv), dtype=float)
+    qvel[0, 0] = 100.0
+    d.qvel.assign(qvel)
+    d.overflow.zero_()
+    m.opt.warn_overflow &= ~OverflowType.BADQACC
+
+    mjw.step(m, d)
+
+    overflow = d.overflow.numpy()
+    self.assertTrue(bool(overflow[0] & OverflowType.BADQACC))
+    if nworld == 2:
+      self.assertFalse(bool(overflow[1] & OverflowType.BADQACC))
+
 
 class PIDTest(parameterized.TestCase):
   """Tests for <pid> actuator dynamics and gain."""
