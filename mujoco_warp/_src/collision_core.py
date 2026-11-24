@@ -372,11 +372,13 @@ def contact_material_params(
       condim = condim1
       max_geom_friction = geom_friction[friction_id, g1]
       adhesion = a1
+      solref = geom_solref[solref_id, g1]
     elif p2 > p1:
       mix = 0.0
       condim = condim2
       max_geom_friction = geom_friction[friction_id, g2]
       adhesion = a2
+      solref = geom_solref[solref_id, g2]
     else:
       mix = safe_div(solmix1, solmix1 + solmix2)
       mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
@@ -386,6 +388,14 @@ def contact_material_params(
       max_geom_friction = wp.max(geom_friction[friction_id, g1], geom_friction[friction_id, g2])
       adhesion = a1 + a2
 
+      # solref: mix if both standard, min if either is direct
+      solref1 = geom_solref[solref_id, g1]
+      solref2 = geom_solref[solref_id, g2]
+      if solref1[0] > 0.0 and solref2[0] > 0.0:
+        solref = mix * solref1 + (1.0 - mix) * solref2
+      else:
+        solref = wp.min(solref1, solref2)
+
     friction = vec5(
       max_geom_friction[0],
       max_geom_friction[0],
@@ -393,11 +403,6 @@ def contact_material_params(
       max_geom_friction[2],
       max_geom_friction[2],
     )
-
-    if geom_solref[solref_id, g1][0] > 0.0 and geom_solref[solref_id, g2][0] > 0.0:
-      solref = mix * geom_solref[solref_id, g1] + (1.0 - mix) * geom_solref[solref_id, g2]
-    else:
-      solref = wp.min(geom_solref[solref_id, g1], geom_solref[solref_id, g2])
 
     solreffriction = wp.vec2(0.0, 0.0)
     solimp = mix * geom_solimp[solimp_id, g1] + (1.0 - mix) * geom_solimp[solimp_id, g2]
