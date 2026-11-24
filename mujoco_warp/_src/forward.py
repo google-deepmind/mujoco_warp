@@ -2874,6 +2874,13 @@ def fwd_kinematics(m: Model, d: Data):
       sleep.update_sleep(m, d)
 
 
+def needs_eq_com_vel(m: Model) -> bool:
+  """Whether connect/weld targets need velocity kinematics during constraint assembly."""
+  return bool(m.eq_connect_adr.size or m.eq_wld_adr.size) and not bool(
+    m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.EQUALITY)
+  )
+
+
 @event_scope
 def fwd_position(m: Model, d: Data, factorize: bool = True):
   """Position-dependent computations.
@@ -2919,6 +2926,9 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
     else:
       collision_driver.collision(m, d)
 
+  # Connect/weld Jdot*v reads cvel and cdof_dot while constructing acceleration targets.
+  if needs_eq_com_vel(m):
+    smooth.com_vel(m, d)
   constraint.make_constraint(m, d)
 
   if sleep_enabled:
@@ -2995,8 +3005,12 @@ def _tendon_velocity(
 
 
 @event_scope
-def fwd_velocity(m: Model, d: Data, cfrc_int_in: Optional[wp.array] = None):
-  """Velocity-dependent computations."""
+def fwd_velocity(m: Model, d: Data, cfrc_int_in: Optional[wp.array] = None, skip_com_vel: bool = False):
+  """Velocity-dependent computations.
+
+  ``skip_com_vel`` reuses velocity kinematics prepared for connect/weld targets by
+  ``fwd_position``. Keep it false when equality waking may have changed the active trees.
+  """
   wp.launch(
     _actuator_velocity,
     dim=(d.nworld, m.nactuator),
@@ -3011,7 +3025,8 @@ def fwd_velocity(m: Model, d: Data, cfrc_int_in: Optional[wp.array] = None):
     outputs=[d.ten_velocity],
   )
 
-  smooth.com_vel(m, d)
+  if not skip_com_vel:
+    smooth.com_vel(m, d)
   passive.passive(m, d)
   smooth.rne(m, d, cfrc_int_in=cfrc_int_in)
   smooth.tendon_bias(m, d, d.qfrc_bias)
@@ -3799,7 +3814,7 @@ def _forward(m: Model, d: Data, skip_sensor: bool = False):
     sensor.sensor_pos(m, d)
   _energy_pos(m, d, skip_sensor)
 
-  fwd_velocity(m, d)
+  fwd_velocity(m, d, skip_com_vel=needs_eq_com_vel(m) and not bool(m.opt.enableflags & EnableBit.SLEEP))
   if not skip_sensor:
     sensor.sensor_vel(m, d)
   _energy_vel(m, d, skip_sensor)
@@ -3860,7 +3875,7 @@ def step1(m: Model, d: Data):
 
   _energy_pos(m, d)
 
-  fwd_velocity(m, d)
+  fwd_velocity(m, d, skip_com_vel=needs_eq_com_vel(m) and not bool(m.opt.enableflags & EnableBit.SLEEP))
   sensor.sensor_vel(m, d)
 
   _energy_vel(m, d)
