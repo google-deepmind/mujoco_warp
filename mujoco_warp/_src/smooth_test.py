@@ -456,6 +456,60 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.light_xpos.numpy()[0], mjd.light_xpos, "light_xpos")
     _assert_eq(d.light_xdir.numpy()[0], mjd.light_xdir, "light_xdir")
 
+  @parameterized.parameters(1, 2)
+  def test_camlight_normalization_fallback(self, nworld):
+    """Tests target camera and light normalization fallbacks."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="target">
+            <joint type="slide" axis="0 1 0"/>
+            <geom size=".1"/>
+          </body>
+          <camera mode="targetbody" target="target" pos="0 0 1"/>
+          <camera mode="targetbody" target="target"/>
+          <light mode="targetbody" target="target"/>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 0] = 0.25
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_kinematics(mjm, mjd1)
+      mujoco.mj_comPos(mjm, mjd1)
+      mujoco.mj_camlight(mjm, mjd1)
+      mjds.append(mjd1)
+      mjw.kinematics(m, d)
+      mjw.com_pos(m, d)
+
+    d.cam_xpos.fill_(wp.inf)
+    d.cam_xmat.fill_(wp.inf)
+    d.light_xpos.fill_(wp.inf)
+    d.light_xdir.fill_(wp.inf)
+    mjw.camlight(m, d)
+
+    cam_xpos = d.cam_xpos.numpy()
+    cam_xmat = d.cam_xmat.numpy()
+    light_xpos = d.light_xpos.numpy()
+    light_xdir = d.light_xdir.numpy()
+    for w in range(nworld):
+      _assert_eq(cam_xpos[w], mjds[w].cam_xpos, f"cam_xpos_world_{w}")
+      _assert_eq(cam_xmat[w], mjds[w].cam_xmat.reshape((-1, 3, 3)), f"cam_xmat_world_{w}")
+      _assert_eq(light_xpos[w], mjds[w].light_xpos, f"light_xpos_world_{w}")
+      _assert_eq(light_xdir[w], mjds[w].light_xdir, f"light_xdir_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(cam_xmat[0], cam_xmat[1]))
+      self.assertFalse(np.allclose(light_xdir[0], light_xdir[1]))
+
   @parameterized.named_parameters(
     _tree_cases(("sparse", mujoco.mjtJacobian.mjJAC_SPARSE), ("dense", mujoco.mjtJacobian.mjJAC_DENSE))
   )
