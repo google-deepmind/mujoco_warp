@@ -34,6 +34,7 @@ from mujoco_warp._src import util_misc
 from mujoco_warp._src.support import mat33_to_quat_polar
 from mujoco_warp._src.support import next_act
 from mujoco_warp._src.support import xfrc_accumulate
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import BroadphaseType
@@ -175,7 +176,7 @@ def _next_position(enable_sleep: bool = False):
 
 
 @cache_kernel
-def _next_velocity(enable_sleep: bool = False):
+def _next_velocity(enable_sleep: bool = False, check_badqacc: bool = False, warn_badqacc: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -189,6 +190,7 @@ def _next_velocity(enable_sleep: bool = False):
     qacc_scale_in: float,
     # Data out:
     qvel_out: wp.array2d[float],
+    overflow_out: wp.array[int],
   ):
     worldid, dofid = wp.tid()
     if wp.static(enable_sleep):
@@ -197,7 +199,19 @@ def _next_velocity(enable_sleep: bool = False):
         return
 
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-    qvel_out[worldid, dofid] = qvel_in[worldid, dofid] + qacc_scale_in * qacc_in[worldid, dofid] * timestep
+    qacc = qacc_in[worldid, dofid]
+    if wp.static(check_badqacc):
+      # check for bad acceleration values (NaN, Inf, or > MJ_MAXVAL)
+      if not wp.isfinite(qacc) or wp.abs(qacc) > MJ_MAXVAL:
+        prev = wp.atomic_or(overflow_out, worldid, OverflowType.BADQACC)  # kernel_analyzer: ignore[atomic]
+        if wp.static(warn_badqacc) and not (prev & OverflowType.BADQACC):
+          wp.printf(
+            "Nan, Inf or huge value in QACC at world %u DOF %u. The simulation is unstable.\n"
+            "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.BADQACC (or = 0 for all)\n",
+            worldid,
+            dofid,
+          )
+    qvel_out[worldid, dofid] = qvel_in[worldid, dofid] + qacc_scale_in * qacc * timestep
 
   return kernel
 
@@ -1345,10 +1359,10 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None,
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP)
 
   wp.launch(
-    _next_velocity(sleep_enabled),
+    _next_velocity(sleep_enabled, True, bool(int(m.opt.warn_overflow) & OverflowType.BADQACC)),
     dim=(d.nworld, m.nv),
     inputs=[m.opt.timestep, m.dof_treeid, d.qvel, qacc, d.tree_awake, 1.0],
-    outputs=[d.qvel],
+    outputs=[d.qvel, d.overflow],
   )
 
   # advance positions with qvel if given, d.qvel otherwise (semi-implicit)
@@ -1774,7 +1788,7 @@ def _rk_perturb_state(
     _next_velocity(enable_sleep),
     dim=(d.nworld, m.nv),
     inputs=[m.opt.timestep, m.dof_treeid, qvel_t0, d.qacc, d.tree_awake, scale],
-    outputs=[d.qvel],
+    outputs=[d.qvel, d.overflow],
   )
 
   # activation

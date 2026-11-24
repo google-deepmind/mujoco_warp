@@ -29,6 +29,7 @@ from mujoco_warp import DynType
 from mujoco_warp import EnableBit
 from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
+from mujoco_warp import OverflowType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
 
@@ -4184,6 +4185,55 @@ class ActuatorDampingTest(parameterized.TestCase):
       _assert_eq(qvel[world], mjd.qvel, f"qvel_world_{world}")
     if nworld == 2:
       self.assertFalse(np.allclose(qvel[0], qvel[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_overflow_badqacc(self, nworld):
+    """Tests that numerical acceleration instability sets OverflowType.BADQACC."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.002" integrator="Euler"/>
+        <worldbody>
+          <body>
+            <joint name="j" axis="0 1 0"/>
+            <geom type="cylinder" size="0.06 0.02" density="900" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <velocity joint="j" kv="2"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qvel = np.zeros((nworld, m.nv), dtype=float)
+    qvel[0, 0] = 1.0
+    d.qvel.assign(qvel)
+    d.overflow.zero_()
+
+    # suppress print warning on second pass while still recording OverflowType.BADQACC
+    for _ in range(15):
+      mjw.step(m, d)
+
+    overflow = d.overflow.numpy()
+    self.assertTrue(bool(overflow[0] & OverflowType.BADQACC))
+    if nworld == 2:
+      self.assertFalse(bool(overflow[1] & OverflowType.BADQACC))
+
+    # reset unstable worlds and verify warning-suppressed detection
+    mjw.reset_data(m, d, reset=wp.array((overflow & int(OverflowType.BADQACC)) != 0, dtype=bool))
+    self.assertEqual(d.overflow.numpy()[0], 0)
+
+    m.opt.warn_overflow &= ~OverflowType.BADQACC
+    d.qvel.assign(qvel)
+    for _ in range(15):
+      mjw.step(m, d)
+
+    overflow = d.overflow.numpy()
+    self.assertTrue(bool(overflow[0] & OverflowType.BADQACC))
+    if nworld == 2:
+      self.assertFalse(bool(overflow[1] & OverflowType.BADQACC))
 
 
 class PIDTest(parameterized.TestCase):
