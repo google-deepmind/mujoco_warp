@@ -23,10 +23,11 @@ from mujoco_warp import GeomType
 from mujoco_warp import Model
 from mujoco_warp import test_data
 from mujoco_warp._src.collision_core import Geom
-from mujoco_warp._src.collision_gjk import _tri_affine_coord
+from mujoco_warp._src.collision_gjk import EPA_WITNESS_TOL
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
+from mujoco_warp._src.collision_gjk import tri_affine_coord
 from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.types import MJ_MAX_EPAFACES
 from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
@@ -391,7 +392,7 @@ class GJKTest(parameterized.TestCase):
     @wp.kernel(module="unique", enable_backward=False)
     def affine_coordinates(points_in: wp.array2d[wp.vec3], coordinates_out: wp.array[wp.vec3]):
       i = wp.tid()
-      coordinates_out[i] = _tri_affine_coord(points_in[i, 0], points_in[i, 1], points_in[i, 2], points_in[i, 3])
+      coordinates_out[i] = tri_affine_coord(points_in[i, 0], points_in[i, 1], points_in[i, 2], points_in[i, 3])
 
     points_in = wp.array(np.array(points), dtype=wp.vec3)
     coordinates_out = wp.full(len(points), wp.inf, dtype=wp.vec3)
@@ -399,6 +400,29 @@ class GJKTest(parameterized.TestCase):
     actual = coordinates_out.numpy()
     np.testing.assert_allclose(actual.sum(axis=1), 1.0, atol=2e-7, rtol=0)
     np.testing.assert_allclose(actual, expected, atol=2e-6, rtol=2e-6)
+
+  @parameterized.named_parameters(
+    ("coincident", ((0, 0, 0), (0, 0, 0), (0, 0, 0)), (0, 0.5, 1), False),
+    ("repeated_vertex", ((0, 0, 0), (0, 0, 0), (0, 1, 0)), (0, 0.5, 0), False),
+    ("collinear", ((0, 0, 0), (0, 1, 0), (0, 2, 0)), (0, 0.5, 0), False),
+    ("collinear_off_line", ((0, 0, 0), (0, 1, 0), (0, 2, 0)), (0, 0.5, 1), True),
+  )
+  def test_tri_affine_coordinates_degenerate(self, triangle, point, expect_fallback):
+    """Zero-area triangles stay finite and off-line queries trigger the EPA fallback predicate."""
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def affine_coordinates(points_in: wp.array[wp.vec3], coordinates_out: wp.array[wp.vec3], fallback_out: wp.array[bool]):
+      coordinates = tri_affine_coord(points_in[0], points_in[1], points_in[2], points_in[3])
+      coordinates_out[0] = coordinates
+      fallback_out[0] = wp.min(coordinates) < -EPA_WITNESS_TOL
+
+    points = np.vstack((triangle, point)).astype(np.float32) + 36.0
+    points_in = wp.array(points, dtype=wp.vec3)
+    coordinates_out = wp.full(1, wp.inf, dtype=wp.vec3)
+    fallback_out = wp.zeros(1, dtype=bool)
+    wp.launch(affine_coordinates, 1, inputs=[points_in], outputs=[coordinates_out, fallback_out])
+    self.assertTrue(np.isfinite(coordinates_out.numpy()).all())
+    self.assertEqual(bool(fallback_out.numpy()[0]), expect_fallback)
 
   def test_spheres_distance(self):
     """Test distance between two spheres."""

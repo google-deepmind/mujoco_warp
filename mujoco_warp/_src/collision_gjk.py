@@ -826,7 +826,7 @@ def _test_tetra(p0: wp.vec3, p1: wp.vec3, p2: wp.vec3, p3: wp.vec3) -> bool:
 
 
 @wp.func
-def _tri_affine_coord(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, p: wp.vec3) -> wp.vec3:
+def tri_affine_coord(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, p: wp.vec3) -> wp.vec3:
   # Work relative to one vertex: absolute-coordinate determinants lose the
   # small triangle area through cancellation on large height fields.
   e0 = v2 - v1
@@ -835,21 +835,23 @@ def _tri_affine_coord(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, p: wp.vec3) -> wp.v
   normal = wp.cross(e0, e1)
   x = int(0)
   y = int(1)
+  det = normal[2]
   if wp.abs(normal[0]) >= wp.abs(normal[1]) and wp.abs(normal[0]) >= wp.abs(normal[2]):
     x = 1
     y = 2
+    det = normal[0]
   elif wp.abs(normal[1]) >= wp.abs(normal[2]):
     x = 0
     y = 2
-  det = e0[x] * e1[y] - e0[y] * e1[x]
-  b = (q[x] * e1[y] - q[y] * e1[x]) / det
-  c = (e0[x] * q[y] - e0[y] * q[x]) / det
+    det = -normal[1]
+  b = safe_div(q[x] * e1[y] - q[y] * e1[x], det)
+  c = safe_div(e0[x] * q[y] - e0[y] * q[x], det)
   return wp.vec3(1.0 - b - c, b, c)
 
 
 @wp.func
 def _tri_point_intersect(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, p: wp.vec3) -> bool:
-  coordinates = _tri_affine_coord(v1, v2, v3, p)
+  coordinates = tri_affine_coord(v1, v2, v3, p)
   l1 = coordinates[0]
   l2 = coordinates[1]
   l3 = coordinates[2]
@@ -976,7 +978,7 @@ def _epa_witness(
   v3 = pt.vert[2 * face[2]] - pt.vert[2 * face[2] + 1]
 
   n = pt.face_pr[face_idx]
-  coordinates = _tri_affine_coord(v1, v2, v3, n)
+  coordinates = tri_affine_coord(v1, v2, v3, n)
 
   # coplanar faces tie for closest, so the selected face may not contain the witness; extrapolating
   # outside it is inaccurate and unbounded for sliver faces, so use the face the ray along n exits
@@ -1044,7 +1046,7 @@ def _epa_witness(
       sp = support(geom2, geomtype2, x2)
       x2 = sp.point
 
-    coordinates2 = _tri_affine_coord(a, b, c, x2)
+    coordinates2 = tri_affine_coord(a, b, c, x2)
     if coordinates2[0] > 0.0 and coordinates2[1] > 0.0 and coordinates2[2] > 0.0:
       x1 = coordinates2[0] * a + coordinates2[1] * b + coordinates2[2] * c
     else:
@@ -2640,7 +2642,7 @@ def _inflate(
       b = geom1.polyvert[4]
       c = geom1.polyvert[5]
 
-      coordinates = _tri_affine_coord(a, b, c, x2)
+      coordinates = tri_affine_coord(a, b, c, x2)
       if coordinates[0] > 0.0 and coordinates[1] > 0.0 and coordinates[2] > 0.0:
         x1 = coordinates[0] * a + coordinates[1] * b + coordinates[2] * c
       else:
