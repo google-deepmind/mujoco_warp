@@ -525,6 +525,51 @@ class SensorTest(parameterized.TestCase):
 
       _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
 
+  def test_accumulated_sensors_reset(self):
+    """Tests that touch and tendon actuator force sensors overwrite stale sensordata."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="1 1 .1"/>
+          <body pos="0 0 .099">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+            <site name="touch" type="box" size=".11 .11 .11"/>
+          </body>
+          <body pos="1 0 1">
+            <joint name="slide" type="slide" axis="1 0 0"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="tendon">
+            <joint joint="slide" coef="1"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <motor tendon="tendon"/>
+          <motor tendon="tendon" gear="2"/>
+        </actuator>
+        <sensor>
+          <touch site="touch"/>
+          <tendonactuatorfrc tendon="tendon"/>
+        </sensor>
+        <keyframe>
+          <key qpos="0 0 .099 1 0 0 0 0" ctrl=".5 .25"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+    self.assertTrue(np.all(mjd.sensordata > 0.0))
+
+    d.sensordata.fill_(wp.inf)
+
+    for _ in range(2):
+      mjw.sensor_acc(m, d)
+      _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
   def test_acc_sensors_dofless_body(self):
     """Test acceleration sensors on static and mocap bodies match MuJoCo."""
     _, mjd, m, d = test_data.fixture(

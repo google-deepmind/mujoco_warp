@@ -348,6 +348,51 @@ class InverseTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(qfrc_inv[0], qfrc_inv[1]))
 
+  def test_inverse_sensordata(self):
+    """Tests that repeated inverse dynamics calls do not accumulate sensor values."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="1 1 .1"/>
+          <body pos="0 0 .099">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1"/>
+            <site name="touch" type="box" size=".11 .11 .11"/>
+          </body>
+          <body pos="1 0 1">
+            <joint name="slide" type="slide" axis="1 0 0"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="tendon">
+            <joint joint="slide" coef="1"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <motor tendon="tendon"/>
+        </actuator>
+        <sensor>
+          <touch site="touch"/>
+          <tendonactuatorfrc tendon="tendon"/>
+          <jointpos joint="slide"/>
+        </sensor>
+        <keyframe>
+          <key qpos="0 0 .099 1 0 0 0 .1" ctrl=".5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    mujoco.mj_inverse(mjm, mjd)
+    self.assertGreater(mjd.sensordata[0], 0.0)
+
+    for _ in range(2):
+      mjw.inverse(m, d)
+      _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+
   @parameterized.product(integrator=(IntegratorType.EULER, IntegratorType.IMPLICITFAST), invdiscrete=(True, False))
   def test_inverse_actuator_damping(self, integrator, invdiscrete):
     """Tests inverse dynamics with actuator damping and armature."""
