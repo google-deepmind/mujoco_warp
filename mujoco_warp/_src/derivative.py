@@ -1607,126 +1607,150 @@ def _qderiv_box_fluid(deterministic: bool = False):
   return kernel
 
 
-@wp.kernel
-def _free_body_block(
-  # Model:
-  opt_timestep: wp.array[float],
-  body_dofadr: wp.array[int],
-  tendon_actuatorid: wp.array[int],
-  ten_J_rownnz: wp.array[int],
-  ten_J_rowadr: wp.array[int],
-  ten_J_colind: wp.array[int],
-  tendon_damping: wp.array2d[float],
-  tendon_dampingpoly: wp.array2d[wp.vec2],
-  actuator_trntype: wp.array[int],
-  actuator_trnid: wp.array[wp.vec2i],
-  actuator_damping: wp.array2d[float],
-  actuator_dampingpoly: wp.array2d[wp.vec2],
-  actuator_gear: wp.array2d[wp.spatial_vector],
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  M_colind: wp.array[int],
-  body_freeadr: wp.array[int],
-  M_elemid: wp.array2d[int],
-  # Data in:
-  ten_J_in: wp.array2d[float],
-  moment_rownnz_in: wp.array2d[int],
-  moment_rowadr_in: wp.array2d[int],
-  moment_colind_in: wp.array2d[int],
-  actuator_moment_in: wp.array2d[float],
-  ten_velocity_in: wp.array2d[float],
-  # In:
-  qDeriv_in: wp.array2d[float],
-  ntendon_damped: int,
-  actuator_vel_in: wp.array2d[float],
-  # Out:
-  block_out: wp.array2d[mat66],
-):
-  """Assembles each standalone free body's 6x6 block of M - dt * (damping derivatives).
+@cache_kernel
+def _free_body_block(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    body_dofadr: wp.array[int],
+    body_treeid: wp.array[int],
+    tendon_actuatorid: wp.array[int],
+    ten_J_rownnz: wp.array[int],
+    ten_J_rowadr: wp.array[int],
+    ten_J_colind: wp.array[int],
+    tendon_damping: wp.array2d[float],
+    tendon_dampingpoly: wp.array2d[wp.vec2],
+    actuator_trntype: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_damping: wp.array2d[float],
+    actuator_dampingpoly: wp.array2d[wp.vec2],
+    actuator_gear: wp.array2d[wp.spatial_vector],
+    M_rownnz: wp.array[int],
+    M_rowadr: wp.array[int],
+    M_colind: wp.array[int],
+    body_freeadr: wp.array[int],
+    # Data in:
+    ten_J_in: wp.array2d[float],
+    moment_rownnz_in: wp.array2d[int],
+    moment_rowadr_in: wp.array2d[int],
+    moment_colind_in: wp.array2d[int],
+    actuator_moment_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
+    ten_velocity_in: wp.array2d[float],
+    # In:
+    qDeriv_in: wp.array2d[float],
+    ntendon_damped: int,
+    actuator_vel_in: wp.array2d[float],
+    # Out:
+    block_out: wp.array2d[mat66],
+  ):
+    """Gather M - dt * damping derivatives, restoring pairs omitted from diagonal M."""
+    worldid, freeid = wp.tid()
+    bodyid = body_freeadr[freeid]
+    if wp.static(enable_sleep):
+      treeid = body_treeid[bodyid]
+      if treeid >= 0 and tree_awake_in[worldid, treeid] == 0:
+        return
+    dof_adr = body_dofadr[bodyid]
+    dof_end = dof_adr + 6
 
-  Gathers the block from qDeriv (M-structure lower triangle). M's sparsity can omit off-diagonal
-  pairs inside the block (a simple body stores only its diagonal); the actuator and tendon damping
-  couplings the in-pattern scatters dropped there are added here, as MuJoCo's D-structure qDeriv
-  keeps them for mjd_freeMhat.
-  """
-  worldid, freeid = wp.tid()
-  dof_adr = body_dofadr[body_freeadr[freeid]]
+    A = mat66(0.0)
+    if M_rownnz[dof_adr + 5] == 6:
+      for r in range(6):
+        row = dof_adr + r
+        start = M_rowadr[row]
+        for k in range(M_rownnz[row]):
+          c = M_colind[start + k] - dof_adr
+          val = qDeriv_in[worldid, start + k]
+          A[r, c] = val
+          A[c, r] = val
+      block_out[worldid, freeid] = A
+      return
 
-  A = mat66(0.0)
-  dense = True
-  for r in range(6):
-    row = dof_adr + r
-    start = M_rowadr[row]
-    nnz = M_rownnz[row]
-    if nnz != r + 1:
-      dense = False
-    for k in range(nnz):
-      c = M_colind[start + k] - dof_adr
-      val = qDeriv_in[worldid, start + k]
-      A[r, c] = val
-      A[c, r] = val
+    for r in range(6):
+      A[r, r] = qDeriv_in[worldid, M_rowadr[dof_adr + r]]
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
-  if dense:
+    # Restore actuator off-diagonal pairs dropped by diagonal-only M.
+    for actid in range(actuator_vel_in.shape[1]):
+      vel = actuator_vel_in[worldid, actid]
+      if vel == 0.0:
+        continue
+      rowadr = moment_rowadr_in[worldid, actid]
+      local = vec6(0.0)
+      nnz = int(0)
+      for i in range(moment_rownnz_in[worldid, actid]):
+        dofi = moment_colind_in[worldid, rowadr + i]
+        if dofi >= dof_end:
+          break
+        if dofi < dof_adr:
+          continue
+        value = actuator_moment_in[worldid, rowadr + i]
+        if value != 0.0:
+          local[dofi - dof_adr] = value
+          nnz += 1
+      if nnz < 2:
+        continue
+      scale = timestep * vel
+      for r in range(6):
+        mr = local[r]
+        if mr == 0.0:
+          continue
+        for c in range(r):
+          if local[c] == 0.0:
+            continue
+          val = scale * mr * local[c]
+          A[r, c] -= val
+          A[c, r] -= val
+
+    # Restore tendon off-diagonal pairs dropped by diagonal-only M.
+    for tenid in range(ntendon_damped):
+      rowadr = ten_J_rowadr[tenid]
+      local = vec6(0.0)
+      nnz = int(0)
+      for i in range(ten_J_rownnz[tenid]):
+        dofi = ten_J_colind[rowadr + i]
+        if dofi >= dof_end:
+          break
+        if dofi < dof_adr:
+          continue
+        value = ten_J_in[worldid, rowadr + i]
+        if value != 0.0:
+          local[dofi - dof_adr] = value
+          nnz += 1
+      if nnz < 2:
+        continue
+      damping, dpoly = util_misc.tendon_damping_total(
+        tendon_actuatorid,
+        tendon_damping,
+        tendon_dampingpoly,
+        actuator_trntype,
+        actuator_trnid,
+        actuator_damping,
+        actuator_dampingpoly,
+        actuator_gear,
+        worldid,
+        tenid,
+      )
+      if damping == 0.0 and dpoly[0] == 0.0 and dpoly[1] == 0.0:
+        continue
+      deriv = timestep * util_misc._poly_force_deriv(damping, dpoly, ten_velocity_in[worldid, tenid], 1)
+      if deriv == 0.0:
+        continue
+      for r in range(6):
+        jr = local[r]
+        if jr == 0.0:
+          continue
+        for c in range(r):
+          if local[c] == 0.0:
+            continue
+          val = deriv * jr * local[c]
+          A[r, c] += val
+          A[c, r] += val
     block_out[worldid, freeid] = A
-    return
 
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-
-  # actuators: -dt * vel * m_i m_j for the pairs _qderiv_actuator_passive_actuation_sparse dropped
-  for actid in range(actuator_vel_in.shape[1]):
-    vel = actuator_vel_in[worldid, actid]
-    if vel == 0.0:
-      continue
-    rowadr = moment_rowadr_in[worldid, actid]
-    for i in range(moment_rownnz_in[worldid, actid]):
-      moment_i = actuator_moment_in[worldid, rowadr + i]
-      dofi = moment_colind_in[worldid, rowadr + i]
-      if moment_i == 0.0 or dofi < dof_adr or dofi >= dof_adr + 6:
-        continue
-      for j in range(i):
-        moment_j = actuator_moment_in[worldid, rowadr + j]
-        dofj = moment_colind_in[worldid, rowadr + j]
-        if moment_j == 0.0 or dofj < dof_adr or dofj >= dof_adr + 6 or M_elemid[dofi, dofj] >= 0:
-          continue
-        val = timestep * vel * moment_i * moment_j
-        A[dofi - dof_adr, dofj - dof_adr] -= val
-        A[dofj - dof_adr, dofi - dof_adr] -= val
-
-  # tendons: dt * damping' * J_i J_j for the pairs outside M's sparsity
-  for tenid in range(ntendon_damped):
-    damping, dpoly = util_misc.tendon_damping_total(
-      tendon_actuatorid,
-      tendon_damping,
-      tendon_dampingpoly,
-      actuator_trntype,
-      actuator_trnid,
-      actuator_damping,
-      actuator_dampingpoly,
-      actuator_gear,
-      worldid,
-      tenid,
-    )
-    deriv = timestep * util_misc._poly_force_deriv(damping, dpoly, ten_velocity_in[worldid, tenid], 1)
-    if deriv == 0.0:
-      continue
-    rowadr = ten_J_rowadr[tenid]
-    for i in range(ten_J_rownnz[tenid]):
-      Ji = ten_J_in[worldid, rowadr + i]
-      dofi = ten_J_colind[rowadr + i]
-      if Ji == 0.0 or dofi < dof_adr or dofi >= dof_adr + 6:
-        continue
-      for j in range(i):
-        Jj = ten_J_in[worldid, rowadr + j]
-        dofj = ten_J_colind[rowadr + j]
-        if Jj == 0.0 or dofj < dof_adr or dofj >= dof_adr + 6:
-          continue
-        if M_elemid[wp.max(dofi, dofj), wp.min(dofi, dofj)] >= 0:
-          continue
-        val = Ji * Jj * deriv
-        A[dofi - dof_adr, dofj - dof_adr] += val
-        A[dofj - dof_adr, dofi - dof_adr] += val
-
-  block_out[worldid, freeid] = A
+  return kernel
 
 
 @event_scope
@@ -1877,11 +1901,12 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float], free_block: Opti
     )
   if free_block is not None:
     wp.launch(
-      _free_body_block,
+      _free_body_block(enable_sleep),
       dim=(d.nworld, m.body_freeadr.size),
       inputs=[
         m.opt.timestep,
         m.body_dofadr,
+        m.body_treeid,
         m.tendon_actuatorid,
         m.ten_J_rownnz,
         m.ten_J_rowadr,
@@ -1897,12 +1922,12 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float], free_block: Opti
         m.M_rowadr,
         m.M_colind,
         m.body_freeadr,
-        m.M_elemid,
         d.ten_J,
         d.moment_rownnz,
         d.moment_rowadr,
         d.moment_colind,
         d.actuator_moment,
+        d.tree_awake,
         d.ten_velocity,
         out,
         m.ntendon if tendon_damper else 0,
