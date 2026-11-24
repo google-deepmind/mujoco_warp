@@ -367,21 +367,18 @@ def contact_material_params(
     a1 = geom_adhesion[adhesion_id, g1]
     a2 = geom_adhesion[adhesion_id, g2]
 
-    solref1 = geom_solref[solref_id, g1]
-    solref2 = geom_solref[solref_id, g2]
-
     if p1 > p2:
       mix = 1.0
       condim = condim1
       max_geom_friction = geom_friction[friction_id, g1]
       adhesion = a1
-      solref = solref1
+      solref = geom_solref[solref_id, g1]
     elif p2 > p1:
       mix = 0.0
       condim = condim2
       max_geom_friction = geom_friction[friction_id, g2]
       adhesion = a2
-      solref = solref2
+      solref = geom_solref[solref_id, g2]
     else:
       mix = safe_div(solmix1, solmix1 + solmix2)
       mix = wp.where((solmix1 < MJ_MINVAL) and (solmix2 < MJ_MINVAL), 0.5, mix)
@@ -392,6 +389,8 @@ def contact_material_params(
       adhesion = a1 + a2
 
       # solref: mix if both standard, min if either is direct
+      solref1 = geom_solref[solref_id, g1]
+      solref2 = geom_solref[solref_id, g2]
       if solref1[0] > 0.0 and solref2[0] > 0.0:
         solref = mix * solref1 + (1.0 - mix) * solref2
       else:
