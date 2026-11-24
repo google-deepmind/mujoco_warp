@@ -466,10 +466,11 @@ class GJKTest(parameterized.TestCase):
     ("box_box", 'type="box" size=".3 .3 .3"', 'type="box" size=".05 .1 .05"', 0.0),
     ("mesh_mesh", 'type="mesh" mesh="cube"', 'type="mesh" mesh="cube"', 0.0),
     ("box_ellipsoid_offset", 'type="box" size=".2 .2 .2"', 'type="ellipsoid" size=".1 .15 .05"', 1e-7),
+    ("box_ellipsoid_tiny_offset", 'type="box" size=".2 .2 .2"', 'type="ellipsoid" size=".1 .15 .05"', 1e-13),
   )
   def test_concentric_contact(self, geom1: str, geom2: str, offset: float):
     """Test penetration between two geoms with the same or almost the same center."""
-    mjm, mjd, m, d = test_data.fixture(
+    _, mjd, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
         <asset>
