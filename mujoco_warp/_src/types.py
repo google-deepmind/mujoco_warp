@@ -417,6 +417,8 @@ class DynType(enum.IntEnum):
     USER: user-defined dynamics via act_dyn_callback
     DCMOTOR: DC motor dynamics
     PID: PID actuator dynamics
+    MILLARD2012: compliant-tendon muscle activation and fiber, Millard 2012
+    GEYER2010: compliant-tendon muscle activation and fiber, Geyer 2010
   """
 
   NONE = mujoco.mjtDyn.mjDYN_NONE
@@ -427,6 +429,8 @@ class DynType(enum.IntEnum):
   USER = mujoco.mjtDyn.mjDYN_USER
   DCMOTOR = mujoco.mjtDyn.mjDYN_DCMOTOR
   PID = mujoco.mjtDyn.mjDYN_PID
+  MILLARD2012 = mujoco.mjtDyn.mjDYN_MILLARD2012
+  GEYER2010 = mujoco.mjtDyn.mjDYN_GEYER2010
 
 
 class GainType(enum.IntEnum):
@@ -440,6 +444,8 @@ class GainType(enum.IntEnum):
     DCMOTOR: DC motor gain
     PID: PID actuator gain
     SO3: SO(3) orientation servo gain
+    MILLARD2012: compliant-tendon muscle active fiber force, Millard 2012
+    GEYER2010: compliant-tendon muscle active fiber force, Geyer 2010
   """
 
   FIXED = mujoco.mjtGain.mjGAIN_FIXED
@@ -449,6 +455,8 @@ class GainType(enum.IntEnum):
   DCMOTOR = mujoco.mjtGain.mjGAIN_DCMOTOR
   PID = mujoco.mjtGain.mjGAIN_PID
   SO3 = mujoco.mjtGain.mjGAIN_SO3
+  MILLARD2012 = mujoco.mjtGain.mjGAIN_MILLARD2012
+  GEYER2010 = mujoco.mjtGain.mjGAIN_GEYER2010
 
 
 class BiasType(enum.IntEnum):
@@ -460,6 +468,8 @@ class BiasType(enum.IntEnum):
     MUSCLE: muscle passive force computed by muscle_bias
     USER: user-defined bias via act_bias_callback
     DCMOTOR: DC motor back-EMF bias
+    MILLARD2012: compliant-tendon muscle passive fiber force, Millard 2012
+    GEYER2010: compliant-tendon muscle passive fiber force, Geyer 2010
   """
 
   NONE = mujoco.mjtBias.mjBIAS_NONE
@@ -467,6 +477,8 @@ class BiasType(enum.IntEnum):
   MUSCLE = mujoco.mjtBias.mjBIAS_MUSCLE
   USER = mujoco.mjtBias.mjBIAS_USER
   DCMOTOR = mujoco.mjtBias.mjBIAS_DCMOTOR
+  MILLARD2012 = mujoco.mjtBias.mjBIAS_MILLARD2012
+  GEYER2010 = mujoco.mjtBias.mjBIAS_GEYER2010
 
 
 class CtrlInput(enum.IntFlag):

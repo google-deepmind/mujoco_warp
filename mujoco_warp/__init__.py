@@ -64,6 +64,7 @@ from mujoco_warp._src.io import put_model as put_model
 from mujoco_warp._src.io import reset_data as reset_data
 from mujoco_warp._src.io import reset_data_keyframe as reset_data_keyframe
 from mujoco_warp._src.island import island as island
+from mujoco_warp._src.muscle import muscle_equilibrium as muscle_equilibrium
 from mujoco_warp._src.passive import passive as passive
 from mujoco_warp._src.ray import ray as ray
 from mujoco_warp._src.ray import rays as rays

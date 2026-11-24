@@ -23,6 +23,7 @@ from mujoco_warp._src import derivative
 from mujoco_warp._src import history
 from mujoco_warp._src import island
 from mujoco_warp._src import math
+from mujoco_warp._src import muscle
 from mujoco_warp._src import passive
 from mujoco_warp._src import sensor
 from mujoco_warp._src import sleep
@@ -3219,6 +3220,26 @@ def _actuator_force(
             err = wp.max(err, 0.0)
         act_dot = err
 
+    elif dyntype == DynType.MILLARD2012 or dyntype == DynType.GEYER2010:
+      # compliant-tendon muscle: activation, and the fiber at the activation of the gain
+      act = act_in[worldid, act_last]
+      force_act = float(-1.0)
+      if not actuator_actearly[uid]:
+        force_act = act
+      muscle_dot = muscle.act_dot(
+        dyntype == DynType.GEYER2010,
+        ctrl,
+        act,
+        act_in[worldid, act_first],
+        actuator_length_in[worldid, uid],
+        force_act,
+        opt_timestep[worldid % opt_timestep.shape[0]],
+        dynprm,
+        gainprm,
+        biasprm,
+      )
+      act_dot_out[worldid, act_first] = muscle_dot[1]
+      act_dot = muscle_dot[0]
     elif dyntype == DynType.USER:
       act_dot = 0.0  # set by act_dyn_callback
     else:  # DynType.NONE
@@ -3281,6 +3302,7 @@ def _actuator_force(
   dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
 
   gain = 0.0
+  muscle_bias = float(0.0)
   if gaintype == GainType.FIXED:
     gain = gainprm[0]
   elif gaintype == GainType.AFFINE:
@@ -3321,6 +3343,22 @@ def _actuator_force(
         )
       else:
         ctrl_act = u_first
+  elif gaintype == GainType.MILLARD2012 or gaintype == GainType.GEYER2010:
+    # compliant-tendon muscle: gain and bias at the solved fiber
+    gain_bias = muscle.gain_bias(
+      gaintype == GainType.GEYER2010,
+      act_in[worldid, act_first],
+      act_dot_out[worldid, act_first],
+      length,
+      velocity,
+      ctrl_act,
+      opt_timestep[worldid % opt_timestep.shape[0]],
+      dynprm,
+      gainprm,
+      biasprm,
+    )
+    gain = gain_bias[0]
+    muscle_bias = gain_bias[1]
   # GainType.USER: gain stays 0, modified by act_gain_callback
 
   # bias
@@ -3335,6 +3373,8 @@ def _actuator_force(
     if dynprm[0] <= 0.0:
       K = gainprm[1]
       bias -= gain * K * velocity
+  elif biastype == BiasType.MILLARD2012 or biastype == BiasType.GEYER2010:
+    bias = muscle_bias
 
   if gaintype == GainType.PID:
     u4 = util_misc.unpack_servo_inputs(
