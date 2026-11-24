@@ -168,6 +168,19 @@ class SphereTriangleTest(parameterized.TestCase):
     np.testing.assert_allclose(normal, [1.0, 0.0, 0.0], atol=1e-6)
     np.testing.assert_allclose(pos, [0.55, 0.33, 0.0], atol=1e-6)
 
+  def test_sphere_center_near_triangle(self):
+    """A tiny nonzero center-to-triangle distance keeps the triangle normal, as in MuJoCo C."""
+    t1 = np.array([0.0, 0.0, 0.0])
+    t2 = np.array([1.0, 0.0, 0.0])
+    t3 = np.array([0.5, 1.0, 0.0])
+    sphere_pos = np.array([0.5, 0.33, 5.0e-8])
+
+    dist, pos, normal = self._run_sphere_triangle(sphere_pos, 0.1, t1, t2, t3, 0.0)
+
+    np.testing.assert_allclose(dist, -0.1, atol=1e-6)
+    np.testing.assert_allclose(normal, [0.0, 0.0, -1.0], atol=1e-6)
+    np.testing.assert_allclose(pos, [0.5, 0.33, -0.05], atol=1e-6)
+
   @parameterized.parameters(
     (np.array([0.5, 0.33, 0.5]),),  # rejected by the plane-distance test
     (np.array([0.5, -0.5, 0.0]),),  # in-plane, rejected by the nearest-point test

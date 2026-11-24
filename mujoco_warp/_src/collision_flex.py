@@ -469,7 +469,7 @@ def _collide_geom_capsule_detect(
   if gtype == int(GeomType.SPHERE):
     sphere_radius = size_val[0]
     dist, contact_pos, nrm = collision_primitive_core.sphere_capsule(
-      pos, sphere_radius, cap_pos, cap_axis, cap_radius, cap_half_len
+      pos, rot[:, 2], sphere_radius, cap_pos, cap_axis, cap_radius, cap_half_len
     )
     if dist < margin:
       _write_candidate(

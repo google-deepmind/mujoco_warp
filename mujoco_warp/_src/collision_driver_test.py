@@ -742,6 +742,111 @@ class CollisionTest(parameterized.TestCase):
 
     self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
 
+  @parameterized.named_parameters(
+    (
+      "sphere_sphere_coincident",
+      """
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size="0.1" euler="90 0 0"/>
+          </body>
+          <body>
+            <freejoint/>
+            <geom size="0.1" euler="0 90 0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+    (
+      "sphere_sphere_coincident_parallel_axes",
+      """
+      <mujoco>
+        <worldbody>
+          <body euler="30 45 60">
+            <joint type="slide"/>
+            <geom size="0.1"/>
+          </body>
+          <body euler="30 0 0">
+            <body euler="0 45 60">
+              <joint type="slide"/>
+              <geom size="0.1"/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+    (
+      "sphere_capsule_on_axis",
+      """
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size="0.05" pos="0 0.1 0" euler="0 90 0"/>
+          </body>
+          <body>
+            <freejoint/>
+            <geom size="0.05 0.3" type="capsule" euler="90 0 0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+    (
+      "capsule_capsule_crossing_axes",
+      """
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size="0.05 0.3" type="capsule" euler="0 90 0"/>
+          </body>
+          <body>
+            <freejoint/>
+            <geom size="0.05 0.3" type="capsule" euler="90 0 0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+    (
+      "sphere_cylinder_side_on_axis",
+      """
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size="0.05" euler="90 0 0"/>
+          </body>
+          <body>
+            <geom size="0.1 0.3" type="cylinder" euler="0 90 0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+  )
+  def test_coincident_sphere_contacts(self, xml):
+    """Coincident sphere centers take the normal from the geom z-axes, as in MuJoCo C."""
+    mjm, mjd, m, d = test_data.fixture(xml=xml)
+    mujoco.mj_collision(mjm, mjd)
+
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    self.assertEqual(mjd.ncon, 1)
+    self.assertEqual(d.nacon.numpy()[0], 1)
+    np.testing.assert_allclose(d.contact.dist.numpy()[0], mjd.contact.dist[0], atol=1e-5)
+    np.testing.assert_allclose(d.contact.pos.numpy()[0], mjd.contact.pos[0], atol=1e-5)
+    np.testing.assert_allclose(d.contact.frame.numpy()[0].flatten(), mjd.contact.frame[0], atol=1e-5)
+
   @parameterized.named_parameters((fixture, fixture) for fixture in _FIXTURES if fixture.startswith("mesh_plane"))
   def test_plane_mesh_contact_selection(self, fixture):
     """Matches MuJoCo's contact face and order; the whole-mesh spread heuristic fails."""

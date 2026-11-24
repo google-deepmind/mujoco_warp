@@ -43,6 +43,11 @@ def plane_sphere(plane_normal: wp.vec3, plane_pos: wp.vec3, sphere_pos: wp.vec3,
   return dist, pos
 
 
+# center distance, relative to the summed radii, below which two sphere centers coincide; MuJoCo C
+# uses mjMINVAL in float64, but float32 rounding of the closest points is far larger than that
+_SPHERE_CENTER_EPS = 1e-6
+
+
 @wp.func
 def sphere_sphere(
   # In:
@@ -50,6 +55,8 @@ def sphere_sphere(
   radius1: float,
   pos2: wp.vec3,
   radius2: float,
+  axis1: wp.vec3,
+  axis2: wp.vec3,
 ) -> Tuple[float, wp.vec3, wp.vec3]:
   """Sphere-sphere collision calculation.
 
@@ -58,6 +65,8 @@ def sphere_sphere(
     radius1: Radius of the first sphere.
     pos2: Center position of the second sphere.
     radius2: Radius of the second sphere.
+    axis1: z-axis of the first geom, used for the normal when the centers coincide.
+    axis2: z-axis of the second geom, used for the normal when the centers coincide.
 
   Returns:
     - Distance between sphere surfaces (negative if overlapping).
@@ -66,8 +75,11 @@ def sphere_sphere(
   """
   dir = pos2 - pos1
   dist = wp.length(dir)
-  if dist == 0.0:
-    n = wp.vec3(1.0, 0.0, 0.0)
+  if dist < wp.max(MJ_MINVAL, _SPHERE_CENTER_EPS * (radius1 + radius2)):
+    # coincident centers: use the cross product of the geom z-axes, as MuJoCo C does
+    n, n_norm = normalize_with_norm(wp.cross(axis1, axis2))
+    if n_norm < 1.0e-4:
+      n = wp.vec3(1.0, 0.0, 0.0)
   else:
     n = dir / dist
   dist = dist - (radius1 + radius2)
@@ -79,6 +91,7 @@ def sphere_sphere(
 def sphere_capsule(
   # In:
   sphere_pos: wp.vec3,
+  sphere_axis: wp.vec3,
   sphere_radius: float,
   capsule_pos: wp.vec3,
   capsule_axis: wp.vec3,
@@ -89,6 +102,7 @@ def sphere_capsule(
 
   Args:
     sphere_pos: Center position of the sphere.
+    sphere_axis: z-axis of the sphere geom.
     sphere_radius: Radius of the sphere.
     capsule_pos: Center position of the capsule.
     capsule_axis: Axis direction of the capsule.
@@ -110,7 +124,7 @@ def sphere_capsule(
   pt = capsule_pos + capsule_axis * projection
 
   # Use sphere-sphere collision between sphere and closest point
-  return sphere_sphere(sphere_pos, sphere_radius, pt, capsule_radius)
+  return sphere_sphere(sphere_pos, sphere_radius, pt, capsule_radius, sphere_axis, capsule_axis)
 
 
 @wp.func
@@ -221,13 +235,17 @@ def capsule_capsule(
   # closest point pairs (2 for parallel axes), sphere-sphere test for each
   n, w0, w1 = _segment_weights(p1, p2, q1, q2)
 
-  dist, pos, normal = sphere_sphere(p1 + w0[0] * (p2 - p1), cap1_radius, q1 + w0[1] * (q2 - q1), cap2_radius)
+  dist, pos, normal = sphere_sphere(
+    p1 + w0[0] * (p2 - p1), cap1_radius, q1 + w0[1] * (q2 - q1), cap2_radius, cap1_axis, cap2_axis
+  )
   contact_dist[0] = dist
   contact_pos[0] = pos
   contact_normal[0] = normal
 
   if n == 2:
-    dist, pos, normal = sphere_sphere(p1 + w1[0] * (p2 - p1), cap1_radius, q1 + w1[1] * (q2 - q1), cap2_radius)
+    dist, pos, normal = sphere_sphere(
+      p1 + w1[0] * (p2 - p1), cap1_radius, q1 + w1[1] * (q2 - q1), cap2_radius, cap1_axis, cap2_axis
+    )
     contact_dist[1] = dist
     contact_pos[1] = pos
     contact_normal[1] = normal
@@ -372,6 +390,7 @@ def plane_box(
 def sphere_cylinder(
   # In:
   sphere_pos: wp.vec3,
+  sphere_axis: wp.vec3,
   sphere_radius: float,
   cylinder_pos: wp.vec3,
   cylinder_axis: wp.vec3,
@@ -382,6 +401,7 @@ def sphere_cylinder(
 
   Args:
     sphere_pos: Center position of the sphere.
+    sphere_axis: z-axis of the sphere geom.
     sphere_radius: Radius of the sphere.
     cylinder_pos: Center position of the cylinder.
     cylinder_axis: Axis direction of the cylinder.
@@ -415,7 +435,7 @@ def sphere_cylinder(
   # side collision
   if collide_side:
     pos_target = cylinder_pos + a_proj
-    return sphere_sphere(sphere_pos, sphere_radius, pos_target, cylinder_radius)
+    return sphere_sphere(sphere_pos, sphere_radius, pos_target, cylinder_radius, sphere_axis, cylinder_axis)
   # cap collision
   elif collide_cap:
     if x > 0.0:
@@ -437,7 +457,7 @@ def sphere_cylinder(
     cap_offset = cylinder_axis * (wp.sign(x) * cylinder_half_height)
     pos_corner = cylinder_pos + cap_offset + p_proj
 
-    return sphere_sphere(sphere_pos, sphere_radius, pos_corner, 0.0)
+    return sphere_sphere(sphere_pos, sphere_radius, pos_corner, 0.0, sphere_axis, cylinder_axis)
 
 
 @wp.func
@@ -1490,10 +1510,14 @@ def sphere_triangle(
     else:
       X = x2[0] * V1 + x2[1] * V2
 
-  dist, pos, nrm = sphere_sphere(sphere_pos, sphere_radius, t1 + X, tri_radius)
+  nrm, dist = normalize_with_norm(t1 + X - sphere_pos)
+  if dist < MJ_MINVAL:
+    nrm = wp.vec3(1.0, 0.0, 0.0)
+  dist -= sphere_radius + tri_radius
   if dist > margin:
     return MJ_MAXVAL, wp.vec3(0.0), wp.vec3(0.0)
 
+  pos = sphere_pos + nrm * (sphere_radius + 0.5 * dist)
   return dist, pos, nrm
 
 
@@ -1726,10 +1750,13 @@ def capsule_triangle(
 
     if t_param > MJ_MINVAL and t_param < 1.0 - MJ_MINVAL:
       closest = p1 + ab * t_param
-      d, p, n = sphere_sphere(closest, capsule_radius, vert, tri_radius)
+      n, d = normalize_with_norm(vert - closest)
+      if d < MJ_MINVAL:
+        n = wp.vec3(1.0, 0.0, 0.0)
+      d -= capsule_radius + tri_radius
       if d <= margin:
         contact_dist[2 + vi] = d
-        contact_pos[2 + vi] = p
+        contact_pos[2 + vi] = closest + n * (capsule_radius + 0.5 * d)
         contact_normal[2 + vi] = n
 
   return contact_dist, contact_pos, contact_normal
