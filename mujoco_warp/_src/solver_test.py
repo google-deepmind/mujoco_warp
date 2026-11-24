@@ -48,6 +48,14 @@ def _assert_eq(a, b, name, tol=_TOLERANCE * 20):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+def _mj_constraint_update(m, d, jar, cost):
+  # TODO(team): call mj_constraintUpdate directly once the minimum supported mujoco drops flg_coneHessian
+  try:
+    mujoco.mj_constraintUpdate(m, d, jar, cost)
+  except TypeError:
+    mujoco.mj_constraintUpdate(m, d, jar, cost, 0)
+
+
 def _set_inertia_scale(m, d, ctx):
   """Set the inverse trace of M, as init_context does, for tests which skip it."""
   solver.launch_inertia_scale(m, d.M, ctx.inertia_scale, d)
@@ -655,7 +663,7 @@ class SolverTest(parameterized.TestCase):
         jaref = np.zeros(mjd.nefc, dtype=float)
         cost = np.zeros(1)
         mujoco.mj_mulJacVec(mjm, mjd, jaref, qacc)
-        mujoco.mj_constraintUpdate(mjm, mjd, jaref - mjd.efc_aref, cost, 0)
+        _mj_constraint_update(mjm, mjd, jaref - mjd.efc_aref, cost)
 
       update_constraints(mjd.qacc)
 
@@ -1573,7 +1581,7 @@ class SolverTest(parameterized.TestCase):
         jaref = np.zeros(mjd.nefc, dtype=float)
         cost = np.zeros(1)
         mujoco.mj_mulJacVec(mjm, mjd, jaref, qacc)
-        mujoco.mj_constraintUpdate(mjm, mjd, jaref - mjd.efc_aref, cost, 0)
+        _mj_constraint_update(mjm, mjd, jaref - mjd.efc_aref, cost)
         return cost
 
       mj_cost = cost(mjd.qacc)
@@ -2053,7 +2061,7 @@ class SolverTest(parameterized.TestCase):
       jaref = np.zeros(d.nefc, dtype=float)
       cost = np.zeros(1)
       mujoco.mj_mulJacVec(m, d, jaref, qacc)
-      mujoco.mj_constraintUpdate(m, d, jaref - d.efc_aref, cost, 0)
+      _mj_constraint_update(m, d, jaref - d.efc_aref, cost)
       return cost
 
     mj_cost0 = cost(mjm0, mjd0, mjd0.qacc)
