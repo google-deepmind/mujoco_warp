@@ -704,10 +704,13 @@ def gjk(
   # set initial guess
   x_k = x1_0 - x2_0
   xnorm = wp.sqrt(wp.dot(x_k, x_k))
+  if xnorm < MINVAL:
+    x_k = wp.vec3(1.0, 0.0, 0.0)
+    xnorm = 1.0
   xnorm_prev = float(0.0)
 
   for k in range(gjk_iterations):
-    if xnorm < min_norm or wp.abs(xnorm_prev - xnorm) < MINVAL:
+    if xnorm < wp.where(n > 1, min_norm, MINVAL) or wp.abs(xnorm_prev - xnorm) < MINVAL:
       break
 
     # compute the support point with direction tuning; the tests below read x_dir, x_k along the
@@ -726,7 +729,7 @@ def gjk(
 
     # stopping criteria using the Frank-Wolfe duality gap given by
     #  |f(x_k) - f(x_min)|^2 <= < grad f(x_k), (x_k - simplex[n]) >
-    if wp.dot(x_dir, x_dir - simplex[n]) < epsilon:
+    if k > 0 and wp.dot(x_dir, x_dir - simplex[n]) < epsilon:
       break
 
     # the lower bound on distance between the two geoms is (lower / x_norm)
