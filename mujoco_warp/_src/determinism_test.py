@@ -38,7 +38,8 @@ from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import render_util
 from mujoco_warp._src import set_const
-from mujoco_warp._src import util_pkg
+from mujoco_warp._src import sleep
+from mujoco_warp._src import sort
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import override_model
 from mujoco_warp._src.types import DeterminismType
@@ -169,7 +170,7 @@ def _spy(module, name, tag, events, d):
 
   def wrapper(*args, **kwargs):
     out = fn(*args, **kwargs)
-    events.append((tag, args[1] is d, _snapshot(_flatten(d, "d"))))
+    events.append((tag, any(arg is d for arg in args), _snapshot(_flatten(d, "d"))))
     return out
 
   return mock.patch.object(module, name, wrapper)
@@ -178,9 +179,9 @@ def _spy(module, name, tag, events, d):
 class _Replay:
   """Replays the contact and constraint rows of the first run in later runs.
 
-  CONTACTS and CONSTRAINT are not implemented yet, so collision and make_constraint emit rows in a
-  racy order. Later runs check that the inputs of these stages are bitwise equal to the first run
-  and that their float outputs are bitwise equal up to order, then restore the first run's outputs.
+  These ATOMICS-only tests deliberately leave CONTACTS and CONSTRAINT disabled. Later runs check
+  that stage inputs and float outputs agree up to order, then restore the first run's row order to
+  isolate atomic reductions. Unpatched sorting and capture regressions live in sort_test.py.
   """
 
   def __init__(self, test, d):
@@ -243,12 +244,10 @@ _TREE_CASES = (
       "smooth._spatial_geom_tendon",
       "smooth._spatial_site_tendon",
       "smooth._tendon_armature",
-      "smooth._tendon_bias_coef",
-      "smooth._tendon_bias_qfrc",
+      "smooth._tendon_bias",
       "smooth._transmission",
       "solver._JTDACJ_sparse",
-      "solver._linesearch_jv_fused_kernel",
-      "solver._solve_init_jaref_kernel",
+      "solver._mul_jac_vec_kernel",
       "solver._update_constraint_efc",
       "solver._update_constraint_init_qfrc_constraint_sparse",
       "solver._update_gradient_grad",
@@ -291,7 +290,7 @@ _TREE_CASES = (
   dict(
     testcase_name="dense_blocks",
     overrides={"opt.jacobian": "DENSE"},
-    covers=("smooth._qLD_acc", "smooth._solve_LD_sparse_level"),
+    covers=("smooth._solve_LD_sparse_level",),
     sparse_blocks=True,
   ),
 )
@@ -367,11 +366,7 @@ _CONTACT_CASES = (
     ),
   ),
   dict(testcase_name="dense", overrides={"opt.jacobian": "DENSE"}, covers=()),
-  dict(
-    testcase_name="elliptic_dense",
-    overrides={"opt.jacobian": "DENSE", "opt.cone": "ELLIPTIC"},
-    covers=("solver._update_gradient_JTCJ_dense",),
-  ),
+  dict(testcase_name="elliptic_dense", overrides={"opt.jacobian": "DENSE", "opt.cone": "ELLIPTIC"}, covers=()),
   dict(testcase_name="elliptic_sparse", overrides={"opt.jacobian": "SPARSE", "opt.cone": "ELLIPTIC"}, covers=()),
   dict(testcase_name="discrete", overrides={"opt.integrator": "DISCRETE"}, covers=()),
 )
@@ -601,11 +596,6 @@ class DeterminismTest(parameterized.TestCase):
       nworld=2,
       qvel_noise=0.1,
     )
-    # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-    if not util_pkg.check_version("mujoco>=3.16.1"):
-      covers = tuple(
-        c for c in covers if c not in ("derivative._eff_flex_rod_stiff", "passive._flex_rod_bending", "passive._flex_rod_mul")
-      )
     with _record_launches() as launches:
       rc = render_util.create_render_context(mjm, nworld=2, cam_res=(8, 8), deterministic=True)
     if not overrides:
@@ -917,7 +907,7 @@ class DeterminismTest(parameterized.TestCase):
 
   @parameterized.parameters(range(8))
   def test_hooks(self, mask):
-    """Sort hooks run iff their bit is set, as the last writer of their stage."""
+    """Sort hooks follow contact filtering and precede constraint construction."""
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -930,7 +920,7 @@ class DeterminismTest(parameterized.TestCase):
             <freejoint/>
             <geom type="box" size=".05 .05 .05"/>
           </body>
-          <body pos=".5 0 .3">
+          <body pos="0 0 .12">
             <freejoint/>
             <geom size=".05"/>
           </body>
@@ -939,6 +929,11 @@ class DeterminismTest(parameterized.TestCase):
       """,
       qvel_noise=0.1,
     )
+    qvel = d.qvel.numpy()
+    qvel[:, :6] = 0.0
+    d.qvel.assign(qvel)
+    d.tree_asleep.assign(np.array([[0, sleep.K_AWAKE_VAL]], dtype=np.int32))
+    sleep.update_sleep(m, d)
     m.opt.deterministic = mask
     events = []
 
@@ -947,9 +942,9 @@ class DeterminismTest(parameterized.TestCase):
 
     m.callback.contactfilter = contactfilter
     spies = (
-      (collision_driver, "_sort_contacts", "contacts"),
+      (sort, "contacts", "contacts"),
       (collision_driver, "collision", "collision"),
-      (constraint, "_sort_constraints", "constraint"),
+      (sort, "constraints", "constraint"),
       (constraint, "make_constraint", "make_constraint"),
     )
     with contextlib.ExitStack() as stack:
@@ -960,27 +955,23 @@ class DeterminismTest(parameterized.TestCase):
 
     tags = [tag for tag, _, _ in events]
     self.assertTrue(all(same for _, same, _ in events))
-    self.assertEqual([tags.count(stage) for stage in ("collision", "contactfilter", "make_constraint")], [2, 2, 1])
-    for hook, stage, bit in (
-      ("contacts", "collision", DeterminismType.CONTACTS),
-      ("constraint", "make_constraint", DeterminismType.CONSTRAINT),
-    ):
-      self.assertEqual(tags.count(hook), tags.count(stage) if mask & bit else 0, hook)
-      for i, tag in enumerate(tags):
-        if tag == hook:
-          # contacts are sorted after the user contact filter
-          if hook == "contacts":
-            self.assertEqual(tags[i - 1], "contactfilter")
-          # nothing writes Data between the hook and the end of its stage
-          self.assertEqual(tags[i + 1], stage)
-          self.assertEqual(_bitwise_diff(events[i][2], events[i + 1][2]), [], hook)
+    # contacts are sorted once, after the user contact filter of both collision passes
+    sort_contacts = ["contacts"] if mask & DeterminismType.CONTACTS else []
+    sort_constraint = ["constraint"] if mask & DeterminismType.CONSTRAINT else []
+    self.assertEqual(tags, ["contactfilter", "collision"] * 2 + sort_contacts + sort_constraint + ["make_constraint"])
+    if sort_constraint:
+      # nothing writes Data between the hook and the end of its stage
+      i = tags.index("constraint")
+      self.assertEqual(_bitwise_diff(events[i][2], events[i + 1][2]), [])
 
     atomics = bool(mask & DeterminismType.ATOMICS)
     for name, mode, _ in launches:
       self.assertEqual(mode == _RUN_TO_RUN, atomics and name in _DET_FACTORIES, name)
 
   @parameterized.named_parameters(
-    ("default", {}, (2, 1)),
+    ("default", {}, (1, 1)),
+    # the unconditional second collision pass also defers sorting
+    ("graph_conditional_disabled", {"opt.graph_conditional": False}, (1, 1)),
     ("contact_disabled", {"opt.disableflags": "CONTACT"}, (0, 1)),
     ("constraint_disabled", {"opt.disableflags": "CONSTRAINT"}, (0, 1)),
     # contacts provided by the user are not sorted
@@ -1000,7 +991,7 @@ class DeterminismTest(parameterized.TestCase):
             <freejoint/>
             <geom type="box" size=".05 .05 .05"/>
           </body>
-          <body pos=".5 0 .3">
+          <body pos="0 0 .12">
             <freejoint/>
             <geom size=".05"/>
           </body>
@@ -1010,15 +1001,19 @@ class DeterminismTest(parameterized.TestCase):
       overrides=overrides,
       qvel_noise=0.1,
     )
+    qvel = d.qvel.numpy()
+    qvel[:, :6] = 0.0
+    d.qvel.assign(qvel)
+    d.tree_asleep.assign(np.array([[0, sleep.K_AWAKE_VAL]], dtype=np.int32))
+    sleep.update_sleep(m, d)
     m.opt.deterministic = DeterminismType.ALL
     with (
-      mock.patch.object(collision_driver, "_sort_contacts") as contacts,
-      mock.patch.object(constraint, "_sort_constraints") as constraints,
+      mock.patch.object(sort, "contacts") as contacts,
+      mock.patch.object(sort, "constraints") as constraints,
     ):
       mjw.forward(m, d)
     self.assertEqual((contacts.call_count, constraints.call_count), ncalls)
 
-  @absltest.skipIf(not wp.get_device().is_cuda, "CUDA graph capture requires CUDA")
   @parameterized.parameters(True, False)
   def test_graph_capture(self, graph_conditional):
     """Captured deterministic steps are bitwise equal to uncaptured steps and to each other."""
@@ -1163,6 +1158,7 @@ class DeterminismTest(parameterized.TestCase):
     )
     m.opt.deterministic = DeterminismType.ALL
     d.body_awake_ind.fill_(-1)
+    mjw.reset_data(m, d)
     mjw.step(m, d)
     np.testing.assert_array_equal(d.body_awake_ind.numpy(), [[0, 1]])
 
@@ -1191,7 +1187,7 @@ class DeterminismTest(parameterized.TestCase):
     self.assertEqual(_RECORDS_ONLY_ARGS["passive._qfrc_adhesion"], ["nv"])
     self.assertEqual(_RECORDS_ONLY_ARGS["derivative._eff_flex_interp_mul"], ["nv"])
     self.assertEqual(_RECORDS_ONLY_ARGS["solver._JTDACJ_sparse"], ["max_records"])
-    self.assertEqual(_RECORDS_ONLY_ARGS["solver._linesearch_jv_fused_kernel"], [])
+    self.assertEqual(_RECORDS_ONLY_ARGS["solver._mul_jac_vec_kernel"], [])
     self.assertEqual(_RECORDS_ONLY_ARGS["smooth._transmission"], [])
 
     # kernel cache keys are (*args, module, name)
