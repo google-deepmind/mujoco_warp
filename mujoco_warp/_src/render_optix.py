@@ -29,13 +29,19 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import math
+from mujoco_warp._src.ray import RAY_TOL_ABS
+from mujoco_warp._src.ray import RAY_TOL_REL
+from mujoco_warp._src.ray import _ray_eliminate
 from mujoco_warp._src.ray import geom_color
 from mujoco_warp._src.ray import make_ray_primitive
+from mujoco_warp._src.ray import ray_plane
+from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OptixScene
 from mujoco_warp._src.types import RenderContext
+from mujoco_warp._src.types import vec6
 
 wp.set_module_options({"enable_backward": False})
 
@@ -63,6 +69,23 @@ def world_offset(worldid: int, grid: int, spacing: float) -> wp.vec3:
   center = float(grid - 1) * 0.5
   cell = wp.vec3(float(worldid % grid), float((worldid // grid) % grid), float(worldid // (grid * grid)))
   return (cell - wp.vec3(center)) * spacing
+
+
+@wp.func
+def cell_range(pnt: wp.vec3, vec: wp.vec3, max_dist: float, extent: float) -> Tuple[bool, float, float]:
+  """Returns whether a ray intersects its world's cell, and where it enters and leaves it."""
+  tmin = float(0.0)
+  tmax = max_dist
+  intersects_cell = True
+  for axis in range(3):
+    if vec[axis] != 0.0:
+      a = (-extent - pnt[axis]) / vec[axis]
+      b = (extent - pnt[axis]) / vec[axis]
+      tmin = wp.max(tmin, wp.min(a, b))
+      tmax = wp.min(tmax, wp.max(a, b))
+    elif wp.abs(pnt[axis]) > extent:
+      intersects_cell = False
+  return intersects_cell and tmax >= tmin, tmin, wp.max(0.0, tmax)
 
 
 def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, nworld: int):
@@ -274,3 +297,125 @@ def create_pipeline(scene: OptixScene, megakernel: wp.Kernel, geom_ray_types: Tu
     module_options={name: megakernel.module.options[name] for name in ("fast_math", "max_unroll")},
     graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
   )
+
+
+def create_ray_pipeline(scene: OptixScene, geom_ray_types: Tuple[int, ...]):
+  """Compile ray casts with mj_ray semantics over `scene` into an OptiX pipeline."""
+  wo = get_wo()
+  grid, extent, planes = scene.grid, scene.extent, scene.planes
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def ray_kernel(
+    # Model:
+    body_weldid: wp.array[int],
+    geom_type: wp.array[int],
+    geom_bodyid: wp.array[int],
+    geom_dataid: wp.array2d[int],
+    geom_matid: wp.array2d[int],
+    geom_group: wp.array[int],
+    geom_size: wp.array2d[wp.vec3],
+    geom_rgba: wp.array2d[wp.vec4],
+    mat_rgba: wp.array2d[wp.vec4],
+    # Data in:
+    geom_xpos_in: wp.array2d[wp.vec3],
+    geom_xquat_in: wp.array2d[wp.quat],
+    # In:
+    pnt: wp.array2d[wp.vec3],
+    vec: wp.array2d[wp.vec3],
+    geomgroup: vec6,
+    flg_static: bool,
+    bodyexclude: wp.array[int],
+    ias: wp.uint64,
+    mesh_bvh_id: wp.array[wp.uint64],
+    mesh_bvh_rot: wp.array[wp.mat33],
+    hfield_bvh_id: wp.array[wp.uint64],
+    # Out:
+    dist_out: wp.array2d[float],
+    geomid_out: wp.array2d[int],
+    normal_out: wp.array2d[wp.vec3],
+  ):
+    worldid, rayid = wp.tid()
+    ngeom = geom_type.shape[0]
+
+    ray_origin = pnt[worldid % pnt.shape[0], rayid]
+    ray_dir = vec[worldid % vec.shape[0], rayid]
+    body_exclude = bodyexclude[rayid]
+    geom_matid_w = geom_matid[worldid % geom_matid.shape[0]]
+    geom_rgba_w = geom_rgba[worldid % geom_rgba.shape[0]]
+    mat_rgba_w = mat_rgba[worldid % mat_rgba.shape[0]]
+
+    min_dist = float(MJ_MAXVAL)
+    min_geomid = int(-1)
+    min_normal = wp.vec3()
+
+    # planes are unbounded, so they are not in the world cells: intersect them directly
+    for i in range(wp.static(len(planes))):
+      planeid = wp.static(planes[i])
+      if not _ray_eliminate(
+        body_weldid,
+        geom_bodyid,
+        geom_matid_w,
+        geom_group,
+        geom_rgba_w,
+        mat_rgba_w,
+        planeid,
+        geomgroup,
+        flg_static,
+        body_exclude,
+      ):
+        d, n = ray_plane(
+          geom_xpos_in[worldid, planeid],
+          math.quat_to_mat(geom_xquat_in[worldid, planeid]),
+          geom_size[worldid % geom_size.shape[0], planeid],
+          ray_origin,
+          ray_dir,
+        )
+        if d >= 0.0 and d < min_dist:
+          min_dist = d
+          min_geomid = planeid
+          min_normal = n
+
+    # clip the ray to its world's cell so it cannot hit geoms of other worlds
+    intersects_cell, tmin, tmax = cell_range(ray_origin, ray_dir, min_dist, wp.static(extent))
+    origin = ray_origin + world_offset(worldid, wp.static(grid), wp.static(3.0 * extent))
+
+    # the closest hit may be on a geom the ray excludes: continue past it
+    while intersects_cell:
+      query = wo.accel_query_ray(
+        ias, origin, ray_dir, tmax, tmin, 0xFF, wp.uint32(wp.static(int(wo.RayFlags.CULL_BACK_FACING_TRIANGLES)))
+      )
+      if not query.result:
+        break
+      gi = int(query.instance_id) - worldid * ngeom
+      gtype = geom_type[gi]
+      # like mj_ray, rays do not intersect SDF geoms
+      if gtype == GeomType.SDF or _ray_eliminate(
+        body_weldid, geom_bodyid, geom_matid_w, geom_group, geom_rgba_w, mat_rgba_w, gi, geomgroup, flg_static, body_exclude
+      ):
+        tmin = query.t * (1.0 + RAY_TOL_REL) + RAY_TOL_ABS
+        continue
+
+      if gtype == GeomType.MESH or gtype == GeomType.HFIELD:
+        dataid = geom_dataid[worldid % geom_dataid.shape[0], gi]
+        mat = math.quat_to_mat(geom_xquat_in[worldid, gi])
+        if gtype == GeomType.MESH:
+          mesh = mesh_bvh_id[dataid]
+          mat = mat @ mesh_bvh_rot[dataid]
+        else:
+          mesh = hfield_bvh_id[dataid]
+        min_normal = wp.normalize(mat @ wp.mesh_eval_face_normal(mesh, int(query.primitive_index)))
+      else:
+        min_normal = wp.vec3(query.u, query.v, wp.optix_uint32_as_float(wp.optix_hit_object_get_attribute(2)))
+      min_dist = query.t
+      min_geomid = gi
+      break
+
+    if min_geomid < 0:
+      dist_out[worldid, rayid] = -1.0
+    else:
+      dist_out[worldid, rayid] = min_dist
+    geomid_out[worldid, rayid] = min_geomid
+    normal_out[worldid, rayid] = min_normal
+
+  # mj_ray culls back faces of meshes only
+  return create_pipeline(scene, ray_kernel, geom_ray_types, cull_backfaces=False)

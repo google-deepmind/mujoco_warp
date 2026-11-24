@@ -2971,6 +2971,7 @@ class OptixScene:
     grid: worlds per axis of the cubic world grid
     write_instances: kernel writing `instances` from the current geom poses
     pipeline: render pipeline (warp_optix.Pipeline), compiled with the render context
+    ray_pipeline: ray pipeline (warp_optix.Pipeline) for rays(), compiled on first use
   """
 
   mesh_traversable: wp.array
@@ -2983,6 +2984,7 @@ class OptixScene:
   grid: int
   write_instances: wp.Kernel
   pipeline: object = None
+  ray_pipeline: object = None
 
 
 @dataclasses.dataclass
