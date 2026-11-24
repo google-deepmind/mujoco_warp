@@ -2289,6 +2289,98 @@ class SmoothTest(parameterized.TestCase):
       self.assertFalse(np.array_equal(ten_wrapadr[0], ten_wrapadr[1]))
 
   @parameterized.parameters(1, 2)
+  def test_spatial_tendon_shared_ancestors(self, nworld):
+    """Tests tendon Jacobians with shared ancestor dofs; catches walks that stop early."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="base" pos="0 0 1">
+            <freejoint/>
+            <geom size="0.1"/>
+            <body name="upper">
+              <joint type="hinge" axis="0 1 0"/>
+              <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03"/>
+              <site name="s_upper" pos="0.05 0 0"/>
+              <body name="lower" pos="0 0 -0.3">
+                <joint type="hinge" axis="1 0 0"/>
+                <geom name="wrap_cylinder" type="cylinder" size="0.08 0.05" zaxis="0 1 0"/>
+                <site name="side" pos="0.15 0 0"/>
+                <body name="hand" pos="0 0 -0.3">
+                  <joint type="ball"/>
+                  <geom size="0.03"/>
+                  <site name="s_hand" pos="0.05 0 0"/>
+                </body>
+              </body>
+            </body>
+            <body name="other" pos="0.2 0 0">
+              <joint type="hinge" axis="0 0 1"/>
+              <geom name="wrap_far" size="0.01" pos="0 0.5 0"/>
+              <site name="s_other" pos="0 0.1 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial>
+            <site site="s_upper"/>
+            <site site="s_hand"/>
+          </spatial>
+          <spatial>
+            <site site="s_hand"/>
+            <site site="s_other"/>
+          </spatial>
+          <spatial>
+            <site site="s_upper"/>
+            <geom geom="wrap_cylinder" sidesite="side"/>
+            <site site="s_hand"/>
+          </spatial>
+          <spatial>
+            <site site="s_upper"/>
+            <geom geom="wrap_far"/>
+            <site site="s_hand"/>
+          </spatial>
+        </tendon>
+      </mujoco>
+      """,
+      qpos_noise=0.3,
+      nworld=nworld,
+    )
+
+    # the third tendon wraps its cylinder and the fourth misses its sphere
+    self.assertGreater(mjd.ten_wrapnum[2], 2)
+    self.assertEqual(mjd.ten_wrapnum[3], 2)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      # move the base and bend the elbow so world 1's Jacobians differ from world 0's
+      qpos[1, 3:7] = np.array([0.9, 0.3, -0.2, 0.25]) / np.linalg.norm([0.9, 0.3, -0.2, 0.25])
+      qpos[1, 8] += 0.4
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_kinematics(mjm, mjd1)
+      mujoco.mj_comPos(mjm, mjd1)
+      mujoco.mj_tendon(mjm, mjd1)
+      mjds.append(mjd1)
+      mjw.kinematics(m, d)
+      mjw.com_pos(m, d)
+
+    d.ten_length.fill_(wp.inf)
+    d.ten_J.fill_(wp.inf)
+
+    mjw.tendon(m, d)
+
+    ten_length = d.ten_length.numpy()
+    ten_J = d.ten_J.numpy()
+    for w in range(nworld):
+      _assert_eq(ten_length[w], mjds[w].ten_length, f"ten_length_world_{w}")
+      _assert_eq(ten_J[w], mjds[w].ten_J, f"ten_J_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(ten_J[0], ten_J[1]))
+
+  @parameterized.parameters(1, 2)
   def test_tendon_armature_runtime_update(self, nworld):
     """Tests runtime updates to tendon_armature and actuator_armature inside a captured graph."""
     mjm, mjd, m, d = test_data.fixture(
