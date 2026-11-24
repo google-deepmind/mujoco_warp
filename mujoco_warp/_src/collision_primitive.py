@@ -322,9 +322,9 @@ def sphere_sphere_wrapper(
   nacon_out: wp.array[int],
 ):
   """Calculates contact between two spheres."""
-  axis1 = wp.vec3(sphere1.rot[0, 2], sphere1.rot[1, 2], sphere1.rot[2, 2])
-  axis2 = wp.vec3(sphere2.rot[0, 2], sphere2.rot[1, 2], sphere2.rot[2, 2])
-  dist, pos, normal = sphere_sphere(sphere1.pos, sphere1.size[0], sphere2.pos, sphere2.size[0], axis1, axis2)
+  dist, pos, normal = sphere_sphere(
+    sphere1.pos, sphere1.size[0], sphere2.pos, sphere2.size[0], sphere1.rot[:, 2], sphere2.rot[:, 2]
+  )
 
   write_contact(
     naconmax_in,
@@ -399,11 +399,9 @@ def sphere_capsule_wrapper(
   nacon_out: wp.array[int],
 ):
   """Calculates one contact between a sphere and a capsule."""
-  # sphere and capsule axes
-  sphere_axis = wp.vec3(sphere.rot[0, 2], sphere.rot[1, 2], sphere.rot[2, 2])
-  axis = wp.vec3(cap.rot[0, 2], cap.rot[1, 2], cap.rot[2, 2])
-
-  dist, pos, normal = sphere_capsule(sphere.pos, sphere_axis, sphere.size[0], cap.pos, axis, cap.size[0], cap.size[1])
+  dist, pos, normal = sphere_capsule(
+    sphere.pos, sphere.rot[:, 2], sphere.size[0], cap.pos, cap.rot[:, 2], cap.size[0], cap.size[1]
+  )
 
   write_contact(
     naconmax_in,
@@ -883,8 +881,8 @@ def sphere_cylinder_wrapper(
 ):
   """Calculates contacts between a sphere and a cylinder."""
   # sphere and cylinder axes
-  sphere_axis = wp.vec3(sphere.rot[0, 2], sphere.rot[1, 2], sphere.rot[2, 2])
-  cylinder_axis = wp.vec3(cylinder.rot[0, 2], cylinder.rot[1, 2], cylinder.rot[2, 2])
+  sphere_axis = sphere.rot[:, 2]
+  cylinder_axis = cylinder.rot[:, 2]
 
   dist, pos, normal = sphere_cylinder(
     sphere.pos,

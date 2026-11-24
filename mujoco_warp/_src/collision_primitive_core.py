@@ -90,7 +90,7 @@ def sphere_sphere(
   if dist < wp.max(MJ_MINVAL, _SPHERE_CENTER_EPS * (radius1 + radius2)):
     # coincident centers: use the cross product of the geom z-axes, as MuJoCo C does
     n, n_norm = normalize_with_norm(wp.cross(axis1, axis2))
-    if n_norm < MJ_MINVAL:
+    if n_norm < 1.0e-4:
       n = wp.vec3(1.0, 0.0, 0.0)
   else:
     n = dir / dist
@@ -1524,10 +1524,14 @@ def sphere_triangle(
     else:
       X = x2[0] * V1 + x2[1] * V2
 
-  dist, pos, nrm = sphere_sphere(sphere_pos, sphere_radius, t1 + X, tri_radius, wp.vec3(0.0), wp.vec3(0.0))
+  nrm, dist = normalize_with_norm(t1 + X - sphere_pos)
+  if dist < MJ_MINVAL:
+    nrm = wp.vec3(1.0, 0.0, 0.0)
+  dist -= sphere_radius + tri_radius
   if dist > margin:
     return MJ_MAXVAL, wp.vec3(0.0), wp.vec3(0.0)
 
+  pos = sphere_pos + nrm * (sphere_radius + 0.5 * dist)
   return dist, pos, nrm
 
 
@@ -1760,10 +1764,13 @@ def capsule_triangle(
 
     if t_param > MJ_MINVAL and t_param < 1.0 - MJ_MINVAL:
       closest = p1 + ab * t_param
-      d, p, n = sphere_sphere(closest, capsule_radius, vert, tri_radius, wp.vec3(0.0), wp.vec3(0.0))
+      n, d = normalize_with_norm(vert - closest)
+      if d < MJ_MINVAL:
+        n = wp.vec3(1.0, 0.0, 0.0)
+      d -= capsule_radius + tri_radius
       if d <= margin:
         contact_dist[2 + vi] = d
-        contact_pos[2 + vi] = p
+        contact_pos[2 + vi] = closest + n * (capsule_radius + 0.5 * d)
         contact_normal[2 + vi] = n
 
   return contact_dist, contact_pos, contact_normal
