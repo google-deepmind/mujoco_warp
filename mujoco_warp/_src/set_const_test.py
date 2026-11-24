@@ -482,8 +482,8 @@ class SetConstTest(parameterized.TestCase):
     for f in ("body_invweight0", "tendon_invweight0", "actuator_acc0"):
       _assert_eq(getattr(m, f).numpy()[0], getattr(mjm, f), f"{f}_nv0")
 
-  @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
-  def test_set_const_body_invweight0_components(self, jacobian):
+  @parameterized.parameters(1, 2)
+  def test_set_const_body_invweight0_components(self, nworld):
     """Test a zero translational or rotational body inverse weight stays zero, as in mj_setConst."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
@@ -510,29 +510,35 @@ class SetConstTest(parameterized.TestCase):
       </worldbody>
     </mujoco>
     """,
-      overrides={"opt.jacobian": jacobian},
-      nworld=2,
+      nworld=nworld,
+      batch_sizes={
+        "body_mass": nworld,
+        "body_subtreemass": nworld,
+        "body_inertia": nworld,
+        "body_invweight0": nworld,
+      },
     )
     # centered hinge and ball: no translational weight; three slides: no rotational weight
     expected = np.array([[0, 0], [0, 1 / 9], [0, 11 / 18], [1 / 2, 0], [1 / 2, 11 / 18]])
     np.testing.assert_allclose(mjm.body_invweight0, expected, rtol=1e-6, atol=0)
 
-    scales = np.array([1.0, 2.0])
+    scales = np.arange(1, nworld + 1, dtype=float)
     body_mass = scales[:, None] * mjm.body_mass[None, :]
     body_inertia = scales[:, None, None] * mjm.body_inertia[None, :, :]
-    m.body_mass = wp.array(body_mass, dtype=float)
-    m.body_inertia = wp.array(body_inertia, dtype=wp.vec3)
-    m.body_invweight0 = wp.full((2, mjm.nbody), value=wp.vec2(wp.inf, wp.inf), dtype=wp.vec2)
+    m.body_mass.assign(body_mass)
+    m.body_inertia.assign(body_inertia)
+    m.body_invweight0.fill_(wp.inf)
     mjwarp.set_const(m, d)
 
     body_invweight0 = m.body_invweight0.numpy()
-    for w in range(2):
+    for w in range(nworld):
       mjm.body_mass[:] = body_mass[w]
       mjm.body_inertia[:] = body_inertia[w]
       mujoco.mj_setConst(mjm, mjd)
       _assert_eq(body_invweight0[w], mjm.body_invweight0, f"body_invweight0_world_{w}")
       np.testing.assert_array_equal(body_invweight0[w] == 0.0, expected == 0.0)
-    self.assertFalse(np.allclose(body_invweight0[0], body_invweight0[1]))
+    if nworld == 2:
+      self.assertFalse(np.allclose(body_invweight0[0], body_invweight0[1]))
 
   def test_set_const_preserves_qpos(self):
     """Test that qpos is restored after set_const."""
