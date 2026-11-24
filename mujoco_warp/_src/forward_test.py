@@ -910,9 +910,7 @@ class ForwardTest(parameterized.TestCase):
       energy = float(d.energy.numpy()[0, 1])
       self.assertLess(energy, 1.01 * initial_energy, f"step {i}")
 
-  @parameterized.product(
-    integrator=(IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST), nworld=(1, 2), dense=(False, True)
-  )
+  @parameterized.product(integrator=(IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST), nworld=(1, 2), dense=(False, True))
   def test_standalone_free_body_actuator_tendon_damping(self, integrator, nworld, dense):
     """Verify a standalone free body keeps actuator and tendon damping implicit, as MuJoCo does.
 
@@ -931,7 +929,7 @@ class ForwardTest(parameterized.TestCase):
             <geom type="box" size=".05 .02 .01" mass=".05"/>
             <site name="base"/>
             <site name="tip" pos=".05 0 0"/>
-            {'<body pos=".02 .01 0"><geom type="sphere" size=".01" mass=".01"/></body>' if dense else ''}
+            {'<body pos=".02 .01 0"><geom type="sphere" size=".01" mass=".01"/></body>' if dense else ""}
           </body>
         </worldbody>
         <tendon>
