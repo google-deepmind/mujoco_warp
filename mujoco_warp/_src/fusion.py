@@ -49,9 +49,10 @@ import warp as wp
 from warp._src import context as wp_context
 from warp._src.codegen import StructInstance
 
-# "fused": queue and fuse, "unfused": queue and launch one kernel per stage, "immediate": launch
-# every stage and operation when called, the reference that queued launches must match
-MODE = "fused"
+# "auto": fuse while a graph is captured, where planning is paid once, and launch immediately
+# otherwise, "fused": always queue and fuse, "unfused": queue and launch one kernel per stage,
+# "immediate": launch every stage and operation when called, the reference fused launches match
+MODE = "auto"
 
 # module options a fused kernel takes from its stages, which only fuse with equal options
 _OPTIONS = ("default_grid_stride", "fast_math", "max_unroll", "fuse_fp", "deterministic", "deterministic_max_records")
@@ -69,6 +70,7 @@ class Stage:
   dim: tuple[str, ...]
   params: dict[str, Any]  # parameter name -> annotation, after the thread indices
   fields: dict[str, tuple[bool, str, str]]  # parameter name -> (in Data, sub-struct or "", field)
+  outs: frozenset[str]  # parameters it writes
   pointwise: frozenset[str]  # array parameters only accessed at the thread indices
   options: tuple  # module options of the kernel that runs it
   fingerprint: str  # the values the body closes over, which tell apart stages of one factory
@@ -96,6 +98,7 @@ def stage(*dim: str, options: Optional[dict] = None):
       dim=dim,
       params={p: sig.parameters[p].annotation for p in params},
       fields={p: _path(p) for p in params},
+      outs=frozenset(p for p in params if _is_out(p)),
       pointwise=pointwise,
       options=tuple(sorted(opts.items())),
       fingerprint=_fingerprint(f),
@@ -189,7 +192,7 @@ def _key(a) -> Any:
 
 def _arrays(a) -> list:
   """Returns the arrays an argument refers to, those in the fields of a struct included."""
-  if isinstance(a, wp.array):
+  if type(a) is wp.array or isinstance(a, wp.array):
     return [a]
   if isinstance(a, StructInstance):
     return [x for name in a._cls.vars for x in _arrays(getattr(a, name))]
@@ -200,14 +203,18 @@ def _keys(args) -> set:
   return {_key(x) for a in args for x in _arrays(a)} - {None}
 
 
+def _ordered_keys(args) -> tuple:
+  return tuple(dict.fromkeys(k for a in args for x in _arrays(a) if (k := _key(x)) is not None))
+
+
 @dataclasses.dataclass
 class _Launch:
   """A stage with the arguments it was launched with."""
 
   stage: Stage
   args: dict[str, Any]
+  argkeys: tuple  # the memory each argument refers to, empty for values
   sizes: tuple[int, ...]
-  persistent: bool  # whether every argument is a Model or Data field, so a command can replay it
   read: set
   write: set
   stream: Any  # the stream it was launched on
@@ -222,6 +229,7 @@ class _Op:
   write: set
   stream: Any
   barrier: bool = False  # nothing moves ahead of it
+  order: tuple = ()  # the read and written memory in argument order, for a stable signature
 
 
 @dataclasses.dataclass
@@ -252,7 +260,7 @@ def _plan(entries: list) -> list:
     if isinstance(e, _Op):
       schedule.append(e)
       continue
-    g = schedule[last] if last is not None and MODE == "fused" else None
+    g = schedule[last] if last is not None and MODE != "unfused" else None
     if g is not None:
       later = schedule[last + 1 :]
       seg = g.segments[-1]
@@ -360,66 +368,111 @@ def kernel(s) -> wp.Kernel:
   return _kernel((((s, slots, len(s.dim)),),), s.options)
 
 
-def _arg_key(a) -> Any:
-  """Identifies an argument by value, an array by the memory and layout it refers to."""
-  if isinstance(a, wp.array):
-    return a.ptr, a.shape, a.strides
-  return a
+def _signature(entries: list) -> tuple:
+  """Describes what the plan of the entries depends on, the arrays as classes of equal memory."""
+  classes = {}
+
+  def cls(keys):
+    return tuple(sorted(classes.setdefault(k, len(classes)) for k in keys))
+
+  sig = []
+  for e in entries:
+    if isinstance(e, _Op):
+      sig.append((None, tuple((classes.setdefault(k, len(classes)), k in e.write) for k in e.order), e.barrier, e.stream))
+    else:
+      shapes = tuple(getattr(a, "shape", None) for a in e.args.values())
+      sig.append((e.stage, e.sizes, e.stream, tuple(cls(k) for k in e.argkeys), shapes))
+  # recorded commands are per device
+  return MODE, wp.get_device().alias, tuple(sig)
 
 
-# launch commands of fused kernels whose arguments are all Model or Data fields, which they hold
-_COMMANDS = {}
-_MAX_COMMANDS = 4096
+@dataclasses.dataclass
+class _Kernel:
+  """A fused kernel of a program, with where its arguments come from and its recorded command."""
+
+  kernel: wp.Kernel
+  gather: list[tuple[int, str]]  # (entry, parameter) of each argument after the sizes
+  sizes: list[int]
+  dim: int
+  stream: Any
+  cmd: Any = None
+  values: list = None  # the arguments the command was last launched with
 
 
-def _launch_group(segments: list[list[_Launch]]):
-  """Launches the kernel running the segments, replaying its recorded command if it has one."""
-  persistent = all(ln.persistent for seg in segments for ln in seg) and wp_context.runtime.tape is None
-  if persistent:
-    key = tuple((ln.stage, ln.sizes, *(_arg_key(a) for a in ln.args.values())) for seg in segments for ln in seg)
-    cmd = _COMMANDS.get(key)
-    if cmd is not None:
-      cmd.launch()
-      return
+def _compile(entries: list) -> list:
+  """Returns the program of the entries: entry indices of operations, and `_Kernel`s."""
+  index = {id(e): i for i, e in enumerate(entries)}
+  classes = {}
+  program = []
+  for item in _plan(entries):
+    if isinstance(item, _Op):
+      program.append(index[id(item)])
+      continue
+    slots, gather, structure = {}, [], []
+    for seg in item.segments:
+      structure.append([])
+      for ln in seg:
+        i = index[id(ln)]
+        seg_slots = []
+        for (p, a), keys in zip(ln.args.items(), ln.argkeys):
+          # an array passed under the same name and type shares an argument, a value has its own
+          mem = tuple(sorted(classes.setdefault(k, len(classes)) for k in keys))
+          key = (p, ln.stage.params[p], mem, getattr(a, "shape", None)) if keys else (i, p)
+          if key not in slots:
+            slots[key] = len(slots)
+            gather.append((i, p))
+          seg_slots.append(slots[key])
+        structure[-1].append((ln.stage, tuple(seg_slots), len(ln.sizes)))
+    structure = tuple(tuple(seg) for seg in structure)
+    sizes = [n for seg in item.segments for n in seg[0].sizes]
+    dim = sum(math.prod(seg[0].sizes) for seg in item.segments)
+    program.append(_Kernel(_kernel(structure, item.segments[0][0].stage.options), gather, sizes, dim, item.stream))
+  return program
 
-  slots, values, structure = {}, [], []
-  for seg in segments:
-    structure.append([])
-    for ln in seg:
-      seg_slots = []
-      for p, a in ln.args.items():
-        slot = slots.setdefault((p, _key(a) or id(a)), len(slots))
-        if slot == len(values):
-          values.append(a)
-        seg_slots.append(slot)
-      structure[-1].append((ln.stage, tuple(seg_slots), len(ln.sizes)))
-  structure = tuple(tuple(seg) for seg in structure)
-  sizes = [n for seg in segments for n in seg[0].sizes]
-  dim = sum(math.prod(seg[0].sizes) for seg in segments)
-  kernel = _kernel(structure, segments[0][0].stage.options)
-  # a recorded command is not launched until replayed
-  cmd = wp.launch(kernel, dim=dim, inputs=sizes + values, record_cmd=persistent)
-  if persistent and cmd is not None:
-    if len(_COMMANDS) >= _MAX_COMMANDS:
-      _COMMANDS.clear()
-    _COMMANDS[key] = cmd
-    cmd.launch()
 
+def _launch_kernel(k: _Kernel, values: list):
+  """Launches a fused kernel, replaying its recorded command with the arguments that changed."""
+  if wp_context.runtime.tape is not None:
+    # a recording tape needs the launch itself
+    wp.launch(k.kernel, dim=k.dim, inputs=k.sizes + values)
+    return
+  if k.cmd is None:
+    # a recorded command is not launched until replayed
+    k.cmd = wp.launch(k.kernel, dim=k.dim, inputs=k.sizes + values, record_cmd=True)
+    k.values = values
+  else:
+    for i, (v, old) in enumerate(zip(values, k.values)):
+      if v is not old:
+        k.cmd.set_param_at_index(len(k.sizes) + i, v)
+    k.values = values
+  if k.cmd is not None:
+    k.cmd.launch()
+
+
+# programs by signature, which hold the commands of their kernels and the last arguments
+_PROGRAMS = {}
+_MAX_PROGRAMS = 1024
 
 _RUNNING = [0]  # nesting depth of _run, during which device work comes from the queue
 
 
 def _run(entries: list):
+  sig = _signature(entries)
+  program = _PROGRAMS.get(sig)
+  if program is None:
+    if len(_PROGRAMS) >= _MAX_PROGRAMS:
+      _PROGRAMS.clear()
+    program = _PROGRAMS[sig] = _compile(entries)
   _RUNNING[0] += 1
   try:
-    for item in _plan(entries):
+    for item in program:
+      stream = item.stream if isinstance(item, _Kernel) else entries[item].stream
       # each item runs on the stream it was launched on, which waits for the stream of the flush
-      scope = wp.ScopedStream(item.stream) if item.stream is not None and item.stream != _stream() else contextlib.nullcontext()
-      with scope:
-        if isinstance(item, _Op):
-          item.fn()
+      with wp.ScopedStream(stream) if stream is not None and stream != _stream() else contextlib.nullcontext():
+        if isinstance(item, _Kernel):
+          _launch_kernel(item, [entries[i].args[p] for i, p in item.gather])
         else:
-          _launch_group(item.segments)
+          entries[item].fn()
   finally:
     _RUNNING[0] -= 1
 
@@ -434,6 +487,8 @@ _QUEUES = []  # the queue of the innermost fuse() block or capture body
 
 def _queue() -> Optional[list]:
   if not _QUEUES or MODE == "immediate" or wp_context.runtime.tape is not None:
+    return None
+  if MODE == "auto" and not wp.get_device().is_capturing:
     return None
   return _QUEUES[-1]
 
@@ -469,12 +524,16 @@ def _stream():
   return wp.get_stream(device) if device.is_cuda else None
 
 
-def _submit(entry):
-  queue = _queue()
-  if queue is None:
-    _run([entry])
-  else:
-    queue.append(entry)
+_SINGLE = {}  # the kernel of each stage launched on its own, by stage, sizes and device
+
+
+def _launch_single(stage: Stage, args: dict, sizes: tuple):
+  """Launches a stage on its own, without planning."""
+  key = (stage, sizes, wp.get_device().alias)
+  k = _SINGLE.get(key)
+  if k is None:
+    k = _SINGLE[key] = _Kernel(kernel(stage), [], list(sizes), math.prod(sizes), None)
+  _launch_kernel(k, list(args.values()))
 
 
 def launch(m, d, stage: Stage, dim=None, **bindings):
@@ -495,20 +554,40 @@ def launch(m, d, stage: Stage, dim=None, **bindings):
     sizes = tuple(int(n) for n in (dim if isinstance(dim, (tuple, list)) else (dim,)))
   if len(sizes) != len(stage.dim):
     raise ValueError(f"{stage.name} takes {len(stage.dim)} dims, got {sizes}")
-  read = _keys(a for p, a in args.items() if not _is_out(p))
-  write = _keys(a for p, a in args.items() if _is_out(p))
-  persistent = not any(_arrays(bindings.get(p)) for p in stage.params)
-  _submit(_Launch(stage, args, sizes, persistent, read, write, _stream()))
+  queue = _queue()
+  if queue is None:
+    _launch_single(stage, args, sizes)
+    return
+  read, write, argkeys = set(), set(), []
+  for p, a in args.items():
+    if type(a) is wp.array:
+      keys = (a.ptr or id(a),)
+    elif isinstance(a, (wp.array, StructInstance)):
+      keys = _ordered_keys((a,))
+    else:
+      keys = ()
+    argkeys.append(keys)
+    (write if p in stage.outs else read).update(keys)
+  queue.append(_Launch(stage, args, tuple(argkeys), sizes, read, write, _stream()))
 
 
 def call(fn: Callable, *args, reads=(), writes=(), **kwargs):
   """Calls `fn(*args, **kwargs)`, queued in a `fuse()` block, as device work using the arrays."""
-  _submit(_Op(lambda: fn(*args, **kwargs), _keys(reads) | _keys(writes), _keys(writes), _stream()))
+  queue = _queue()
+  if queue is None:
+    fn(*args, **kwargs)
+    return
+  order = _ordered_keys((*reads, *writes))
+  queue.append(_Op(lambda: fn(*args, **kwargs), set(order), _keys(writes), _stream(), order=order))
 
 
 def wait_stream(stream):
   """Makes the current stream wait for `stream`, as `wp.wait_stream`; nothing moves ahead of it."""
-  _submit(_Op(lambda: wp.wait_stream(stream), set(), set(), _stream(), barrier=True))
+  queue = _queue()
+  if queue is None:
+    wp.wait_stream(stream)
+  else:
+    queue.append(_Op(lambda: wp.wait_stream(stream), set(), set(), _stream(), barrier=True))
 
 
 def zero(a: wp.array):

@@ -14,6 +14,10 @@
 # ==============================================================================
 """Tests for stage fusion."""
 
+import contextlib
+import functools
+from unittest import mock
+
 import numpy as np
 import warp as wp
 from absl.testing import absltest
@@ -91,6 +95,12 @@ def _kernels(entries):
 
 
 class FusionTest(parameterized.TestCase):
+  def setUp(self):
+    super().setUp()
+    # fuse without a graph capture too, which "auto" only does in one
+    fusion.MODE = "fused"
+    self.addCleanup(setattr, fusion, "MODE", "auto")
+
   def test_plan(self):
     """A stage reading only its own thread's result fuses into that thread, other reads don't."""
     _, _, m, d = test_data.fixture(xml=_XML, nworld=2)
@@ -128,6 +138,19 @@ class FusionTest(parameterized.TestCase):
       fusion.launch(m, d, _read_rows, rows_in=rows, c_out=c)
       self.assertEqual(_kernels(fusion._QUEUES[-1]), [[[_write_rows]], [[_read_rows]]])
 
+  def test_devices(self):
+    """A stage launched on one device and then another runs on each, not on the first's command."""
+    if not wp.is_cuda_available():
+      self.skipTest("needs a CUDA device")
+    fusion.MODE = "auto"
+    _, _, m, d = test_data.fixture(xml=_XML)
+    for device in ("cpu", "cuda:0"):
+      with wp.ScopedDevice(device):
+        a = wp.array(np.arange(m.nbody, dtype=np.float32).reshape(1, -1))
+        b = wp.empty_like(a)
+        fusion.launch(m, d, _double, a_in=a, b_out=b)
+        np.testing.assert_array_equal(b.numpy(), 2.0 * a.numpy())
+
   @parameterized.parameters(1, 2)
   def test_step_matches_immediate(self, nworld):
     """Fused steps write the same Data as launching every stage when called, in fewer kernels."""
@@ -143,14 +166,13 @@ class FusionTest(parameterized.TestCase):
         qvel[1] += 0.3
         d.qvel.assign(qvel)
       fusion.MODE = mode
-      launch, count = fusion._launch_group, [0]
-      fusion._launch_group = lambda segments: count.__setitem__(0, count[0] + 1) or launch(segments)
+      launch, count = fusion._launch_kernel, [0]
+      fusion._launch_kernel = lambda k, values: count.__setitem__(0, count[0] + 1) or launch(k, values)
       try:
         for _ in range(3):
           mjw.step(m, d)
       finally:
-        fusion.MODE = "fused"
-        fusion._launch_group = launch
+        fusion._launch_kernel = launch
       results.append(d)
       nkernel.append(count[0])
 
@@ -164,6 +186,35 @@ class FusionTest(parameterized.TestCase):
     self.assertLess(nkernel[2], nkernel[1])
     if nworld == 2:
       self.assertFalse(np.array_equal(fused.qpos.numpy()[0], fused.qpos.numpy()[1]))
+
+  def test_step_work_goes_through_fusion(self):
+    """No device work in a step runs directly while stages are queued, which would pass them."""
+    mjm, mjd, _, _ = test_data.fixture(xml=_XML, qvel_noise=0.5, ctrl_noise=0.5)
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nconmax=32, njmax=64)
+
+    def guard(fn):
+      @functools.wraps(fn)
+      def wrapper(*args, **kwargs):
+        self.assertFalse(fusion.pending(), f"{fn.__name__} runs while stages are queued")
+        return fn(*args, **kwargs)
+
+      return wrapper
+
+    with contextlib.ExitStack() as stack:
+      for obj, name in (
+        (wp, "launch"),
+        (wp, "launch_tiled"),
+        (wp, "copy"),
+        (wp, "clone"),
+        (wp, "capture_while"),
+        (wp, "capture_if"),
+      ):
+        stack.enter_context(mock.patch.object(obj, name, guard(getattr(obj, name))))
+      for name in ("assign", "numpy"):
+        stack.enter_context(mock.patch.object(wp.array, name, guard(getattr(wp.array, name))))
+      for _ in range(3):
+        mjw.step(m, d)
 
 
 if __name__ == "__main__":

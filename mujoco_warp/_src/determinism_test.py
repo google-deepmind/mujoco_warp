@@ -149,21 +149,33 @@ def _record_launches():
   """Records (factory, deterministic mode, nonzero dim) for each kernel launch."""
   launches = []
 
+  def record(kernel, dim):
+    mode = kernel.module.options.get("deterministic", wp.DeterministicMode.NOT_GUARANTEED)
+    # a fused kernel runs the bodies of several stages
+    for func in [s.func.func for s in getattr(kernel, "stages", ())] or [kernel.func]:
+      module = func.__module__.rsplit(".", 1)[-1]
+      factory = func.__qualname__.split(".<locals>")[0]
+      launches.append((f"{module}.{factory}", mode, bool(np.prod(dim))))
+
   def wrap(launch):
     def wrapper(*args, **kwargs):
       kernel = kwargs["kernel"] if "kernel" in kwargs else args[0]
-      dim = kwargs["dim"] if "dim" in kwargs else args[1]
-      mode = kernel.module.options.get("deterministic", wp.DeterministicMode.NOT_GUARANTEED)
-      # a fused kernel runs the bodies of several stages
-      for func in [s.func.func for s in getattr(kernel, "stages", ())] or [kernel.func]:
-        module = func.__module__.rsplit(".", 1)[-1]
-        factory = func.__qualname__.split(".<locals>")[0]
-        launches.append((f"{module}.{factory}", mode, bool(np.prod(dim))))
+      # stage kernels replay recorded commands, so fusion._launch_kernel records them
+      if not hasattr(kernel, "stages"):
+        record(kernel, kwargs["dim"] if "dim" in kwargs else args[1])
       return launch(*args, **kwargs)
 
     return wrapper
 
-  with mock.patch.object(wp, "launch", wrap(wp.launch)), mock.patch.object(wp, "launch_tiled", wrap(wp.launch_tiled)):
+  def launch_kernel(k, values, launch=fusion._launch_kernel):
+    record(k.kernel, k.dim)
+    return launch(k, values)
+
+  with (
+    mock.patch.object(wp, "launch", wrap(wp.launch)),
+    mock.patch.object(wp, "launch_tiled", wrap(wp.launch_tiled)),
+    mock.patch.object(fusion, "_launch_kernel", launch_kernel),
+  ):
     yield launches
 
 
