@@ -24,6 +24,9 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src import sort
+from mujoco_warp._src.types import ContactType
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import OverflowType
 
 # tolerance for difference between MuJoCo and MJWarp calculations - mostly
@@ -1286,6 +1289,111 @@ class SensorTest(parameterized.TestCase):
 
     # MuJoCo: -0.141 mm; _assert_eq's 5e-4 tolerance would pass the separated reading
     np.testing.assert_allclose(d.sensordata.numpy()[0], mjd.sensordata, atol=1e-7)
+
+  @parameterized.parameters(1, 2)
+  def test_sensor_collision_sdf(self, nworld):
+    """Collision sensors deterministically select the minimum-distance SDF contact."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="cube" vertex="1 1 1 1 1 -1 1 -1 1 1 -1 -1 -1 1 1 -1 1 -1 -1 -1 1 -1 -1 -1"/>
+        </asset>
+        <worldbody>
+          <geom name="sdf0" type="sdf" mesh="cube"/>
+          <body name="box" pos="0 0 1.8" euler="35 20 10">
+            <freejoint/>
+            <geom name="sdf1" type="sdf" mesh="cube"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <clock/>
+          <distance geom1="sdf0" geom2="sdf1" cutoff="10"/>
+          <distance body1="world" body2="box" cutoff="10"/>
+          <normal geom1="sdf0" geom2="sdf1" cutoff="10"/>
+          <normal geom1="sdf1" geom2="sdf0" cutoff="10"/>
+          <fromto geom1="sdf0" geom2="sdf1" cutoff="10"/>
+        </sensor>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=128,
+      njmax=512,
+    )
+    if nworld == 2:
+      qpos = d.qpos.numpy().copy()
+      qpos[1, :3] = [0.05, -0.03, 1.72]
+      d.qpos.assign(qpos)
+      mjw.kinematics(m, d)
+
+    m.opt.deterministic = DeterminismType.ALL
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.sensordata.fill_(wp.inf)
+    mjw.collision(m, d)
+    mjw.sensor_pos(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    con_dist = d.contact.dist.numpy()[:nacon].copy()
+    con_pos = d.contact.pos.numpy()[:nacon].copy()
+    con_frame = d.contact.frame.numpy()[:nacon].copy()
+    con_world = d.contact.worldid.numpy()[:nacon].copy()
+    con_type = d.contact.type.numpy()[:nacon].copy()
+    con_geomid = d.contact.geomcollisionid.numpy()[:nacon].copy()
+    sensordata = d.sensordata.numpy().copy()
+
+    # Verify SDF narrowphase emitted >8 sensor contacts per world all sharing geomcollisionid == 0.
+    np.testing.assert_array_equal(con_geomid, 0)
+    for w in range(nworld):
+      mask = (con_world == w) & ((con_type & int(ContactType.SENSOR)) != 0)
+      idx = np.flatnonzero(mask)
+      self.assertGreater(len(idx), 8)
+      self.assertGreater(len(np.unique(con_dist[idx])), 1)
+      best = idx[int(np.argmin(con_dist[idx]))]
+      min_dist = con_dist[best]
+      seg = -con_frame[best, 0]
+      half = 0.5 * abs(min_dist) * seg
+      expected_fromto = np.concatenate([con_pos[best] - half, con_pos[best] + half])
+      np.testing.assert_allclose(sensordata[w, 1], min_dist, atol=1e-6)
+      np.testing.assert_allclose(sensordata[w, 2], min_dist, atol=1e-6)
+      np.testing.assert_allclose(sensordata[w, 3:6], seg, atol=1e-6)
+      np.testing.assert_allclose(sensordata[w, 6:9], -seg, atol=1e-6)
+      np.testing.assert_allclose(sensordata[w, 9:15], expected_fromto, atol=1e-6)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(sensordata[0, 1:], sensordata[1, 1:]))
+
+    # Force an exact minimum-distance tie per world and verify permutation invariance.
+    for w in range(nworld):
+      idx = np.flatnonzero(con_world == w)
+      tie_dist = np.float32(np.min(con_dist[idx]) - 0.05)
+      con_dist[idx[0]] = tie_dist
+      con_dist[idx[-1]] = tie_dist
+      con_pos[idx[0]] = [0.1, -0.2, 0.8 + 0.1 * w]
+      con_pos[idx[-1]] = [-0.3, 0.4, 0.9 + 0.1 * w]
+    d.contact.dist[:nacon].assign(con_dist)
+    d.contact.pos[:nacon].assign(con_pos)
+
+    saved = [(arr, arr.numpy()[:nacon].copy()) for arr in vars(d.contact).values() if isinstance(arr, wp.array) and arr.size]
+    base_idx = np.arange(nacon)
+    perms = (base_idx, base_idx[::-1], np.roll(base_idx, 11), np.concatenate([base_idx[1::2], base_idx[0::2]]))
+
+    with wp.ScopedCapture() as capture:
+      sort.contacts(d)
+      mjw.sensor_pos(m, d)
+
+    ref_tie = None
+    for step_idx, perm in enumerate(perms):
+      for arr, val in saved:
+        arr[:nacon].assign(val[perm])
+      d.sensordata.fill_(wp.inf)
+      if step_idx == 0:
+        sort.contacts(d)
+        mjw.sensor_pos(m, d)
+        ref_tie = d.sensordata.numpy().copy()
+      else:
+        wp.capture_launch(capture.graph)
+        self.assertEqual(d.sensordata.numpy().tobytes(), ref_tie.tobytes())
 
   @parameterized.parameters(0, 1)
   def test_insidesite(self, keyframe):

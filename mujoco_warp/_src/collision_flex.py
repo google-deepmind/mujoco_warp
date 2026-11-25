@@ -19,6 +19,7 @@ import math
 import warp as wp
 
 from mujoco_warp._src import collision_primitive_core
+from mujoco_warp._src import sort
 from mujoco_warp._src import support
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_core import sap_binary_search
@@ -37,6 +38,7 @@ from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import Model
@@ -52,6 +54,26 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 _FPS_SLOTS: int = 8  # candidates per thread kept in registers during FPS
 ENABLE_SAT_PREFILTER: bool = True
 _FLEX_CONTACT_DEDUP_TOLERANCE: float = 1e-3
+
+
+@wp.func
+def _cmp_vec2i(a: wp.vec2i, b: wp.vec2i) -> int:
+  """Lexicographic comparison of two vec2i values (-1, 0, or 1)."""
+  for k in range(2):
+    if a[k] != b[k]:
+      return -1 if a[k] < b[k] else 1
+  return 0
+
+
+@wp.func
+def _cmp_vec3f(a: wp.vec3, b: wp.vec3) -> int:
+  """Lexicographic comparison of two vec3 values using total float bit order (-1, 0, or 1)."""
+  for k in range(3):
+    ka = sort.float_key(wp.cast(a[k], wp.uint32))
+    kb = sort.float_key(wp.cast(b[k], wp.uint32))
+    if ka != kb:
+      return -1 if ka < kb else 1
+  return 0
 
 
 @wp.func
@@ -2730,13 +2752,51 @@ def _compare_candidate(
   return False
 
 
+@wp.func
+def _compare_candidate_canonical(
+  # In:
+  dist_i: float,
+  dist_j: float,
+  pos_i: wp.vec3,
+  pos_j: wp.vec3,
+  cand_idx_i: int,
+  cand_idx_j: int,
+  cand_nrm: wp.array[wp.vec3],
+  cand_flex: wp.array[wp.vec2i],
+  cand_elem: wp.array[wp.vec2i],
+  cand_vert: wp.array[wp.vec2i],
+) -> bool:
+  """Returns True if candidate i is dominated by j, breaking ties by candidate content."""
+  dist_key_i = sort.float_key(wp.cast(dist_i, wp.uint32))
+  dist_key_j = sort.float_key(wp.cast(dist_j, wp.uint32))
+  if dist_key_j != dist_key_i:
+    return dist_key_j < dist_key_i
+  # Break exact distance ties canonically by candidate content before raw atomic index.
+  c = _cmp_vec2i(cand_flex[cand_idx_j], cand_flex[cand_idx_i])
+  if c != 0:
+    return c < 0
+  c = _cmp_vec2i(cand_elem[cand_idx_j], cand_elem[cand_idx_i])
+  if c != 0:
+    return c < 0
+  c = _cmp_vec2i(cand_vert[cand_idx_j], cand_vert[cand_idx_i])
+  if c != 0:
+    return c < 0
+  c = _cmp_vec3f(pos_j, pos_i)
+  if c != 0:
+    return c < 0
+  c = _cmp_vec3f(cand_nrm[cand_idx_j], cand_nrm[cand_idx_i])
+  if c != 0:
+    return c < 0
+  return cand_idx_j < cand_idx_i
+
+
 # Note: MuJoCo Warp uses proximity deduplication (1 mm threshold) only for 1D and 2D
 # flex-geom collisions and ContactType.PASSIVE flex pairs. Non-passive 3D flex-geom,
 # flex self-collision, and flex-flex collisions apply proximity deduplication before
 # Farthest Point Sampling (FPS) limited to MJ_MAXCONPAIR.
 # TODO(thowell): Figure out an FPS version that utilizes a configurable mj_maxconpair.
 @cache_kernel
-def _filter_flex_candidates_sorted(has_passive_flex: bool):
+def _filter_flex_candidates_sorted(has_passive_flex: bool, canonical_ties: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -2754,6 +2814,7 @@ def _filter_flex_candidates_sorted(has_passive_flex: bool):
     sort_val: wp.array[int],
     cand_dist: wp.array[float],
     cand_pos: wp.array[wp.vec3],
+    cand_nrm: wp.array[wp.vec3],
     cand_geom: wp.array[wp.vec2i],
     cand_flex: wp.array[wp.vec2i],
     cand_elem: wp.array[wp.vec2i],
@@ -2819,7 +2880,13 @@ def _filter_flex_candidates_sorted(has_passive_flex: bool):
         pos_j = cand_pos[oj]
         diff = pos_i - pos_j
         if wp.dot(diff, diff) < eps2:
-          if _compare_candidate(dist_i, cand_dist[oj], i, oj):
+          if wp.static(canonical_ties):
+            if _compare_candidate_canonical(
+              dist_i, cand_dist[oj], pos_i, pos_j, i, oj, cand_nrm, cand_flex, cand_elem, cand_vert
+            ):
+              keep = 0
+              break
+          elif _compare_candidate(dist_i, cand_dist[oj], i, oj):
             keep = 0
             break
       j -= 1
@@ -2840,7 +2907,13 @@ def _filter_flex_candidates_sorted(has_passive_flex: bool):
           pos_j = cand_pos[oj]
           diff = pos_i - pos_j
           if wp.dot(diff, diff) < eps2:
-            if _compare_candidate(dist_i, cand_dist[oj], i, oj):
+            if wp.static(canonical_ties):
+              if _compare_candidate_canonical(
+                dist_i, cand_dist[oj], pos_i, pos_j, i, oj, cand_nrm, cand_flex, cand_elem, cand_vert
+              ):
+                keep = 0
+                break
+            elif _compare_candidate(dist_i, cand_dist[oj], i, oj):
               keep = 0
               break
         j += 1
@@ -3150,6 +3223,29 @@ def _tie_break_fps(
   return curr_idx < sel_idx
 
 
+@wp.func
+def _tie_break_fps_canonical(
+  # In:
+  curr_idx: int,
+  sel_idx: int,
+  cand_pos: wp.array[wp.vec3],
+  cand_elem: wp.array[wp.vec2i],
+  cand_vert: wp.array[wp.vec2i],
+) -> bool:
+  if sel_idx < 0:
+    return True
+  c = _cmp_vec2i(cand_elem[curr_idx], cand_elem[sel_idx])
+  if c != 0:
+    return c < 0
+  c = _cmp_vec2i(cand_vert[curr_idx], cand_vert[sel_idx])
+  if c != 0:
+    return c < 0
+  c = _cmp_vec3f(cand_pos[curr_idx], cand_pos[sel_idx])
+  if c != 0:
+    return c < 0
+  return curr_idx < sel_idx
+
+
 _fps_vecf = wp.types.vector(length=_FPS_SLOTS, dtype=float)
 _fps_veci = wp.types.vector(length=_FPS_SLOTS, dtype=int)
 
@@ -3162,6 +3258,15 @@ class _FpsPick:
   vert: wp.vec2i
 
 
+@wp.struct
+class _FpsPickCanonical:
+  dist: float
+  cidx: int
+  elem: wp.vec2i
+  vert: wp.vec2i
+  pos: wp.vec3
+
+
 @wp.func
 def _fps_pick(dist: float, cidx: int, cand_elem: wp.array[wp.vec2i], cand_vert: wp.array[wp.vec2i]) -> _FpsPick:
   pick = _FpsPick()
@@ -3170,6 +3275,25 @@ def _fps_pick(dist: float, cidx: int, cand_elem: wp.array[wp.vec2i], cand_vert: 
   if cidx >= 0:
     pick.elem = cand_elem[cidx]
     pick.vert = cand_vert[cidx]
+  return pick
+
+
+@wp.func
+def _fps_pick_canonical(
+  # In:
+  dist: float,
+  cidx: int,
+  cand_pos: wp.array[wp.vec3],
+  cand_elem: wp.array[wp.vec2i],
+  cand_vert: wp.array[wp.vec2i],
+) -> _FpsPickCanonical:
+  pick = _FpsPickCanonical()
+  pick.dist = dist
+  pick.cidx = cidx
+  if cidx >= 0:
+    pick.elem = cand_elem[cidx]
+    pick.vert = cand_vert[cidx]
+    pick.pos = cand_pos[cidx]
   return pick
 
 
@@ -3205,8 +3329,31 @@ def _fps_pick_max(a: _FpsPick, b: _FpsPick) -> _FpsPick:
   return b
 
 
+@wp.func
+def _fps_pick_max_canonical(a: _FpsPickCanonical, b: _FpsPickCanonical) -> _FpsPickCanonical:
+  """Returns the pick with the larger distance, breaking ties like _tie_break_fps_canonical."""
+  if b.cidx < 0:
+    return a
+  if a.cidx < 0:
+    return b
+  if a.dist > b.dist:
+    return a
+  if b.dist > a.dist:
+    return b
+  c = _cmp_vec2i(a.elem, b.elem)
+  if c != 0:
+    return a if c < 0 else b
+  c = _cmp_vec2i(a.vert, b.vert)
+  if c != 0:
+    return a if c < 0 else b
+  c = _cmp_vec3f(a.pos, b.pos)
+  if c != 0:
+    return a if c < 0 else b
+  return a if a.cidx < b.cidx else b
+
+
 @cache_kernel
-def _parallel_fps(has_passive_flex: bool):
+def _parallel_fps(has_passive_flex: bool, canonical_ties: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -3298,7 +3445,10 @@ def _parallel_fps(has_passive_flex: bool):
             min_d = d_val
             seed = c_idx
           elif d_val == min_d:
-            if _tie_break_fps(c_idx, seed, cand_elem, cand_vert):
+            if wp.static(canonical_ties):
+              if _tie_break_fps_canonical(c_idx, seed, cand_pos, cand_elem, cand_vert):
+                seed = c_idx
+            elif _tie_break_fps(c_idx, seed, cand_elem, cand_vert):
               seed = c_idx
 
     overflow_start = g_start + tid + wp.static(_FPS_SLOTS) * nthread
@@ -3312,14 +3462,23 @@ def _parallel_fps(has_passive_flex: bool):
           min_d = d_val
           seed = c_idx
         elif d_val == min_d:
-          if _tie_break_fps(c_idx, seed, cand_elem, cand_vert):
+          if wp.static(canonical_ties):
+            if _tie_break_fps_canonical(c_idx, seed, cand_pos, cand_elem, cand_vert):
+              seed = c_idx
+          elif _tie_break_fps(c_idx, seed, cand_elem, cand_vert):
             seed = c_idx
 
     if wp.tile_sum(wp.tile(local_active))[0] <= MJ_MAXCONPAIR:
       return
 
     # negating the distance turns the min search into a max with the same tie-break
-    sel = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(-min_d, seed, cand_elem, cand_vert)))[0].cidx
+    if wp.static(canonical_ties):
+      sel = wp.tile_reduce(
+        _fps_pick_max_canonical,
+        wp.tile(_fps_pick_canonical(-min_d, seed, cand_pos, cand_elem, cand_vert)),
+      )[0].cidx
+    else:
+      sel = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(-min_d, seed, cand_elem, cand_vert)))[0].cidx
 
     for _ in range(MJ_MAXCONPAIR - 1):
       sel_p = cand_pos[sel]
@@ -3338,7 +3497,10 @@ def _parallel_fps(has_passive_flex: bool):
               max_d = md
               best = c_idx
             elif md == max_d:
-              if _tie_break_fps(c_idx, best, cand_elem, cand_vert):
+              if wp.static(canonical_ties):
+                if _tie_break_fps_canonical(c_idx, best, cand_pos, cand_elem, cand_vert):
+                  best = c_idx
+              elif _tie_break_fps(c_idx, best, cand_elem, cand_vert):
                 best = c_idx
 
       for si in range(overflow_start, g_end, nthread):
@@ -3357,10 +3519,19 @@ def _parallel_fps(has_passive_flex: bool):
                 max_d = md
                 best = c_idx
               elif md == max_d:
-                if _tie_break_fps(c_idx, best, cand_elem, cand_vert):
+                if wp.static(canonical_ties):
+                  if _tie_break_fps_canonical(c_idx, best, cand_pos, cand_elem, cand_vert):
+                    best = c_idx
+                elif _tie_break_fps(c_idx, best, cand_elem, cand_vert):
                   best = c_idx
 
-      pick = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(max_d, best, cand_elem, cand_vert)))[0]
+      if wp.static(canonical_ties):
+        pick = wp.tile_reduce(
+          _fps_pick_max_canonical,
+          wp.tile(_fps_pick_canonical(max_d, best, cand_pos, cand_elem, cand_vert)),
+        )[0]
+      else:
+        pick = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(max_d, best, cand_elem, cand_vert)))[0]
       if pick.cidx < 0 or pick.dist <= 0.0:
         sel = -1
         break
@@ -3507,10 +3678,10 @@ def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
   )
 
 
-def _run_filter_flex_fps(m: Model, ws: FlexWorkspace, has_passive_flex: bool):
+def _run_filter_flex_fps(m: Model, ws: FlexWorkspace, has_passive_flex: bool, canonical_ties: bool):
   """Applies Far Point Sampling to limit contact points per group to MJ_MAXCONPAIR in parallel."""
   wp.launch_tiled(
-    _parallel_fps(has_passive_flex),
+    _parallel_fps(has_passive_flex, canonical_ties),
     dim=ws.flex_group_start_indices.shape[0],
     inputs=[
       m.opt.integrator,
@@ -3568,8 +3739,9 @@ def _filter_and_write_contacts(
   wp.utils.radix_sort_pairs(ws.filter_key, ws.filter_val, d.naconmax)
 
   has_passive_flex = bool(m.opt.integrator == IntegratorType.DISCRETE and m.has_flex_passive)
+  canonical_ties = bool(m.opt.deterministic & DeterminismType.CONTACTS)
   wp.launch(
-    _filter_flex_candidates_sorted(has_passive_flex),
+    _filter_flex_candidates_sorted(has_passive_flex, canonical_ties),
     dim=d.naconmax,
     inputs=[
       m.opt.integrator,
@@ -3585,6 +3757,7 @@ def _filter_and_write_contacts(
       ws.filter_val,
       ws.dist,
       ws.pos,
+      ws.nrm,
       ws.geom,
       ws.flex,
       ws.elem,
@@ -3630,7 +3803,7 @@ def _filter_and_write_contacts(
       ],
     )
 
-    _run_filter_flex_fps(m, ws, has_passive_flex)
+    _run_filter_flex_fps(m, ws, has_passive_flex, canonical_ties)
 
   wp.launch(
     _write_filtered_contacts(int(m.opt.warn_overflow), has_passive_flex),
