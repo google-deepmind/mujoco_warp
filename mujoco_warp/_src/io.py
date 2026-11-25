@@ -23,6 +23,7 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import history
+from mujoco_warp._src import math
 from mujoco_warp._src import sleep
 from mujoco_warp._src import support
 from mujoco_warp._src import types
@@ -1079,7 +1080,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   # precalculated geom pairs
   geom1, geom2, nxn_pairid_contact = _nxn_pairid_contact(mjm)
   m.nxn_geom_pair = np.stack((geom1, geom2), axis=1)
-  m.max_efc_J_rownnz = _max_efc_J_rownnz(mjm, (geom1, geom2, nxn_pairid_contact))
+  m.max_efc_J_rownnz = _max_efc_J_rownnz(mjm, (geom1, geom2, nxn_pairid_contact), body_isdofancestor[:, : mjm.nv])
 
   sensor_collision_adr = np.nonzero(is_collision_sensor)[0]
   collision_sensor_adr = np.full(mjm.nsensor, -1)
@@ -1112,7 +1113,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     # collide all pairs
     for geom1id in range(id1, id1 + n1):
       for geom2id in range(id2, id2 + n2):
-        pairid = _upper_tri_index(mjm.ngeom, geom1id, geom2id)
+        pairid = math.upper_tri_index(mjm.ngeom, min(geom1id, geom2id), max(geom1id, geom2id))
 
         if pairid in pairids:
           sensor_collision_start_adr.append(nxn_pairid_collision[pairid])
@@ -2094,11 +2095,6 @@ def _body_isdofancestor(mjm: mujoco.MjModel) -> np.ndarray:
   return body_isdofancestor
 
 
-def _upper_tri_index(n: int, i: int, j: int) -> int:
-  i, j = (j, i) if j < i else (i, j)
-  return (i * (2 * n - i - 3)) // 2 + j - 1
-
-
 def _nxn_pairid_contact(mjm: mujoco.MjModel) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
   """Returns the geom pairs and their contact pair id: -1 without a pair, -2 if filtered."""
   filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT)
@@ -2130,7 +2126,8 @@ def _nxn_pairid_contact(mjm: mujoco.MjModel) -> tuple[np.ndarray, np.ndarray, np
 
   # contact pairs
   for i in range(mjm.npair):
-    nxn_pairid_contact[_upper_tri_index(mjm.ngeom, mjm.pair_geom1[i], mjm.pair_geom2[i])] = i
+    g1, g2 = int(mjm.pair_geom1[i]), int(mjm.pair_geom2[i])
+    nxn_pairid_contact[math.upper_tri_index(mjm.ngeom, min(g1, g2), max(g1, g2))] = i
 
   return geom1, geom2, nxn_pairid_contact
 
@@ -2164,12 +2161,17 @@ def _body_set_nnz(mjm: mujoco.MjModel, bodies) -> int:
   return len(active_dofs)
 
 
-def _calculate_max_contact_nnz(mjm: mujoco.MjModel, nxn_pair: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None) -> int:
+def _calculate_max_contact_nnz(
+  mjm: mujoco.MjModel,
+  nxn_pair: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+  body_isdofancestor: np.ndarray | None = None,
+) -> int:
   """Returns the maximum number of non-zeros for a single contact constraint.
 
   Args:
     mjm: The model containing kinematic and dynamic information (host).
     nxn_pair: The result of `_nxn_pairid_contact`, if the caller already has it.
+    body_isdofancestor: The result of `_body_isdofancestor`, if the caller already has it.
   """
   # a rigid contact row spans the dofs that move either body of a geom pair that can collide
   geom1, geom2, nxn_pairid_contact = nxn_pair or _nxn_pairid_contact(mjm)
@@ -2177,7 +2179,9 @@ def _calculate_max_contact_nnz(mjm: mujoco.MjModel, nxn_pair: tuple[np.ndarray, 
   weld = np.unique(mjm.body_weldid)
   index = np.zeros(mjm.nbody, dtype=int)
   index[weld] = np.arange(weld.size)
-  moves = _body_isdofancestor(mjm)[weld].astype(np.float32)
+  if body_isdofancestor is None:
+    body_isdofancestor = _body_isdofancestor(mjm)
+  moves = body_isdofancestor[weld].astype(np.float32)
   ndof = moves.sum(axis=1)
   union = ndof[:, None] + ndof[None, :] - moves @ moves.T
   body1 = index[mjm.body_weldid[mjm.geom_bodyid[geom1[contact]]]]
@@ -2381,17 +2385,20 @@ def _efc_rownnz(mjm: mujoco.MjModel) -> list[tuple[int, int]]:
   return rows
 
 
-def _max_efc_J_rownnz(mjm: mujoco.MjModel, nxn_pair: tuple[np.ndarray, np.ndarray, np.ndarray]) -> int:
+def _max_efc_J_rownnz(
+  mjm: mujoco.MjModel, nxn_pair: tuple[np.ndarray, np.ndarray, np.ndarray], body_isdofancestor: np.ndarray
+) -> int:
   """Returns an upper bound on the number of non-zeros in one constraint Jacobian row.
 
   Args:
     mjm: The model containing kinematic and dynamic information (host).
     nxn_pair: The result of `_nxn_pairid_contact`.
+    body_isdofancestor: The result of `_body_isdofancestor`.
   """
   if mjm.nflex:
     # the flex contact estimate samples one cell of an interpolated flex, so it is not a bound
     return mjm.nv
-  rownnz = max([1, _calculate_max_contact_nnz(mjm, nxn_pair)] + [nnz for _, nnz in _efc_rownnz(mjm)])
+  rownnz = max([1, _calculate_max_contact_nnz(mjm, nxn_pair, body_isdofancestor)] + [nnz for _, nnz in _efc_rownnz(mjm)])
   if mjm.ntendon:
     # frictionloss can be set on any tendon after construction
     rownnz = max(rownnz, int(mjm.ten_J_rownnz.max()))
