@@ -7363,7 +7363,6 @@ def make_constraint(m: types.Model, d: types.Data):
     _make_rows(m, d, efc_nnz, *rows, *dense, contacts=False)
     if discover_stream is not None:
       wp.wait_stream(discover_stream)
-    island.island_rows_done(m, d)
   else:
     _make_rows(m, d, efc_nnz)
 
