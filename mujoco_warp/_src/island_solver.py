@@ -961,6 +961,12 @@ def _grad(final: bool):
     Ma_in: wp.array2d[float],
     iqfrc_smooth_in: wp.array2d[float],
     grad_scale_in: wp.array2d[float],
+    row2dof_in: wp.array2d[int],
+    iqacc_in: wp.array2d[float],
+    # Data out:
+    qacc_out: wp.array2d[float],
+    qfrc_constraint_out: wp.array2d[float],
+    efc_Ma_out: wp.array2d[float],
     # Out:
     frc_out: wp.array2d[float],
     grad_out: wp.array2d[float],
@@ -968,7 +974,8 @@ def _grad(final: bool):
   ):
     """J'force of dense rows and the gradient per group, as _update_gradient_grad.
 
-    The final pass recovers J'force that stable groups skipped from their gradient.
+    The final pass scatters the solution back, with J'force that stable groups skipped recovered
+    from their gradient.
     """
     slot, lane = wp.tid()
     if wp.static(not FINAL):
@@ -982,16 +989,24 @@ def _grad(final: bool):
         if done_in[worldid, g] or _stable(niter_in[worldid, g], state_changed_in[worldid, g]):
           continue
       block = group_dense_in[worldid, g]
-      if wp.static(FINAL):
-        # J'force is at the solution unless the last iteration was stable (it skips J'force)
-        if not _stable(niter_in[worldid, g], state_changed_in[worldid, g]):
-          continue
       vbase = vbase_in[worldid, g]
       if wp.static(FINAL):
+        # J'force is at the solution unless the last iteration was stable (it skips J'force)
+        stable = _stable(niter_in[worldid, g], state_changed_in[worldid, g])
         grad_scale = grad_scale_in[worldid, g]
         for col in range(lane, ntile_in[worldid, g] * _TILE, _TILE):
           row = vbase + col
-          frc_out[worldid, row] = Ma_in[worldid, row] - iqfrc_smooth_in[worldid, row] - grad_scale * grad_out[worldid, row]
+          dofid = row2dof_in[worldid, row]
+          if dofid >= 0:
+            ma = Ma_in[worldid, row]
+            if stable:
+              frc = ma - iqfrc_smooth_in[worldid, row] - grad_scale * grad_out[worldid, row]
+              frc_out[worldid, row] = frc
+            else:
+              frc = frc_out[worldid, row]
+            qacc_out[worldid, dofid] = iqacc_in[worldid, row]
+            qfrc_constraint_out[worldid, dofid] = frc
+            efc_Ma_out[worldid, dofid] = ma
         continue
       for col in range(lane, ntile_in[worldid, g] * _TILE, _TILE):
         row = vbase + col
@@ -1191,29 +1206,6 @@ def _dense_factor(ntile: int):
 
 
 @wp.kernel
-def _scatter_dofs(
-  # In:
-  lanes: int,
-  nrow_used_in: wp.array[int],
-  row2dof_in: wp.array2d[int],
-  iqacc_in: wp.array2d[float],
-  frc_in: wp.array2d[float],
-  iMa_in: wp.array2d[float],
-  # Data out:
-  qacc_out: wp.array2d[float],
-  qfrc_constraint_out: wp.array2d[float],
-  efc_Ma_out: wp.array2d[float],
-):
-  worldid, lane = wp.tid()
-  for row in range(lane, nrow_used_in[worldid], lanes):
-    dofid = row2dof_in[worldid, row]
-    if dofid >= 0:
-      qacc_out[worldid, dofid] = iqacc_in[worldid, row]
-      qfrc_constraint_out[worldid, dofid] = frc_in[worldid, row]
-      efc_Ma_out[worldid, dofid] = iMa_in[worldid, row]
-
-
-@wp.kernel
 def _dofs(
   # Model:
   dof_treeid: wp.array[int],
@@ -1346,11 +1338,6 @@ def _reset_counts(
   for i in range(group_count_out.shape[0]):
     group_count_out[i] = 0
   nsolving_out[0] = 0
-
-
-def _lanes(nworld: int, nrow: int) -> int:
-  """Threads per world of the row kernels, which loop over the rows that exist."""
-  return min(nrow, max(32, -(-(1 << 19) // nworld // 32) * 32))
 
 
 def _nblock(per_sm: int = 1) -> int:
@@ -1589,8 +1576,17 @@ def _launch_grad(d: types.Data, ctx: IslandContext, g: island.GroupBuffers, fina
       ctx.Ma,
       ctx.qfrc_smooth,
       ctx.grad_scale,
+      ctx.row2dof,
+      ctx.qacc,
     ],
-    outputs=[ctx.frc, ctx.grad.reshape((d.nworld, nrow)), ctx.nsolving],
+    outputs=[
+      d.qacc if final else None,
+      d.qfrc_constraint if final else None,
+      d.efc.Ma if final else None,
+      ctx.frc,
+      ctx.grad.reshape((d.nworld, nrow)),
+      ctx.nsolving,
+    ],
     block_dim=4 * _TILE,
   )
 
@@ -1849,14 +1845,8 @@ def _solve_groups(m: types.Model, d: types.Data, ctx: IslandContext, g: island.G
     for _ in range(m.opt.iterations):
       _iteration(m, d, ctx, g)
 
-  # J'force where the last iteration skipped it, then scatter back
+  # scatter back, with J'force where the last iteration skipped it
   _launch_grad(d, ctx, g, final=True)
-  wp.launch(
-    _scatter_dofs,
-    dim=(d.nworld, _lanes(d.nworld, nrow)),
-    inputs=[_lanes(d.nworld, nrow), ctx.nrow_used, ctx.row2dof, ctx.qacc, ctx.frc, ctx.Ma],
-    outputs=[d.qacc, d.qfrc_constraint, d.efc.Ma],
-  )
 
 
 def solve(m: types.Model, d: types.Data) -> IslandContext:
