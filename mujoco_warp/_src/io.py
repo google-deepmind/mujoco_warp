@@ -1494,18 +1494,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.qLD_all_updates = all_updates_flat if all_updates_flat else [(0, 0, 0)]
   m.qLD_level_offsets = level_offsets
 
-  # Indices for sparse M_fullm (used in solver). M_fullm_i/j are built by
-  # walking dof_parentid for each dof, so for joint types whose internal block
-  # MuJoCo stores diagonal-only in the compact (M_rownnz, M_rowadr) layout
-  # (e.g. free joints), the chain-aware layout here has more entries per row
-  # than the compact layout.
-  m.M_fullm_i, m.M_fullm_j = [], []
-  for i in range(mjm.nv):
-    j = i
-    while j > -1:
-      m.M_fullm_i.append(i)
-      m.M_fullm_j.append(j)
-      j = mjm.dof_parentid[j]
   # M_elemid maps (row, col) -> madr index in the native CSR M layout
   M_elemid = np.full((mjm.nv, mjm.nv), -1, dtype=np.int32)
   # M_hinit_i: row index of each CSR entry (its madr is the flat index). The dense Newton H-init
@@ -1932,7 +1920,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nqLD_fused_pairs": len(m.qLD_fused_pairs),
       "nqLD_all_updates": len(m.qLD_all_updates),
       "nqLD_level_offsets": len(m.qLD_level_offsets),
-      "nM_fullm": len(m.M_fullm_i),
       "nv_tile": m.M_tile_colmask.shape[0],
       "nv_tile_word": m.M_tile_colmask.shape[1],
       "nqD_fullm": len(m.qD_fullm_i),
@@ -2362,10 +2349,12 @@ def _default_njmax_nnz(mjm: mujoco.MjModel, nconmax: int, njmax: int) -> int:
       if jnt_type == mujoco.mjtJoint.mjJNT_BALL:
         total_nnz += 3
       elif jnt_type in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE):
-        total_nnz += 1
+        # both sides are active when the range is narrower than twice the margin
+        total_nnz += 1 + int(mjm.jnt_range[i, 1] - mjm.jnt_range[i, 0] < 2 * mjm.jnt_margin[i])
   for i in range(mjm.ntendon):
     if mjm.tendon_limited[i]:
-      total_nnz += mjm.ten_J_rownnz[i]
+      bilateral = mjm.tendon_range[i, 1] - mjm.tendon_range[i, 0] < 2 * mjm.tendon_margin[i]
+      total_nnz += (1 + int(bilateral)) * mjm.ten_J_rownnz[i]
 
   # contact constraints: njmax rows at max contact non-zeros
   max_contact_nnz = _calculate_max_contact_nnz(mjm)

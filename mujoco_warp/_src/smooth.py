@@ -21,6 +21,7 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.island import is_repeated_fixed_support_efc
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Q_LD_BLOCK_COMPACT
@@ -1144,6 +1145,16 @@ def com_pos(m: Model, d: Data):
   )
 
 
+@wp.func
+def _normalize3(vec: wp.vec3) -> wp.vec3:
+  length = wp.length(vec)
+  if length < MJ_MINVAL:
+    vec = wp.vec3(1.0, 0.0, 0.0)
+  else:
+    vec /= length
+  return vec
+
+
 @wp.kernel
 def _cam_local_to_global(
   # Model:
@@ -1192,10 +1203,10 @@ def _cam_local_to_global(
     if cam_mode[camid] == CamLightType.TARGETBODYCOM:
       pos = subtree_com_in[worldid, cam_targetbodyid[camid]]
     # zaxis = -desired camera direction, in global frame
-    mat_3 = wp.normalize(cam_xpos_out[worldid, camid] - pos)
+    mat_3 = _normalize3(cam_xpos_out[worldid, camid] - pos)
     # xaxis: orthogonal to zaxis and to (0,0,1)
-    mat_1 = wp.normalize(wp.cross(wp.vec3(0.0, 0.0, 1.0), mat_3))
-    mat_2 = wp.normalize(wp.cross(mat_3, mat_1))
+    mat_1 = _normalize3(wp.cross(wp.vec3(0.0, 0.0, 1.0), mat_3))
+    mat_2 = _normalize3(wp.cross(mat_3, mat_1))
     # fmt: off
     cam_xmat_out[worldid, camid] = wp.mat33(
       mat_1[0], mat_2[0], mat_3[0],
@@ -1267,7 +1278,7 @@ def _light_local_to_global(
     light_xpos_out[worldid, lightid] = xpos + math.rot_vec_quat(light_pos[light_pos_id, lightid], xquat)
     light_xdir_out[worldid, lightid] = math.rot_vec_quat(light_dir[light_dir_id, lightid], xquat)
 
-  light_xdir_out[worldid, lightid] = wp.normalize(light_xdir_out[worldid, lightid])
+  light_xdir_out[worldid, lightid] = _normalize3(light_xdir_out[worldid, lightid])
 
 
 @event_scope
@@ -2313,6 +2324,7 @@ def _cfrc_ext_tendon_constraint(deterministic: bool = False):
     eq_obj2id: wp.array[int],
     eq_data: wp.array2d[vec12],
     tendon_range: wp.array2d[wp.vec2],
+    tendon_margin: wp.array2d[float],
     tendon_length0: wp.array2d[float],
     # Data in:
     nefc_in: wp.array[int],
@@ -2355,10 +2367,11 @@ def _cfrc_ext_tendon_constraint(deterministic: bool = False):
     if efc_type == ConstraintType.LIMIT_TENDON:
       tenid = efc_id_in[worldid, efcid]
       tenrange = tendon_range[worldid % tendon_range.shape[0], tenid]
+      tenmargin = tendon_margin[worldid % tendon_margin.shape[0], tenid]
       length = ten_length_in[worldid, tenid]
-      dist_min = length - tenrange[0]
-      dist_max = tenrange[1] - length
-      scl = wp.where(dist_min < dist_max, 1.0, -1.0)
+      # the lower limit row, if active, precedes the upper limit row
+      lower = length - tenrange[0] < tenmargin and not is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid)
+      scl = wp.where(lower, 1.0, -1.0)
       wp.atomic_add(ten_frc_out[worldid], tenid, scl * efc_force)
 
   return kernel
@@ -2696,6 +2709,7 @@ def rne_postconstraint(m: Model, d: Data):
         m.eq_obj2id,
         m.eq_data,
         m.tendon_range,
+        m.tendon_margin,
         m.tendon_length0,
         d.nefc,
         d.ten_length,
