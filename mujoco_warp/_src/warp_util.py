@@ -132,8 +132,11 @@ def event_scope(fn, name: str = ""):
     saved_stack, _STACK = _STACK, {}
     beg = wp.Event(enable_timing=True)
     end = wp.Event(enable_timing=True)
+    # the events time the function's own work, so queued stages launch on either side of it
+    fusion.flush()
     wp.record_event(beg)
     res = fn(*args, **kwargs)
+    fusion.flush()
     wp.record_event(end)
     # pop back up to current level
     sub_stack, _STACK = _STACK, saved_stack

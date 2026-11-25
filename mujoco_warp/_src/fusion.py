@@ -47,6 +47,7 @@ from typing import Any, Callable, Optional
 
 import warp as wp
 from warp._src import context as wp_context
+from warp._src.codegen import StructInstance
 
 # "fused": queue and fuse, "unfused": queue and launch one kernel per stage, "immediate": launch
 # every stage and operation when called, the reference that queued launches must match
@@ -186,8 +187,17 @@ def _key(a) -> Any:
   return None
 
 
-def _keys(arrays) -> set:
-  return {_key(a) for a in arrays} - {None}
+def _arrays(a) -> list:
+  """Returns the arrays an argument refers to, those in the fields of a struct included."""
+  if isinstance(a, wp.array):
+    return [a]
+  if isinstance(a, StructInstance):
+    return [x for name in a._cls.vars for x in _arrays(getattr(a, name))]
+  return []
+
+
+def _keys(args) -> set:
+  return {_key(x) for a in args for x in _arrays(a)} - {None}
 
 
 @dataclasses.dataclass
@@ -264,7 +274,7 @@ def _plan(entries: list) -> list:
         and not later
         and e.sizes == seg[0].sizes
         and not (hazard & set().union(*g.touched[:-1]))
-        and all(p in t.stage.pointwise for t in [*seg, e] for p, a in t.args.items() if _key(a) in hazard)
+        and all(p in t.stage.pointwise for t in [*seg, e] for p, a in t.args.items() if _keys([a]) & hazard)
       ):
         # depends only on the last segment, at the thread's own index: runs after it in its threads
         seg.append(e)
@@ -487,7 +497,7 @@ def launch(m, d, stage: Stage, dim=None, **bindings):
     raise ValueError(f"{stage.name} takes {len(stage.dim)} dims, got {sizes}")
   read = _keys(a for p, a in args.items() if not _is_out(p))
   write = _keys(a for p, a in args.items() if _is_out(p))
-  persistent = not any(isinstance(bindings.get(p), wp.array) for p in stage.params)
+  persistent = not any(_arrays(bindings.get(p)) for p in stage.params)
   _submit(_Launch(stage, args, sizes, persistent, read, write, _stream()))
 
 

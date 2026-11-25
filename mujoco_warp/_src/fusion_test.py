@@ -71,6 +71,21 @@ def _add_root(worldid: int, bodyid: int, b_in: wp.array2d[float], c_out: wp.arra
   c_out[worldid, bodyid] = b_in[worldid, 0] + 1.0
 
 
+@wp.struct
+class _Rows:
+  x: wp.array2d[float]
+
+
+@fusion.stage("nworld", "nbody")
+def _write_rows(worldid: int, bodyid: int, a_in: wp.array2d[float], rows_out: _Rows):
+  rows_out.x[worldid, bodyid] = a_in[worldid, bodyid]
+
+
+@fusion.stage("nworld", "nbody")
+def _read_rows(worldid: int, bodyid: int, rows_in: _Rows, c_out: wp.array2d[float]):
+  c_out[worldid, bodyid] = rows_in.x[worldid, 0]
+
+
 def _kernels(entries):
   return [[[e.stage for e in seg] for seg in g.segments] if hasattr(g, "segments") else "op" for g in fusion._plan(entries)]
 
@@ -104,6 +119,14 @@ class FusionTest(parameterized.TestCase):
       fusion.launch(m, d, _add_own, b_in=b, c_out=c)
       self.assertEqual(_kernels(fusion._QUEUES[-1]), [[[_double], [_double]], "op", "op", [[_add_own]]])
     np.testing.assert_array_equal(c.numpy(), np.ones_like(c.numpy()))
+
+    # arrays in struct arguments are dependencies too
+    rows = _Rows()
+    rows.x = x
+    with fusion.fuse():
+      fusion.launch(m, d, _write_rows, a_in=a, rows_out=rows)
+      fusion.launch(m, d, _read_rows, rows_in=rows, c_out=c)
+      self.assertEqual(_kernels(fusion._QUEUES[-1]), [[[_write_rows]], [[_read_rows]]])
 
   @parameterized.parameters(1, 2)
   def test_step_matches_immediate(self, nworld):
