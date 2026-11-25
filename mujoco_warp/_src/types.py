@@ -71,6 +71,7 @@ class BlockDim:
     nxn_broadphase: NXN broadphase block dimension (collision_driver)
     convex_ccd: convex CCD kernel block dimension (collision_convex)
     flex_fps: flex contact FPS block dimension (collision_flex)
+    flex_sdf: flex-SDF narrowphase block dimension (collision_flex)
     island_dsu: island discovery DSU block dimension (island)
     ray: ray block dimension (ray)
     contact_sort: contact sort block dimension (sensor)
@@ -106,6 +107,7 @@ class BlockDim:
   convex_ccd: int = 64
   # collision_flex
   flex_fps: int = 256
+  flex_sdf: int = 64
   # island
   island_dsu: int = 32
   # ray
@@ -1837,6 +1839,8 @@ class Model:
     flex_rodedge_jnt: twist hinge joint id of each DER chain edge; -1 none  (nflexrodedge,)
     flex_elem_rodedge: (chain edge index, orientation sign) per flex elem   (nflexelem, 2)
     flex_vert_rodelem: incident local element index per flex vertex         (nflexvert,)
+    flex_elem_bvhorder: local elem ids in C BVH order (2D), else identity    (nflexelem,)
+    flex_sdf_pair: (SDF geom id, 2D flex id) pairs that can collide         (nflex_sdf_pair,)
   """
 
   nq: int
@@ -2435,6 +2439,8 @@ class Model:
   flex_rodedge_jnt: array("nflexrodedge", int)
   flex_elem_rodedge: array("nflexelem", wp.vec2i)
   flex_vert_rodelem: array("nflexvert", int)
+  flex_elem_bvhorder: array("nflexelem", int)
+  flex_sdf_pair: array("nflex_sdf_pair", wp.vec2i)
 
 
 class ContactType(enum.IntFlag):

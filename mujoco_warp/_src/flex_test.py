@@ -32,6 +32,7 @@ from mujoco_warp._src import derivative
 from mujoco_warp._src import io
 from mujoco_warp._src import passive
 from mujoco_warp._src import types
+from mujoco_warp.test_data.collision_sdf.utils import register_sdf_plugins
 
 _TOLERANCE = 5e-4
 
@@ -3450,24 +3451,6 @@ class FlexCollisionTest(parameterized.TestCase):
       </mujoco>
       """,
     ),
-    (
-      "sdf",
-      """
-      <mujoco>
-        <asset>
-          <mesh name="cube"
-           vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
-        </asset>
-        <worldbody>
-          <body pos="0 0 1">
-            <freejoint/>
-            <geom type="sdf" mesh="cube"/>
-          </body>
-          <flexcomp type="grid" count="2 2 1" spacing=".2 .2 .1" pos="0 0 0.1" name="cloth" dim="2"/>
-        </worldbody>
-      </mujoco>
-      """,
-    ),
   )
   def test_unsupported_flex_collision_error(self, xml):
     """Test that loading a model with unsupported geoms and Flex raises NotImplementedError."""
@@ -6044,6 +6027,659 @@ class FlexFlexCollisionTest(parameterized.TestCase):
     mjw.collision(m, d)
     nacon = int(d.nacon.numpy()[0])
     self.assertEqual(nacon, 0, "Expected 0 contacts due to shared body exclusion")
+
+
+class FlexSDFCollisionTest(parameterized.TestCase):
+  """Tests for collisions between 2D flexes and SDF geoms."""
+
+  @classmethod
+  def setUpClass(cls):
+    register_sdf_plugins(mjw)
+
+  def _assert_contact_parity(self, mjm, mjd, m, d, nworld, sdf_only=False, qpos_offset=None):
+    """Compares the contacts and constraint forces of each world with MuJoCo.
+
+    World w starts at qpos + w * qpos_offset; the default offset moves the first free body. With
+    sdf_only, compares only the contacts with SDF geoms and skips the forces.
+    """
+    if qpos_offset is None:
+      qpos_offset = np.zeros(mjm.nq)
+      qpos_offset[:3] = [0.02, 0.0, 0.01]
+    qpos = mjd.qpos + np.arange(nworld)[:, None] * qpos_offset
+    d.qpos.assign(qpos)
+    d.nacon.fill_(-1)
+    d.overflow.fill_(0)
+    for arr in (d.contact.dist, d.contact.pos, d.contact.frame, d.contact.includemargin, d.qfrc_constraint, d.qacc):
+      arr.fill_(wp.inf)
+    d.qfrc_passive.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert, d.contact.worldid):
+      arr.fill_(-1)
+
+    mjw.forward(m, d)
+    np.testing.assert_equal(d.overflow.numpy(), 0)
+
+    nacon = d.nacon.numpy()[0]
+    worldid = d.contact.worldid.numpy()[:nacon]
+    dist = d.contact.dist.numpy()[:nacon]
+    pos = d.contact.pos.numpy()[:nacon]
+    frame = d.contact.frame.numpy()[:nacon].reshape(-1, 9)
+    includemargin = d.contact.includemargin.numpy()[:nacon]
+    geom = d.contact.geom.numpy()[:nacon]
+    flex = d.contact.flex.numpy()[:nacon]
+    elem = d.contact.elem.numpy()[:nacon]
+    vert = d.contact.vert.numpy()[:nacon]
+
+    world_dist = []
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_forward(mjm, mjd)
+      # Geom is -1 for flex-flex contacts
+      is_sdf = (geom[:, 0] >= 0) & (mjm.geom_type[geom[:, 0]] == mujoco.mjtGeom.mjGEOM_SDF)
+      ids = np.flatnonzero((worldid == w) & (is_sdf | (not sdf_only)))
+      c_geom = mjd.contact.geom[:, 0]
+      c_ids = np.flatnonzero((c_geom >= 0) & (mjm.geom_type[c_geom] == mujoco.mjtGeom.mjGEOM_SDF) | (not sdf_only))
+      self.assertGreater(len(c_ids), 0)
+      self.assertEqual(len(ids), len(c_ids))
+
+      # MuJoCo orders contacts by BVH traversal, so match each one to the nearest contact here
+      unmatched = set(ids)
+      for i in c_ids:
+        c = mjd.contact[i]
+        j = min(unmatched, key=lambda k: np.linalg.norm(pos[k] - c.pos))
+        unmatched.remove(j)
+        msg = f"world {w} contact {i}"
+        np.testing.assert_allclose(pos[j], c.pos, atol=1e-5, err_msg=msg)
+        np.testing.assert_allclose(dist[j], c.dist, atol=1e-5, err_msg=msg)
+        np.testing.assert_allclose(frame[j], c.frame, atol=1e-4, err_msg=msg)
+        np.testing.assert_allclose(includemargin[j], c.includemargin, atol=1e-6, err_msg=msg)
+        np.testing.assert_equal(geom[j], c.geom, err_msg=msg)
+        np.testing.assert_equal(flex[j], c.flex, err_msg=msg)
+        np.testing.assert_equal(vert[j], c.vert, err_msg=msg)
+        # Elements that share the deepest point (a common vertex) keep the first in BVH order
+        np.testing.assert_equal(elem[j], c.elem, err_msg=msg)
+
+      if not sdf_only:
+        np.testing.assert_allclose(d.qfrc_constraint.numpy()[w], mjd.qfrc_constraint, atol=1e-3, rtol=1e-3)
+        np.testing.assert_allclose(d.qacc.numpy()[w], mjd.qacc, atol=1e-2, rtol=1e-3)
+        np.testing.assert_allclose(d.qfrc_passive.numpy()[w], mjd.qfrc_passive, atol=1e-3, rtol=1e-5)
+      world_dist.append(np.sort(dist[ids]))
+
+    for w in range(1, nworld):
+      self.assertFalse(np.array_equal(world_dist[0], world_dist[w]))
+
+  def _num_vertices_in_cube(self, mjm, mjd, half_size):
+    """Returns the number of flex vertices inside the cube SDF geom."""
+    geomid = int(np.flatnonzero(mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF)[0])
+    rot = mjd.geom_xmat[geomid].reshape(3, 3)
+    local = (mjd.flexvert_xpos - mjd.geom_xpos[geomid]) @ rot
+    return int(np.sum(np.all(np.abs(local) < half_size, axis=1)))
+
+  @parameterized.parameters(1, 2)
+  def test_contact_parity_mesh(self, nworld):
+    """Tests that contacts between a cloth and a mesh SDF match MuJoCo."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option sdf_iterations="10" sdf_initpoints="40"/>
+        <asset>
+          <mesh name="cube" scale=".3 .3 .3"
+                vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+        </asset>
+        <worldbody>
+          <body euler="10 20 30">
+            <freejoint/>
+            <geom type="sdf" mesh="cube"/>
+          </body>
+          <flexcomp name="cloth" type="grid" count="6 6 1" spacing=".15 .15 .1" pos="0 0 .28" dim="2" radius=".005">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=types.MJ_MAXCONPAIR,
+      njmax=600,
+    )
+    self._assert_contact_parity(mjm, mjd, m, d, nworld)
+
+  @parameterized.parameters(1, 2)
+  def test_contact_parity_plugin(self, nworld):
+    """Tests that contacts between a cloth and a plugin SDF match MuJoCo."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option sdf_iterations="10" sdf_initpoints="40"/>
+        <extension>
+          <plugin plugin="mujoco.sdf.torus">
+            <instance name="torus">
+              <config key="radius1" value="0.3"/>
+              <config key="radius2" value="0.1"/>
+            </instance>
+          </plugin>
+        </extension>
+        <asset>
+          <mesh name="torus">
+            <plugin instance="torus"/>
+          </mesh>
+        </asset>
+        <worldbody>
+          <body euler="5 15 0">
+            <freejoint/>
+            <geom type="sdf" mesh="torus">
+              <plugin instance="torus"/>
+            </geom>
+          </body>
+          <flexcomp name="cloth" type="grid" count="8 8 1" spacing=".12 .12 .1" pos="0 0 .08" dim="2" radius=".005">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=types.MJ_MAXCONPAIR,
+      njmax=600,
+    )
+    self._assert_contact_parity(mjm, mjd, m, d, nworld)
+
+  @parameterized.parameters(32, 64, 256)
+  def test_contact_parity_maxconpair(self, block_dim):
+    """Tests that a pair with more than MJ_MAXCONPAIR penetrating elements matches MuJoCo.
+
+    MuJoCo keeps the first MJ_MAXCONPAIR penetrating elements in BVH order and then removes
+    duplicate points, so this scene has fewer than MJ_MAXCONPAIR contacts. The kept elements span
+    more than one chunk of block_dim elements, and the element count is not a multiple of block_dim.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option sdf_iterations="10" sdf_initpoints="10"/>
+        <asset>
+          <mesh name="cube" scale=".3 .3 .3"
+                vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+        </asset>
+        <worldbody>
+          <body pos="-.3 0 0" euler="10 20 30">
+            <freejoint/>
+            <geom type="sdf" mesh="cube"/>
+          </body>
+          <flexcomp name="cloth" type="grid" count="20 20 1" spacing=".04 .04 .1" pos="0 0 .2" dim="2" radius=".005">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=2,
+      nconmax=2 * types.MJ_MAXCONPAIR,
+      njmax=1200,
+    )
+    m.block_dim.flex_sdf = block_dim
+    # A vertex inside the cube makes its elements penetrate, and an element has 3 vertices
+    self.assertGreater(self._num_vertices_in_cube(mjm, mjd, 0.3), 3 * types.MJ_MAXCONPAIR)
+    self.assertLess(mjd.ncon, types.MJ_MAXCONPAIR)
+    self.assertNotEqual(mjm.nflexelem % block_dim, 0)
+    rank = np.argsort(m.flex_elem_bvhorder.numpy())[[c.elem[1] for c in mjd.contact]]
+    self.assertLess(rank.min() // block_dim, rank.max() // block_dim)
+    self._assert_contact_parity(mjm, mjd, m, d, 2)
+
+  @parameterized.parameters(1, 2)
+  def test_contact_parity_submillimeter(self, nworld):
+    """Tests that contacts less than a millimeter apart are kept, as in MuJoCo."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option sdf_iterations="10" sdf_initpoints="10"/>
+        <asset>
+          <mesh name="cube" scale=".3 .3 .3"
+                vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+        </asset>
+        <worldbody>
+          <body euler="10 20 30">
+            <freejoint/>
+            <geom type="sdf" mesh="cube"/>
+          </body>
+          <flexcomp name="cloth" type="grid" count="6 6 1" spacing=".0009 .0009 .1" pos="0 0 .2" dim="2" radius=".0001">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=types.MJ_MAXCONPAIR,
+      njmax=600,
+    )
+    self.assertGreater(mjd.ncon, 1)
+    self._assert_contact_parity(mjm, mjd, m, d, nworld)
+
+  @parameterized.parameters(1, 2)
+  def test_contact_parity_passive(self, nworld):
+    """Tests that a passive cloth on a static SDF geom gives passive contacts, as in MuJoCo."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" sdf_iterations="10" sdf_initpoints="10"/>
+        <asset>
+          <mesh name="cube" scale=".3 .3 .3"
+                vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+        </asset>
+        <worldbody>
+          <geom type="sdf" mesh="cube" euler="10 20 30"/>
+          <flexcomp name="cloth" type="grid" count="6 6 1" spacing=".15 .15 .1" pos="0 0 .28" dim="2" radius=".005"
+                    mass=".5">
+            <contact selfcollide="none" passive="true"/>
+            <elasticity young="1e3" thickness="1e-3" damping="1e-3" elastic2d="both"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=types.MJ_MAXCONPAIR,
+      njmax=600,
+    )
+    # Each vertex has x, y and z slide joints, so this moves the cloth 1 cm down per world
+    qpos_offset = np.tile([0.0, 0.0, -0.01], mjm.nflexvert)
+    # Compares contacts only: qacc of a passive cloth differs from MuJoCo by about 20 with a box
+    # geom too, so the gap is not in the SDF path
+    self._assert_contact_parity(mjm, mjd, m, d, nworld, sdf_only=True, qpos_offset=qpos_offset)
+
+    nacon = d.nacon.numpy()[0]
+    contact_type = d.contact.type.numpy()[:nacon]
+    self.assertTrue(np.all(contact_type & types.ContactType.PASSIVE))
+    self.assertTrue(all(c.exclude == 4 for c in mjd.contact))
+
+  def test_contact_parity_mixed(self):
+    """Tests the SDF contacts of a cloth that also touches a plane and a box, in 3 worlds."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option sdf_iterations="10" sdf_initpoints="20"/>
+        <asset>
+          <mesh name="cube" scale=".3 .3 .3"
+                vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+        </asset>
+        <worldbody>
+          <geom type="plane" size="5 5 .1" pos="0 0 .267"/>
+          <body euler="10 20 30">
+            <freejoint/>
+            <geom type="sdf" mesh="cube"/>
+          </body>
+          <body pos=".9 0 .118">
+            <freejoint/>
+            <geom type="box" size=".15 .15 .15"/>
+          </body>
+          <flexcomp name="cloth" type="grid" count="12 6 1" spacing=".12 .12 .1" pos=".45 0 .27" dim="2" radius=".005">
+            <contact selfcollide="none" contype="2" conaffinity="1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=3,
+      nconmax=600,
+      njmax=2000,
+    )
+    self._assert_contact_parity(mjm, mjd, m, d, 3, sdf_only=True)
+    geom_type = mjm.geom_type[d.contact.geom.numpy()[: d.nacon.numpy()[0], 0]]
+    for t in (mujoco.mjtGeom.mjGEOM_PLANE, mujoco.mjtGeom.mjGEOM_BOX, mujoco.mjtGeom.mjGEOM_SDF):
+      self.assertIn(t, geom_type)
+
+  @parameterized.parameters(1, 2)
+  def test_contact_parity_shallow(self, nworld):
+    """Tests contacts less than 0.1 mm deep at the outer rim of a plugin SDF.
+
+    The rim lies outside the geom AABB. The torus is a world body geom, which MuJoCo's broadphase
+    pairs with every flex.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option sdf_iterations="10" sdf_initpoints="3"/>
+        <extension>
+          <plugin plugin="mujoco.sdf.torus">
+            <instance name="torus">
+              <config key="radius1" value="0.35"/>
+              <config key="radius2" value="0.12"/>
+            </instance>
+          </plugin>
+        </extension>
+        <asset>
+          <mesh name="torus">
+            <plugin instance="torus"/>
+          </mesh>
+        </asset>
+        <worldbody>
+          <geom type="sdf" mesh="torus">
+            <plugin instance="torus"/>
+          </geom>
+          <flexcomp name="cloth" type="grid" count="9 9 1" spacing=".03 .03 .1" pos=".46995 .011 .005" euler="0 90 0"
+                    dim="2" radius="0">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=types.MJ_MAXCONPAIR,
+      njmax=600,
+    )
+    self.assertTrue(all(-1e-4 < c.dist < 0 for c in mjd.contact))
+    # Moving the cloth along the torus axis keeps the contacts at the rim
+    qpos_offset = np.zeros(mjm.nq)
+    qpos_offset[2::3] = -0.01
+    self._assert_contact_parity(mjm, mjd, m, d, nworld, qpos_offset=qpos_offset)
+    dist = d.contact.dist.numpy()[: d.nacon.numpy()[0]]
+    self.assertTrue(np.all((-1e-4 < dist) & (dist < 0)))
+
+  def test_flex_elem_bvhorder(self):
+    """Tests that each flex gets a permutation of its local element ids."""
+    mjm, _, m, _ = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="rope" type="grid" count="8 1 1" spacing=".05 .1 .1" pos="0 0 .5" dim="1" radius=".005"/>
+          <flexcomp name="cloth" type="grid" count="6 5 1" spacing=".1 .1 .1" pos="0 0 1" dim="2" radius=".005"/>
+          <flexcomp name="block" type="grid" count="3 3 3" spacing=".1 .1 .1" pos="0 0 2" dim="3" radius=".005"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    order = m.flex_elem_bvhorder.numpy()
+    for f in range(mjm.nflex):
+      adr, num = mjm.flex_elemadr[f], mjm.flex_elemnum[f]
+      np.testing.assert_equal(np.sort(order[adr : adr + num]), np.arange(num))
+      if mjm.flex_dim[f] != 2:
+        np.testing.assert_equal(order[adr : adr + num], np.arange(num))
+    cloth = slice(mjm.flex_elemadr[1], mjm.flex_elemadr[1] + mjm.flex_elemnum[1])
+    self.assertFalse(np.array_equal(order[cloth], np.arange(mjm.flex_elemnum[1])))
+
+  @parameterized.named_parameters(
+    (
+      "dim1",
+      """
+      <mujoco>
+        <option sdf_iterations="10" sdf_initpoints="40"/>
+        <asset>
+          <mesh name="cube" scale=".3 .3 .3"
+                vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+        </asset>
+        <worldbody>
+          <body euler="10 20 30">
+            <freejoint/>
+            <geom type="sdf" mesh="cube"/>
+          </body>
+          <flexcomp name="rope" type="grid" count="8 1 1" spacing=".05 .1 .1" pos="0 0 .25" dim="1" radius=".005"/>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" pos="3 0 0" dim="2" radius=".005"/>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+    (
+      "dim3",
+      """
+      <mujoco>
+        <option sdf_iterations="10" sdf_initpoints="40"/>
+        <asset>
+          <mesh name="cube" scale=".3 .3 .3"
+                vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+        </asset>
+        <worldbody>
+          <body euler="10 20 30">
+            <freejoint/>
+            <geom type="sdf" mesh="cube"/>
+          </body>
+          <flexcomp name="block" type="grid" count="3 3 3" spacing=".1 .1 .1" pos="0 0 .25" dim="3" radius=".005">
+            <contact selfcollide="none"/>
+          </flexcomp>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" pos="3 0 0" dim="2" radius=".005"/>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+    (
+      "contype",
+      """
+      <mujoco>
+        <option sdf_iterations="10" sdf_initpoints="40"/>
+        <asset>
+          <mesh name="cube" scale=".3 .3 .3"
+                vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+        </asset>
+        <worldbody>
+          <body euler="10 20 30">
+            <freejoint/>
+            <geom type="sdf" mesh="cube"/>
+          </body>
+          <flexcomp name="cloth" type="grid" count="6 6 1" spacing=".15 .15 .1" pos="0 0 .28" dim="2" radius=".005">
+            <contact selfcollide="none" contype="2" conaffinity="2"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+  )
+  def test_no_contact(self, xml):
+    """Tests that SDF geoms skip 1D and 3D flexes and flexes filtered by contype and conaffinity.
+
+    The 1D and 3D scenes add a distant cloth so that the flex-SDF kernel runs.
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nconmax=200)
+    self.assertGreater(self._num_vertices_in_cube(mjm, mjd, 0.3), 0)
+    d.nacon.fill_(-1)
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+    self.assertEqual(mjd.ncon, 0)
+    self.assertEqual(d.nacon.numpy()[0], 0)
+
+  @parameterized.named_parameters(
+    (
+      "plugin",
+      """
+      <mujoco>
+        <option sdf_iterations="10" sdf_initpoints="3"/>
+        <extension>
+          <plugin plugin="mujoco.sdf.torus">
+            <instance name="torus">
+              <config key="radius1" value="1"/>
+              <config key="radius2" value=".4"/>
+            </instance>
+          </plugin>
+        </extension>
+        <asset>
+          <mesh name="torus">
+            <plugin instance="torus"/>
+          </mesh>
+        </asset>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="sdf" mesh="torus">
+              <plugin instance="torus"/>
+            </geom>
+            <geom type="sphere" size=".05" pos="0 3 0"/>
+          </body>
+          <flexcomp name="cloth" type="grid" count="7 7 1" spacing=".02 .02 .1" pos="1.3999 .007 .004" euler="0 90 0"
+                    dim="2" radius="0">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+    (
+      "mesh",
+      """
+      <mujoco>
+        <option sdf_iterations="8" sdf_initpoints="3"/>
+        <asset>
+          <mesh name="L" vertex="0 0 0  .6 0 0  .6 .2 0  .2 .2 0  .2 .6 0  0 .6 0   0 0 .2  .6 0 .2  .6 .2 .2  .2 .2 .2  .2 .6 .2  0 .6 .2"
+                face="0 3 1  1 3 2  0 5 3  3 5 4   6 7 9  7 8 9  6 9 11  9 10 11   0 1 7  0 7 6  1 2 8  1 8 7  2 3 9  2 9 8  3 4 10  3 10 9  4 5 11  4 11 10  5 0 6  5 6 11"/>
+        </asset>
+        <worldbody>
+          <body pos=".1 .2 .3" quat=".270598 -.653281 .270598 -.653281">
+            <freejoint/>
+            <geom type="sdf" mesh="L" margin=".0014"/>
+          </body>
+          <flexcomp name="cloth" type="grid" count="5 5 1" spacing=".02 .02 .02" pos=".1 .199 .3" quat=".5 -.5 -.5 -.5"
+                    dim="2" radius="0">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+  )
+  def test_contact_parity_geom_box_face(self, xml):
+    """Tests contacts at the geom AABB face of an SDF geom on a free body.
+
+    The torus surface extends past its geom AABB and the cloth lies just outside the AABB; the
+    sphere makes MuJoCo's body box contain the torus surface. The L-shaped mesh has an off-center
+    AABB aligned with the world axes and a margin, and the cloth is 1 mm inside its top vertex.
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nconmax=types.MJ_MAXCONPAIR, njmax=600)
+    self.assertGreater(mjd.ncon, 0)
+    self._assert_contact_parity(mjm, mjd, m, d, 1)
+
+  def test_missing_mesh(self):
+    """Tests that an SDF geom whose batched geom_dataid is -1 gives no contacts in that world."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option sdf_iterations="10" sdf_initpoints="10"/>
+        <asset>
+          <mesh name="cube" scale=".3 .3 .3"
+                vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+        </asset>
+        <worldbody>
+          <body euler="10 20 30">
+            <freejoint/>
+            <geom type="sdf" mesh="cube"/>
+          </body>
+          <flexcomp name="cloth" type="grid" count="6 6 1" spacing=".15 .15 .1" pos="0 0 .28" dim="2" radius=".005">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=2,
+      nconmax=2 * types.MJ_MAXCONPAIR,
+      njmax=1200,
+    )
+    dataid = np.tile(m.geom_dataid.numpy(), (2, 1))
+    dataid[0, 0] = -1  # absent in world 0, present in world 1
+    m.geom_dataid = wp.array(dataid, dtype=int)
+    d.nacon.fill_(-1)
+    mjw.forward(m, d)
+
+    worldid = d.contact.worldid.numpy()[: d.nacon.numpy()[0]]
+    self.assertGreater(mjd.ncon, 0)
+    self.assertEqual(np.sum(worldid == 0), 0)
+    self.assertEqual(np.sum(worldid == 1), mjd.ncon)
+
+  # A tall L mesh whose long axis is along world x, so the +x face of its geom box is the end face
+  # of the L. The geom box is off-center in the geom frame, and with the transposed rotation the +x
+  # half extent shrinks by 6 cm. The cloth is tilted 0.2 degrees and its deepest vertex is 0.3 mm
+  # inside the end face.
+  _CULL_XML = """
+    <mujoco>
+      <option sdf_iterations="10" sdf_initpoints="3"/>
+      <asset>
+        <mesh name="L" vertex="0 0 0  .3 0 0  .3 .1 0  .1 .1 0  .1 .3 0  0 .3 0  0 0 .8  .3 0 .8  .3 .1 .8  .1 .1 .8  .1 .3 .8  0 .3 .8"
+              face="0 3 1  1 3 2  0 5 3  3 5 4   6 7 9  7 8 9  6 9 11  9 10 11   0 1 7  0 7 6  1 2 8  1 8 7  2 3 9  2 9 8  3 4 10  3 10 9  4 5 11  4 11 10  5 0 6  5 6 11"/>
+      </asset>
+      <worldbody>
+        <body quat=".5964 .3799 .5964 .3799">
+          <freejoint/>
+          <geom type="sdf" mesh="L"/>
+        </body>
+        <flexcomp name="cloth" type="grid" count="9 9 1" spacing=".02 .02 .1" pos=".79998 .177 .064" euler="0 89.8 0"
+                  dim="2" radius="0">
+          <contact selfcollide="none"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+  """
+
+  def _cull_qpos_offset(self, mjm):
+    """Moves world 1 by 1 m along y, with the L 0.01 mm deeper into the cloth."""
+    return np.concatenate([[1e-5, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], np.tile([0.0, 1.0, 0.0], mjm.nflexvert)])
+
+  def test_contact_parity_geom_box_cull_keep(self):
+    """Tests that the geom box cull keeps a pair whose flex box overlaps the geom box by 0.3 mm."""
+    mjm, mjd, m, d = test_data.fixture(xml=self._CULL_XML, nworld=2, nconmax=2 * types.MJ_MAXCONPAIR, njmax=1200)
+    self.assertGreater(np.linalg.norm(mjm.geom_aabb[0, :3]), 0.01)
+    self._assert_contact_parity(mjm, mjd, m, d, 2, qpos_offset=self._cull_qpos_offset(mjm))
+
+  def test_geom_box_cull_reject(self):
+    """Tests that the geom box cull skips a pair whose flex box misses the geom box.
+
+    World 0 shrinks the geom box by 1 mm along the long axis, so the cull skips a pair that has
+    contacts in MuJoCo. World 1 keeps the geom box.
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=self._CULL_XML, nworld=2, nconmax=2 * types.MJ_MAXCONPAIR, njmax=1200)
+    geom_aabb = np.tile(mjm.geom_aabb.reshape(1, mjm.ngeom, 2, 3), (2, 1, 1, 1))
+    geom_aabb[0, 0, 1, np.argmax(geom_aabb[0, 0, 1])] -= 1e-3
+    m.geom_aabb = wp.array(geom_aabb, dtype=wp.vec3)
+    d.qpos.assign(mjd.qpos + np.arange(2)[:, None] * self._cull_qpos_offset(mjm))
+    d.nacon.fill_(-1)
+    mjw.forward(m, d)
+
+    worldid = d.contact.worldid.numpy()[: d.nacon.numpy()[0]]
+    self.assertGreater(mjd.ncon, 0)
+    self.assertEqual(np.sum(worldid == 0), 0)
+    mjd.qpos[:] = d.qpos.numpy()[1]
+    mujoco.mj_forward(mjm, mjd)
+    self.assertGreater(mjd.ncon, 0)
+    self.assertEqual(np.sum(worldid == 1), mjd.ncon)
+
+  @parameterized.parameters(1, 2)
+  def test_dynamics_parity(self, nworld):
+    """Tests that a cloth falling on a fixed SDF geom matches MuJoCo for 10 steps."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option sdf_iterations="10" sdf_initpoints="20"/>
+        <asset>
+          <mesh name="cube" scale=".15 .15 .15"
+                vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+        </asset>
+        <worldbody>
+          <body euler="10 20 30">
+            <geom type="sdf" mesh="cube"/>
+          </body>
+          <flexcomp name="cloth" type="grid" count="5 5 1" spacing=".1 .1 .1" pos="0 0 .2" dim="2"
+                    radius=".005" mass="1">
+            <contact selfcollide="none"/>
+            <edge equality="true"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=200,
+      njmax=600,
+    )
+    # World w starts with the cloth moved w * 2 mm along each slide joint axis
+    mjds = []
+    for w in range(nworld):
+      mjds.append(mujoco.MjData(mjm))
+      mjds[w].qpos[:] = mjd.qpos + 0.002 * w
+      mujoco.mj_forward(mjm, mjds[w])
+      self.assertGreater(mjds[w].ncon, 0)
+    d.qpos.assign(np.array([x.qpos for x in mjds]))
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    for _ in range(10):
+      for x in mjds:
+        mujoco.mj_step(mjm, x)
+      wp.capture_launch(capture.graph)
+
+    np.testing.assert_equal(d.nacon.numpy()[0], sum(x.ncon for x in mjds))
+    for w, x in enumerate(mjds):
+      self.assertGreater(x.ncon, 0)
+      np.testing.assert_allclose(d.qpos.numpy()[w], x.qpos, atol=1e-5, err_msg=f"qpos mismatch (world {w})")
+      np.testing.assert_allclose(d.qvel.numpy()[w], x.qvel, atol=1e-5, err_msg=f"qvel mismatch (world {w})")
+    if nworld == 2:
+      self.assertFalse(np.allclose(mjds[0].qpos, mjds[1].qpos, atol=1e-4))
 
 
 class FlexContactNnzTest(parameterized.TestCase):
