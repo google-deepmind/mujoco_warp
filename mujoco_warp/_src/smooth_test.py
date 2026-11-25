@@ -2346,6 +2346,8 @@ class SmoothTest(parameterized.TestCase):
       },
     )
 
+    self.assertEqual(m.flg_tendon_armature.numpy()[0], 0)
+
     with wp.ScopedCapture() as capture:
       mjw.set_const(m, d)
       mjw.forward(m, d)
@@ -2354,6 +2356,7 @@ class SmoothTest(parameterized.TestCase):
     for arr in (d.M, d.qfrc_bias, d.qacc, d.cacc, d.cfrc_int, d.cfrc_ext):
       arr.fill_(wp.inf)
     wp.capture_launch(capture.graph)
+    self.assertEqual(m.flg_tendon_armature.numpy()[0], 0)
     M_zero = d.M.numpy().copy()
     bias_zero = d.qfrc_bias.numpy().copy()
     _assert_eq(M_zero[0], mjd.M, "M_zero")
@@ -2370,6 +2373,7 @@ class SmoothTest(parameterized.TestCase):
     for arr in (d.M, d.qfrc_bias, d.qacc, d.cacc, d.cfrc_int, d.cfrc_ext):
       arr.fill_(wp.inf)
     wp.capture_launch(capture.graph)
+    self.assertEqual(m.flg_tendon_armature.numpy()[0], 1)
 
     M = d.M.numpy()
     qfrc_bias = d.qfrc_bias.numpy()
@@ -2401,6 +2405,103 @@ class SmoothTest(parameterized.TestCase):
       _assert_eq(cacc[w], mjd.cacc, f"cacc_world_{w}")
       _assert_eq(cfrc_int[w], mjd.cfrc_int, f"cfrc_int_world_{w}")
       _assert_eq(cfrc_ext[w], mjd.cfrc_ext, f"cfrc_ext_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(M[0], M[1]))
+      self.assertFalse(np.allclose(qfrc_bias[0], qfrc_bias[1]))
+
+    # Zero armature back out and verify flg_tendon_armature resets to 0
+    m.tendon_armature.zero_()
+    m.actuator_armature.zero_()
+    for arr in (d.M, d.qfrc_bias, d.qacc, d.cacc, d.cfrc_int, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+    self.assertEqual(m.flg_tendon_armature.numpy()[0], 0)
+    _assert_eq(d.M.numpy(), M_zero, "M_zero_reset")
+    _assert_eq(d.qfrc_bias.numpy(), bias_zero, "qfrc_bias_zero_reset")
+
+  @parameterized.parameters(1, 2)
+  def test_tendon_armature_zero_early_exit(self, nworld):
+    """Tests that flg_tendon_armature == 0 skips tendon armature and bias kernels."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 -10">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <site name="s0" pos="0 0 .5"/>
+          <body>
+            <joint name="j0" axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+            <site name="s1" pos=".2 0 .05"/>
+            <body pos=".3 0 0">
+              <joint name="j1" axis="0 1 0"/>
+              <geom size=".05" pos=".2 0 0"/>
+              <site name="s2" pos=".1 .05 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="t0">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+          <spatial name="t1">
+            <site site="s0"/>
+            <site site="s2"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <motor tendon="t0" gear="2"/>
+          <motor tendon="t1" gear="0" armature="0.5"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    self.assertEqual(m.flg_tendon_armature.numpy()[0], 0)
+
+    qpos_np = np.array([[0.3, -0.4], [-0.5, 0.7]][:nworld], dtype=np.float32)
+    qvel_np = np.array([[0.8, -0.5], [-0.6, 0.9]][:nworld], dtype=np.float32)
+    d.qpos.assign(qpos_np)
+    d.qvel.assign(qvel_np)
+
+    mjw.forward(m, d)
+    mjw.rne_postconstraint(m, d)
+
+    # Set non-zero tendon_armature while keeping flg_tendon_armature == 0 to verify
+    # the flag itself short-circuits both kernels without writing to sentinel outputs
+    m.tendon_armature.fill_(0.5)
+    d.M.fill_(123.0)
+    qfrc = wp.full((nworld, m.nv), 123.0, dtype=float)
+    smooth.tendon_armature(m, d)
+    smooth.tendon_bias(m, d, qfrc)
+    np.testing.assert_array_equal(d.M.numpy(), np.full(d.M.shape, 123.0, dtype=np.float32))
+    np.testing.assert_array_equal(qfrc.numpy(), np.full((nworld, m.nv), 123.0, dtype=np.float32))
+    m.tendon_armature.zero_()
+
+    # Verify full forward + rne_postconstraint under graph capture matches CPU
+    with wp.ScopedCapture() as capture:
+      mjw.forward(m, d)
+      mjw.rne_postconstraint(m, d)
+
+    for arr in (d.M, d.qfrc_bias, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+
+    M = d.M.numpy()
+    qfrc_bias = d.qfrc_bias.numpy()
+    cfrc_ext = d.cfrc_ext.numpy()
+    for w in range(nworld):
+      mjd.qpos[:] = qpos_np[w]
+      mjd.qvel[:] = qvel_np[w]
+      mujoco.mj_forward(mjm, mjd)
+      mujoco.mj_rnePostConstraint(mjm, mjd)
+      _assert_eq(M[w], mjd.M, f"M_w{w}")
+      _assert_eq(qfrc_bias[w], mjd.qfrc_bias, f"qfrc_bias_w{w}")
+      _assert_eq(cfrc_ext[w], mjd.cfrc_ext, f"cfrc_ext_w{w}")
 
     if nworld == 2:
       self.assertFalse(np.allclose(M[0], M[1]))

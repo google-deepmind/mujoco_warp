@@ -934,6 +934,19 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     m.block_dim.linesearch_iterative = 256
   m.is_sparse = is_sparse(mjm)
   m.has_fluid = bool(mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0)
+  m.flg_tendon_armature = np.array(
+    [
+      int(
+        np.any(mjm.tendon_armature != 0)
+        or np.any(
+          (mjm.actuator_trntype == int(mujoco.mjtTrn.mjTRN_TENDON))
+          & (mjm.actuator_armature != 0)
+          & (mjm.actuator_gear[:, 0] != 0)
+        )
+      )
+    ],
+    dtype=np.int32,
+  )
   m.nflexintcell = _get_nflexintcell(mjm)
   efm_d = _get_efm_data(mjm)
   m.nefmK = int(efm_d.nefmK) if efm_d else 0

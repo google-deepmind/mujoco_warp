@@ -23,6 +23,7 @@ import warp as wp
 from mujoco_warp._src import math as mjmath
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
+from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import TrnType
 
 wp.set_module_options({"default_grid_stride": False})
@@ -490,6 +491,24 @@ def _set_length_range(
   actuator_lengthrange_out[worldid, actid] = lr
 
 
+@wp.kernel
+def _flg_tendon_armature(
+  tendon_actuatorid: wp.array[int],
+  tendon_armature: wp.array2d[float],
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  actuator_armature: wp.array2d[float],
+  actuator_gear: wp.array2d[wp.spatial_vector],
+  flg_tendon_armature_out: wp.array[int],
+):
+  worldid, tenid = wp.tid()
+  armature = util_misc.tendon_armature_total(
+    tendon_actuatorid, tendon_armature, actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, worldid, tenid
+  )
+  if armature != 0.0:
+    flg_tendon_armature_out[0] = 1
+
+
 # kernel_analyzer: on
 
 
@@ -560,6 +579,21 @@ def _set_kinematics0(m: types.Model, d: types.Data):
 
 def _set_inertia0(m: types.Model, d: types.Data):
   """Compute inertial quantities in qpos0 (requires _kinematics0)."""
+  m.flg_tendon_armature.zero_()
+  nworld_arm = max(m.tendon_armature.shape[0], m.actuator_armature.shape[0], m.actuator_gear.shape[0])
+  wp.launch(
+    _flg_tendon_armature,
+    dim=(nworld_arm, m.ntendon),
+    inputs=[
+      m.tendon_actuatorid,
+      m.tendon_armature,
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.actuator_armature,
+      m.actuator_gear,
+    ],
+    outputs=[m.flg_tendon_armature],
+  )
   smooth.crb(m, d)
   smooth.tendon_armature(m, d)
   smooth.factor_m(m, d)
@@ -697,6 +731,9 @@ def set_const(
   eq_data               SetConstGroup.KIN0
   body_inertia          SetConstGroup.INERT0
   dof_armature          SetConstGroup.INERT0
+  tendon_armature       SetConstGroup.INERT0
+  actuator_armature     SetConstGroup.INERT0
+  actuator_gear         SetConstGroup.INERT0
   qpos0                 SetConstGroup.KIN0 | SetConstGroup.INERT0
   ====================  =================================================
 
@@ -710,6 +747,7 @@ def set_const(
       - cam_pos0, cam_poscom0, cam_mat0: camera references
       - light_pos0, light_poscom0, light_dir0: light references
     - Inertial qpos0 quantities (SetConstGroup.INERT0):
+      - flg_tendon_armature: whether any tendon has non-zero armature
       - dof_invweight0: inverse inertia for DOFs
       - body_invweight0: inverse spatial inertia for bodies
       - tendon_invweight0: inverse weight for tendons

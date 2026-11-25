@@ -1507,6 +1507,149 @@ class SetConstTest(parameterized.TestCase):
       if nworld == 2:
         self.assertFalse(np.allclose(m_val[0], m_val[1]), f"{f} should differ across worlds")
 
+  @parameterized.product(nworld=(1, 2), source=("tendon", "actuator", "gear"))
+  def test_set_const_tendon_armature_graph_capture(self, nworld, source):
+    """Test toggling tendon armature or gear via set_const(INERT0) under CUDA graph capture."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 -10">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <site name="s0" pos="0 0 .5"/>
+          <body>
+            <joint name="j0" axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+            <site name="s1" pos=".2 0 .05"/>
+            <body pos=".3 0 0">
+              <joint name="j1" axis="0 1 0"/>
+              <geom size=".05" pos=".2 0 0"/>
+              <site name="s2" pos=".1 .05 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="t0">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+          <spatial name="t1">
+            <site site="s0"/>
+            <site site="s2"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <motor tendon="t0" gear="2" damping=".1"/>
+          <motor tendon="t1" gear="0" armature="0.5"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={
+        "tendon_armature": nworld,
+        "actuator_armature": nworld,
+        "actuator_gear": nworld,
+        "dof_invweight0": nworld,
+        "body_invweight0": nworld,
+        "tendon_invweight0": nworld,
+        "actuator_acc0": nworld,
+      },
+    )
+
+    qpos_np = np.array([[0.3, -0.4], [-0.2, 0.5]][:nworld], dtype=np.float32)
+    qvel_np = np.array([[0.8, -0.5], [-0.4, 0.7]][:nworld], dtype=np.float32)
+    d.qpos.assign(qpos_np)
+    d.qvel.assign(qvel_np)
+
+    # Warmup and capture forward() + rne_postconstraint() while effective armature is all zero
+    self.assertEqual(m.flg_tendon_armature.numpy()[0], 0)
+    mjwarp.forward(m, d)
+    mjwarp.rne_postconstraint(m, d)
+    with wp.ScopedCapture() as capture:
+      mjwarp.forward(m, d)
+      mjwarp.rne_postconstraint(m, d)
+
+    # Replay with all-zero effective armature
+    for arr in (d.M, d.qfrc_bias, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+    M_zero = d.M.numpy().copy()
+    bias_zero = d.qfrc_bias.numpy().copy()
+    cfrc_ext_zero = d.cfrc_ext.numpy().copy()
+
+    # Enable armature (when nworld == 2, keep world 0 zero to verify cross-world scanning)
+    gear_base = m.actuator_gear.numpy().copy()
+    act_arm_base = m.actuator_armature.numpy().copy()
+    if source == "tendon":
+      arm_on = np.array([[0.2, 0.3]], dtype=np.float32) if nworld == 1 else np.array([[0.0, 0.0], [0.5, 0.1]], dtype=np.float32)
+      m.tendon_armature.assign(arm_on)
+    elif source == "actuator":
+      arm_on = act_arm_base.copy()
+      if nworld == 1:
+        arm_on[0, 0] = 0.15
+      else:
+        arm_on[1, 0] = 0.4
+      m.actuator_armature.assign(arm_on)
+    else:
+      gear_on = gear_base.copy()
+      if nworld == 1:
+        gear_on[0, 1, 0] = 1.5
+      else:
+        gear_on[1, 1, 0] = 2.0
+      m.actuator_gear.assign(gear_on)
+
+    mjwarp.set_const(m, d, groups=mjwarp.SetConstGroup.INERT0, restore=False)
+    self.assertEqual(m.flg_tendon_armature.numpy()[0], 1)
+
+    # Replay same captured graph with non-zero armature
+    for arr in (d.M, d.qfrc_bias, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+
+    M = d.M.numpy()
+    qfrc_bias = d.qfrc_bias.numpy()
+    cfrc_ext = d.cfrc_ext.numpy()
+    for w in range(nworld):
+      mjm_w = copy.copy(mjm)
+      if source == "tendon":
+        mjm_w.tendon_armature[:] = arm_on[w]
+      elif source == "actuator":
+        mjm_w.actuator_armature[:] = arm_on[w]
+      else:
+        mjm_w.actuator_gear[:] = gear_on[w]
+      mjd_w = mujoco.MjData(mjm_w)
+      mujoco.mj_setConst(mjm_w, mjd_w)
+      mjd_w.qpos[:] = qpos_np[w]
+      mjd_w.qvel[:] = qvel_np[w]
+      mujoco.mj_forward(mjm_w, mjd_w)
+      mujoco.mj_rnePostConstraint(mjm_w, mjd_w)
+      _assert_eq(M[w], mjd_w.M, f"M_on_w{w}")
+      _assert_eq(qfrc_bias[w], mjd_w.qfrc_bias, f"qfrc_bias_on_w{w}")
+      _assert_eq(cfrc_ext[w], mjd_w.cfrc_ext, f"cfrc_ext_on_w{w}")
+
+    active_w = 0 if nworld == 1 else 1
+    self.assertFalse(np.allclose(M[active_w], M_zero[active_w]))
+    self.assertFalse(np.allclose(qfrc_bias[active_w], bias_zero[active_w]))
+    if nworld == 2:
+      self.assertFalse(np.allclose(M[0], M[1]))
+      self.assertFalse(np.allclose(qfrc_bias[0], qfrc_bias[1]))
+
+    # Restore initial zero-effective-armature state and update via set_const(INERT0)
+    m.tendon_armature.zero_()
+    m.actuator_armature.assign(act_arm_base)
+    m.actuator_gear.assign(gear_base)
+    mjwarp.set_const(m, d, groups=mjwarp.SetConstGroup.INERT0, restore=False)
+    self.assertEqual(m.flg_tendon_armature.numpy()[0], 0)
+
+    # Replay same captured graph and verify parity with all-zero baseline
+    for arr in (d.M, d.qfrc_bias, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+    _assert_eq(d.M.numpy(), M_zero, "M_off")
+    _assert_eq(d.qfrc_bias.numpy(), bias_zero, "qfrc_bias_off")
+    _assert_eq(d.cfrc_ext.numpy(), cfrc_ext_zero, "cfrc_ext_off")
+
 
 if __name__ == "__main__":
   wp.init()

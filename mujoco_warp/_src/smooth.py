@@ -1476,12 +1476,15 @@ def _tendon_armature(nM: int, enable_sleep: bool = False, deterministic: bool = 
     actuator_gear: wp.array2d[wp.spatial_vector],
     M_rownnz: wp.array[int],
     M_rowadr: wp.array[int],
+    flg_tendon_armature: wp.array[int],
     # Data in:
     ten_J_in: wp.array2d[float],
     tree_awake_in: wp.array2d[int],
     # Data out:
     M_out: wp.array2d[float],
   ):
+    if flg_tendon_armature[0] == 0:
+      return
     worldid, tenid = wp.tid()
 
     armature = util_misc.tendon_armature_total(
@@ -1556,6 +1559,7 @@ def tendon_armature(m: Model, d: Data):
       m.actuator_gear,
       m.M_rownnz,
       m.M_rowadr,
+      m.flg_tendon_armature,
       d.ten_J,
       d.tree_awake,
     ],
@@ -2450,6 +2454,7 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     actuator_dampingpoly: wp.array2d[wp.vec2],
     actuator_armature: wp.array2d[float],
     actuator_gear: wp.array2d[wp.spatial_vector],
+    flg_tendon_armature: wp.array[int],
     # Data in:
     qvel_in: wp.array2d[float],
     plastic_in: wp.array2d[float],
@@ -2516,44 +2521,45 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
         frc += -v * util_misc._poly_force(damping, dpoly, v, 1)
 
     # ten_frc -= armature * tendon acceleration: reaction of the armature inertia
-    armature = util_misc.tendon_armature_total(
-      tendon_actuatorid, tendon_armature, actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, worldid, tenid
-    )
-    if armature != 0.0:
-      # tendon acceleration: Jdot' * qvel + J' * qacc
-      acc = _tendon_dot(
-        body_parentid,
-        body_rootid,
-        body_dofnum,
-        body_dofadr,
-        jnt_type,
-        jnt_dofadr,
-        dof_jntid,
-        site_bodyid,
-        tendon_type,
-        tendon_adr,
-        tendon_num,
-        ten_J_rownnz,
-        ten_J_rowadr,
-        ten_J_colind,
-        wrap_type,
-        wrap_objid,
-        wrap_prm,
-        qvel_in,
-        site_xpos_in,
-        subtree_com_in,
-        cdof_in,
-        cvel_in,
-        cdof_dot_in,
-        worldid,
-        tenid,
+    if flg_tendon_armature[0] != 0:
+      armature = util_misc.tendon_armature_total(
+        tendon_actuatorid, tendon_armature, actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, worldid, tenid
       )
-      rownnz = ten_J_rownnz[tenid]
-      rowadr = ten_J_rowadr[tenid]
-      for i in range(rownnz):
-        sparseid = rowadr + i
-        acc += ten_J_in[worldid, sparseid] * qacc_in[worldid, ten_J_colind[sparseid]]
-      frc -= armature * acc
+      if armature != 0.0:
+        # tendon acceleration: Jdot' * qvel + J' * qacc
+        acc = _tendon_dot(
+          body_parentid,
+          body_rootid,
+          body_dofnum,
+          body_dofadr,
+          jnt_type,
+          jnt_dofadr,
+          dof_jntid,
+          site_bodyid,
+          tendon_type,
+          tendon_adr,
+          tendon_num,
+          ten_J_rownnz,
+          ten_J_rowadr,
+          ten_J_colind,
+          wrap_type,
+          wrap_objid,
+          wrap_prm,
+          qvel_in,
+          site_xpos_in,
+          subtree_com_in,
+          cdof_in,
+          cvel_in,
+          cdof_dot_in,
+          worldid,
+          tenid,
+        )
+        rownnz = ten_J_rownnz[tenid]
+        rowadr = ten_J_rowadr[tenid]
+        for i in range(rownnz):
+          sparseid = rowadr + i
+          acc += ten_J_in[worldid, sparseid] * qacc_in[worldid, ten_J_colind[sparseid]]
+        frc -= armature * acc
 
     if frc == 0.0:
       return
@@ -2772,6 +2778,7 @@ def rne_postconstraint(m: Model, d: Data):
         m.actuator_dampingpoly,
         m.actuator_armature,
         m.actuator_gear,
+        m.flg_tendon_armature,
         d.qvel,
         d.plastic,
         d.qacc,
@@ -3041,6 +3048,7 @@ def _tendon_bias(max_ten_J_rownnz: int, deterministic: bool = False):
     actuator_trnid: wp.array[wp.vec2i],
     actuator_armature: wp.array2d[float],
     actuator_gear: wp.array2d[wp.spatial_vector],
+    flg_tendon_armature: wp.array[int],
     # Data in:
     qvel_in: wp.array2d[float],
     site_xpos_in: wp.array2d[wp.vec3],
@@ -3052,6 +3060,8 @@ def _tendon_bias(max_ten_J_rownnz: int, deterministic: bool = False):
     # Out:
     qfrc_out: wp.array2d[float],
   ):
+    if flg_tendon_armature[0] == 0:
+      return
     worldid, tenid = wp.tid()
 
     armature = util_misc.tendon_armature_total(
@@ -3142,6 +3152,7 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
       m.actuator_trnid,
       m.actuator_armature,
       m.actuator_gear,
+      m.flg_tendon_armature,
       d.qvel,
       d.site_xpos,
       d.subtree_com,
