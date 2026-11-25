@@ -178,17 +178,21 @@ def _sweep(input_dir: str, output_dir: str):
     rev_args = (f"{_ARGS.target}^..{commit_range['from']}^",)
 
   if _ARGS.daily:
-    result = git(
-      "log", "--first-parent", "--format=%H %cd", "--date=format-local:%Y-%m-%dT%H:%M:%S+00:00", *rev_args, cwd=input_dir
-    )
-    # Exclude today's incomplete UTC day for HEAD and count forward sweeps.
-    exclude_today = _ARGS.direction == "forward" and (_ARGS.target == "HEAD" or _ARGS.target.isdigit())
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d") if exclude_today else None
+    result = git("log", "--first-parent", "--format=%H %cd", "--date=format-local:%Y-%m-%d", *rev_args, cwd=input_dir)
+    if _ARGS.direction == "forward":
+      # Exclude today's incomplete UTC day for HEAD and count forward sweeps.
+      cutoff_day = (
+        datetime.now(timezone.utc).strftime("%Y-%m-%d") if (_ARGS.target == "HEAD" or _ARGS.target.isdigit()) else None
+      )
+    else:
+      # Skip commit_range["from"]'s UTC day so repeated back sweeps don't re-sample it.
+      cutoff_day = git(
+        "log", "-1", "--format=%cd", "--date=format-local:%Y-%m-%d", commit_range["from"], cwd=input_dir
+      ).stdout.strip()
     by_day: dict[str, str] = {}
     for line in result.stdout.strip().splitlines():
-      sha, ts = line.split(" ", 1)
-      day = ts[:10]
-      if today is not None and day >= today:
+      sha, day = line.split(" ", 1)
+      if cutoff_day is not None and day >= cutoff_day:
         continue
       if _ARGS.direction == "forward" or day not in by_day:
         by_day[day] = sha
