@@ -262,6 +262,8 @@ def _spring_damper_tendon_passive(deterministic: bool = False):
     actuator_damping: wp.array2d[float],
     actuator_dampingpoly: wp.array2d[wp.vec2],
     actuator_gear: wp.array2d[wp.spatial_vector],
+    flg_tendon_stiffness: wp.array[int],
+    flg_tendon_damping: wp.array[int],
     # Data in:
     plastic_in: wp.array2d[float],
     ten_J_in: wp.array2d[float],
@@ -274,25 +276,38 @@ def _spring_damper_tendon_passive(deterministic: bool = False):
     qfrc_spring_out: wp.array2d[float],
     qfrc_damper_out: wp.array2d[float],
   ):
+    check_stiffness = not dsbl_spring and flg_tendon_stiffness[0] != 0
+    check_damping = not dsbl_damper and flg_tendon_damping[0] != 0
+    if not check_stiffness and not check_damping:
+      return
+
     worldid, tenid, dofid_sparse = wp.tid()
 
-    stiffness = tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid]
-    spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
-    damping, dpoly = util_misc.tendon_damping_total(
-      tendon_actuatorid,
-      tendon_damping,
-      tendon_dampingpoly,
-      actuator_trntype,
-      actuator_trnid,
-      actuator_damping,
-      actuator_dampingpoly,
-      actuator_gear,
-      worldid,
-      tenid,
-    )
+    has_stiffness = False
+    stiffness = float(0.0)
+    spoly = wp.vec2(0.0)
+    if check_stiffness:
+      stiffness = tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid]
+      spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
+      has_stiffness = stiffness != 0.0 or spoly[0] != 0.0 or spoly[1] != 0.0
 
-    has_stiffness = (stiffness != 0.0 or spoly[0] != 0.0 or spoly[1] != 0.0) and not dsbl_spring
-    has_damping = (damping != 0.0 or dpoly[0] != 0.0 or dpoly[1] != 0.0) and not dsbl_damper
+    has_damping = False
+    damping = float(0.0)
+    dpoly = wp.vec2(0.0)
+    if check_damping:
+      damping, dpoly = util_misc.tendon_damping_total(
+        tendon_actuatorid,
+        tendon_damping,
+        tendon_dampingpoly,
+        actuator_trntype,
+        actuator_trnid,
+        actuator_damping,
+        actuator_dampingpoly,
+        actuator_gear,
+        worldid,
+        tenid,
+      )
+      has_damping = damping != 0.0 or dpoly[0] != 0.0 or dpoly[1] != 0.0
 
     if not has_stiffness and not has_damping:
       return
@@ -5290,7 +5305,7 @@ def passive(m: Model, d: Data):
   )
 
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  if m.ntendon:
+  if not (dsbl_spring and dsbl_damper):
     wp.launch(
       _spring_damper_tendon_passive(det_atomics),
       dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
@@ -5310,6 +5325,8 @@ def passive(m: Model, d: Data):
         m.actuator_damping,
         m.actuator_dampingpoly,
         m.actuator_gear,
+        m.flg_tendon_stiffness,
+        m.flg_tendon_damping,
         d.plastic,
         d.ten_J,
         d.ten_length,

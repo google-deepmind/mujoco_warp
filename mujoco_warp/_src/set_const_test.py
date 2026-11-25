@@ -1507,6 +1507,177 @@ class SetConstTest(parameterized.TestCase):
       if nworld == 2:
         self.assertFalse(np.allclose(m_val[0], m_val[1]), f"{f} should differ across worlds")
 
+  @parameterized.product(
+    nworld=(1, 2), source=("stiffness", "stiffnesspoly", "damping", "dampingpoly", "actuator_damping", "gear")
+  )
+  def test_set_const_tendon_passive_graph_capture(self, nworld, source):
+    """Test toggling tendon stiffness/damping via set_const(FIXED) under CUDA graph capture."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 -10" integrator="implicitfast">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <site name="s0" pos="0 0 .5"/>
+          <body>
+            <joint name="j0" axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+            <site name="s1" pos=".2 0 .05"/>
+            <body pos=".3 0 0">
+              <joint name="j1" axis="0 1 0"/>
+              <geom size=".05" pos=".2 0 0"/>
+              <site name="s2" pos=".1 .05 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="t0" springlength="0.1">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+          <spatial name="t1" springlength="0.1">
+            <site site="s0"/>
+            <site site="s2"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <motor tendon="t0" gear="2" armature="0.05"/>
+          <motor tendon="t1" gear="0" damping="0.5"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={
+        "tendon_stiffness": nworld,
+        "tendon_stiffnesspoly": nworld,
+        "tendon_damping": nworld,
+        "tendon_dampingpoly": nworld,
+        "actuator_damping": nworld,
+        "actuator_gear": nworld,
+      },
+    )
+
+    qpos_np = np.array([[0.3, -0.4], [-0.2, 0.5]][:nworld], dtype=np.float32)
+    qvel_np = np.array([[0.8, -0.5], [-0.4, 0.7]][:nworld], dtype=np.float32)
+    d.qpos.assign(qpos_np)
+    d.qvel.assign(qvel_np)
+
+    # Warmup and capture forward() + rne_postconstraint() while effective stiffness/damping are 0
+    self.assertEqual(m.flg_tendon_stiffness.numpy()[0], 0)
+    self.assertEqual(m.flg_tendon_damping.numpy()[0], 0)
+    mjwarp.forward(m, d)
+    mjwarp.rne_postconstraint(m, d)
+    with wp.ScopedCapture() as capture:
+      mjwarp.forward(m, d)
+      mjwarp.rne_postconstraint(m, d)
+
+    # Replay with all-zero effective stiffness/damping
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive, d.qacc, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+    qfrc_passive_zero = d.qfrc_passive.numpy().copy()
+    qacc_zero = d.qacc.numpy().copy()
+    cfrc_ext_zero = d.cfrc_ext.numpy().copy()
+
+    # Enable passive term (when nworld == 2, keep world 0 zero to verify cross-world scanning)
+    gear_base = m.actuator_gear.numpy().copy()
+    act_damp_base = m.actuator_damping.numpy().copy()
+    if source == "stiffness":
+      val_on = np.array([[5.0, 3.0]], dtype=np.float32) if nworld == 1 else np.array([[0.0, 0.0], [5.0, 3.0]], dtype=np.float32)
+      m.tendon_stiffness.assign(val_on)
+    elif source == "stiffnesspoly":
+      val_on = np.zeros((nworld, mjm.ntendon, 2), dtype=np.float32)
+      val_on[0 if nworld == 1 else 1, :, 0] = [4.0, 2.0]
+      m.tendon_stiffnesspoly.assign(val_on)
+    elif source == "damping":
+      val_on = np.array([[1.5, 0.8]], dtype=np.float32) if nworld == 1 else np.array([[0.0, 0.0], [1.5, 0.8]], dtype=np.float32)
+      m.tendon_damping.assign(val_on)
+    elif source == "dampingpoly":
+      val_on = np.zeros((nworld, mjm.ntendon, 2), dtype=np.float32)
+      val_on[0 if nworld == 1 else 1, :, 0] = [1.2, 0.6]
+      m.tendon_dampingpoly.assign(val_on)
+    elif source == "actuator_damping":
+      val_on = act_damp_base.copy()
+      if nworld == 1:
+        val_on[0, 0] = 0.6
+      else:
+        val_on[1, 0] = 0.6
+      m.actuator_damping.assign(val_on)
+    else:
+      gear_on = gear_base.copy()
+      if nworld == 1:
+        gear_on[0, 1, 0] = 1.5
+      else:
+        gear_on[1, 1, 0] = 2.0
+      m.actuator_gear.assign(gear_on)
+
+    is_stiff = source in ("stiffness", "stiffnesspoly")
+    mjwarp.set_const(m, d, groups=mjwarp.SetConstGroup.FIXED, restore=False)
+    self.assertEqual(m.flg_tendon_stiffness.numpy()[0], int(is_stiff))
+    self.assertEqual(m.flg_tendon_damping.numpy()[0], int(not is_stiff))
+
+    # Replay same captured graph with active tendon stiffness/damping
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive, d.qacc, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+
+    qfrc_spring = d.qfrc_spring.numpy()
+    qfrc_damper = d.qfrc_damper.numpy()
+    qfrc_passive = d.qfrc_passive.numpy()
+    qacc = d.qacc.numpy()
+    cfrc_ext = d.cfrc_ext.numpy()
+    for w in range(nworld):
+      mjm_w = copy.copy(mjm)
+      if source == "stiffness":
+        mjm_w.tendon_stiffness[:] = val_on[w]
+      elif source == "stiffnesspoly":
+        mjm_w.tendon_stiffnesspoly[:] = val_on[w]
+      elif source == "damping":
+        mjm_w.tendon_damping[:] = val_on[w]
+      elif source == "dampingpoly":
+        mjm_w.tendon_dampingpoly[:] = val_on[w]
+      elif source == "actuator_damping":
+        mjm_w.actuator_damping[:] = val_on[w]
+      else:
+        mjm_w.actuator_gear[:] = gear_on[w]
+      mjd_w = mujoco.MjData(mjm_w)
+      mujoco.mj_setConst(mjm_w, mjd_w)
+      mjd_w.qpos[:] = qpos_np[w]
+      mjd_w.qvel[:] = qvel_np[w]
+      mujoco.mj_forward(mjm_w, mjd_w)
+      mujoco.mj_rnePostConstraint(mjm_w, mjd_w)
+      _assert_eq(qfrc_spring[w], mjd_w.qfrc_spring, f"qfrc_spring_on_w{w}")
+      _assert_eq(qfrc_damper[w], mjd_w.qfrc_damper, f"qfrc_damper_on_w{w}")
+      _assert_eq(qfrc_passive[w], mjd_w.qfrc_passive, f"qfrc_passive_on_w{w}")
+      _assert_eq(qacc[w], mjd_w.qacc, f"qacc_on_w{w}")
+      _assert_eq(cfrc_ext[w], mjd_w.cfrc_ext, f"cfrc_ext_on_w{w}")
+
+    active_w = 0 if nworld == 1 else 1
+    self.assertFalse(np.allclose(qfrc_passive[active_w], qfrc_passive_zero[active_w]))
+    self.assertFalse(np.allclose(qacc[active_w], qacc_zero[active_w]))
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_passive[0], qfrc_passive[1]))
+
+    # Restore initial zero-effective state and update via set_const(FIXED)
+    m.tendon_stiffness.zero_()
+    m.tendon_stiffnesspoly.zero_()
+    m.tendon_damping.zero_()
+    m.tendon_dampingpoly.zero_()
+    m.actuator_damping.assign(act_damp_base)
+    m.actuator_gear.assign(gear_base)
+    mjwarp.set_const(m, d, groups=mjwarp.SetConstGroup.FIXED, restore=False)
+    self.assertEqual(m.flg_tendon_stiffness.numpy()[0], 0)
+    self.assertEqual(m.flg_tendon_damping.numpy()[0], 0)
+
+    # Replay same captured graph and verify parity with all-zero baseline
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive, d.qacc, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+    _assert_eq(d.qfrc_passive.numpy(), qfrc_passive_zero, "qfrc_passive_off")
+    _assert_eq(d.qacc.numpy(), qacc_zero, "qacc_off")
+    _assert_eq(d.cfrc_ext.numpy(), cfrc_ext_zero, "cfrc_ext_off")
+
 
 if __name__ == "__main__":
   wp.init()

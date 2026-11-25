@@ -23,6 +23,7 @@ import warp as wp
 from mujoco_warp._src import math as mjmath
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
+from mujoco_warp._src import util_misc
 from mujoco_warp._src.types import TrnType
 
 wp.set_module_options({"default_grid_stride": False})
@@ -490,6 +491,42 @@ def _set_length_range(
   actuator_lengthrange_out[worldid, actid] = lr
 
 
+@wp.kernel
+def _flg_tendon_passive(
+  tendon_actuatorid: wp.array[int],
+  tendon_stiffness: wp.array2d[float],
+  tendon_stiffnesspoly: wp.array2d[wp.vec2],
+  tendon_damping: wp.array2d[float],
+  tendon_dampingpoly: wp.array2d[wp.vec2],
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  actuator_damping: wp.array2d[float],
+  actuator_dampingpoly: wp.array2d[wp.vec2],
+  actuator_gear: wp.array2d[wp.spatial_vector],
+  flg_tendon_stiffness_out: wp.array[int],
+  flg_tendon_damping_out: wp.array[int],
+):
+  worldid, tenid = wp.tid()
+  stiffness = tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid]
+  spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
+  if stiffness != 0.0 or spoly[0] != 0.0 or spoly[1] != 0.0:
+    flg_tendon_stiffness_out[0] = 1
+  damping, dpoly = util_misc.tendon_damping_total(
+    tendon_actuatorid,
+    tendon_damping,
+    tendon_dampingpoly,
+    actuator_trntype,
+    actuator_trnid,
+    actuator_damping,
+    actuator_dampingpoly,
+    actuator_gear,
+    worldid,
+    tenid,
+  )
+  if damping != 0.0 or dpoly[0] != 0.0 or dpoly[1] != 0.0:
+    flg_tendon_damping_out[0] = 1
+
+
 # kernel_analyzer: on
 
 
@@ -512,6 +549,34 @@ def _set_fixed(m: types.Model):
     dim=(nworld_subtreemass, m.nbody),
     inputs=[m.body_subtreenum, m.body_mass],
     outputs=[m.body_subtreemass],
+  )
+  m.flg_tendon_stiffness.zero_()
+  m.flg_tendon_damping.zero_()
+  nworld_ten = max(
+    m.tendon_stiffness.shape[0],
+    m.tendon_stiffnesspoly.shape[0],
+    m.tendon_damping.shape[0],
+    m.tendon_dampingpoly.shape[0],
+    m.actuator_damping.shape[0],
+    m.actuator_dampingpoly.shape[0],
+    m.actuator_gear.shape[0],
+  )
+  wp.launch(
+    _flg_tendon_passive,
+    dim=(nworld_ten, m.ntendon),
+    inputs=[
+      m.tendon_actuatorid,
+      m.tendon_stiffness,
+      m.tendon_stiffnesspoly,
+      m.tendon_damping,
+      m.tendon_dampingpoly,
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.actuator_damping,
+      m.actuator_dampingpoly,
+      m.actuator_gear,
+    ],
+    outputs=[m.flg_tendon_stiffness, m.flg_tendon_damping],
   )
 
 
@@ -674,15 +739,19 @@ def set_const(
   body_ipos, body_iquat               since inertia is sum(m * r^2).
   body_pos, body_quat                 Unsafe for static bodies (invalidates BVH).
   dof_armature, tendon_armature
-  actuator_armature, actuator_gear    Actuator armature is added to joint and tendon
-                                      armature. Not if changing from/to zero, since
-                                      jnt_actuatorid and tendon_actuatorid are set
-                                      by put_model.
+  actuator_armature, actuator_gear,   Actuator armature/damping are added to joint and
+  actuator_damping,                   tendon terms. Not if changing from/to zero unless
+  actuator_dampingpoly                the actuator already had non-zero damping,
+                                      dampingpoly, or armature at put_model time, since
+                                      jnt_actuatorid and tendon_actuatorid are set by
+                                      put_model.
   eq_data                             Connect anchors, marked weld poses.
   geom_size, hfield_size              Bounds of primitive and height field geoms.
   cam_pos, cam_quat                   Camera pose in body frame.
   light_pos, light_dir                Light position and direction in body frame.
-  tendon_stiffness, tendon_damping    Only if changing from/to zero.
+  tendon_stiffness,                   Recomputes flg_tendon_stiffness/flg_tendon_damping
+  tendon_stiffnesspoly,               (DISCRETE integrator relies on put_model-time
+  tendon_damping, tendon_dampingpoly  has_tendon_stiffness/has_tendon_damping).
   ==================================  ==============================================
 
   For selective updates, pass SetConstGroup flags to groups:
@@ -692,6 +761,10 @@ def set_const(
   ====================  =================================================
   body_mass             SetConstGroup.ALL
   geom_size             SetConstGroup.FIXED (or ALL if tendon wraps geom)
+  tendon_stiffness*     SetConstGroup.FIXED
+  tendon_damping*       SetConstGroup.FIXED
+  actuator_damping*     SetConstGroup.FIXED
+  actuator_gear         SetConstGroup.FIXED | SetConstGroup.INERT0
   cam_pos, cam_quat     SetConstGroup.KIN0
   light_pos, light_dir  SetConstGroup.KIN0
   eq_data               SetConstGroup.KIN0
@@ -703,6 +776,8 @@ def set_const(
   Computes:
     - Fixed quantities (SetConstGroup.FIXED):
       - body_subtreemass: mass of body and all descendants
+      - flg_tendon_stiffness: whether any tendon has non-zero stiffness
+      - flg_tendon_damping: whether any tendon has non-zero damping
       - geom_aabb, geom_rbound, geom_size (hfield): geom bounds
     - Kinematic qpos0 quantities (SetConstGroup.KIN0):
       - tendon_length0: tendon resting lengths

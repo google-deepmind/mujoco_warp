@@ -644,6 +644,7 @@ def _qderiv_tendon_damping(enable_sleep: bool = False):
     actuator_dampingpoly: wp.array2d[wp.vec2],
     actuator_gear: wp.array2d[wp.spatial_vector],
     M_colind: wp.array[int],
+    flg_tendon_damping: wp.array[int],
     M_hinit_i: wp.array[int],
     # Data in:
     ten_J_in: wp.array2d[float],
@@ -652,6 +653,8 @@ def _qderiv_tendon_damping(enable_sleep: bool = False):
     # Out:
     qDeriv_out: wp.array2d[float],
   ):
+    if flg_tendon_damping[0] == 0:
+      return
     worldid, madr = wp.tid()
     dofiid = M_hinit_i[madr]
     if wp.static(enable_sleep):
@@ -1739,6 +1742,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         m.actuator_dampingpoly,
         m.actuator_gear,
         m.M_colind,
+        m.flg_tendon_damping,
         m.M_hinit_i,
         d.ten_J,
         d.tree_awake,
@@ -2279,6 +2283,8 @@ def _eff_tendon_shift(max_ten_J_rownnz: int, deterministic: bool = False):
     actuator_damping: wp.array2d[float],
     actuator_dampingpoly: wp.array2d[wp.vec2],
     actuator_gear: wp.array2d[wp.spatial_vector],
+    flg_tendon_stiffness: wp.array[int],
+    flg_tendon_damping: wp.array[int],
     # Data in:
     plastic_in: wp.array2d[float],
     ten_J_in: wp.array2d[float],
@@ -2289,10 +2295,16 @@ def _eff_tendon_shift(max_ten_J_rownnz: int, deterministic: bool = False):
     efm_ts_out: wp.array2d[float],
   ):
     worldid, tenid = wp.tid()
+    check_stiffness = not (opt_disableflags & DisableBit.SPRING) and flg_tendon_stiffness[0] != 0
+    check_damping = not (opt_disableflags & DisableBit.DAMPER) and flg_tendon_damping[0] != 0
+    if not check_stiffness and not check_damping:
+      efm_ts_out[worldid, tenid] = 0.0
+      return
+
     h = opt_timestep[worldid % opt_timestep.shape[0]]
 
     k = float(0.0)
-    if not (opt_disableflags & DisableBit.SPRING):
+    if check_stiffness:
       length = ten_length_in[worldid, tenid]
       padr = tendon_plasticadr[tenid]
       if padr >= 0:
@@ -2313,7 +2325,7 @@ def _eff_tendon_shift(max_ten_J_rownnz: int, deterministic: bool = False):
         k = wp.max(0.0, util_misc._poly_force_deriv(stiff, spoly, x, 0))
 
     b = float(0.0)
-    if not (opt_disableflags & DisableBit.DAMPER):
+    if check_damping:
       damping, dpoly = util_misc.tendon_damping_total(
         tendon_actuatorid,
         tendon_damping,
@@ -4569,6 +4581,8 @@ def eff_shift(m: Model, d: Data):
       m.actuator_damping,
       m.actuator_dampingpoly,
       m.actuator_gear,
+      m.flg_tendon_stiffness,
+      m.flg_tendon_damping,
       d.plastic,
       d.ten_J,
       d.ten_length,

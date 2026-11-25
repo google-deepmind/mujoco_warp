@@ -1283,6 +1283,97 @@ class PassiveTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(qfrc_spring[0], qfrc_spring[1]))
 
+  @parameterized.parameters(1, 2)
+  def test_tendon_passive_zero_early_exit(self, nworld):
+    """Tests that flg_tendon_stiffness/damping == 0 skips tendon passive and qderiv kernels."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 -10" integrator="implicitfast">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <site name="s0" pos="0 0 .5"/>
+          <body>
+            <joint name="j0" axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+            <site name="s1" pos=".2 0 .05"/>
+            <body pos=".3 0 0">
+              <joint name="j1" axis="0 1 0"/>
+              <geom size=".05" pos=".2 0 0"/>
+              <site name="s2" pos=".1 .05 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="t0">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+          <spatial name="t1">
+            <site site="s0"/>
+            <site site="s2"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <motor tendon="t0" gear="2"/>
+          <motor tendon="t1" gear="0" damping="0.5"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    self.assertEqual(m.flg_tendon_stiffness.numpy()[0], 0)
+    self.assertEqual(m.flg_tendon_damping.numpy()[0], 0)
+
+    qpos_np = np.array([[0.3, -0.4], [-0.5, 0.7]][:nworld], dtype=np.float32)
+    qvel_np = np.array([[0.8, -0.5], [-0.6, 0.9]][:nworld], dtype=np.float32)
+    d.qpos.assign(qpos_np)
+    d.qvel.assign(qvel_np)
+
+    # Set non-zero stiffness/damping while flags stay 0 to prove flags short-circuit
+    # _spring_damper_tendon_passive, _qderiv_tendon_damping, and _cfrc_ext_spatial_tendon
+    m.tendon_stiffness.fill_(10.0)
+    m.tendon_damping.fill_(2.0)
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive, d.qacc, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    mjw.forward(m, d)
+    mjw.rne_postconstraint(m, d)
+
+    np.testing.assert_allclose(d.qfrc_spring.numpy(), 0.0, atol=1e-6)
+    np.testing.assert_allclose(d.qfrc_damper.numpy(), 0.0, atol=1e-6)
+    qacc_short = d.qacc.numpy().copy()
+    cfrc_ext_short = d.cfrc_ext.numpy().copy()
+    m.tendon_stiffness.zero_()
+    m.tendon_damping.zero_()
+
+    # Verify graph-captured forward + rne_postconstraint match CPU (and short-circuited run)
+    with wp.ScopedCapture() as capture:
+      mjw.forward(m, d)
+      mjw.rne_postconstraint(m, d)
+
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive, d.qacc, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+
+    qfrc_passive = d.qfrc_passive.numpy()
+    qacc = d.qacc.numpy()
+    cfrc_ext = d.cfrc_ext.numpy()
+    _assert_eq(qacc_short, qacc, "qacc_short")
+    _assert_eq(cfrc_ext_short, cfrc_ext, "cfrc_ext_short")
+    for w in range(nworld):
+      mjd.qpos[:] = qpos_np[w]
+      mjd.qvel[:] = qvel_np[w]
+      mujoco.mj_forward(mjm, mjd)
+      mujoco.mj_rnePostConstraint(mjm, mjd)
+      _assert_eq(qfrc_passive[w], mjd.qfrc_passive, f"qfrc_passive_w{w}")
+      _assert_eq(qacc[w], mjd.qacc, f"qacc_w{w}")
+      _assert_eq(cfrc_ext[w], mjd.cfrc_ext, f"cfrc_ext_w{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+
 
 if __name__ == "__main__":
   wp.init()
