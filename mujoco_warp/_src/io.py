@@ -929,7 +929,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   # Derive CG solver block_dim from nv: clamp(round_up_to_32(nv), 32, 256)
   _nv_block = max(32, min(256, ((mjm.nv + 31) // 32) * 32))
   m.block_dim.update_gradient_grad = _nv_block
-  m.block_dim.solve_beta_accumulate = _nv_block
   m.block_dim.solve_search_update_cg = _nv_block
   m.block_dim.solve_init_search_cg = _nv_block
   if mjm.nv > 500:
@@ -1260,21 +1259,11 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
         m.wrap_jnt_adr.append(adr + j)
 
   # spatial tendon
-  m.tendon_site_pair_adr, m.tendon_geom_adr = [], []
-  m.ten_wrapadr_site, m.ten_wrapnum_site = [0], []
+  m.tendon_site_pair_adr, m.tendon_geom_adr, m.tendon_geom_wrapadr = [], [], []
   for i, tendon_num in enumerate(mjm.tendon_num):
     adr = mjm.tendon_adr[i]
-    # sites
-    if (mjm.wrap_type[adr : adr + tendon_num] == mujoco.mjtWrap.mjWRAP_SITE).all():
-      if i < mjm.ntendon:
-        m.ten_wrapadr_site.append(m.ten_wrapadr_site[-1] + tendon_num)
-      m.ten_wrapnum_site.append(tendon_num)
-    else:
-      if i < mjm.ntendon:
-        m.ten_wrapadr_site.append(m.ten_wrapadr_site[-1])
-      m.ten_wrapnum_site.append(0)
-
-    # geoms
+    # first geom wrap of this tendon, indexing the geom wrap arrays
+    m.tendon_geom_wrapadr.append(len(m.tendon_geom_adr))
     for j in range(tendon_num):
       wrap_type = mjm.wrap_type[adr + j]
       if j < tendon_num - 1:
@@ -1465,18 +1454,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.qLD_all_updates = all_updates_flat if all_updates_flat else [(0, 0, 0)]
   m.qLD_level_offsets = level_offsets
 
-  # Indices for sparse M_fullm (used in solver). M_fullm_i/j are built by
-  # walking dof_parentid for each dof, so for joint types whose internal block
-  # MuJoCo stores diagonal-only in the compact (M_rownnz, M_rowadr) layout
-  # (e.g. free joints), the chain-aware layout here has more entries per row
-  # than the compact layout.
-  m.M_fullm_i, m.M_fullm_j = [], []
-  for i in range(mjm.nv):
-    j = i
-    while j > -1:
-      m.M_fullm_i.append(i)
-      m.M_fullm_j.append(j)
-      j = mjm.dof_parentid[j]
   # M_elemid maps (row, col) -> madr index in the native CSR M layout
   M_elemid = np.full((mjm.nv, mjm.nv), -1, dtype=np.int32)
   # M_hinit_i: row index of each CSR entry (its madr is the flat index). The dense Newton H-init
@@ -1552,13 +1529,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # Flatten into CSR-like arrays
   m.M_mulm_rowadr = [0]
-  m.M_mulm_col = []
-  m.M_mulm_madr = []
-  for i in range(mjm.nv):
-    for col, madr in row_elements[i]:
-      m.M_mulm_col.append(col)
-      m.M_mulm_madr.append(madr)
-    m.M_mulm_rowadr.append(len(m.M_mulm_col))
+  m.M_mulm_entry = []
+  for row in row_elements:
+    m.M_mulm_entry.extend((int(madr) << 32) | col for col, madr in row)
+    m.M_mulm_rowadr.append(len(m.M_mulm_entry))
 
   m.flexedge_J_rownnz = mjm.flexedge_J_rownnz
   m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
@@ -1882,7 +1856,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "ntendon_site_pair": len(m.tendon_site_pair_adr),
       "ntendon_geom": len(m.tendon_geom_adr),
       "ntendon_limited": len(m.tendon_limited_adr),
-      "nten_wrapadr_site": len(m.ten_wrapadr_site),
       "nwrap_jnt": len(m.wrap_jnt_adr),
       "nwrap_site": len(m.wrap_site_adr),
       "nwrap_site_pair": len(m.wrap_site_pair_adr),
@@ -1907,12 +1880,11 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nqLD_fused_pairs": len(m.qLD_fused_pairs),
       "nqLD_all_updates": len(m.qLD_all_updates),
       "nqLD_level_offsets": len(m.qLD_level_offsets),
-      "nM_fullm": len(m.M_fullm_i),
       "nv_tile": m.M_tile_colmask.shape[0],
       "nv_tile_word": m.M_tile_colmask.shape[1],
       "nqD_fullm": len(m.qD_fullm_i),
       "nv_plus_1": len(m.M_mulm_rowadr),
-      "nM_mulm": len(m.M_mulm_col),
+      "nM_mulm": len(m.M_mulm_entry),
       "nefm_3dof": len(m.efm_L_dofid),
       "nefm_bt_adr": len(m.efm_BT_adr),
     }
@@ -2377,10 +2349,12 @@ def _efc_rownnz(mjm: mujoco.MjModel) -> list[tuple[int, int]]:
       if jnt_type == mujoco.mjtJoint.mjJNT_BALL:
         rows.append((1, 3))
       elif jnt_type in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE):
-        rows.append((1, 1))
+        # both sides are active when the range is narrower than twice the margin
+        rows.append((1 + int(mjm.jnt_range[i, 1] - mjm.jnt_range[i, 0] < 2 * mjm.jnt_margin[i]), 1))
   for i in range(mjm.ntendon):
     if mjm.tendon_limited[i]:
-      rows.append((1, mjm.ten_J_rownnz[i]))
+      bilateral = mjm.tendon_range[i, 1] - mjm.tendon_range[i, 0] < 2 * mjm.tendon_margin[i]
+      rows.append((1 + int(bilateral), mjm.ten_J_rownnz[i]))
 
   return rows
 

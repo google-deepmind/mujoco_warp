@@ -69,6 +69,7 @@ def _geom_dist(
   multiccd_idx2 = wp.empty(nmeshdegmax, dtype=int)
   multiccd_n1 = wp.empty(nmeshdegmax, dtype=wp.vec3)
   multiccd_n2 = wp.empty(nmeshdegmax, dtype=wp.vec3)
+  multiccd_edge = wp.empty(nmeshdegmax, dtype=wp.vec3)
   multiccd_endvert = wp.empty(nmeshdegmax, dtype=wp.vec3)
   multiccd_face1 = wp.empty(npolygonmax, dtype=wp.vec3)
   multiccd_face2 = wp.empty(npolygonmax, dtype=wp.vec3)
@@ -113,6 +114,7 @@ def _geom_dist(
     idx2: wp.array[int],
     n1: wp.array[wp.vec3],
     n2: wp.array[wp.vec3],
+    edge: wp.array[wp.vec3],
     endvert: wp.array[wp.vec3],
     face1: wp.array[wp.vec3],
     face2: wp.array[wp.vec3],
@@ -228,6 +230,7 @@ def _geom_dist(
         idx2,
         n1,
         n2,
+        edge,
         endvert,
         face1,
         face2,
@@ -304,6 +307,7 @@ def _geom_dist(
       multiccd_idx2,
       multiccd_n1,
       multiccd_n2,
+      multiccd_edge,
       multiccd_endvert,
       multiccd_face1,
       multiccd_face2,
@@ -461,6 +465,36 @@ class GJKTest(parameterized.TestCase):
     self.assertAlmostEqual(normal[0], 1)
     self.assertAlmostEqual(normal[1], 0)
     self.assertAlmostEqual(normal[2], 0)
+
+  @parameterized.named_parameters(
+    ("box_box", 'type="box" size=".3 .3 .3"', 'type="box" size=".05 .1 .05"', 0.0),
+    ("mesh_mesh", 'type="mesh" mesh="cube"', 'type="mesh" mesh="cube"', 0.0),
+    ("box_ellipsoid_offset", 'type="box" size=".2 .2 .2"', 'type="ellipsoid" size=".1 .15 .05"', 1e-7),
+    ("box_ellipsoid_tiny_offset", 'type="box" size=".2 .2 .2"', 'type="ellipsoid" size=".1 .15 .05"', 1e-13),
+  )
+  def test_concentric_contact(self, geom1: str, geom2: str, offset: float):
+    """Test penetration between two geoms with the same or almost the same center."""
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <mesh name="cube" vertex="-.1 -.1 -.1  .1 -.1 -.1  -.1 .1 -.1  .1 .1 -.1
+                                    -.1 -.1  .1  .1 -.1  .1  -.1 .1  .1  .1 .1  .1"/>
+        </asset>
+        <worldbody>
+          <geom {geom1}/>
+          <body pos="{offset} 0 0">
+            <joint type="hinge" axis="0 0 1"/>
+            <geom {geom2}/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    self.assertGreater(mjd.ncon, 0)
+    dist, _, _, _ = _geom_dist(m, d, 0, 1)
+
+    np.testing.assert_allclose(dist, mjd.contact.dist.min(), rtol=1e-5, atol=1e-5)
 
   def test_mesh_mesh_contact(self):
     """Test penetration between two meshes."""

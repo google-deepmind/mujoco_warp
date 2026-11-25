@@ -670,6 +670,11 @@ def _constraint_primary(
         if efc_type_in[worldid, previous] != row_type or efc_id_in[worldid, previous] != id:
           break
         component += 1
+  elif row_type == int(types.ConstraintType.LIMIT_JOINT) or row_type == int(types.ConstraintType.LIMIT_TENDON):
+    # Assembly emits both sides of a limit contiguously, lower side first. Without a component the
+    # Jacobian tie-break (-1 < +1) would put the upper row first and split the two-row block.
+    if row > 0 and efc_type_in[worldid, row - 1] == row_type and efc_id_in[worldid, row - 1] == id:
+      component = 1
   elif row_type >= int(types.ConstraintType.CONTACT_FRICTIONLESS):
     # A row that its contact addresses is ordered by the rank of that contact and by its component,
     # not by the contact index. Components that the contact does not use cannot claim a row.

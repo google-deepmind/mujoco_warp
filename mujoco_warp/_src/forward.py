@@ -300,6 +300,13 @@ def _next_activation(
   dyntype = actuator_dyntype[uid]
 
   if dyntype == DynType.DCMOTOR:
+    if not limit:
+      # rk4 stage: explicit euler with the stage-scaled timestep, as in mj_RungeKutta
+      h = act_dot_scale * opt_timestep[opt_timestep_id]
+      for j in range(actadr, actadr + actnum):
+        act_out[worldid, j] = act_in[worldid, j] + act_dot_in[worldid, j] * h
+      return
+
     dynprm = actuator_dynprm[actuator_dynprm_id, uid]
     gainprm = actuator_gainprm[actuator_gainprm_id, uid]
     biasprm = actuator_biasprm[actuator_biasprm_id, uid]
@@ -1300,7 +1307,7 @@ def _next_plastic_flex_interp(
       plastic_out[worldid, padr + 5] = sp5
 
 
-def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None):
+def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None, act_dot: Optional[wp.array] = None):
   """Advance state and time given activation derivatives and acceleration."""
   # TODO(team): can we assume static timesteps?
 
@@ -1325,7 +1332,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
       m.actuator_actrange,
       m.actuator_gear,
       d.act,
-      d.act_dot,
+      d.act_dot if act_dot is None else act_dot,
       d.actuator_length,
       d.actuator_velocity,
       1.0,
@@ -1574,14 +1581,10 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   if sleep_enabled:
     nslept = sleep.sleep(m, d)
     can_capture_on_slept = m.opt.graph_conditional and m.nflex == 0 and not m.has_fluid
-    ten_Jdot = wp.empty((d.nworld, m.nJten), dtype=float) if can_capture_on_slept and m.nJten > 0 else None
-    ten_bias_coef = (
-      wp.empty((d.nworld, m.ntendon), dtype=float) if can_capture_on_slept and m.ntendon > 0 and m.nJten > 0 else None
-    )
     cfrc_int_in = wp.empty_like(d.cfrc_int) if can_capture_on_slept else None
 
     def _on_slept():
-      fwd_velocity(m, d, ten_Jdot=ten_Jdot, ten_bias_coef=ten_bias_coef, cfrc_int_in=cfrc_int_in)
+      fwd_velocity(m, d, cfrc_int_in=cfrc_int_in)
       sleep.update_sleep(m, d)
 
     if can_capture_on_slept:
@@ -1717,6 +1720,20 @@ def euler(m: Model, d: Data):
     _advance(m, d, d.qacc)
 
 
+@wp.kernel
+def _rk_stage_time(
+  # Model:
+  opt_timestep: wp.array[float],
+  # In:
+  time_t0: wp.array[float],
+  scale: float,
+  # Data out:
+  time_out: wp.array[float],
+):
+  worldid = wp.tid()
+  time_out[worldid] = time_t0[worldid] + scale * opt_timestep[worldid % opt_timestep.shape[0]]
+
+
 def _rk_perturb_state(
   m: Model,
   d: Data,
@@ -1725,7 +1742,11 @@ def _rk_perturb_state(
   qvel_t0: wp.array2d[float],
   qvel_pos: wp.array2d[float],
   act_t0: Optional[wp.array] = None,
+  time_t0: Optional[wp.array] = None,
 ):
+  # time
+  if time_t0 is not None:
+    wp.launch(_rk_stage_time, dim=d.nworld, inputs=[m.opt.timestep, time_t0, scale], outputs=[d.time])
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
 
   # position, integrated with the (corrected) previous stage velocity
@@ -1893,6 +1914,7 @@ def rungekutta4(m: Model, d: Data):
 
   qpos_t0 = wp.clone(d.qpos)
   qvel_t0 = wp.clone(d.qvel)
+  time_t0 = wp.clone(d.time)
   qvel_rk = wp.zeros((d.nworld, m.nv), dtype=float)
   qacc_rk = wp.zeros((d.nworld, m.nv), dtype=float)
 
@@ -1938,7 +1960,7 @@ def rungekutta4(m: Model, d: Data):
 
   for i in range(3):
     a, b = float(A[i]), B[i + 1]
-    _rk_perturb_state(m, d, a, qpos_t0, qvel_t0, qvel_stage, act_t0)
+    _rk_perturb_state(m, d, a, qpos_t0, qvel_t0, qvel_stage, act_t0, time_t0)
     # sensors keep their values from the start of the step, as in mj_RungeKutta
     _forward(m, d, skip_sensor=True)
     wp.launch(
@@ -1951,13 +1973,14 @@ def rungekutta4(m: Model, d: Data):
 
   wp.copy(d.qpos, qpos_t0)
   wp.copy(d.qvel, qvel_t0)
+  wp.copy(d.time, time_t0)
 
   # last stage's acceleration, the most recent solve: warm start for the next step
   qacc_last = wp.clone(d.qacc)
 
+  # d.act_dot keeps the last stage's value, as in mj_RungeKutta
   if m.na:
     wp.copy(d.act, act_t0)
-    wp.copy(d.act_dot, act_dot_rk)
 
   if actuator_length_t0 is not None:
     wp.copy(d.actuator_length, actuator_length_t0)
@@ -1977,7 +2000,7 @@ def rungekutta4(m: Model, d: Data):
     wp.copy(d.xpos, xpos_t0)
     wp.copy(d.xquat, xquat_t0)
 
-  _advance(m, d, qacc_rk, qvel_rk)
+  _advance(m, d, qacc_rk, qvel_rk, act_dot_rk)
 
   # effective acceleration of the step (RK weighted combination)
   wp.copy(d.qacc, qacc_rk)
@@ -2851,6 +2874,13 @@ def fwd_kinematics(m: Model, d: Data):
       sleep.update_sleep(m, d)
 
 
+def needs_eq_com_vel(m: Model) -> bool:
+  """Whether connect/weld targets need velocity kinematics during constraint assembly."""
+  return bool(m.eq_connect_adr.size or m.eq_wld_adr.size) and not bool(
+    m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.EQUALITY)
+  )
+
+
 @event_scope
 def fwd_position(m: Model, d: Data, factorize: bool = True):
   """Position-dependent computations.
@@ -2896,6 +2926,9 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
     else:
       collision_driver.collision(m, d)
 
+  # Connect/weld Jdot*v reads cvel and cdof_dot while constructing acceleration targets.
+  if needs_eq_com_vel(m):
+    smooth.com_vel(m, d)
   constraint.make_constraint(m, d)
 
   if sleep_enabled:
@@ -2972,14 +3005,12 @@ def _tendon_velocity(
 
 
 @event_scope
-def fwd_velocity(
-  m: Model,
-  d: Data,
-  ten_Jdot: Optional[wp.array] = None,
-  ten_bias_coef: Optional[wp.array] = None,
-  cfrc_int_in: Optional[wp.array] = None,
-):
-  """Velocity-dependent computations."""
+def fwd_velocity(m: Model, d: Data, cfrc_int_in: Optional[wp.array] = None, skip_com_vel: bool = False):
+  """Velocity-dependent computations.
+
+  ``skip_com_vel`` reuses velocity kinematics prepared for connect/weld targets by
+  ``fwd_position``. Keep it false when equality waking may have changed the active trees.
+  """
   wp.launch(
     _actuator_velocity,
     dim=(d.nworld, m.nactuator),
@@ -2994,10 +3025,11 @@ def fwd_velocity(
     outputs=[d.ten_velocity],
   )
 
-  smooth.com_vel(m, d)
+  if not skip_com_vel:
+    smooth.com_vel(m, d)
   passive.passive(m, d)
   smooth.rne(m, d, cfrc_int_in=cfrc_int_in)
-  smooth.tendon_bias(m, d, d.qfrc_bias, ten_Jdot=ten_Jdot, ten_bias_coef=ten_bias_coef)
+  smooth.tendon_bias(m, d, d.qfrc_bias)
   if m.opt.integrator == IntegratorType.DISCRETE:
     derivative.eff_shift(m, d)
 
@@ -3752,8 +3784,8 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   if m.opt.integrator == IntegratorType.DISCRETE:
     derivative.eff_solve(m, d, d.qacc_smooth)
   elif factorize:
-    # only the CG solver reads the factor (solve_m for Mgrad)
-    store_factor = m.opt.solver == SolverType.CG
+    # the CG solver (solve_m for Mgrad) and noslip (M^-1 J') read the factor
+    store_factor = (m.opt.solver == SolverType.CG) or (m.opt.noslip_iterations > 0)
     smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, d.qacc_smooth, d.qfrc_smooth, store_factor=store_factor)
   else:
     smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
@@ -3782,7 +3814,7 @@ def _forward(m: Model, d: Data, skip_sensor: bool = False):
     sensor.sensor_pos(m, d)
   _energy_pos(m, d, skip_sensor)
 
-  fwd_velocity(m, d)
+  fwd_velocity(m, d, skip_com_vel=needs_eq_com_vel(m) and not bool(m.opt.enableflags & EnableBit.SLEEP))
   if not skip_sensor:
     sensor.sensor_vel(m, d)
   _energy_vel(m, d, skip_sensor)
@@ -3843,7 +3875,7 @@ def step1(m: Model, d: Data):
 
   _energy_pos(m, d)
 
-  fwd_velocity(m, d)
+  fwd_velocity(m, d, skip_com_vel=needs_eq_com_vel(m) and not bool(m.opt.enableflags & EnableBit.SLEEP))
   sensor.sensor_vel(m, d)
 
   _energy_vel(m, d)

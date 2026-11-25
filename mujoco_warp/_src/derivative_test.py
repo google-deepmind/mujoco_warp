@@ -532,16 +532,7 @@ class DerivativeTest(parameterized.TestCase):
     _assert_eq(mjw_out, mj_out, "M - dt * qDeriv (sparse tendon coupled)")
 
   def test_smooth_vel_sparse_free_joint_precedes_actuator(self):
-    """Sparse qDeriv uses chain-aware row offsets when indexing M_fullm.
-
-    A free joint's internal block is stored diagonal-only in the compact
-    (M_rownnz, M_rowadr) layout but fully chained (1+2+...+n entries per
-    internal dof) in M_fullm_i / M_fullm_j. For any actuated dof that
-    follows the free joint in qvel order, indexing M_fullm with the compact
-    offsets lands in slots that belong to the free-joint block, the actuator
-    contribution to qDeriv is silently dropped, and the implicit step loses
-    damping for the actuated dof.
-    """
+    """A free joint preceding an actuator must not shift its damping contribution."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
     <mujoco>
@@ -626,10 +617,7 @@ class DerivativeTest(parameterized.TestCase):
     out_smooth_vel = wp.zeros((1, m.nC), dtype=float)
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
     mjw_out = np.zeros((m.nv, m.nv))
-    qi = m.M_fullm_i.numpy()
-    qj = m.M_fullm_j.numpy()
-    for elem, (i, j) in enumerate(zip(qi, qj)):
-      mjw_out[i, j] = out_smooth_vel.numpy()[0, elem]
+    mujoco.mju_sym2dense(mjw_out, out_smooth_vel.numpy()[0].astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
 
     # with actearly=true and nonzero act_dot, derivative should differ
     # because actearly uses next activation: act + act_dot*dt
@@ -676,11 +664,7 @@ class DerivativeTest(parameterized.TestCase):
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
     mjw_out = np.zeros((m.nv, m.nv))
-    qi = m.M_fullm_i.numpy()
-    qj = m.M_fullm_j.numpy()
-    for elem, (i, j) in enumerate(zip(qi, qj)):
-      mjw_out[i, j] = out_smooth_vel.numpy()[0, elem]
-    mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
+    mujoco.mju_sym2dense(mjw_out, out_smooth_vel.numpy()[0].astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
@@ -1262,11 +1246,7 @@ class DerivativeTest(parameterized.TestCase):
     mjw.deriv_smooth_vel(m, d, out_smooth_vel)
 
     mjw_out = np.zeros((m.nv, m.nv))
-    qi = m.M_fullm_i.numpy()
-    qj = m.M_fullm_j.numpy()
-    for elem, (i, j) in enumerate(zip(qi, qj)):
-      mjw_out[i, j] = out_smooth_vel.numpy()[0, elem]
-    mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
+    mujoco.mju_sym2dense(mjw_out, out_smooth_vel.numpy()[0].astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
@@ -1366,12 +1346,7 @@ class DerivativeTest(parameterized.TestCase):
     derivative.deriv_smooth_vel(m, d, out)
 
     mjw_out = np.zeros((m.nv, m.nv))
-    qi = m.M_fullm_i.numpy()
-    qj = m.M_fullm_j.numpy()
-    for elem, (i, j) in enumerate(zip(qi, qj)):
-      mjw_out[i, j] = out.numpy()[0, elem]
-
-    mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
+    mujoco.mju_sym2dense(mjw_out, out.numpy()[0].astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
 
     mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
     mujoco.mju_sparse2dense(

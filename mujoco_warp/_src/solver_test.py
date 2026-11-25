@@ -15,6 +15,7 @@
 
 """Tests for solver functions."""
 
+import contextlib
 import copy
 import dataclasses
 from unittest import mock
@@ -451,27 +452,34 @@ class SolverTest(parameterized.TestCase):
     nsolving = wp.ones(1, dtype=int)
     done = wp.zeros(1, dtype=bool)
     overflow = wp.zeros(1, dtype=int)
-    beta = wp.zeros(1, dtype=float)
 
     wp.launch(
-      solver._solve_beta_finalize_tiled(types.OverflowType.NONE),
+      solver._solve_search_update_cg_tiled(types.OverflowType.NONE),
       dim=(1, 32),
       inputs=[
         1,
         wp.array([1.0e-6], dtype=float),
         1,
         wp.array([1.0], dtype=float),
+        wp.ones((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
-        wp.zeros((1, 1), dtype=float),
-        wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
         done,
       ],
-      outputs=[solver_niter, overflow, beta, nsolving, done],
+      outputs=[
+        solver_niter,
+        overflow,
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros(1, dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        nsolving,
+        done,
+      ],
     )
 
     self.assertTrue(done.numpy()[0])
@@ -485,27 +493,34 @@ class SolverTest(parameterized.TestCase):
     nsolving = wp.ones(1, dtype=int)
     done = wp.zeros(1, dtype=bool)
     overflow = wp.zeros(1, dtype=int)
-    beta = wp.zeros(1, dtype=float)
 
     wp.launch(
-      solver._solve_beta_finalize_tiled(types.OverflowType.NONE),
+      solver._solve_search_update_cg_tiled(types.OverflowType.NONE),
       dim=(1, 32),
       inputs=[
         1,
         wp.array([1.0e-6], dtype=float),
         100,
         wp.array([1.0], dtype=float),
+        wp.ones((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
         wp.zeros((1, 1), dtype=float),
-        wp.zeros((1, 1), dtype=float),
-        wp.array([1.0], dtype=float),
         wp.array([1.0], dtype=float),
         wp.array([0.0], dtype=float),
         done,
       ],
-      outputs=[solver_niter, overflow, beta, nsolving, done],
+      outputs=[
+        solver_niter,
+        overflow,
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros(1, dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        wp.zeros((1, 1), dtype=float),
+        nsolving,
+        done,
+      ],
     )
 
     self.assertTrue(done.numpy()[0])
@@ -514,12 +529,12 @@ class SolverTest(parameterized.TestCase):
     self.assertEqual(overflow.numpy()[0], 0)
 
   def test_solve_cg_finalize_hager_zhang_beta(self):
-    """CG beta finalize computes Hager-Zhang beta with HZ+ truncation and conjugacy restart."""
+    """CG search update uses Hager-Zhang beta with HZ+ truncation and conjugacy restart."""
     solver_niter = wp.zeros(3, dtype=int)
     nsolving = wp.array([3], dtype=int)
     done = wp.zeros(3, dtype=bool)
     overflow = wp.zeros(3, dtype=int)
-    beta = wp.full(3, wp.inf, dtype=float)
+    search_dot = wp.full(3, wp.inf, dtype=float)
 
     grad = wp.array([[2.0, 2.0], [2.0, 2.0], [2.0, 2.0]], dtype=float)
     prev_grad = wp.array([[1.0, 2.0], [1.0, 2.0], [1.0, 2.0]], dtype=float)
@@ -528,7 +543,7 @@ class SolverTest(parameterized.TestCase):
     search = wp.array([[2.0, -1.5], [2.0, 1.0], [-1.0, -3.0]], dtype=float)
 
     wp.launch_tiled(
-      solver._solve_beta_finalize_tiled(types.OverflowType.NONE),
+      solver._solve_search_update_cg_tiled(types.OverflowType.NONE),
       dim=3,
       inputs=[
         2,
@@ -542,20 +557,21 @@ class SolverTest(parameterized.TestCase):
         search,
         wp.ones(3, dtype=float),
         wp.ones(3, dtype=float),
-        wp.ones(3, dtype=float),
         done,
       ],
-      outputs=[solver_niter, overflow, beta, nsolving, done],
+      outputs=[solver_niter, overflow, search, search_dot, prev_grad, prev_Mgrad, nsolving, done],
       block_dim=32,
     )
 
-    beta_np = beta.numpy()
+    # search = -Mgrad + beta * search
     # World 0: exact Hager-Zhang beta = (4 - 2 * (2 / 2) * 1) / 2 = 1.0 (distinct from PRP = 0.4)
-    self.assertAlmostEqual(beta_np[0], 1.0, places=5)
     # World 1: negative beta_hz = (4 - 2 * (2 / 2) * 6) / 2 = -4.0 clamped to 0 in float32 (HZ+)
-    self.assertEqual(beta_np[1], 0.0)
     # World 2: d' * y = -1 < MJ_MINVAL restarts to steepest descent (raw beta_hz = 28 > 0)
-    self.assertEqual(beta_np[2], 0.0)
+    np.testing.assert_allclose(search.numpy(), [[-2.0, -5.5], [-4.0, -4.0], [-4.0, -4.0]], rtol=1e-6)
+    np.testing.assert_allclose(search_dot.numpy(), [34.25, 32.0, 32.0], rtol=1e-6)
+    np.testing.assert_array_equal(prev_grad.numpy(), grad.numpy())
+    np.testing.assert_array_equal(prev_Mgrad.numpy(), Mgrad.numpy())
+    self.assertFalse(done.numpy().any())
 
   # Transition cases use powers of two so the exact delta is below the absolute-cost ulp.
   @parameterized.named_parameters(
@@ -1701,7 +1717,7 @@ class SolverTest(parameterized.TestCase):
     shared_module = solver._solve_init_efc.module
     self.assertNotEqual(solver._solve_init_search_cg_tiled.module, shared_module)
     self.assertNotEqual(solver._update_gradient_grad_tiled.module, shared_module)
-    self.assertNotEqual(solver._solve_search_update_cg_tiled.module, shared_module)
+    self.assertNotEqual(solver._solve_search_update_cg_tiled(0).module, shared_module)
 
   @parameterized.parameters(1, 2)
   def test_elliptic_dense_hessian(self, nworld):
@@ -2429,6 +2445,77 @@ class SolverTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(d.qpos.numpy()[0], d.qpos.numpy()[1]))
+
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    nworld=(1, 2),
+    sparse_blocks=(False, True),
+  )
+  def test_noslip_inertia_blocks(self, jacobian, nworld, sparse_blocks):
+    """Tests noslip solver for each inertia block kind with per-world masses against MuJoCo."""
+    # the 7-dof tree exceeds the patched dense block size and joins the sparse LDL region
+    blocks = mock.patch.multiple("mujoco_warp._src.types", M_BLOCK_DENSE_MAX=6)
+    with blocks if sparse_blocks else contextlib.nullcontext():
+      mjm, mjd, m, d = test_data.fixture(
+        xml="""
+      <mujoco>
+        <option noslip_iterations="3" noslip_tolerance="0">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint frictionloss=".5"/>
+            <geom pos=".2 0 0" size=".1" mass="1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint axis="1 0 0" frictionloss=".5"/>
+            <joint axis="0 1 0" frictionloss=".5"/>
+            <geom pos=".1 .1 .1" type="box" size=".1 .2 .1" mass=".7"/>
+          </body>
+          <body pos="2 0 0">
+            <freejoint/>
+            <geom type="box" size=".1 .2 .3" mass="2"/>
+            <body pos=".2 0 0">
+              <joint axis="0 1 0" frictionloss=".5"/>
+              <geom pos=".1 0 0" size=".05" mass=".5"/>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+        qpos_noise=0.3,
+        qvel_noise=1.0,
+        # three sweeps do not converge, so the result depends on the row order: use MuJoCo's
+        overrides={"opt.jacobian": jacobian, "opt.deterministic": types.DeterminismType.CONSTRAINT},
+        nworld=nworld,
+        batch_sizes={"body_mass": nworld},
+      )
+    block_adr = m.qLD_block_adr.numpy()[mjm.tree_dofadr]
+    # the 2-dof scalar block takes the first 4 entries of qLD, ahead of the 7-dof tile block
+    expected_blocks = [types.Q_LD_BLOCK_COMPACT, 0, types.Q_LD_BLOCK_SPARSE if sparse_blocks else 4]
+    self.assertEqual(sorted(block_adr), sorted(expected_blocks))
+
+    # main solver forces without noslip, used to check that noslip has an effect
+    mjd_slip = copy.copy(mjd)
+    mujoco.mj_forward(_noslip_model(mjm, noslip_iterations=0), mjd_slip)
+    mujoco.mj_forward(mjm, mjd)
+    self.assertGreater(np.abs(mjd.qacc - mjd_slip.qacc).max(), 1e-6)
+
+    body_mass = m.body_mass.numpy()
+    body_mass[nworld - 1] *= 1.0 + np.arange(mjm.nbody) / mjm.nbody
+    m.body_mass.assign(body_mass)
+    d.qacc.fill_(wp.inf)
+    d.efc.force.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    qacc, efc_force = d.qacc.numpy(), d.efc.force.numpy()
+    for w in range(nworld):
+      mjm.body_mass[:] = body_mass[w]
+      mujoco.mj_forward(mjm, mjd)
+      _assert_eq(qacc[w], mjd.qacc, f"qacc{w}", tol=_NOSLIP_TOLERANCE)
+      _assert_eq(efc_force[w, : mjd.nefc], mjd.efc_force, f"efc_force{w}", tol=_NOSLIP_TOLERANCE)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
 
   @parameterized.parameters(1, 2)
   def test_noslip_tolerance(self, nworld):
@@ -3754,6 +3841,76 @@ class CompactSolverTest(parameterized.TestCase):
       1e-5,
       f"qfrc_constraint should be zeroed, but got max abs: {np.max(np.abs(qfrc_constraint_post))}",
     )
+
+  @parameterized.product(
+    nworld=(1, 2),
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+  )
+  def test_solve_compact_sparse_qfrc_constraint(self, nworld, cone):
+    """The compact solve of a sparse model zeroes qfrc_constraint in worlds without constraints."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse">
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <body>
+            <joint name="j0"/>
+            <geom type="capsule" fromto="0 0 .5 .3 0 .5" size=".05"/>
+          </body>
+          <body pos="1 0 1">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="j0"/>
+        </actuator>
+        <keyframe>
+          <key qvel=".1 .2 -.1 .3 -.2 .1 .4" ctrl="1"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.cone": cone},
+      nworld=nworld,
+    )
+    self.assertTrue(m.is_sparse)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd1, 0)
+      mjd1.qpos[mjm.jnt_qposadr[1] + 2] = 0.08  # world 1: sphere in contact with floor
+      mujoco.mj_forward(mjm, mjd1)
+      qpos = d.qpos.numpy()
+      qpos[1] = mjd1.qpos
+      d.qpos.assign(qpos)
+      mjds.append(mjd1)
+
+    d.nefc.fill_(-1)
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    d.cqfrc_constraint.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    nefc = d.nefc.numpy()
+    qacc = d.qacc.numpy()
+    qfrc_constraint = d.qfrc_constraint.numpy()
+    self.assertEqual(nefc[0], 0)
+    if nworld == 2:
+      self.assertGreater(nefc[1], 0)
+
+    for w in range(nworld):
+      np.testing.assert_allclose(qacc[w], mjds[w].qacc, rtol=1e-4, atol=1e-4)
+      np.testing.assert_allclose(qfrc_constraint[w], mjds[w].qfrc_constraint, rtol=1e-4, atol=1e-4)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+      self.assertFalse(np.allclose(qfrc_constraint[0], qfrc_constraint[1]))
 
   def test_discrete_cg_init_context_prec_fold(self):
     """Verifies solver.init_context folds constraint/contact metric into ctx.tw_diag for 1D rods."""

@@ -607,6 +607,30 @@ class IOTest(parameterized.TestCase):
     # the tendon equality spans all four hinges, a contact only two
     self.assertEqual(mjwarp.put_model(mjm).max_efc_J_rownnz, 4)
 
+  def test_default_njmax_nnz_includes_bilateral_limits(self):
+    """Count both limit sides when the range is narrower than twice the margin."""
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide" limited="true" range="-1 1" margin="1.5"/>
+            <joint type="hinge" limited="true" range="-1 1"/>
+            <geom size="0.1" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed limited="true" range="-1 1" margin="1.5">
+            <joint joint="slide" coef="1"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """
+    )
+
+    self.assertEqual(io._default_njmax_nnz(mjm, nconmax=0, njmax=5), 5)
+
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
     mjm, _, _, d = test_data.fixture("pendula.xml", nvmax=None)

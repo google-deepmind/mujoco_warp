@@ -56,6 +56,50 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.actuator_velocity.numpy()[0], mjd.actuator_velocity, "actuator_velocity")
     _assert_eq(d.qfrc_bias.numpy()[0], mjd.qfrc_bias, "qfrc_bias")
 
+  @parameterized.product(
+    nworld=(1, 2),
+    stale_velocity=(float("nan"), 37.0),
+    disableflags=(0, DisableBit.CONSTRAINT, DisableBit.EQUALITY),
+    equality=('<weld body1="body"/>', '<connect body1="body" anchor="0.2 0.1 0.3"/>'),
+  )
+  def test_forward_refreshes_equality_velocity(self, nworld, stale_velocity, equality, disableflags):
+    """Equality acceleration targets must use current velocity kinematics after reset."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option solver="Newton" integrator="implicitfast" gravity="0 0 0"/>
+        <worldbody>
+          <body name="body" pos="0.2 0.1 0.3" quat="0.9 0.1 0.2 0.3">
+            <freejoint/>
+            <geom type="box" size="0.1 0.08 0.05" mass="0.3"/>
+          </body>
+        </worldbody>
+        <equality>{equality}</equality>
+      </mujoco>
+      """,
+      nworld=nworld,
+      qvel_noise=0.1,
+      overrides={"opt.disableflags": disableflags},
+    )
+    velocities = np.stack([mjd.qvel * (world + 1) + world * 0.1 for world in range(nworld)])
+    references = []
+    for velocity in velocities:
+      reference = mujoco.MjData(mjm)
+      reference.qpos[:] = mjd.qpos
+      reference.qvel[:] = velocity
+      mujoco.mj_forward(mjm, reference)
+      references.append(reference.qacc.copy())
+    d.qvel.assign(velocities)
+    d.cvel.fill_(stale_velocity)
+    d.cdof_dot.fill_(stale_velocity)
+    d.qacc.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    _assert_eq(d.qacc.numpy(), np.stack(references), "qacc after velocity reset")
+    if nworld == 2:
+      self.assertFalse(np.allclose(references[0], references[1]))
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_fwd_velocity_tendon(self, jacobian):
     _, mjd, m, d = test_data.fixture("tendon/fixed.xml", overrides={"opt.jacobian": jacobian})
@@ -203,9 +247,13 @@ class ForwardTest(parameterized.TestCase):
     _assert_eq(d.qfrc_smooth.numpy()[0], mjd.qfrc_smooth, "qfrc_smooth")
     _assert_eq(d.qacc_smooth.numpy()[0], mjd.qacc_smooth, "qacc_smooth")
 
-  @parameterized.parameters(SolverType.NEWTON, SolverType.CG)
-  def test_forward_qld_store_factor(self, solver):
-    """Forward stores the dense-block factor of M only for CG, which reads it."""
+  @parameterized.parameters(
+    (SolverType.NEWTON, 0),
+    (SolverType.NEWTON, 1),
+    (SolverType.CG, 0),
+  )
+  def test_forward_qld_store_factor(self, solver, noslip_iterations):
+    """Forward stores the dense-block factor of M only for CG or noslip, which read it."""
     _, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -225,7 +273,7 @@ class ForwardTest(parameterized.TestCase):
         </worldbody>
       </mujoco>
       """,
-      overrides={"opt.solver": solver},
+      overrides={"opt.solver": solver, "opt.noslip_iterations": noslip_iterations},
     )
     self.assertTrue(any(tile.elemid.size for tile in m.M_tiles))
     self.assertGreater(mjd.nefc, 0)
@@ -235,7 +283,7 @@ class ForwardTest(parameterized.TestCase):
     mjw.forward(m, d)
 
     dense = d.qLD.numpy()[0, : m.qLD_block_total]
-    self.assertEqual(np.isinf(dense).all(), solver != SolverType.CG)
+    self.assertEqual(np.isinf(dense).all(), (solver != SolverType.CG) and (noslip_iterations == 0))
     _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
 
   @parameterized.product(
@@ -339,6 +387,94 @@ class ForwardTest(parameterized.TestCase):
     mjw.step(m, d)
 
     _assert_eq(d.energy.numpy()[0], mjd.energy, "energy")
+
+  def test_rungekutta4_stage_time(self):
+    """Intermediate rk4 stages read delayed controls at t0 + a_i * h."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="RK4" timestep=".01">
+          <flag constraint="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide" axis="1 0 0"/>
+            <geom size=".1" mass="1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="slide" delay=".015" nsample="4" interp="linear"/>
+        </actuator>
+      </mujoco>
+      """
+    )
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    for i in range(6):
+      mjd.ctrl[0] = np.sin(i)
+      d.ctrl.fill_(float(mjd.ctrl[0]))
+      mujoco.mj_step(mjm, mjd)
+      wp.capture_launch(capture.graph)
+
+    _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
+    _assert_eq(d.time.numpy()[0], mjd.time, "time")
+
+  def test_rungekutta4_dcmotor(self):
+    """Rk4 stages integrate dc motor states with the stage timestep and keep the stage-3 act_dot."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="RK4" timestep=".0002">
+          <flag constraint="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint name="slide1" type="slide"/>
+            <geom size=".03"/>
+          </body>
+          <body pos="0 .1 0">
+            <joint name="slide2" type="slide"/>
+            <geom size=".03"/>
+          </body>
+          <body pos="0 .2 0">
+            <joint name="hinge" armature=".1"/>
+            <geom size=".03"/>
+          </body>
+          <body pos="0 .3 0">
+            <joint name="slide3" type="slide"/>
+            <geom size=".03"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <dcmotor joint="slide1" motorconst="2" resistance=".5" inductance=".001" input="voltage"/>
+          <dcmotor joint="slide2" motorconst="1" resistance="1" inductance=".001" input="pos vel" controller="10 0 5"/>
+          <dcmotor joint="hinge" motorconst=".05" resistance="2" input="none" lugre="1e4 100 .005 .008 .1"/>
+          <general joint="slide3" dyntype="filter" dynprm=".05"/>
+        </actuator>
+        <keyframe>
+          <key qpos=".1 -.2 .3 .05" qvel=".5 -1 .02 .7" ctrl="1 .5 0 -1"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    for _ in range(3):
+      mujoco.mj_step(mjm, mjd)
+      wp.capture_launch(capture.graph)
+
+    _assert_eq(d.qpos.numpy()[0], mjd.qpos, "qpos")
+    _assert_eq(d.qvel.numpy()[0], mjd.qvel, "qvel")
+    _assert_eq(d.act.numpy()[0], mjd.act, "act")
+    _assert_eq(d.act_dot.numpy()[0], mjd.act_dot, "act_dot")
+    _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
+    self.assertEqual(mjd.warning[mujoco.mjtWarning.mjWARN_BADQPOS].number, 0)
 
   def test_rungekutta4(self):
     mjm, mjd, m, d = test_data.fixture(
