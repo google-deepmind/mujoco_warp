@@ -3062,6 +3062,38 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
   return kernel
 
 
+@wp.func
+def _contact_rownnz(
+  # Model:
+  body_weldid: wp.array[int],
+  body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
+  dof_parentid: wp.array[int],
+  geom_bodyid: wp.array[int],
+  # In:
+  geom: wp.vec2i,
+) -> int:
+  """Nonzeros of a contact's Jacobian rows: the DOFs of either body's chain but not of both."""
+  body1 = body_weldid[geom_bodyid[geom[0]]]
+  body2 = body_weldid[geom_bodyid[geom[1]]]
+
+  da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
+  da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
+
+  rownnz = int(0)
+  while da1 >= 0 or da2 >= 0:
+    da = wp.max(da1, da2)
+    # skip common dofs
+    if da1 == da and da2 == da:
+      break
+    if da1 == da:
+      da1 = dof_parentid[da1]
+    if da2 == da:
+      da2 = dof_parentid[da2]
+    rownnz += 1
+  return rownnz
+
+
 @cache_kernel
 def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, flg_adhesion: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
@@ -3131,26 +3163,8 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
     rownnz = int(0)
     rowadr = int(0)
     if wp.static(IS_SPARSE):
-      geom = geom_in[conid]
-      body1 = body_weldid[geom_bodyid[geom[0]]]
-      body2 = body_weldid[geom_bodyid[geom[1]]]
-
-      da1 = int(body_dofadr[body1] + body_dofnum[body1] - 1)
-      da2 = int(body_dofadr[body2] + body_dofnum[body2] - 1)
-
-      # count non-zeros
-      while da1 >= 0 or da2 >= 0:
-        da = wp.max(da1, da2)
-        # skip common dofs
-        if da1 == da and da2 == da:
-          break
-        if da1 == da:
-          da1 = dof_parentid[da1]
-        if da2 == da:
-          da2 = dof_parentid[da2]
-        rownnz += 1
-
       if not island_cursor_out:
+        rownnz = _contact_rownnz(body_weldid, body_dofnum, body_dofadr, dof_parentid, geom_bodyid, geom_in[conid])
         rowadr = _reserve_efc_nnz(nefc_out, njmax_in, njmax_nnz_in, worldid, ndim, rownnz, efc_nnz_out)
         if rowadr < 0:
           for dim in range(ndim):
@@ -3197,6 +3211,9 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
     empty = srow >= 0
     if wp.static(IS_SPARSE):
       if island_cursor_out:
+        # only sparse rows need their nonzeros (counting them walks the DOF tree)
+        if not empty:
+          rownnz = _contact_rownnz(body_weldid, body_dofnum, body_dofadr, dof_parentid, geom_bodyid, geom_in[conid])
         rowadr = rows_reserve(worldid, base_efcid, ndim, wp.where(empty, 0, rownnz), njmax_in, njmax_nnz_in, efc_nnz_out)
         empty = empty or rowadr < 0
         rowadr = wp.max(rowadr, 0)
