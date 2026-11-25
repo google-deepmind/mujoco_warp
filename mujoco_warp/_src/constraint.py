@@ -346,8 +346,6 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # In:
     island_body_treeid_in: wp.array[int],
     island_dof_treeid_in: wp.array[int],
-    island_rowadr_in: wp.array2d[int],
-    island_dense_in: wp.array2d[wp.vec4i],
     dof_densecol_in: wp.array2d[int],
     # Data out:
     ne_out: wp.array[int],
@@ -444,8 +442,6 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
         3,
         ROW_EQUALITY,
         njmax_in,
-        island_rowadr_in,
-        island_dense_in,
         nefc_out,
         island_cursor_out,
       )
@@ -714,8 +710,6 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # In:
     island_body_treeid_in: wp.array[int],
     island_dof_treeid_in: wp.array[int],
-    island_rowadr_in: wp.array2d[int],
-    island_dense_in: wp.array2d[wp.vec4i],
     dof_densecol_in: wp.array2d[int],
     # Data out:
     ne_out: wp.array[int],
@@ -775,8 +769,6 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
         1,
         ROW_EQUALITY,
         njmax_in,
-        island_rowadr_in,
-        island_dense_in,
         nefc_out,
         island_cursor_out,
       )
@@ -909,8 +901,6 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # In:
     island_body_treeid_in: wp.array[int],
     island_dof_treeid_in: wp.array[int],
-    island_rowadr_in: wp.array2d[int],
-    island_dense_in: wp.array2d[wp.vec4i],
     dof_densecol_in: wp.array2d[int],
     # Data out:
     ne_out: wp.array[int],
@@ -1018,8 +1008,6 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
         1,
         ROW_EQUALITY,
         njmax_in,
-        island_rowadr_in,
-        island_dense_in,
         nefc_out,
         island_cursor_out,
       )
@@ -1374,8 +1362,6 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # In:
     island_body_treeid_in: wp.array[int],
     island_dof_treeid_in: wp.array[int],
-    island_rowadr_in: wp.array2d[int],
-    island_dense_in: wp.array2d[wp.vec4i],
     dof_densecol_in: wp.array2d[int],
     # Data out:
     ne_out: wp.array[int],
@@ -1506,8 +1492,6 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
         6,
         ROW_EQUALITY,
         njmax_in,
-        island_rowadr_in,
-        island_dense_in,
         nefc_out,
         island_cursor_out,
       )
@@ -2184,8 +2168,6 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
     # In:
     island_body_treeid_in: wp.array[int],
     island_dof_treeid_in: wp.array[int],
-    island_rowadr_in: wp.array2d[int],
-    island_dense_in: wp.array2d[wp.vec4i],
     dof_densecol_in: wp.array2d[int],
     # Data out:
     nf_out: wp.array[int],
@@ -2239,8 +2221,6 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
         1,
         ROW_FRICTION,
         njmax_in,
-        island_rowadr_in,
-        island_dense_in,
         nefc_out,
         island_cursor_out,
       )
@@ -2334,8 +2314,6 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # In:
     island_body_treeid_in: wp.array[int],
     island_dof_treeid_in: wp.array[int],
-    island_rowadr_in: wp.array2d[int],
-    island_dense_in: wp.array2d[wp.vec4i],
     dof_densecol_in: wp.array2d[int],
     # Data out:
     nf_out: wp.array[int],
@@ -2391,8 +2369,6 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
         1,
         ROW_FRICTION,
         njmax_in,
-        island_rowadr_in,
-        island_dense_in,
         nefc_out,
         island_cursor_out,
       )
@@ -2553,8 +2529,6 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
     # In:
     island_body_treeid_in: wp.array[int],
     island_dof_treeid_in: wp.array[int],
-    island_rowadr_in: wp.array2d[int],
-    island_dense_in: wp.array2d[wp.vec4i],
     dof_densecol_in: wp.array2d[int],
     # Data out:
     nl_out: wp.array[int],
@@ -2614,8 +2588,6 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
           1,
           ROW_LIMIT,
           njmax_in,
-          island_rowadr_in,
-          island_dense_in,
           nefc_out,
           island_cursor_out,
         )
@@ -2717,8 +2689,6 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # In:
     island_body_treeid_in: wp.array[int],
     island_dof_treeid_in: wp.array[int],
-    island_rowadr_in: wp.array2d[int],
-    island_dense_in: wp.array2d[wp.vec4i],
     dof_densecol_in: wp.array2d[int],
     # Data out:
     nl_out: wp.array[int],
@@ -2780,8 +2750,6 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
           1,
           ROW_LIMIT,
           njmax_in,
-          island_rowadr_in,
-          island_dense_in,
           nefc_out,
           island_cursor_out,
         )
@@ -2907,8 +2875,6 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # In:
     island_body_treeid_in: wp.array[int],
     island_dof_treeid_in: wp.array[int],
-    island_rowadr_in: wp.array2d[int],
-    island_dense_in: wp.array2d[wp.vec4i],
     dof_densecol_in: wp.array2d[int],
     # Data out:
     nl_out: wp.array[int],
@@ -2969,8 +2935,6 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
           1,
           ROW_LIMIT,
           njmax_in,
-          island_rowadr_in,
-          island_dense_in,
           nefc_out,
           island_cursor_out,
         )
@@ -3122,8 +3086,6 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
     # In:
     island_body_treeid_in: wp.array[int],
     island_dof_treeid_in: wp.array[int],
-    island_rowadr_in: wp.array2d[int],
-    island_dense_in: wp.array2d[wp.vec4i],
     dof_densecol_in: wp.array2d[int],
     # Data out:
     nefc_out: wp.array[int],
@@ -3185,8 +3147,6 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
         ndim,
         ROW_CONTACT,
         njmax_in,
-        island_rowadr_in,
-        island_dense_in,
         nefc_out,
         island_cursor_out,
       )
@@ -5941,8 +5901,6 @@ def _make_rows(
           d.njmax_nnz,
           m.body_treeid,
           m.dof_treeid,
-          island_rowadr,
-          island_dense,
           dof_densecol,
         ],
         outputs=[
@@ -6012,8 +5970,6 @@ def _make_rows(
           d.njmax_nnz,
           m.body_treeid,
           m.dof_treeid,
-          island_rowadr,
-          island_dense,
           dof_densecol,
         ],
         outputs=[
@@ -6064,8 +6020,6 @@ def _make_rows(
           d.njmax_nnz,
           m.body_treeid,
           m.dof_treeid,
-          island_rowadr,
-          island_dense,
           dof_densecol,
         ],
         outputs=[
@@ -6118,8 +6072,6 @@ def _make_rows(
           d.njmax_nnz,
           m.body_treeid,
           m.dof_treeid,
-          island_rowadr,
-          island_dense,
           dof_densecol,
         ],
         outputs=[
@@ -6292,8 +6244,6 @@ def _make_rows(
           d.njmax_nnz,
           m.body_treeid,
           m.dof_treeid,
-          island_rowadr,
-          island_dense,
           dof_densecol,
         ],
         outputs=[
@@ -6339,8 +6289,6 @@ def _make_rows(
           d.njmax_nnz,
           m.body_treeid,
           m.dof_treeid,
-          island_rowadr,
-          island_dense,
           dof_densecol,
         ],
         outputs=[
@@ -6391,8 +6339,6 @@ def _make_rows(
           d.njmax_nnz,
           m.body_treeid,
           m.dof_treeid,
-          island_rowadr,
-          island_dense,
           dof_densecol,
         ],
         outputs=[
@@ -6441,8 +6387,6 @@ def _make_rows(
           d.njmax_nnz,
           m.body_treeid,
           m.dof_treeid,
-          island_rowadr,
-          island_dense,
           dof_densecol,
         ],
         outputs=[
@@ -6493,8 +6437,6 @@ def _make_rows(
           d.njmax_nnz,
           m.body_treeid,
           m.dof_treeid,
-          island_rowadr,
-          island_dense,
           dof_densecol,
         ],
         outputs=[
@@ -6625,8 +6567,6 @@ def _make_rows(
             d.contact.type,
             m.body_treeid,
             m.dof_treeid,
-            island_rowadr,
-            island_dense,
             dof_densecol,
           ],
           outputs=[

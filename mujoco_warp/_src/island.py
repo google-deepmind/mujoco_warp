@@ -1542,6 +1542,10 @@ ROW_EQUALITY = 0
 ROW_FRICTION = 1
 ROW_LIMIT = 2
 ROW_CONTACT = 3
+# an island's row record in island_cursor: the next row of each class, then the dense row width (a
+# 32-byte sector: a constraint takes its rows and finds their kind in one place)
+ROW_RECORD = 8
+ROW_DENSE = ROW_CLASSES
 
 # Groups of up to dense_width(m) DOFs (a humanoid, a few resting boxes) write their Jacobian rows
 # only to GroupBuffers.J, dense and in group-local columns; their sparse rows are empty.
@@ -1555,24 +1559,6 @@ MERGE_NV = 32
 MIN_NV = MERGE_NV
 # models of more trees are the world solver's: _island_world's shared memory grows with ntree
 MAX_NTREE = 1024
-
-
-@wp.func
-def rows_dense(
-  # Data in:
-  tree_island_in: wp.array2d[int],
-  # In:
-  worldid: int,
-  tree: int,
-  efcid: int,
-  island_dense_in: wp.array2d[wp.vec4i],
-) -> int:
-  """A constraint's first dense row: efcid in a group with dense rows, else -1 (sparse rows)."""
-  if tree < 0:
-    return -1
-  if island_dense_in[worldid, tree_island_in[worldid, tree]][0] == 0:
-    return -1
-  return efcid
 
 
 @wp.func
@@ -1626,7 +1612,7 @@ class GroupBuffers:
     self.island_parent = wp.empty(shape, dtype=int)
     self.tree_nrow = wp.empty((d.nworld, m.ntree * ROW_CLASSES), dtype=int)
     self.island_rowadr = wp.empty((d.nworld, m.ntree * ROW_CLASSES), dtype=int)
-    self.island_cursor = wp.empty((d.nworld, m.ntree * ROW_CLASSES), dtype=int)
+    self.island_cursor = wp.empty((d.nworld, m.ntree * ROW_RECORD), dtype=int)
     self.tree_group = wp.empty(shape, dtype=int)
     self.island_root = wp.empty(shape, dtype=int)
     self.island_acc = wp.empty(shape, dtype=int)
@@ -1817,7 +1803,6 @@ def _island_world(ntree: int):
       valid = valid and islandid >= 0
       wp.tile_scatter_add(ndof, wp.where(valid, islandid, 0), wp.where(valid, tree_dofnum[tc], 0), valid)
     wp.tile_store(island_rowadr_out[worldid], wp.tile_scan_exclusive(counts))
-    wp.tile_store(island_cursor_out[worldid], wp.tile_zeros(shape=NT, dtype=int))
     wp.tile_store(island_nv_out[worldid], ndof)
     wp.tile_store(island_idofadr_out[worldid], wp.tile_scan_exclusive(ndof))
     nidof = wp.tile_sum(ndof)[0]
@@ -1838,6 +1823,11 @@ def _island_world(ntree: int):
       island_nefc_out[worldid, i] = fit[2]
       island_iefcadr_out[worldid, i] = iefcadr
       _tile_set(iefc, i, iefcadr)
+      # each class's rows start where the class before ends
+      cursor = iefcadr
+      for c in range(ROW_CLASSES):
+        island_cursor_out[worldid, i * ROW_RECORD + c] = cursor
+        cursor += counts[i * ROW_CLASSES + c]
       # the first DOF of each island is set per DOF
       island_dofadr_out[worldid, i] = nv
     if lane == 0:
@@ -1964,10 +1954,11 @@ def _island_world(ntree: int):
         block = wp.vec4i(width, 0, group_nefc_out[worldid, i], group_iefcadr_out[worldid, i])
       group_dense_out[worldid, i] = block
     _block_sync()
-    for i in range(lane, ntree, lanes):
-      g = island_group_out[worldid, i]
-      if g >= 0:
-        island_dense_out[worldid, i] = group_dense_out[worldid, g]
+    for i in range(lane, nisland, lanes):
+      gi = igroup[i]
+      block = group_dense_out[worldid, wp.where(gi < 0, -2 - gi, gi)]
+      island_dense_out[worldid, i] = block
+      island_cursor_out[worldid, i * ROW_RECORD + ROW_DENSE] = block[0]
 
     # zero dense rows but contacts' (written whole), here rather than a row a thread: coalesced
     width = dense_J_out.shape[2]
@@ -2200,25 +2191,16 @@ def rows_discover_tendon(
 
 @wp.func
 def rows_write(
-  # Data in:
-  tree_island_in: wp.array2d[int],
   # In:
   worldid: int,
-  tree: int,
+  island: int,
   nrow: int,
   rowclass: int,
-  nrow_max: int,
-  island_rowadr_in: wp.array2d[int],
   # Out:
   island_cursor_out: wp.array2d[int],
 ) -> int:
-  """Address of a constraint's first row in its island (nrow_max if it has no tree)."""
-  if tree < 0:
-    return nrow_max
-  slot = tree_island_in[worldid, tree] * ROW_CLASSES + rowclass
-  return island_rowadr_in[worldid, slot] + wp.atomic_add(
-    island_cursor_out, worldid, slot, nrow
-  )  # kernel_analyzer: ignore[atomic]
+  """Address of a constraint's first row: its island's cursors start at the rows of each class."""
+  return wp.atomic_add(island_cursor_out, worldid, island * ROW_RECORD + rowclass, nrow)  # kernel_analyzer: ignore[atomic]
 
 
 @wp.func
@@ -2232,18 +2214,22 @@ def rows_island(
   nrow: int,
   rowclass: int,
   nrow_max: int,
-  island_rowadr_in: wp.array2d[int],
-  island_dense_in: wp.array2d[wp.vec4i],
   # Data out:
   nefc_out: wp.array[int],
   # Out:
   island_cursor_out: wp.array2d[int],
 ) -> wp.vec2i:
-  """A constraint's rows in island order (counted in nefc): its first row and first dense row."""
+  """A constraint's rows in island order (counted in nefc): its first row and first dense row.
+
+  Without a tree, nrow_max; the first dense row is -1 for sparse rows.
+  """
   wp.atomic_add(nefc_out, worldid, nrow)  # kernel_analyzer: ignore[atomic]
   tree = wp.where(tree0 >= 0, tree0, tree1)
-  efcid = rows_write(tree_island_in, worldid, tree, nrow, rowclass, nrow_max, island_rowadr_in, island_cursor_out)
-  return wp.vec2i(efcid, rows_dense(tree_island_in, worldid, tree, efcid, island_dense_in))
+  if tree < 0:
+    return wp.vec2i(nrow_max, -1)
+  island = tree_island_in[worldid, tree]
+  efcid = rows_write(worldid, island, nrow, rowclass, island_cursor_out)
+  return wp.vec2i(efcid, wp.where(island_cursor_out[worldid, island * ROW_RECORD + ROW_DENSE] > 0, efcid, -1))
 
 
 @wp.func
