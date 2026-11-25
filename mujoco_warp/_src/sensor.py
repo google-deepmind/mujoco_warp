@@ -21,6 +21,7 @@ from mujoco_warp._src import history
 from mujoco_warp._src import math
 from mujoco_warp._src import ray
 from mujoco_warp._src import smooth
+from mujoco_warp._src import sort
 from mujoco_warp._src import support
 from mujoco_warp._src.collision_sdf import get_sdf_params
 from mujoco_warp._src.collision_sdf import sdf
@@ -812,26 +813,25 @@ def _sensor_pos(
         else:
           pairid = math.upper_tri_index(ngeom, geomid2, geomid1)
         collisionid = nxn_pairid[pairid][1]
-        if collisionid >= 0:
-          packed = sensor_collision_in[worldid, collisionid]
-          if packed != ~wp.uint64(0):
-            conid = int(wp.uint32(packed))
-            dist_new = contact_dist_in[conid]
+        packed = sensor_collision_in[worldid, collisionid]
+        if packed != ~wp.uint64(0):
+          conid = int(wp.uint32(packed))
+          dist_new = contact_dist_in[conid]
 
-            if dist_new < dist:
-              dist = dist_new
+          if dist_new < dist:
+            dist = dist_new
 
-              if sensortype == SensorType.GEOMFROMTO:
-                pos = contact_pos_in[conid]
-              if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
-                normal = contact_frame_in[conid][0]
+            if sensortype == SensorType.GEOMFROMTO:
+              pos = contact_pos_in[conid]
+            if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
+              normal = contact_frame_in[conid][0]
 
-              if geom_type[geomid1] > geom_type[geomid2]:
-                flip = True
-              elif geom_type[geomid1] == geom_type[geomid2]:
-                flip = geomid1 > geomid2
-              else:
-                flip = False
+            if geom_type[geomid1] > geom_type[geomid2]:
+              flip = True
+            elif geom_type[geomid1] == geom_type[geomid2]:
+              flip = geomid1 > geomid2
+            else:
+              flip = False
     # the segment from geom 1 to geom 2, which points along the contact normal or against it
     if dist >= sensor_cutoff[sensorid] or dist == 0.0:
       segment = wp.vec3()
@@ -908,7 +908,7 @@ def _sensor_collision(
 ):
   conid = wp.tid()
 
-  if conid >= wp.min(nacon_in[0], contact_dist_in.shape[0]):
+  if conid >= nacon_in[0]:
     return
 
   if not (contact_type_in[conid] & ContactType.SENSOR):
@@ -921,14 +921,10 @@ def _sensor_collision(
     pairid = math.upper_tri_index(ngeom, geom[1], geom[0])
 
   collisionid = nxn_pairid[pairid][1]
-  if collisionid < 0:
-    return
 
   # Pack ordered float32 distance bits above unique contact index for exact min reduction.
   worldid = contact_worldid_in[conid]
-  bits = wp.cast(contact_dist_in[conid], wp.uint32)
-  sign = wp.uint32(1) << wp.uint32(31)
-  dist_key = wp.where((bits & sign) != wp.uint32(0), ~bits, bits ^ sign)
+  dist_key = sort.float_key(wp.cast(contact_dist_in[conid], wp.uint32))
   key = (wp.uint64(dist_key) << wp.uint64(32)) | wp.uint64(conid)
   wp.atomic_min(sensor_collision_out, worldid, collisionid, key)  # kernel_analyzer: ignore[atomic]
 

@@ -19,6 +19,7 @@ import math
 import warp as wp
 
 from mujoco_warp._src import collision_primitive_core
+from mujoco_warp._src import sort
 from mujoco_warp._src import support
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_core import sap_binary_search
@@ -56,14 +57,6 @@ _FLEX_CONTACT_DEDUP_TOLERANCE: float = 1e-3
 
 
 @wp.func
-def _float_key(val: float) -> wp.uint32:
-  """Total ordering of float bits, including signed zero and NaNs."""
-  bits = wp.cast(val, wp.uint32)
-  sign = wp.uint32(1) << wp.uint32(31)
-  return wp.where((bits & sign) != wp.uint32(0), ~bits, bits ^ sign)
-
-
-@wp.func
 def _cmp_vec2i(a: wp.vec2i, b: wp.vec2i) -> int:
   """Lexicographic comparison of two vec2i values (-1, 0, or 1)."""
   for k in range(2):
@@ -76,8 +69,8 @@ def _cmp_vec2i(a: wp.vec2i, b: wp.vec2i) -> int:
 def _cmp_vec3f(a: wp.vec3, b: wp.vec3) -> int:
   """Lexicographic comparison of two vec3 values using total float bit order (-1, 0, or 1)."""
   for k in range(3):
-    ka = _float_key(a[k])
-    kb = _float_key(b[k])
+    ka = sort.float_key(wp.cast(a[k], wp.uint32))
+    kb = sort.float_key(wp.cast(b[k], wp.uint32))
     if ka != kb:
       return -1 if ka < kb else 1
   return 0
@@ -2774,8 +2767,8 @@ def _compare_candidate_canonical(
   cand_vert: wp.array[wp.vec2i],
 ) -> bool:
   """Returns True if candidate i is dominated by j, breaking ties by candidate content."""
-  dist_key_i = _float_key(dist_i)
-  dist_key_j = _float_key(dist_j)
+  dist_key_i = sort.float_key(wp.cast(dist_i, wp.uint32))
+  dist_key_j = sort.float_key(wp.cast(dist_j, wp.uint32))
   if dist_key_j != dist_key_i:
     return dist_key_j < dist_key_i
   # Break exact distance ties canonically by candidate content before raw atomic index.
@@ -3236,7 +3229,6 @@ def _tie_break_fps_canonical(
   curr_idx: int,
   sel_idx: int,
   cand_pos: wp.array[wp.vec3],
-  cand_flex: wp.array[wp.vec2i],
   cand_elem: wp.array[wp.vec2i],
   cand_vert: wp.array[wp.vec2i],
 ) -> bool:
@@ -3246,9 +3238,6 @@ def _tie_break_fps_canonical(
   if c != 0:
     return c < 0
   c = _cmp_vec2i(cand_vert[curr_idx], cand_vert[sel_idx])
-  if c != 0:
-    return c < 0
-  c = _cmp_vec2i(cand_flex[curr_idx], cand_flex[sel_idx])
   if c != 0:
     return c < 0
   c = _cmp_vec3f(cand_pos[curr_idx], cand_pos[sel_idx])
@@ -3275,7 +3264,6 @@ class _FpsPickCanonical:
   cidx: int
   elem: wp.vec2i
   vert: wp.vec2i
-  flex: wp.vec2i
   pos: wp.vec3
 
 
@@ -3296,7 +3284,6 @@ def _fps_pick_canonical(
   dist: float,
   cidx: int,
   cand_pos: wp.array[wp.vec3],
-  cand_flex: wp.array[wp.vec2i],
   cand_elem: wp.array[wp.vec2i],
   cand_vert: wp.array[wp.vec2i],
 ) -> _FpsPickCanonical:
@@ -3306,7 +3293,6 @@ def _fps_pick_canonical(
   if cidx >= 0:
     pick.elem = cand_elem[cidx]
     pick.vert = cand_vert[cidx]
-    pick.flex = cand_flex[cidx]
     pick.pos = cand_pos[cidx]
   return pick
 
@@ -3358,9 +3344,6 @@ def _fps_pick_max_canonical(a: _FpsPickCanonical, b: _FpsPickCanonical) -> _FpsP
   if c != 0:
     return a if c < 0 else b
   c = _cmp_vec2i(a.vert, b.vert)
-  if c != 0:
-    return a if c < 0 else b
-  c = _cmp_vec2i(a.flex, b.flex)
   if c != 0:
     return a if c < 0 else b
   c = _cmp_vec3f(a.pos, b.pos)
@@ -3463,7 +3446,7 @@ def _parallel_fps(has_passive_flex: bool, canonical_ties: bool):
             seed = c_idx
           elif d_val == min_d:
             if wp.static(canonical_ties):
-              if _tie_break_fps_canonical(c_idx, seed, cand_pos, cand_flex, cand_elem, cand_vert):
+              if _tie_break_fps_canonical(c_idx, seed, cand_pos, cand_elem, cand_vert):
                 seed = c_idx
             elif _tie_break_fps(c_idx, seed, cand_elem, cand_vert):
               seed = c_idx
@@ -3480,7 +3463,7 @@ def _parallel_fps(has_passive_flex: bool, canonical_ties: bool):
           seed = c_idx
         elif d_val == min_d:
           if wp.static(canonical_ties):
-            if _tie_break_fps_canonical(c_idx, seed, cand_pos, cand_flex, cand_elem, cand_vert):
+            if _tie_break_fps_canonical(c_idx, seed, cand_pos, cand_elem, cand_vert):
               seed = c_idx
           elif _tie_break_fps(c_idx, seed, cand_elem, cand_vert):
             seed = c_idx
@@ -3492,7 +3475,7 @@ def _parallel_fps(has_passive_flex: bool, canonical_ties: bool):
     if wp.static(canonical_ties):
       sel = wp.tile_reduce(
         _fps_pick_max_canonical,
-        wp.tile(_fps_pick_canonical(-min_d, seed, cand_pos, cand_flex, cand_elem, cand_vert)),
+        wp.tile(_fps_pick_canonical(-min_d, seed, cand_pos, cand_elem, cand_vert)),
       )[0].cidx
     else:
       sel = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(-min_d, seed, cand_elem, cand_vert)))[0].cidx
@@ -3515,7 +3498,7 @@ def _parallel_fps(has_passive_flex: bool, canonical_ties: bool):
               best = c_idx
             elif md == max_d:
               if wp.static(canonical_ties):
-                if _tie_break_fps_canonical(c_idx, best, cand_pos, cand_flex, cand_elem, cand_vert):
+                if _tie_break_fps_canonical(c_idx, best, cand_pos, cand_elem, cand_vert):
                   best = c_idx
               elif _tie_break_fps(c_idx, best, cand_elem, cand_vert):
                 best = c_idx
@@ -3537,7 +3520,7 @@ def _parallel_fps(has_passive_flex: bool, canonical_ties: bool):
                 best = c_idx
               elif md == max_d:
                 if wp.static(canonical_ties):
-                  if _tie_break_fps_canonical(c_idx, best, cand_pos, cand_flex, cand_elem, cand_vert):
+                  if _tie_break_fps_canonical(c_idx, best, cand_pos, cand_elem, cand_vert):
                     best = c_idx
                 elif _tie_break_fps(c_idx, best, cand_elem, cand_vert):
                   best = c_idx
@@ -3545,7 +3528,7 @@ def _parallel_fps(has_passive_flex: bool, canonical_ties: bool):
       if wp.static(canonical_ties):
         pick = wp.tile_reduce(
           _fps_pick_max_canonical,
-          wp.tile(_fps_pick_canonical(max_d, best, cand_pos, cand_flex, cand_elem, cand_vert)),
+          wp.tile(_fps_pick_canonical(max_d, best, cand_pos, cand_elem, cand_vert)),
         )[0]
       else:
         pick = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(max_d, best, cand_elem, cand_vert)))[0]
@@ -3756,7 +3739,7 @@ def _filter_and_write_contacts(
   wp.utils.radix_sort_pairs(ws.filter_key, ws.filter_val, d.naconmax)
 
   has_passive_flex = bool(m.opt.integrator == IntegratorType.DISCRETE and m.has_flex_passive)
-  canonical_ties = bool(m.opt.deterministic and (m.opt.deterministic & DeterminismType.CONTACTS))
+  canonical_ties = bool(m.opt.deterministic & DeterminismType.CONTACTS)
   wp.launch(
     _filter_flex_candidates_sorted(has_passive_flex, canonical_ties),
     dim=d.naconmax,

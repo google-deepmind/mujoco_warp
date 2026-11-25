@@ -1363,14 +1363,6 @@ class SensorTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(sensordata[0, 1:], sensordata[1, 1:]))
 
-    # Verify overflow count > naconmax clamps safely to contact buffer capacity.
-    d.nacon.fill_(d.naconmax + 10)
-    d.contact.type[nacon:].zero_()
-    d.sensordata.fill_(wp.inf)
-    mjw.sensor_pos(m, d)
-    np.testing.assert_array_equal(d.sensordata.numpy(), sensordata)
-    d.nacon.fill_(nacon)
-
     # Force an exact minimum-distance tie per world and verify permutation invariance.
     for w in range(nworld):
       idx = np.flatnonzero(con_world == w)

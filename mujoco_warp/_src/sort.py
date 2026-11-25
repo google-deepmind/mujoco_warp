@@ -132,7 +132,7 @@ class _BlockKeys:
 
 
 @wp.func
-def _float_key(bits: wp.uint32) -> wp.uint32:
+def float_key(bits: wp.uint32) -> wp.uint32:
   """Total ordering of float bits, including signed zero and NaNs."""
   return wp.where((bits & wp.uint32(0x80000000)) != wp.uint32(0), ~bits, bits ^ wp.uint32(0x80000000))
 
@@ -159,36 +159,36 @@ def _contact_less(keys: _ContactKeys, worldid: int, a: int, b: int) -> bool:
         return keys.vert[a][i] < keys.vert[b][i]
   for i in range(3):
     if keys.pos[a, i] != keys.pos[b, i]:
-      return _float_key(keys.pos[a, i]) < _float_key(keys.pos[b, i])
+      return float_key(keys.pos[a, i]) < float_key(keys.pos[b, i])
   for i in range(3):
     for j in range(3):
       if keys.frame[a, i, j] != keys.frame[b, i, j]:
-        return _float_key(keys.frame[a, i, j]) < _float_key(keys.frame[b, i, j])
+        return float_key(keys.frame[a, i, j]) < float_key(keys.frame[b, i, j])
   if keys.dist[a] != keys.dist[b]:
-    return _float_key(keys.dist[a]) < _float_key(keys.dist[b])
+    return float_key(keys.dist[a]) < float_key(keys.dist[b])
   if keys.dim[a] != keys.dim[b]:
     return keys.dim[a] < keys.dim[b]
   if keys.type[a] != keys.type[b]:
     return keys.type[a] < keys.type[b]
   if keys.includemargin[a] != keys.includemargin[b]:
-    return _float_key(keys.includemargin[a]) < _float_key(keys.includemargin[b])
+    return float_key(keys.includemargin[a]) < float_key(keys.includemargin[b])
   for i in range(5):
     if keys.friction[a, i] != keys.friction[b, i]:
-      return _float_key(keys.friction[a, i]) < _float_key(keys.friction[b, i])
+      return float_key(keys.friction[a, i]) < float_key(keys.friction[b, i])
   for i in range(2):
     if keys.solref[a, i] != keys.solref[b, i]:
-      return _float_key(keys.solref[a, i]) < _float_key(keys.solref[b, i])
+      return float_key(keys.solref[a, i]) < float_key(keys.solref[b, i])
   for i in range(2):
     if keys.solreffriction[a, i] != keys.solreffriction[b, i]:
-      return _float_key(keys.solreffriction[a, i]) < _float_key(keys.solreffriction[b, i])
+      return float_key(keys.solreffriction[a, i]) < float_key(keys.solreffriction[b, i])
   for i in range(5):
     if keys.solimp[a, i] != keys.solimp[b, i]:
-      return _float_key(keys.solimp[a, i]) < _float_key(keys.solimp[b, i])
+      return float_key(keys.solimp[a, i]) < float_key(keys.solimp[b, i])
   if keys.adhesion[a] != keys.adhesion[b]:
-    return _float_key(keys.adhesion[a]) < _float_key(keys.adhesion[b])
+    return float_key(keys.adhesion[a]) < float_key(keys.adhesion[b])
   for i in range(3):
     if keys.surfacevel[a, i] != keys.surfacevel[b, i]:
-      return _float_key(keys.surfacevel[a, i]) < _float_key(keys.surfacevel[b, i])
+      return float_key(keys.surfacevel[a, i]) < float_key(keys.surfacevel[b, i])
   return keys.geomcollisionid[a] < keys.geomcollisionid[b]
 
 
@@ -213,26 +213,26 @@ def _constraint_less(keys: _ConstraintKeys, worldid: int, a: int, b: int) -> boo
       if ca != cb:
         return ca < cb
       if keys.J[worldid, 0, aa + i] != keys.J[worldid, 0, ab + i]:
-        return _float_key(keys.J[worldid, 0, aa + i]) < _float_key(keys.J[worldid, 0, ab + i])
+        return float_key(keys.J[worldid, 0, aa + i]) < float_key(keys.J[worldid, 0, ab + i])
     if na != nb:
       return na < nb
   else:
     for i in range(keys.nv):
       if keys.J[worldid, a, i] != keys.J[worldid, b, i]:
-        return _float_key(keys.J[worldid, a, i]) < _float_key(keys.J[worldid, b, i])
+        return float_key(keys.J[worldid, a, i]) < float_key(keys.J[worldid, b, i])
 
   if keys.pos[worldid, a] != keys.pos[worldid, b]:
-    return _float_key(keys.pos[worldid, a]) < _float_key(keys.pos[worldid, b])
+    return float_key(keys.pos[worldid, a]) < float_key(keys.pos[worldid, b])
   if keys.margin[worldid, a] != keys.margin[worldid, b]:
-    return _float_key(keys.margin[worldid, a]) < _float_key(keys.margin[worldid, b])
+    return float_key(keys.margin[worldid, a]) < float_key(keys.margin[worldid, b])
   if keys.D[worldid, a] != keys.D[worldid, b]:
-    return _float_key(keys.D[worldid, a]) < _float_key(keys.D[worldid, b])
+    return float_key(keys.D[worldid, a]) < float_key(keys.D[worldid, b])
   if keys.vel[worldid, a] != keys.vel[worldid, b]:
-    return _float_key(keys.vel[worldid, a]) < _float_key(keys.vel[worldid, b])
+    return float_key(keys.vel[worldid, a]) < float_key(keys.vel[worldid, b])
   if keys.aref[worldid, a] != keys.aref[worldid, b]:
-    return _float_key(keys.aref[worldid, a]) < _float_key(keys.aref[worldid, b])
+    return float_key(keys.aref[worldid, a]) < float_key(keys.aref[worldid, b])
   if keys.frictionloss[worldid, a] != keys.frictionloss[worldid, b]:
-    return _float_key(keys.frictionloss[worldid, a]) < _float_key(keys.frictionloss[worldid, b])
+    return float_key(keys.frictionloss[worldid, a]) < float_key(keys.frictionloss[worldid, b])
   return False
 
 
