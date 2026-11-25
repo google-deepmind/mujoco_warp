@@ -20,6 +20,7 @@ import warp as wp
 from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
 from mujoco_warp._src import derivative
+from mujoco_warp._src import fusion
 from mujoco_warp._src import history
 from mujoco_warp._src import island
 from mujoco_warp._src import math
@@ -2832,9 +2833,10 @@ def fwd_kinematics(m: Model, d: Data):
     else:
       sleep.update_sleep(m, d)
 
-  smooth.kinematics(m, d)
-  smooth.com_pos(m, d)
-  smooth.camlight(m, d)
+  with fusion.fuse():
+    smooth.kinematics(m, d)
+    smooth.com_pos(m, d)
+    smooth.camlight(m, d)
   smooth.flex(m, d)
   smooth.tendon(m, d)
 

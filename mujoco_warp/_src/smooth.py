@@ -18,6 +18,7 @@ from typing import Optional, Tuple
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
@@ -69,8 +70,10 @@ def _tree_asleep(
   return treeid >= 0 and tree_awake_in[worldid, treeid] == 0
 
 
-@wp.kernel
+@fusion.stage("nworld", "nbranch")
 def _kinematics_branch(
+  worldid: int,
+  branchid: int,
   # Model:
   qpos0: wp.array2d[float],
   body_parentid: wp.array[int],
@@ -95,8 +98,6 @@ def _kinematics_branch(
   xanchor_out: wp.array2d[wp.vec3],
   xaxis_out: wp.array2d[wp.vec3],
 ):
-  worldid, branchid = wp.tid()
-
   start = body_branch_start[branchid]
   end = body_branch_start[branchid + 1]
 
@@ -171,8 +172,10 @@ def _kinematics_branch(
     xquat_out[worldid, bodyid] = xquat
 
 
-@wp.kernel
+@fusion.stage("nworld", "nbody")
 def _compute_body_inertial_frames(
+  worldid: int,
+  bodyid: int,
   # Model:
   body_ipos: wp.array2d[wp.vec3],
   body_iquat: wp.array2d[wp.quat],
@@ -183,15 +186,16 @@ def _compute_body_inertial_frames(
   xipos_out: wp.array2d[wp.vec3],
   xiquat_out: wp.array2d[wp.quat],
 ):
-  worldid, bodyid = wp.tid()
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
   xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid % body_ipos.shape[0], bodyid], xquat)
   xiquat_out[worldid, bodyid] = math.mul_quat(xquat, body_iquat[worldid % body_iquat.shape[0], bodyid])
 
 
-@wp.kernel
+@fusion.stage("nworld", "ngeom")
 def _geom_local_to_global(
+  worldid: int,
+  geomid: int,
   # Model:
   body_rootid: wp.array[int],
   body_weldid: wp.array[int],
@@ -206,7 +210,6 @@ def _geom_local_to_global(
   geom_xpos_out: wp.array2d[wp.vec3],
   geom_xquat_out: wp.array2d[wp.quat],
 ):
-  worldid, geomid = wp.tid()
   bodyid = geom_bodyid[geomid]
 
   if body_weldid[bodyid] == 0 and body_mocapid[body_rootid[bodyid]] == -1:
@@ -220,8 +223,10 @@ def _geom_local_to_global(
   geom_xquat_out[worldid, geomid] = math.mul_quat(xquat, geom_quat[worldid % geom_quat.shape[0], geomid])
 
 
-@wp.kernel
+@fusion.stage("nworld", "nsite")
 def _site_local_to_global(
+  worldid: int,
+  siteid: int,
   # Model:
   site_bodyid: wp.array[int],
   site_pos: wp.array2d[wp.vec3],
@@ -233,7 +238,6 @@ def _site_local_to_global(
   site_xpos_out: wp.array2d[wp.vec3],
   site_xquat_out: wp.array2d[wp.quat],
 ):
-  worldid, siteid = wp.tid()
   bodyid = site_bodyid[siteid]
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
@@ -463,54 +467,13 @@ def _flex_edges(
 @event_scope
 def kinematics1(m: Model, d: Data):
   """Computes body poses and joint anchors and axes."""
-  wp.launch(
-    _kinematics_branch,
-    dim=(d.nworld, m.nbranch),
-    inputs=[
-      m.qpos0,
-      m.body_parentid,
-      m.body_mocapid,
-      m.body_jntnum,
-      m.body_jntadr,
-      m.body_pos,
-      m.body_quat,
-      m.jnt_type,
-      m.jnt_qposadr,
-      m.jnt_pos,
-      m.jnt_axis,
-      m.body_branches,
-      m.body_branch_start,
-      d.qpos,
-      d.mocap_pos,
-      d.mocap_quat,
-    ],
-    outputs=[d.xpos, d.xquat, d.xanchor, d.xaxis],
-  )
+  fusion.launch(m, d, _kinematics_branch)
 
 
 @event_scope
 def kinematics2(m: Model, d: Data):
   """Computes global body inertial frames, geoms, and sites from body poses."""
-  wp.launch(
-    _compute_body_inertial_frames,
-    dim=(d.nworld, m.nbody),
-    inputs=[m.body_ipos, m.body_iquat, d.xpos, d.xquat],
-    outputs=[d.xipos, d.xiquat],
-  )
-
-  wp.launch(
-    _geom_local_to_global,
-    dim=(d.nworld, m.ngeom),
-    inputs=[m.body_rootid, m.body_weldid, m.body_mocapid, m.geom_bodyid, m.geom_pos, m.geom_quat, d.xpos, d.xquat],
-    outputs=[d.geom_xpos, d.geom_xquat],
-  )
-
-  wp.launch(
-    _site_local_to_global,
-    dim=(d.nworld, m.nsite),
-    inputs=[m.site_bodyid, m.site_pos, m.site_quat, d.xpos, d.xquat],
-    outputs=[d.site_xpos, d.site_xquat],
-  )
+  fusion.launch(m, d, _compute_body_inertial_frames, _geom_local_to_global, _site_local_to_global)
 
 
 @event_scope
@@ -911,8 +874,10 @@ def flex(m: Model, d: Data):
     )
 
 
-@wp.kernel
+@fusion.stage("nworld", "nbody")
 def _subtree_com(
+  worldid: int,
+  bodyid: int,
   # Model:
   body_mass: wp.array2d[float],
   body_subtreemass: wp.array2d[float],
@@ -923,7 +888,6 @@ def _subtree_com(
   subtree_com_out: wp.array2d[wp.vec3],
 ):
   """Mass-weighted com of the subtree, the contiguous body range [b, b + body_subtreenum[b])."""
-  worldid, bodyid = wp.tid()
   if bodyid == 0:  # summed from the tree roots in _subtree_com_world
     return
   mass_id = worldid % body_mass.shape[0]
@@ -941,8 +905,9 @@ def _subtree_com(
   subtree_com_out[worldid, bodyid] = com
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _subtree_com_world(
+  worldid: int,
   # Model:
   nbody: int,
   body_mass: wp.array2d[float],
@@ -954,7 +919,6 @@ def _subtree_com_world(
   # Data out:
   subtree_com_out: wp.array2d[wp.vec3],
 ):
-  worldid = wp.tid()
   subtreemass_id = worldid % body_subtreemass.shape[0]
 
   com = xipos_in[worldid, 0] * body_mass[worldid % body_mass.shape[0], 0]
@@ -1036,8 +1000,10 @@ def inert_com(
   )
 
 
-@wp.kernel
+@fusion.stage("nworld", "nbody")
 def _cinert(
+  worldid: int,
+  bodyid: int,
   # Model:
   body_rootid: wp.array[int],
   body_mass: wp.array2d[float],
@@ -1049,7 +1015,6 @@ def _cinert(
   # Data out:
   cinert_out: wp.array2d[vec10],
 ):
-  worldid, bodyid = wp.tid()
   mat = math.quat_to_mat(xiquat_in[worldid, bodyid])
   inert = body_inertia[worldid % body_inertia.shape[0], bodyid]
   mass = body_mass[worldid % body_mass.shape[0], bodyid]
@@ -1057,8 +1022,10 @@ def _cinert(
   cinert_out[worldid, bodyid] = inert_com(mass, inert, mat, dif)
 
 
-@wp.kernel
+@fusion.stage("nworld", "njnt")
 def _cdof(
+  worldid: int,
+  jntid: int,
   # Model:
   body_rootid: wp.array[int],
   jnt_type: wp.array[int],
@@ -1072,7 +1039,6 @@ def _cdof(
   # Data out:
   cdof_out: wp.array2d[wp.spatial_vector],
 ):
-  worldid, jntid = wp.tid()
   bodyid = jnt_bodyid[jntid]
   dofid = jnt_dofadr[jntid]
   jnt_type_ = jnt_type[jntid]
@@ -1110,13 +1076,9 @@ def com_pos(m: Model, d: Data):
   positions over each subtree, divides by total mass, and computes composite inertias and motion
   degrees of freedom in the subtree CoM frame.
   """
-  wp.launch(
-    _subtree_com,
-    dim=(d.nworld, m.nbody),
-    inputs=[m.body_mass, m.body_subtreemass, m.body_subtreenum, d.xipos],
-    outputs=[d.subtree_com],
-  )
+  fusion.launch(m, d, _subtree_com)
   if m.nbody > 1 and m.body_tree[1].shape[0] > WORLD_SUM_BLOCK:
+    fusion.flush()
     wp.launch_tiled(
       _subtree_com_world_tiled,
       dim=d.nworld,
@@ -1125,28 +1087,14 @@ def com_pos(m: Model, d: Data):
       block_dim=WORLD_SUM_BLOCK,
     )
   else:
-    wp.launch(
-      _subtree_com_world,
-      dim=d.nworld,
-      inputs=[m.nbody, m.body_mass, m.body_subtreemass, m.body_subtreenum, d.xipos, d.subtree_com],
-      outputs=[d.subtree_com],
-    )
-  wp.launch(
-    _cinert,
-    dim=(d.nworld, m.nbody),
-    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.xiquat, d.subtree_com],
-    outputs=[d.cinert],
-  )
-  wp.launch(
-    _cdof,
-    dim=(d.nworld, m.njnt),
-    inputs=[m.body_rootid, m.jnt_type, m.jnt_dofadr, m.jnt_bodyid, d.xquat, d.xanchor, d.xaxis, d.subtree_com],
-    outputs=[d.cdof],
-  )
+    fusion.launch(m, d, _subtree_com_world)
+  fusion.launch(m, d, _cinert, _cdof)
 
 
-@wp.kernel
+@fusion.stage("nworld", "ncam")
 def _cam_local_to_global(
+  worldid: int,
+  camid: int,
   # Model:
   cam_mode: wp.array[int],
   cam_bodyid: wp.array[int],
@@ -1164,7 +1112,6 @@ def _cam_local_to_global(
   cam_xpos_out: wp.array2d[wp.vec3],
   cam_xmat_out: wp.array2d[wp.mat33],
 ):
-  worldid, camid = wp.tid()
   cam_pos_id = worldid % cam_pos.shape[0]
   cam_quat_id = worldid % cam_quat.shape[0]
   is_target_cam = (cam_mode[camid] == CamLightType.TARGETBODY) or (cam_mode[camid] == CamLightType.TARGETBODYCOM)
@@ -1212,8 +1159,10 @@ def _cam_local_to_global(
     cam_xmat_out[worldid, camid] = math.quat_to_mat(math.mul_quat(xquat, cam_quat[cam_quat_id, camid]))
 
 
-@wp.kernel
+@fusion.stage("nworld", "nlight")
 def _light_local_to_global(
+  worldid: int,
+  lightid: int,
   # Model:
   light_mode: wp.array[int],
   light_bodyid: wp.array[int],
@@ -1231,7 +1180,6 @@ def _light_local_to_global(
   light_xpos_out: wp.array2d[wp.vec3],
   light_xdir_out: wp.array2d[wp.vec3],
 ):
-  worldid, lightid = wp.tid()
   light_pos_id = worldid % light_pos.shape[0]
   light_dir_id = worldid % light_dir.shape[0]
   is_target_light = (light_mode[lightid] == CamLightType.TARGETBODY) or (light_mode[lightid] == CamLightType.TARGETBODYCOM)
@@ -1278,42 +1226,7 @@ def camlight(m: Model, d: Data):
   Updates the global positions and orientations for all cameras and lights in the model,
   including special handling for tracking and target modes.
   """
-  wp.launch(
-    _cam_local_to_global,
-    dim=(d.nworld, m.ncam),
-    inputs=[
-      m.cam_mode,
-      m.cam_bodyid,
-      m.cam_targetbodyid,
-      m.cam_pos,
-      m.cam_quat,
-      m.cam_poscom0,
-      m.cam_pos0,
-      m.cam_mat0,
-      d.xpos,
-      d.xquat,
-      d.subtree_com,
-    ],
-    outputs=[d.cam_xpos, d.cam_xmat],
-  )
-  wp.launch(
-    _light_local_to_global,
-    dim=(d.nworld, m.nlight),
-    inputs=[
-      m.light_mode,
-      m.light_bodyid,
-      m.light_targetbodyid,
-      m.light_pos,
-      m.light_dir,
-      m.light_poscom0,
-      m.light_pos0,
-      m.light_dir0,
-      d.xpos,
-      d.xquat,
-      d.subtree_com,
-    ],
-    outputs=[d.light_xpos, d.light_xdir],
-  )
+  fusion.launch(m, d, _cam_local_to_global, _light_local_to_global)
 
 
 @cache_kernel
