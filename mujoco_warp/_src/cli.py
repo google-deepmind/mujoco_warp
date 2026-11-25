@@ -25,6 +25,7 @@ from absl import flags
 from etils import epath
 
 import mujoco_warp as mjw
+from mujoco_warp._src import fusion
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import load_trajectory
 from mujoco_warp._src.io import override_model
@@ -101,8 +102,10 @@ def load_model(path: epath.Path) -> mujoco.MjModel:
   return mjm
 
 
-@wp.kernel
+@fusion.stage("nworld", "nu")
 def _ctrl_noise(
+  worldid: int,
+  actid: int,
   # Model:
   opt_timestep: wp.array[float],
   actuator_ctrllimited: wp.array[bool],
@@ -117,8 +120,6 @@ def _ctrl_noise(
   # Data out:
   ctrl_out: wp.array2d[float],
 ):
-  worldid, actid = wp.tid()
-
   # convert rate and scale to discrete time (Ornstein-Uhlenbeck)
   rate = wp.exp(-opt_timestep[worldid % opt_timestep.shape[0]] / ctrlnoiserate)
   scale = ctrlnoisestd * wp.sqrt(1.0 - rate * rate)
@@ -278,20 +279,8 @@ def unroll(
         with wp.ScopedStream(wp.get_stream()):
           if ctrls is not None:
             center = wp.array(ctrls[i], dtype=wp.float32)
-            wp.launch(
-              _ctrl_noise,
-              dim=(d.nworld, m.nu),
-              inputs=[
-                m.opt.timestep,
-                m.actuator_ctrllimited,
-                m.actuator_ctrlrange,
-                d.ctrl,
-                center,
-                i,
-                NOISE_STD.value,
-                NOISE_RATE.value,
-              ],
-              outputs=[d.ctrl],
+            fusion.launch(
+              m, d, _ctrl_noise, ctrl_center=center, step=i, ctrlnoisestd=NOISE_STD.value, ctrlnoiserate=NOISE_RATE.value
             )
             wp.synchronize()
 

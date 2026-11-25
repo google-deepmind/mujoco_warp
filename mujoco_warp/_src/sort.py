@@ -19,6 +19,7 @@ from typing import Callable
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src import types
 from mujoco_warp._src.warp_util import cache_kernel
 
@@ -406,8 +407,9 @@ def _contact_bucket(worldid: int, nbucket: int) -> int:
   return wp.clamp(worldid + 1, 0, nbucket - 1)
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _contact_buckets(
+  conid: int,
   # Data in:
   contact_worldid_in: wp.array[int],
   nacon_in: wp.array[int],
@@ -415,7 +417,6 @@ def _contact_buckets(
   count_out: wp.array[int],
   slot_out: wp.array[int],
 ):
-  conid = wp.tid()
   if conid >= wp.min(nacon_in[0], slot_out.shape[0]):
     return
   bucket = _contact_bucket(contact_worldid_in[conid], count_out.shape[0])
@@ -424,8 +425,9 @@ def _contact_buckets(
   slot_out[conid] = wp.atomic_add(count_out, bucket, 1)  # kernel_analyzer: ignore[atomic]
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _contact_group(
+  conid: int,
   # Data in:
   contact_worldid_in: wp.array[int],
   nacon_in: wp.array[int],
@@ -438,7 +440,6 @@ def _contact_group(
   rows_out: _ContactRows,
 ):
   """Copy the contacts of each world next to each other, in no particular order."""
-  conid = wp.tid()
   if conid >= wp.min(nacon_in[0], slot_in.shape[0]):
     return
   target = offset_in[_contact_bucket(contact_worldid_in[conid], offset_in.shape[0])] + slot_in[conid]
@@ -446,8 +447,9 @@ def _contact_group(
   _move_contact(rows_in, conid, target, rows_out)
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _contact_place(
+  slot: int,
   # Data in:
   nacon_in: wp.array[int],
   # In:
@@ -460,7 +462,6 @@ def _contact_place(
   rows_out: _ContactRows,
 ):
   """Move each grouped contact to its canonical position: after the contacts that precede it."""
-  slot = wp.tid()
   if slot >= wp.min(nacon_in[0], source_in.shape[0]):
     return
   bucket = _contact_bucket(keys_in.worldid[slot], offset_in.shape[0])
@@ -479,8 +480,9 @@ def _contact_place(
   _move_contact(rows_in, slot, rank, rows_out)
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _contact_gather(
+  conid: int,
   # Data in:
   nacon_in: wp.array[int],
   # In:
@@ -489,13 +491,13 @@ def _contact_gather(
   # Out:
   rows_out: _ContactRows,
 ):
-  conid = wp.tid()
   if conid < wp.min(nacon_in[0], order_in.shape[1]):
     _move_contact(rows_in, order_in[0, conid], conid, rows_out)
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _contact_restore(
+  conid: int,
   # Data in:
   nacon_in: wp.array[int],
   # In:
@@ -503,7 +505,6 @@ def _contact_restore(
   # Out:
   rows_out: _ContactRows,
 ):
-  conid = wp.tid()
   if conid < wp.min(nacon_in[0], rows_in.worldid.shape[0]):
     _move_contact(rows_in, conid, conid, rows_out)
 
@@ -529,8 +530,9 @@ def _constraint_count(
   return count
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _contact_unsorted(
+  conid: int,
   # Data in:
   nacon_in: wp.array[int],
   # In:
@@ -542,14 +544,14 @@ def _contact_unsorted(
 
   The count stays zero for a buffer in canonical order, which has no contact left to sort.
   """
-  conid = wp.tid()
   if conid > 0 and conid < wp.min(nacon_in[0], keys_in.worldid.shape[0]):
     if _contact_less(keys_in, 0, conid, conid - 1):
       unsorted_out[0] = nacon_in[0]
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _contact_row_rank(
+  conid: int,
   # Model:
   opt_cone: int,
   # Data in:
@@ -570,7 +572,6 @@ def _contact_row_rank(
   rank_out: wp.array[int],
 ):
   """Canonical order of each contact among the contacts of its world that have constraint rows."""
-  conid = wp.tid()
   ncon = wp.min(nacon_in[0], rank_out.shape[0])
   if conid >= ncon:
     return
@@ -844,8 +845,9 @@ def _remap_friction(
     dof_frictionadr_out[worldid, dofid] = inverse_in[worldid, row]
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _sparse_offsets(
+  worldid: int,
   # Data in:
   efc_J_rownnz_in: wp.array2d[int],
   # In:
@@ -855,7 +857,6 @@ def _sparse_offsets(
   offsets_out: wp.array2d[int],
   nnz_out: wp.array[int],
 ):
-  worldid = wp.tid()
   offset = int(0)
   offsets_out[worldid, 0] = 0
   # Scan assembled rows within each world, not the (possibly interleaved) contact buffer.
@@ -984,12 +985,12 @@ def permutation(
   unused = wp.empty((0, 0), dtype=int)
   width = _rank_width(count.size, capacity)
   last = inverse if inverse is not None and width >= capacity else unused
-  wp.launch(_rank(compare), dim=shape, inputs=[count, keys, width], outputs=[order, last])
+  fusion.launch_kernel(_rank(compare), dim=shape, inputs=[count, keys, width], outputs=[order, last])
   if width < capacity:
     scratch = wp.empty_like(order)
     while width < capacity:
       last = inverse if inverse is not None and 2 * width >= capacity else unused
-      wp.launch(_merge(compare), dim=shape, inputs=[count, keys, order, width], outputs=[scratch, last])
+      fusion.launch_kernel(_merge(compare), dim=shape, inputs=[count, keys, order, width], outputs=[scratch, last])
       order, scratch = scratch, order
       width *= 2
   return order
@@ -1099,24 +1100,24 @@ def contacts(d: types.Data):
     offset = wp.empty(d.nworld + 2, dtype=int)
     slot = wp.empty(d.naconmax, dtype=int)
     source = wp.empty(d.naconmax, dtype=int)
-    wp.launch(_contact_buckets, dim=d.naconmax, inputs=[d.contact.worldid, d.nacon], outputs=[count, slot])
-    wp.utils.array_scan(count, offset, False)
-    wp.launch(
-      _contact_group,
-      dim=d.naconmax,
-      inputs=[d.contact.worldid, d.nacon, offset, slot, rows],
-      outputs=[source, copy_rows],
-    )
-    wp.launch(
+    fusion.launch(None, d, _contact_buckets, count_out=count, slot_out=slot)
+    fusion.call(wp.utils.array_scan, count, offset, False, reads=(count,), writes=(offset,))
+    fusion.launch(None, d, _contact_group, offset_in=offset, slot_in=slot, rows_in=rows, source_out=source, rows_out=copy_rows)
+    fusion.launch(
+      None,
+      d,
       _contact_place,
-      dim=d.naconmax,
-      inputs=[d.nacon, _contact_keys(copy_rows), offset, count, source, copy_rows],
-      outputs=[rows],
+      keys_in=_contact_keys(copy_rows),
+      offset_in=offset,
+      count_in=count,
+      source_in=source,
+      rows_in=copy_rows,
+      rows_out=rows,
     )
   else:
     order = contact_permutation(d)
-    wp.launch(_contact_gather, dim=d.naconmax, inputs=[d.nacon, order, rows], outputs=[copy_rows])
-    wp.launch(_contact_restore, dim=d.naconmax, inputs=[d.nacon, copy_rows], outputs=[rows])
+    fusion.launch(None, d, _contact_gather, order_in=order, rows_in=rows, rows_out=copy_rows)
+    fusion.launch(None, d, _contact_restore, rows_in=copy_rows, rows_out=rows)
 
 
 def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
@@ -1132,34 +1133,15 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
   if d.contact.efc_address.size:
     contact_keys = _contact_keys(d.contact)
     unsorted = wp.zeros(1, dtype=int)
-    wp.launch(_contact_unsorted, dim=d.naconmax, inputs=[d.nacon, contact_keys], outputs=[unsorted])
+    fusion.launch(m, d, _contact_unsorted, keys_in=contact_keys, unsorted_out=unsorted)
     if d.njmax <= _ROW_RANK_NJMAX:
-      wp.launch(
-        _contact_row_rank,
-        dim=d.naconmax,
-        inputs=[
-          m.opt.cone,
-          d.nefc,
-          d.contact.dim,
-          d.contact.efc_address,
-          d.contact.worldid,
-          d.efc.type,
-          d.efc.id,
-          d.njmax,
-          d.njmax_nnz,
-          d.nacon,
-          contact_keys,
-          nnz,
-          unsorted,
-        ],
-        outputs=[rank],
-      )
+      fusion.launch(m, d, _contact_row_rank, keys_in=contact_keys, nnz_in=nnz, unsorted_in=unsorted, rank_out=rank)
     else:
       # The position of each contact in the canonical order of the buffer. The passes sort the
       # unsorted count: none of a buffer in canonical order, whose contacts keep their index.
       permutation(unsorted, d.naconmax, contact_keys, _contact_less, rank.reshape((1, d.naconmax)))
   else:
-    rank.fill_(-1)
+    fusion.fill(rank, -1)
   keys = _ConstraintKeys()
   keys.primary = wp.empty(shape, dtype=wp.vec4i)
   keys.J = d.efc.J.view(wp.uint32)
@@ -1173,7 +1155,7 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
   keys.aref = d.efc.aref.view(wp.uint32)
   keys.frictionloss = d.efc.frictionloss.view(wp.uint32)
   keys.nv = m.nv
-  wp.launch(
+  fusion.launch_kernel(
     _constraint_primary,
     dim=shape,
     inputs=[
@@ -1196,13 +1178,13 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
   )
   inverse = wp.empty(shape, dtype=int)
   order = permutation(count, d.njmax, keys, _constraint_less, inverse)
-  wp.launch(
+  fusion.launch_kernel(
     _remap_contacts,
     dim=d.contact.efc_address.shape,
     inputs=[d.contact.efc_address, d.contact.worldid, d.nacon, count, inverse],
     outputs=[d.contact.efc_address],
   )
-  wp.launch(
+  fusion.launch_kernel(
     _remap_friction,
     dim=d.dof_frictionadr.shape,
     inputs=[d.nf, d.dof_frictionadr, count, inverse],
@@ -1233,31 +1215,33 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
   # the count of a world hold zero, and so does a last row that ends the scan.
   scan = m.is_sparse and d.nworld * d.njmax_nnz < _SCAN_MAX
   rownnz = wp.zeros((d.nworld + 1, d.njmax), dtype=int) if scan else unused
-  wp.launch(_constraint_gather, dim=shape, inputs=[d.efc.J_rownnz, count, order, rows], outputs=[ints, floats, rownnz])
+  fusion.launch_kernel(
+    _constraint_gather, dim=shape, inputs=[d.efc.J_rownnz, count, order, rows], outputs=[ints, floats, rownnz]
+  )
 
   if m.is_sparse:
     # The nonzeros are packed in the new row order, so they move through a copy as well.
     if scan:
       offsets = wp.empty_like(rownnz)
       total = wp.empty(0, dtype=int)
-      wp.utils.array_scan(rownnz.reshape(-1), offsets.reshape(-1), False)
+      fusion.call(wp.utils.array_scan, rownnz.reshape(-1), offsets.reshape(-1), False, reads=(rownnz,), writes=(offsets,))
     else:
       offsets = wp.empty(shape, dtype=int)
       total = wp.empty(d.nworld, dtype=int)
-      wp.launch(_sparse_offsets, dim=d.nworld, inputs=[d.efc.J_rownnz, count, order], outputs=[offsets, total])
+      fusion.launch(m, d, _sparse_offsets, count_in=count, order_in=order, offsets_out=offsets, nnz_out=total)
     chunks = (d.nworld, (d.njmax_nnz + _CHUNK - 1) // _CHUNK)
     colind = d.efc.J_colind.reshape((d.nworld, d.njmax_nnz))
     J = d.efc.J.reshape((d.nworld, d.njmax_nnz))
     colind_sorted = wp.empty_like(colind)
     J_sorted = wp.empty_like(J)
-    wp.launch(
+    fusion.launch_kernel(
       _sparse_move,
       dim=chunks,
       inputs=[d.efc.J_rowadr, count, order, offsets, total, colind, J, False],
       outputs=[colind_sorted, J_sorted],
     )
     # Before the rows take their new addresses.
-    wp.launch(
+    fusion.launch_kernel(
       _sparse_move,
       dim=chunks,
       inputs=[d.efc.J_rowadr, count, order, offsets, total, colind_sorted, J_sorted, True],
@@ -1270,7 +1254,7 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
       block_order = permutation(nblock, d.njmax, block_keys, _block_less)
       adr = wp.empty(shape, dtype=int)
       nrow = wp.empty(shape, dtype=int)
-      wp.launch(
+      fusion.launch_kernel(
         _block_gather,
         dim=shape,
         inputs=[d.efc.jtdaj_adr, d.efc.jtdaj_nrow, nblock, block_order, inverse],
@@ -1280,13 +1264,13 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
     J = row_view(d.efc.J, d.nworld, d.efc.J.shape[1])
     J_sorted = wp.empty_like(J)
     chunks = (d.nworld, d.njmax, (J.shape[2] + _CHUNK - 1) // _CHUNK)
-    wp.launch(_gather, dim=chunks, inputs=[count, order, J], outputs=[J_sorted])
+    fusion.launch_kernel(_gather, dim=chunks, inputs=[count, order, J], outputs=[J_sorted])
 
-  wp.launch(
+  fusion.launch_kernel(
     _constraint_unpack,
     dim=shape,
     inputs=[count, order, ints, floats, offsets, nblock, adr, nrow],
     outputs=[d.efc.jtdaj_adr, d.efc.jtdaj_nrow, d.efc.J_rowadr, rows],
   )
   if not m.is_sparse and d.efc.J.size:
-    wp.launch(_restore, dim=chunks, inputs=[count, order, J_sorted], outputs=[J])
+    fusion.launch_kernel(_restore, dim=chunks, inputs=[count, order, J_sorted], outputs=[J])

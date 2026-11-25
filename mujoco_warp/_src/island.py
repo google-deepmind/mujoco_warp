@@ -17,6 +17,7 @@ from typing import Tuple
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src import passive
 from mujoco_warp._src import support
 from mujoco_warp._src import types
@@ -113,8 +114,10 @@ def _union_tendon_trees(
       _dsu_union(island_parent_out, worldid, tree1, tree2, tree_island_out)
 
 
-@wp.kernel
+@fusion.stage("nworld", "ntree")
 def _reset_dsu(
+  worldid: int,
+  treeid: int,
   # Data out:
   nisland_out: wp.array[int],
   tree_island_out: wp.array2d[int],
@@ -122,7 +125,6 @@ def _reset_dsu(
   island_parent_out: wp.array2d[int],
 ):
   """Reset identity parents and active/output markers in parallel."""
-  worldid, treeid = wp.tid()
   island_parent_out[worldid, treeid] = treeid
   tree_island_out[worldid, treeid] = -1
   if treeid == 0:
@@ -262,8 +264,10 @@ def _flex_contact_bodies(
   return bodies0, bodies1
 
 
-@wp.kernel
+@fusion.stage("nworld", "nflex")
 def _flex_island_dsu(
+  worldid: int,
+  f: int,
   # Model:
   opt_enableflags: int,
   body_treeid: wp.array[int],
@@ -291,7 +295,6 @@ def _flex_island_dsu(
   island_parent_out: wp.array2d[int],
 ):
   """Unions awake dynamic trees of each metric-coupled flex (vertices, nodes, twist joints)."""
-  worldid, f = wp.tid()
   if not flex_eff_possible[f]:
     return
   if nefc_in[worldid] == 0 and not sleep_metric_flex:
@@ -325,8 +328,9 @@ def _flex_island_dsu(
         _dsu_union(island_parent_out, worldid, tree1, tree2, tree_island_out)
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _passive_contact_island_dsu(
+  cid: int,
   # Model:
   opt_enableflags: int,
   body_treeid: wp.array[int],
@@ -372,7 +376,6 @@ def _passive_contact_island_dsu(
   island_parent_out: wp.array2d[int],
 ):
   """Unions awake dynamic trees coupled by passive flex contacts under the discrete integrator."""
-  cid = wp.tid()
   if cid >= nacon_in[0]:
     return
   if (contact_type_in[cid] & int(types.ContactType.PASSIVE)) == 0:
@@ -427,8 +430,10 @@ def _passive_contact_island_dsu(
       _dsu_union(island_parent_out, worldid, tree1, tree2, tree_island_out)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nidx")
 def _island_dsu_metric_couplings(
+  worldid: int,
+  idx: int,
   # Model:
   nactuator: int,
   ntendon: int,
@@ -457,7 +462,6 @@ def _island_dsu_metric_couplings(
   # Out:
   island_parent_out: wp.array2d[int],
 ):
-  worldid, idx = wp.tid()
   if nefc_in[worldid] == 0:
     return
 
@@ -753,87 +757,17 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
   max_chunks = max(1, -(-d.njmax // _DSU_MIN_CHUNK))
   nchunk = min(max(1, -(-_DSU_TARGET_BLOCKS // d.nworld)), max_chunks)
   chunk_size = -(-d.njmax // nchunk)
-  wp.launch(
-    _reset_dsu,
-    dim=(d.nworld, m.ntree),
-    inputs=[d.nisland, d.tree_island, island_parent],
-  )
+  fusion.launch(m, d, _reset_dsu, island_parent_out=island_parent)
   if m.nflex > 0:
     has_passive = not ((m.opt.disableflags & types.DisableBit.SPRING) and (m.opt.disableflags & types.DisableBit.DAMPER))
     sleep_metric_flex = (
       bool(m.opt.enableflags & types.EnableBit.SLEEP) and m.opt.integrator == types.IntegratorType.DISCRETE and has_passive
     )
-    wp.launch(
-      _flex_island_dsu,
-      dim=(d.nworld, m.nflex),
-      inputs=[
-        m.opt.enableflags,
-        m.body_treeid,
-        m.jnt_bodyid,
-        m.flex_interp,
-        m.flex_nodeadr,
-        m.flex_nodenum,
-        m.flex_vertadr,
-        m.flex_vertnum,
-        m.flex_nodebodyid,
-        m.flex_vertbodyid,
-        m.flex_rod_has_twist,
-        m.flex_eff_possible,
-        m.flex_rod_edgeadr,
-        m.flex_rod_edgenum,
-        m.flex_rodedge_jnt,
-        d.nefc,
-        d.tree_awake,
-        sleep_metric_flex,
-      ],
-      outputs=[d.tree_island, island_parent],
-    )
+    fusion.launch(m, d, _flex_island_dsu, sleep_metric_flex=sleep_metric_flex, island_parent_out=island_parent)
     if m.opt.integrator == types.IntegratorType.DISCRETE and passive.flex_passive_contact(m):
-      wp.launch(
-        _passive_contact_island_dsu,
-        dim=d.naconmax,
-        inputs=[
-          m.opt.enableflags,
-          m.body_treeid,
-          m.jnt_bodyid,
-          m.geom_bodyid,
-          m.flex_dim,
-          m.flex_interp,
-          m.flex_cellnum,
-          m.flex_celladr,
-          m.flex_nodeadr,
-          m.flex_vertadr,
-          m.flex_elemadr,
-          m.flex_elemnum,
-          m.flex_elemdataadr,
-          m.flex_nodebodyid,
-          m.flex_vertbodyid,
-          m.flex_cellempty,
-          m.flex_elem,
-          m.flex_vert0,
-          m.flex_rod_has_twist,
-          m.flex_rod_edgeadr,
-          m.flex_rod_edgenum,
-          m.flex_rodedge_jnt,
-          m.flex_elem_rodedge,
-          m.flex_vert_rodelem,
-          d.nefc,
-          d.flexvert_xpos,
-          d.tree_awake,
-          d.contact.pos,
-          d.contact.geom,
-          d.contact.flex,
-          d.contact.elem,
-          d.contact.vert,
-          d.contact.worldid,
-          d.contact.type,
-          d.nacon,
-          sleep_metric_flex,
-        ],
-        outputs=[d.tree_island, island_parent],
-      )
+      fusion.launch(m, d, _passive_contact_island_dsu, sleep_metric_flex=sleep_metric_flex, island_parent_out=island_parent)
 
-  wp.launch_tiled(
+  fusion.launch_tiled(
     _island_dsu,
     dim=(d.nworld, nchunk),
     inputs=[
@@ -892,35 +826,10 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
     block_dim=types.BlockDim.island_dsu,
   )
   if m.opt.integrator == IntegratorType.DISCRETE and (m.has_tendon_stiffness or m.has_tendon_damping or m.has_efm_actuator):
-    wp.launch(
-      _island_dsu_metric_couplings,
-      dim=(d.nworld, max(m.ntendon, m.nactuator)),
-      inputs=[
-        m.nactuator,
-        m.ntendon,
-        m.opt.disableflags,
-        m.opt.enableflags,
-        m.body_treeid,
-        m.dof_treeid,
-        m.site_bodyid,
-        m.tendon_actuatorid,
-        m.ten_J_rownnz,
-        m.ten_J_rowadr,
-        m.ten_J_colind,
-        m.tendon_stiffness,
-        m.tendon_stiffnesspoly,
-        m.tendon_damping,
-        m.tendon_dampingpoly,
-        m.actuator_trntype,
-        m.actuator_gaintype,
-        m.actuator_biastype,
-        m.actuator_trnid,
-        d.nefc,
-        d.tree_awake,
-      ],
-      outputs=[d.tree_island, island_parent],
+    fusion.launch(
+      m, d, _island_dsu_metric_couplings, dim=(d.nworld, max(m.ntendon, m.nactuator)), island_parent_out=island_parent
     )
-  wp.launch(
+  fusion.launch_kernel(
     _finalize_dsu,
     dim=d.nworld,
     inputs=[m.ntree, island_parent],
@@ -928,13 +837,13 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
   )
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _zero_island_counts(
+  worldid: int,
   # Data out:
   nisland_out: wp.array[int],
   nidof_out: wp.array[int],
 ):
-  worldid = wp.tid()
   nisland_out[worldid] = 0
   nidof_out[worldid] = 0
 
@@ -943,18 +852,16 @@ def _zero_island_counts(
 def island(m: types.Model, d: types.Data):
   """Discover constraint islands."""
   if m.ntree == 0:
-    wp.launch(
-      _zero_island_counts,
-      dim=d.nworld,
-      outputs=[d.nisland, d.nidof],
-    )
+    fusion.launch(m, d, _zero_island_counts)
     return
 
   direct_dsu(m, d, wp.empty((d.nworld, m.ntree), dtype=int))
 
 
-@wp.kernel
+@fusion.stage("nworld", "nv")
 def _island_count_dofs(
+  worldid: int,
+  dofid: int,
   # Model:
   dof_treeid: wp.array[int],
   # Data in:
@@ -963,16 +870,15 @@ def _island_count_dofs(
   dof_island_out: wp.array2d[int],
   island_nv_out: wp.array2d[int],
 ):
-  worldid, dofid = wp.tid()
-
   island_id = tree_island_in[worldid, dof_treeid[dofid]]
   dof_island_out[worldid, dofid] = island_id
   if island_id >= 0:
     wp.atomic_add(island_nv_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _island_scan_sizes(
+  worldid: int,
   # Data in:
   nisland_in: wp.array[int],
   island_nv_in: wp.array2d[int],
@@ -982,8 +888,6 @@ def _island_scan_sizes(
   island_nefc_out: wp.array2d[int],
   island_iefcadr_out: wp.array2d[int],
 ):
-  worldid = wp.tid()
-
   nisland = nisland_in[worldid]
   if nisland == 0:
     nidof_out[worldid] = 0
@@ -1004,8 +908,10 @@ def _island_scan_sizes(
     island_nefc_out[worldid, i] = 0
 
 
-@wp.kernel
+@fusion.stage("nworld", "nv")
 def _island_map_dofs(
+  worldid: int,
+  dofid: int,
   # Model:
   dof_treeid: wp.array[int],
   tree_dofadr: wp.array[int],
@@ -1028,8 +934,6 @@ def _island_map_dofs(
   carrying the same label. That closed form makes the ascending order reproducible
   without a serial per-world scan.
   """
-  worldid, dofid = wp.tid()
-
   tree = dof_treeid[dofid]
   island_id = tree_island_in[worldid, tree]
 
@@ -1050,8 +954,10 @@ def _island_map_dofs(
   map_idof2dof_out[worldid, idof] = dofid
 
 
-@wp.kernel
+@fusion.stage("nworld", "ntree")
 def _island_map_constraints(
+  worldid: int,
+  islandid: int,
   # Data in:
   nefc_in: wp.array[int],
   nisland_in: wp.array[int],
@@ -1075,7 +981,6 @@ def _island_map_constraints(
   ascending scan stays serial per island (and therefore reproducible) while different
   islands and worlds advance in parallel.
   """
-  worldid, islandid = wp.tid()
   if islandid >= nisland_in[worldid]:
     return
 
@@ -1111,8 +1016,10 @@ def _island_map_constraints(
   island_nefc_out[worldid, islandid] = ne_mapped + nf_mapped + nother_mapped
 
 
-@wp.kernel
+@fusion.stage("nworld", "njmax")
 def _island_count_constraints(
+  worldid: int,
+  efcid: int,
   # Model:
   nv: int,
   body_treeid: wp.array[int],
@@ -1169,8 +1076,6 @@ def _island_count_constraints(
   island_nf_out: wp.array2d[int],
 ):
   """Compute the first non-negative tree for each constraint and count constraints per island."""
-  worldid, efcid = wp.tid()
-
   if efcid >= wp.min(njmax_in, nefc_in[worldid]):
     return
 
@@ -1312,8 +1217,10 @@ def _island_count_constraints(
       wp.atomic_add(island_nf_out, worldid, island_id, 1)  # kernel_analyzer: ignore[atomic]
 
 
-@wp.kernel
+@fusion.stage("nworld", "ntree")
 def _init_island_arrays(
+  worldid: int,
+  islandid: int,
   # Model:
   nv: int,
   # Data out:
@@ -1326,7 +1233,6 @@ def _init_island_arrays(
   island_nf_out: wp.array2d[int],
   island_iefcadr_out: wp.array2d[int],
 ):
-  worldid, islandid = wp.tid()
   island_dofadr_out[worldid, islandid] = nv
   island_nv_out[worldid, islandid] = 0
   island_nefc_out[worldid, islandid] = 0
@@ -1338,8 +1244,10 @@ def _init_island_arrays(
     nidof_out[worldid] = 0
 
 
-@wp.kernel
+@fusion.stage("nworld", "nv")
 def _init_dof_arrays(
+  worldid: int,
+  dofid: int,
   # Data out:
   dof_island_out: wp.array2d[int],
   map_dof2idof_out: wp.array2d[int],
@@ -1347,15 +1255,16 @@ def _init_dof_arrays(
   # Out:
   idof_islandid_out: wp.array2d[int],
 ):
-  worldid, dofid = wp.tid()
   dof_island_out[worldid, dofid] = -1
   map_dof2idof_out[worldid, dofid] = 0
   map_idof2dof_out[worldid, dofid] = 0
   idof_islandid_out[worldid, dofid] = -1
 
 
-@wp.kernel
+@fusion.stage("nworld", "njmax")
 def _init_efc_arrays(
+  worldid: int,
+  efcid: int,
   # Data out:
   efc_island_out: wp.array2d[int],
   map_efc2iefc_out: wp.array2d[int],
@@ -1363,7 +1272,6 @@ def _init_efc_arrays(
   # Out:
   iefc_islandid_out: wp.array2d[int],
 ):
-  worldid, efcid = wp.tid()
   efc_island_out[worldid, efcid] = -1
   map_efc2iefc_out[worldid, efcid] = 0
   map_iefc2efc_out[worldid, efcid] = 0
@@ -1391,121 +1299,24 @@ def compute_island_mapping(m: types.Model, d: types.Data):
   if d.island_idofadr.shape[1] != m.ntree:
     d.island_idofadr = wp.empty((d.nworld, m.ntree), dtype=int)
 
-  wp.launch(
-    _init_island_arrays,
-    dim=(d.nworld, m.ntree),
-    inputs=[m.nv],
-    outputs=[
-      d.nidof,
-      d.island_dofadr,
-      d.island_idofadr,
-      d.island_nv,
-      d.island_nefc,
-      d.island_ne,
-      d.island_nf,
-      d.island_iefcadr,
-    ],
-  )
-  wp.launch(
-    _init_dof_arrays,
-    dim=(d.nworld, m.nv),
-    inputs=[],
-    outputs=[d.dof_island, d.map_dof2idof, d.map_idof2dof, d.dof_islandid],
-  )
-  wp.launch(
-    _init_efc_arrays,
-    dim=(d.nworld, d.njmax),
-    inputs=[],
-    outputs=[d.efc.island, d.map_efc2iefc, d.map_iefc2efc, d.efc_islandid],
-  )
+  fusion.launch(m, d, _init_island_arrays)
+  fusion.launch(m, d, _init_dof_arrays, idof_islandid_out=d.dof_islandid)
+  fusion.launch(m, d, _init_efc_arrays, iefc_islandid_out=d.efc_islandid)
 
   # Count DOFs per island
-  wp.launch(
-    _island_count_dofs,
-    dim=(d.nworld, m.nv),
-    inputs=[m.dof_treeid, d.tree_island],
-    outputs=[d.dof_island, d.island_nv],
-  )
+  fusion.launch(m, d, _island_count_dofs)
 
   # Count Constraints per island
-  wp.launch(
-    _island_count_constraints,
-    dim=(d.nworld, d.njmax),
-    inputs=[
-      m.nv,
-      m.body_treeid,
-      m.jnt_dofadr,
-      m.jnt_bodyid,
-      m.dof_treeid,
-      m.geom_bodyid,
-      m.site_bodyid,
-      m.flex_dim,
-      m.flex_interp,
-      m.flex_cellnum,
-      m.flex_celladr,
-      m.flex_nodeadr,
-      m.flex_vertadr,
-      m.flex_elemadr,
-      m.flex_elemnum,
-      m.flex_elemdataadr,
-      m.flex_nodebodyid,
-      m.flex_vertbodyid,
-      m.flex_cellempty,
-      m.flex_elem,
-      m.flex_vert0,
-      m.eq_type,
-      m.eq_obj1id,
-      m.eq_obj2id,
-      m.eq_objtype,
-      m.is_sparse,
-      m.flex_rod_has_twist,
-      m.flex_rod_edgeadr,
-      m.flex_rod_edgenum,
-      m.flex_rodedge_jnt,
-      m.flex_elem_rodedge,
-      m.flex_vert_rodelem,
-      d.nefc,
-      d.flexvert_xpos,
-      d.contact.pos,
-      d.contact.geom,
-      d.contact.flex,
-      d.contact.elem,
-      d.contact.vert,
-      d.efc.type,
-      d.efc.id,
-      d.efc.J_rownnz,
-      d.efc.J_rowadr,
-      d.efc.J_colind,
-      d.efc.J,
-      d.tree_island,
-      d.njmax,
-    ],
-    outputs=[d.efc.island, d.island_nefc, d.island_ne, d.island_nf],
-  )
+  fusion.launch(m, d, _island_count_constraints)
 
   # 3. Scan sizes and reset counters for mapping
-  wp.launch(
-    _island_scan_sizes,
-    dim=d.nworld,
-    inputs=[d.nisland, d.island_nv],
-    outputs=[d.nidof, d.island_idofadr, d.island_nefc, d.island_iefcadr],
-  )
+  fusion.launch(m, d, _island_scan_sizes)
 
   # 4. Map DOFs
-  wp.launch(
-    _island_map_dofs,
-    dim=(d.nworld, m.nv),
-    inputs=[m.dof_treeid, m.tree_dofadr, m.tree_dofnum, d.nidof, d.tree_island, d.island_idofadr],
-    outputs=[d.island_dofadr, d.map_dof2idof, d.map_idof2dof, d.dof_islandid],
-  )
+  fusion.launch(m, d, _island_map_dofs, idof_islandid_out=d.dof_islandid)
 
   # 5. Map Constraints
-  wp.launch(
-    _island_map_constraints,
-    dim=(d.nworld, m.ntree),
-    inputs=[d.nefc, d.nisland, d.efc.type, d.efc.island, d.island_ne, d.island_nf, d.island_iefcadr, d.njmax],
-    outputs=[d.island_nefc, d.map_efc2iefc, d.map_iefc2efc, d.efc_islandid],
-  )
+  fusion.launch(m, d, _island_map_constraints, iefc_islandid_out=d.efc_islandid)
 
 
 # Active-DOF compaction (nvmax < nv).
@@ -1516,8 +1327,10 @@ def compute_island_mapping(m: types.Model, d: types.Data):
 # size nvmax instead of nv. This is the active-set analog of compute_island_mapping.
 
 
-@wp.kernel
+@fusion.stage("nworld", "nidx")
 def _reset_compact_maps(
+  worldid: int,
+  idx: int,
   # Model:
   nv: int,
   # Data in:
@@ -1526,7 +1339,6 @@ def _reset_compact_maps(
   dof_cdof_out: wp.array2d[int],
   cdof_dof_out: wp.array2d[int],
 ):
-  worldid, idx = wp.tid()
   if idx < nv:
     dof_cdof_out[worldid, idx] = -1
   # cdof_dof is nvmax_pad-wide: clear the whole row so the padded tail [ncdof, nvmax_pad)
@@ -1537,8 +1349,9 @@ def _reset_compact_maps(
 
 @cache_kernel
 def _compact_dofs_builder(warn_overflow: int):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld")
   def _compact_dofs(
+    worldid: int,
     # Model:
     ntree: int,
     tree_dofadr: wp.array[int],
@@ -1552,7 +1365,6 @@ def _compact_dofs_builder(warn_overflow: int):
     cdof_dof_out: wp.array2d[int],
     overflow_out: wp.array[int],
   ):
-    worldid = wp.tid()
     count = int(0)
     for t in range(ntree):
       if tree_awake_in[worldid, t] == 1:
@@ -1585,15 +1397,5 @@ def _compact_dofs_builder(warn_overflow: int):
 @event_scope
 def update_active_dofs(m: types.Model, d: types.Data):
   """Rebuild the compaction maps (dof_cdof / cdof_dof) from tree_awake."""
-  wp.launch(
-    _reset_compact_maps,
-    dim=(d.nworld, max(m.nv, d.nvmax_pad)),
-    inputs=[m.nv, d.nvmax_pad],
-    outputs=[d.dof_cdof, d.cdof_dof],
-  )
-  wp.launch(
-    _compact_dofs_builder(int(m.opt.warn_overflow)),
-    dim=(d.nworld,),
-    inputs=[m.ntree, m.tree_dofadr, m.tree_dofnum, d.tree_awake, d.nvmax],
-    outputs=[d.ncdof, d.dof_cdof, d.cdof_dof, d.overflow],
-  )
+  fusion.launch(m, d, _reset_compact_maps, dim=(d.nworld, max(m.nv, d.nvmax_pad)))
+  fusion.launch(m, d, _compact_dofs_builder(int(m.opt.warn_overflow)))

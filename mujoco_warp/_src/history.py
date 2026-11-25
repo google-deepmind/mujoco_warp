@@ -17,6 +17,7 @@ from typing import Optional, Union
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import CtrlChart
 from mujoco_warp._src.types import Data
@@ -360,8 +361,10 @@ def _history_insert_vector(
     buf_out[worldid, values_offset + slot_phys * dim + d] = src[worldid, src_adr + d]
 
 
-@wp.kernel
+@fusion.stage("nworld", "nactuator")
 def _read_ctrl_delayed_kernel(
+  worldid: int,
+  uid: int,
   # Model:
   actuator_ctrladr: wp.array[int],
   actuator_ctrlnum: wp.array[int],
@@ -376,8 +379,6 @@ def _read_ctrl_delayed_kernel(
   ctrl_out: wp.array2d[float],
 ):
   """Read delayed ctrl for each actuator."""
-  worldid, uid = wp.tid()
-
   ctrlnum = actuator_ctrlnum[uid]
   if ctrlnum == 0:
     return
@@ -408,8 +409,10 @@ def _read_ctrl_delayed_kernel(
     )
 
 
-@wp.kernel
+@fusion.stage("nworld", "nactuator")
 def _insert_ctrl_history_kernel(
+  worldid: int,
+  uid: int,
   # Model:
   actuator_ctrladr: wp.array[int],
   actuator_ctrlnum: wp.array[int],
@@ -422,8 +425,6 @@ def _insert_ctrl_history_kernel(
   history_out: wp.array2d[float],
 ):
   """Insert current ctrl into history buffers."""
-  worldid, uid = wp.tid()
-
   ctrlnum = actuator_ctrlnum[uid]
   if ctrlnum == 0:
     return
@@ -439,8 +440,10 @@ def _insert_ctrl_history_kernel(
   _history_insert_vector(worldid, buf_offset, nsample, ctrlnum, t, ctrl_in, uadr, history_out)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nidx")
 def _insert_sensor_history_stage(
+  worldid: int,
+  idx: int,
   # Model:
   sensor_dim: wp.array[int],
   sensor_adr: wp.array[int],
@@ -457,7 +460,6 @@ def _insert_sensor_history_stage(
   history_out: wp.array2d[float],
 ):
   """Insert current sensor values into history buffers for specific sensor IDs."""
-  worldid, idx = wp.tid()
   sid = sensor_ids[idx]
 
   hist = sensor_history[worldid % sensor_history.shape[0], sid]
@@ -483,8 +485,10 @@ def _insert_sensor_history_stage(
     _history_insert_vector(worldid, buf_offset, nsample, dim, t, sensordata_in, sensor_adr[sid], history_out)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nidx")
 def _apply_sensor_delay_kernel(
+  worldid: int,
+  idx: int,
   # Model:
   sensor_dim: wp.array[int],
   sensor_adr: wp.array[int],
@@ -505,7 +509,6 @@ def _apply_sensor_delay_kernel(
   TODO(team): Revisit always-compute decision for computationally expensive sensors
   with interval/period (e.g., raytracers)
   """
-  worldid, idx = wp.tid()
   sid = sensor_ids[idx]
 
   hist = sensor_history[worldid % sensor_history.shape[0], sid]
@@ -554,8 +557,10 @@ def _apply_sensor_delay_kernel(
       # else: interval condition satisfied, keep computed value
 
 
-@wp.kernel
+@fusion.stage("nworld", "nactuator")
 def _reset_actuator_history_kernel(
+  worldid: int,
+  uid: int,
   # Model:
   opt_timestep: wp.array[float],
   actuator_gaintype: wp.array[int],
@@ -569,7 +574,6 @@ def _reset_actuator_history_kernel(
   history_out: wp.array2d[float],
 ):
   """Reset actuator history buffers to initial state matching MuJoCo C."""
-  worldid, uid = wp.tid()
   if reset_in.shape[0] > 0 and not reset_in[worldid]:
     return
 
@@ -601,8 +605,10 @@ def _reset_actuator_history_kernel(
       history_out[worldid, values_offset + 4 * j] = 1.0
 
 
-@wp.kernel
+@fusion.stage("nworld", "nsensor")
 def _reset_sensor_history_kernel(
+  worldid: int,
+  sid: int,
   # Model:
   opt_timestep: wp.array[float],
   sensor_dim: wp.array[int],
@@ -615,7 +621,6 @@ def _reset_sensor_history_kernel(
   history_out: wp.array2d[float],
 ):
   """Reset sensor history buffers to initial state matching MuJoCo C."""
-  worldid, sid = wp.tid()
   if reset_in.shape[0] > 0 and not reset_in[worldid]:
     return
 
@@ -687,57 +692,18 @@ def reset_history(
 
   reset_in = reset if reset is not None else wp.empty(0, dtype=bool)
 
-  wp.launch(
-    _reset_actuator_history_kernel,
-    dim=(d.nworld, m.nactuator),
-    inputs=[
-      m.opt.timestep,
-      m.actuator_gaintype,
-      m.actuator_ctrlnum,
-      m.actuator_ctrlspec,
-      m.actuator_history,
-      m.actuator_historyadr,
-      reset_in,
-    ],
-    outputs=[d.history],
-  )
+  fusion.launch(m, d, _reset_actuator_history_kernel, reset_in=reset_in)
 
-  wp.launch(
-    _reset_sensor_history_kernel,
-    dim=(d.nworld, m.nsensor),
-    inputs=[
-      m.opt.timestep,
-      m.sensor_dim,
-      m.sensor_history,
-      m.sensor_historyadr,
-      m.sensor_interval,
-      reset_in,
-    ],
-    outputs=[d.history],
-  )
+  fusion.launch(m, d, _reset_sensor_history_kernel, reset_in=reset_in)
 
 
 def read_ctrl_delayed(m: Model, d: Data, ctrl: wp.array2d[float]):
   """Read delayed ctrl values for all actuators."""
   if m.nhistory == 0:
-    wp.copy(ctrl, d.ctrl)
+    fusion.copy(ctrl, d.ctrl)
     return
 
-  wp.launch(
-    _read_ctrl_delayed_kernel,
-    dim=(d.nworld, m.nactuator),
-    inputs=[
-      m.actuator_ctrladr,
-      m.actuator_ctrlnum,
-      m.actuator_history,
-      m.actuator_historyadr,
-      m.actuator_delay,
-      d.time,
-      d.history,
-      d.ctrl,
-    ],
-    outputs=[ctrl],
-  )
+  fusion.launch(m, d, _read_ctrl_delayed_kernel, ctrl_out=ctrl)
 
 
 def insert_ctrl_history(m: Model, d: Data):
@@ -745,19 +711,7 @@ def insert_ctrl_history(m: Model, d: Data):
   if m.nhistory == 0 or m.nactuator == 0:
     return
 
-  wp.launch(
-    _insert_ctrl_history_kernel,
-    dim=(d.nworld, m.nactuator),
-    inputs=[
-      m.actuator_ctrladr,
-      m.actuator_ctrlnum,
-      m.actuator_history,
-      m.actuator_historyadr,
-      d.time,
-      d.ctrl,
-    ],
-    outputs=[d.history],
-  )
+  fusion.launch(m, d, _insert_ctrl_history_kernel)
 
 
 def apply_sensor_delay(m: Model, d: Data, sensorid: wp.array[int]):
@@ -772,47 +726,20 @@ def apply_sensor_delay(m: Model, d: Data, sensorid: wp.array[int]):
 
   # Save fresh sensordata before delay overwrite
   fresh_sensordata = wp.empty_like(d.sensordata)
-  wp.copy(fresh_sensordata, d.sensordata)
+  fusion.copy(fresh_sensordata, d.sensordata)
 
   # Read delayed values from buffer → overwrite sensordata
-  wp.launch(
-    _apply_sensor_delay_kernel,
-    dim=(d.nworld, sensorid.shape[0]),
-    inputs=[
-      m.sensor_dim,
-      m.sensor_adr,
-      m.sensor_history,
-      m.sensor_historyadr,
-      m.sensor_delay,
-      m.sensor_interval,
-      d.time,
-      d.history,
-      sensorid,
-    ],
-    outputs=[d.sensordata],
-  )
+  fusion.launch(m, d, _apply_sensor_delay_kernel, dim=(d.nworld, sensorid.shape[0]), sensor_ids=sensorid)
 
   # Insert saved fresh sensor values into history buffers
-  wp.launch(
-    _insert_sensor_history_stage,
-    dim=(d.nworld, sensorid.shape[0]),
-    inputs=[
-      m.sensor_dim,
-      m.sensor_adr,
-      m.sensor_history,
-      m.sensor_historyadr,
-      m.sensor_delay,
-      m.sensor_interval,
-      d.time,
-      fresh_sensordata,
-      sensorid,
-    ],
-    outputs=[d.history],
+  fusion.launch(
+    m, d, _insert_sensor_history_stage, dim=(d.nworld, sensorid.shape[0]), sensordata_in=fresh_sensordata, sensor_ids=sensorid
   )
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _read_ctrl_kernel(
+  worldid: int,
   # Model:
   actuator_ctrladr: wp.array[int],
   actuator_ctrlnum: wp.array[int],
@@ -830,8 +757,6 @@ def _read_ctrl_kernel(
   result_out: wp.array2d[float],
 ):
   """Read delayed ctrl for 1 actuator across all worlds."""
-  worldid = wp.tid()
-
   hist = actuator_history[worldid % actuator_history.shape[0], uid]
   nsample = hist[0]
   dim = actuator_ctrlnum[uid]
@@ -879,27 +804,12 @@ def read_ctrl(
     result: output buffer (nworld, dim) or (nworld,) if dim == 1.
   """
   result_out = result.reshape((d.nworld, 1)) if result.ndim == 1 else result
-  wp.launch(
-    _read_ctrl_kernel,
-    dim=(d.nworld,),
-    inputs=[
-      m.actuator_ctrladr,
-      m.actuator_ctrlnum,
-      m.actuator_history,
-      m.actuator_historyadr,
-      m.actuator_delay,
-      time,
-      d.history,
-      d.ctrl,
-      ctrlid,
-      interp,
-    ],
-    outputs=[result_out],
-  )
+  fusion.launch(m, d, _read_ctrl_kernel, time_in=time, uid=ctrlid, interp=interp, result_out=result_out)
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _read_sensor_kernel(
+  worldid: int,
   # Model:
   sensor_dim: wp.array[int],
   sensor_adr: wp.array[int],
@@ -917,8 +827,6 @@ def _read_sensor_kernel(
   result_out: wp.array2d[float],
 ):
   """Read delayed sensor for 1 sensor across all worlds."""
-  worldid = wp.tid()
-
   hist = sensor_history[worldid % sensor_history.shape[0], sid]
   nsample = hist[0]
   dim = sensor_dim[sid]
@@ -965,27 +873,12 @@ def read_sensor(
     interp: interpolation mode (-1=model default, 0=ZOH, 1=linear, 2=cubic).
     result: output buffer (nworld, dim).
   """
-  wp.launch(
-    _read_sensor_kernel,
-    dim=(d.nworld,),
-    inputs=[
-      m.sensor_dim,
-      m.sensor_adr,
-      m.sensor_history,
-      m.sensor_historyadr,
-      m.sensor_delay,
-      time,
-      d.history,
-      d.sensordata,
-      sensorid,
-      interp,
-    ],
-    outputs=[result],
-  )
+  fusion.launch(m, d, _read_sensor_kernel, time_in=time, sid=sensorid, interp=interp, result_out=result)
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _init_ctrl_history_kernel(
+  worldid: int,
   # Model:
   actuator_ctrlnum: wp.array[int],
   actuator_history: wp.array2d[wp.vec2i],
@@ -999,8 +892,6 @@ def _init_ctrl_history_kernel(
   history_out: wp.array2d[float],
 ):
   """Initialize history buffer for 1 actuator across all worlds."""
-  worldid = wp.tid()
-
   nsample = actuator_history[worldid % actuator_history.shape[0], ctrlid][0]
   dim = actuator_ctrlnum[ctrlid]
   buf_offset = actuator_historyadr[worldid % actuator_historyadr.shape[0], ctrlid]
@@ -1076,24 +967,12 @@ def init_ctrl_history(
   if times is None:
     times = wp.empty(0, dtype=float)
 
-  wp.launch(
-    _init_ctrl_history_kernel,
-    dim=(d.nworld,),
-    inputs=[
-      m.actuator_ctrlnum,
-      m.actuator_history,
-      m.actuator_historyadr,
-      ctrlid,
-      times,
-      values,
-      has_times,
-    ],
-    outputs=[d.history],
-  )
+  fusion.launch(m, d, _init_ctrl_history_kernel, ctrlid=ctrlid, times=times, values=values, has_times=has_times)
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _init_sensor_history_kernel(
+  worldid: int,
   # Model:
   sensor_dim: wp.array[int],
   sensor_history: wp.array2d[wp.vec2i],
@@ -1109,8 +988,6 @@ def _init_sensor_history_kernel(
   history_out: wp.array2d[float],
 ):
   """Initialize history buffer for 1 sensor across all worlds."""
-  worldid = wp.tid()
-
   nsample = sensor_history[worldid % sensor_history.shape[0], sensorid][0]
   dim = sensor_dim[sensorid]
   buf_offset = sensor_historyadr[worldid % sensor_historyadr.shape[0], sensorid]
@@ -1197,19 +1074,14 @@ def init_sensor_history(
     has_phase = 1
     phase_arr = wp.full(d.nworld, float(phase), dtype=float)
 
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _init_sensor_history_kernel,
-    dim=(d.nworld,),
-    inputs=[
-      m.sensor_dim,
-      m.sensor_history,
-      m.sensor_historyadr,
-      sensorid,
-      times,
-      values,
-      phase_arr,
-      has_phase,
-      has_times,
-    ],
-    outputs=[d.history],
+    sensorid=sensorid,
+    times=times,
+    values=values,
+    phase=phase_arr,
+    has_phase=has_phase,
+    has_times=has_times,
   )

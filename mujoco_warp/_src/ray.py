@@ -17,6 +17,7 @@ from typing import Tuple
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.types import MJ_MAXVAL
@@ -1257,7 +1258,7 @@ def ray(
     geomgroup = vec6(-1, -1, -1, -1, -1, -1)
 
   ray_bodyexclude = wp.empty(1, dtype=int)
-  ray_bodyexclude.fill_(bodyexclude)
+  fusion.fill(ray_bodyexclude, bodyexclude)
   ray_dist = wp.empty((d.nworld, 1), dtype=float)
   ray_geomid = wp.empty((d.nworld, 1), dtype=int)
   ray_normal = wp.empty((d.nworld, 1), dtype=wp.vec3)
@@ -1309,7 +1310,7 @@ def rays(
   assert normal.shape == (d.nworld, pnt.shape[1]), f"normal shape {normal.shape} != {(d.nworld, pnt.shape[1])}"
   # TODO: Investigate building rc if none and removing the non-accelerated path
   if rc is None:
-    wp.launch_tiled(
+    fusion.launch_tiled(
       _ray,
       dim=(d.nworld, pnt.shape[1]),
       inputs=[
@@ -1347,7 +1348,7 @@ def rays(
       block_dim=m.block_dim.ray,
     )
   else:
-    wp.launch(
+    fusion.launch_kernel(
       _ray_bvh,
       dim=(d.nworld, pnt.shape[1]),
       inputs=[

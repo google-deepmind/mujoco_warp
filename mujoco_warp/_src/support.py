@@ -17,6 +17,7 @@ from typing import Optional, Tuple
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src import math
 from mujoco_warp._src.collision_primitive_core import tri_weights
 from mujoco_warp._src.math import motion_cross
@@ -916,8 +917,10 @@ def mul_m_indices(entry: wp.uint64):
 
 @cache_kernel
 def mul_m_kernel(check_skip: bool):
-  @wp.kernel(module="unique", grid_stride=False)
+  @fusion.stage("nworld", "nv", options={"default_grid_stride": False})
   def _mul_m(
+    worldid: int,
+    dofid: int,
     # Model:
     M_mulm_rowadr: wp.array[int],
     M_mulm_entry: wp.array[wp.uint64],
@@ -930,8 +933,6 @@ def mul_m_kernel(check_skip: bool):
     res: wp.array2d[float],
   ):
     """Sparse matmul: one thread per DOF, gather-based (no atomics)."""
-    worldid, dofid = wp.tid()
-
     if wp.static(check_skip):
       if skip[worldid]:
         return
@@ -951,8 +952,10 @@ def mul_m_kernel(check_skip: bool):
 
 @cache_kernel
 def mul_m_dense(nv: int, check_skip: bool):
-  @wp.kernel(module="unique", grid_stride=False)
+  @fusion.stage("nworld", "nv", options={"default_grid_stride": False})
   def _mul_m_dense(
+    worldid: int,
+    i: int,
     # Data in:
     M_in: wp.array3d[float],  # kernel_analyzer: ignore
     # In:
@@ -962,8 +965,6 @@ def mul_m_dense(nv: int, check_skip: bool):
     res: wp.array2d[float],
   ):
     """Dense matmul for the compact active-DOF inertia block (nworld, nv, nv)."""
-    worldid, i = wp.tid()
-
     if wp.static(check_skip):
       if skip[worldid]:
         return
@@ -1003,23 +1004,15 @@ def mul_m(
 
   if M.ndim == 3:
     # Dense compact active-DOF block (nworld, nv, nv) used by the compact solver.
-    wp.launch(
-      mul_m_dense(m.nv, check_skip),
-      dim=(d.nworld, m.nv),
-      inputs=[M, vec, skip],
-      outputs=[res],
-    )
+    fusion.launch(m, d, mul_m_dense(m.nv, check_skip), M_in=M, vec=vec, skip=skip, res=res)
   else:
-    wp.launch(
-      mul_m_kernel(check_skip),
-      dim=(d.nworld, m.nv),
-      inputs=[m.M_mulm_rowadr, m.M_mulm_entry, M, vec, skip],
-      outputs=[res],
-    )
+    fusion.launch(m, d, mul_m_kernel(check_skip), M_in=M, vec=vec, skip=skip, res=res)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nv")
 def _apply_ft_gather(
+  worldid: int,
+  dofid: int,
   # Model:
   body_rootid: wp.array[int],
   dof_bodyid: wp.array[int],
@@ -1034,7 +1027,6 @@ def _apply_ft_gather(
   # Out:
   qfrc_out: wp.array2d[float],
 ):
-  worldid, dofid = wp.tid()
   cdof = cdof_in[worldid, dofid]
   rotational_cdof = wp.vec3(cdof[0], cdof[1], cdof[2])
   jac = wp.spatial_vector(cdof[3], cdof[4], cdof[5], cdof[0], cdof[1], cdof[2])
@@ -1065,8 +1057,10 @@ def _apply_ft_scatter(nv: int, deterministic: bool = False):
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = nv
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nbody", options={**module_options})
   def kernel(
+    worldid: int,
+    bodyid: int,
     # Model:
     body_rootid: wp.array[int],
     body_weldid: wp.array[int],
@@ -1082,8 +1076,6 @@ def _apply_ft_scatter(nv: int, deterministic: bool = False):
     # Out:
     qfrc_out: wp.array2d[float],
   ):
-    worldid, bodyid = wp.tid()
-
     # J' ft over the ancestor dofs of bodies with a wrench
     ft = ft_in[worldid, bodyid]
     if ft == wp.spatial_vector():
@@ -1113,24 +1105,14 @@ def apply_ft(
   """Maps body wrenches ft to dof space; sparse: most wrenches are zero."""
   if not sparse:
     # dense wrenches: a thread per dof gathers its subtree
-    wp.launch(
-      _apply_ft_gather,
-      dim=(d.nworld, m.nv),
-      inputs=[m.body_rootid, m.dof_bodyid, m.body_subtreenum, d.xipos, d.subtree_com, d.cdof, ft, flg_add],
-      outputs=[qfrc],
-    )
+    fusion.launch(m, d, _apply_ft_gather, ft_in=ft, flg_add=flg_add, qfrc_out=qfrc)
     return
 
   # sparse wrenches: a thread per body scatters to its ancestor dofs, zero wrenches cost one load
   if not flg_add:
-    qfrc.zero_()
+    fusion.zero(qfrc)
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  wp.launch(
-    _apply_ft_scatter(m.nv if det_atomics else 0, det_atomics),
-    dim=(d.nworld, m.nbody),
-    inputs=[m.body_rootid, m.body_weldid, m.body_dofnum, m.body_dofadr, m.dof_parentid, d.xipos, d.subtree_com, d.cdof, ft],
-    outputs=[qfrc],
-  )
+  fusion.launch(m, d, _apply_ft_scatter(m.nv if det_atomics else 0, det_atomics), ft_in=ft, qfrc_out=qfrc)
 
 
 @event_scope
@@ -1220,8 +1202,9 @@ def contact_force_fn(
   return force
 
 
-@wp.kernel
+@fusion.stage("size")
 def contact_force_kernel(
+  tid: int,
   # Model:
   opt_cone: int,
   # Data in:
@@ -1240,8 +1223,6 @@ def contact_force_kernel(
   # Out:
   out: wp.array[wp.spatial_vector],
 ):
-  tid = wp.tid()
-
   contactid = contact_ids[tid]
 
   if contactid >= nacon_in[0]:
@@ -1275,24 +1256,8 @@ def contact_force(m: Model, d: Data, contact_ids: wp.array[int], to_world_frame:
     to_world_frame: If True, map force from contact to world frame.
     force: Contact forces.
   """
-  wp.launch(
-    contact_force_kernel,
-    dim=contact_ids.size,
-    inputs=[
-      m.opt.cone,
-      d.contact.frame,
-      d.contact.friction,
-      d.contact.dim,
-      d.contact.efc_address,
-      d.contact.worldid,
-      d.contact.adhesion,
-      d.efc.force,
-      d.njmax,
-      d.nacon,
-      contact_ids,
-      to_world_frame,
-    ],
-    outputs=[force],
+  fusion.launch(
+    m, d, contact_force_kernel, dim=contact_ids.size, contact_ids=contact_ids, to_world_frame=to_world_frame, out=force
   )
 
 
@@ -1357,8 +1322,10 @@ def jac_dof(
 
 @cache_kernel
 def _make_jac_kernel(has_jacp: bool, has_jacr: bool):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "nv", options={"default_grid_stride": False})
   def _jac(
+    worldid: int,
+    dofid: int,
     # Model:
     body_parentid: wp.array[int],
     body_rootid: wp.array[int],
@@ -1374,8 +1341,6 @@ def _make_jac_kernel(has_jacp: bool, has_jacr: bool):
     jacp_out: wp.array3d[float],
     jacr_out: wp.array3d[float],
   ):
-    worldid, dofid = wp.tid()
-
     jacp_val, jacr_val = jac_dof(
       body_parentid,
       body_rootid,
@@ -1426,12 +1391,7 @@ def jac(
   jacp_arr = jacp or wp.empty((0, 0, 0), dtype=float)
   jacr_arr = jacr or wp.empty((0, 0, 0), dtype=float)
 
-  wp.launch(
-    kernel,
-    dim=(d.nworld, m.nv),
-    inputs=[m.body_parentid, m.body_rootid, m.dof_bodyid, m.body_isdofancestor, d.subtree_com, d.cdof, point, body],
-    outputs=[jacp_arr, jacr_arr],
-  )
+  fusion.launch(m, d, kernel, point_in=point, bodyid_in=body, jacp_out=jacp_arr, jacr_out=jacr_arr)
 
 
 @wp.func
@@ -1622,7 +1582,7 @@ def get_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
             state_out[worldid, adr + j] = plastic_in[worldid, j]
           adr += nplastic
 
-  wp.launch(
+  fusion.launch_kernel(
     _get_state,
     dim=d.nworld,
     inputs=[
@@ -1796,7 +1756,7 @@ def set_state(m: Model, d: Data, state: wp.array2d[float], sig: int, active: Opt
             if flex_plasticadr[f] >= 0:
               flex_hessian_valid_out[worldid, f] = False
 
-  wp.launch(
+  fusion.launch_kernel(
     _set_state,
     dim=d.nworld,
     inputs=[

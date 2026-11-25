@@ -25,6 +25,7 @@ import mujoco_warp as mjwarp
 from mujoco_warp import ConeType
 from mujoco_warp import State
 from mujoco_warp import test_data
+from mujoco_warp._src import fusion
 from mujoco_warp._src import io
 from mujoco_warp._src import support
 from mujoco_warp._src.block_cholesky import create_blocked_cholesky_augmented_factorize_solve_func
@@ -635,17 +636,32 @@ class SupportTest(parameterized.TestCase):
       outputs=[tile_nz],
       block_dim=32,
     )
-    wp.launch(
+    fusion.launch(
+      None,
+      None,
       mjwarp._src.solver._symbolic_h_tile_cholesky(ntiles, False, False),
       dim=nworld,
-      inputs=[done, tile_nz, nefc, nefc],
-      outputs=[row_mask, col_mask, tile_is_diag],
+      ctx_done_in=done,
+      tile_nz_in=tile_nz,
+      quad_changed_count_in=nefc,
+      state_changed_count_in=nefc,
+      row_mask_out=row_mask,
+      col_mask_out=col_mask,
+      tile_is_diag_out=tile_is_diag,
     )
-    wp.launch(
+    fusion.launch(
+      None,
+      None,
       mjwarp._src.solver._prepare_h_rhs_work(tile_size, nv, False, False),
       dim=(nworld, nv_pad),
-      inputs=[done, grad, h, tile_is_diag, nefc, nefc],
-      outputs=[hfactor, rhs_work],
+      ctx_done_in=done,
+      ctx_grad_in=grad,
+      ctx_h_in=h,
+      tile_is_diag_in=tile_is_diag,
+      quad_changed_count_in=nefc,
+      state_changed_count_in=nefc,
+      ctx_hfactor_out=hfactor,
+      rhs_work_out=rhs_work,
     )
 
     if ntiles == 66:
@@ -743,11 +759,19 @@ class SupportTest(parameterized.TestCase):
     grad2_np[0, :nv] = b2
     grad2 = wp.array(grad2_np, dtype=float)
     zero_changed = wp.zeros(nworld, dtype=int)
-    wp.launch(
+    fusion.launch(
+      None,
+      None,
       mjwarp._src.solver._prepare_h_rhs_work(tile_size, nv, True, False),
       dim=(nworld, nv_pad),
-      inputs=[done, grad2, h, tile_is_diag, zero_changed, nefc],
-      outputs=[hfactor, rhs_work],
+      ctx_done_in=done,
+      ctx_grad_in=grad2,
+      ctx_h_in=h,
+      tile_is_diag_in=tile_is_diag,
+      quad_changed_count_in=zero_changed,
+      state_changed_count_in=nefc,
+      ctx_hfactor_out=hfactor,
+      rhs_work_out=rhs_work,
     )
     search_solve = wp.zeros((nworld, nv), dtype=float)
     sums_solve = wp.zeros(nworld, dtype=wp.vec2)

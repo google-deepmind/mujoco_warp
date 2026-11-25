@@ -35,6 +35,7 @@ from mujoco_warp import reset_history
 from mujoco_warp import set_state
 from mujoco_warp import step
 from mujoco_warp import test_data
+from mujoco_warp._src import fusion
 from mujoco_warp._src.history import _reset_actuator_history_kernel
 from mujoco_warp._src.history import read_ctrl_delayed
 
@@ -2077,19 +2078,19 @@ class BatchedDelayTest(parameterized.TestCase):
     history = wp.empty((nworld, nhistory), dtype=float)
     history.fill_(wp.inf)
 
-    wp.launch(
+    fusion.launch(
+      None,
+      None,
       _reset_actuator_history_kernel,
       dim=(nworld, nactuator),
-      inputs=[
-        opt_timestep,
-        actuator_gaintype,
-        actuator_ctrlnum,
-        actuator_ctrlspec,
-        actuator_history,
-        actuator_historyadr,
-        reset_in,
-      ],
-      outputs=[history],
+      opt_timestep=opt_timestep,
+      actuator_gaintype=actuator_gaintype,
+      actuator_ctrlnum=actuator_ctrlnum,
+      actuator_ctrlspec=actuator_ctrlspec,
+      actuator_history=actuator_history,
+      actuator_historyadr=actuator_historyadr,
+      reset_in=reset_in,
+      history_out=history,
     )
 
     hist_np = history.numpy()

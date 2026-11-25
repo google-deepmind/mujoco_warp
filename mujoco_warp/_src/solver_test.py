@@ -30,6 +30,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
+from mujoco_warp._src import fusion
 from mujoco_warp._src import island
 from mujoco_warp._src import solver
 from mujoco_warp._src import types
@@ -369,20 +370,23 @@ class SolverTest(parameterized.TestCase):
     done = wp.zeros(1, dtype=bool)
     overflow = wp.zeros(1, dtype=int)
 
-    wp.launch(
+    fusion.launch(
+      None,
+      None,
       solver._solve_done(types.OverflowType.NONE),
       dim=1,
-      inputs=[
-        wp.array([1.0e-6], dtype=float),
-        2,
-        wp.array([1.0], dtype=float),
-        wp.array([4.0e-12], dtype=float),
-        wp.array([1.0e-6], dtype=float),
-        wp.array([2.0e-6], dtype=float),
-        wp.array([1.0], dtype=float),
-        done,
-      ],
-      outputs=[solver_niter, overflow, nsolving, done],
+      opt_tolerance=wp.array([1.0e-6], dtype=float),
+      opt_iterations=2,
+      ctx_inertia_scale_in=wp.array([1.0], dtype=float),
+      ctx_grad_dot_in=wp.array([4.0e-12], dtype=float),
+      ctx_newton_decrement_in=wp.array([1.0e-6], dtype=float),
+      ctx_improvement_in=wp.array([2.0e-6], dtype=float),
+      ctx_alpha_in=wp.array([1.0], dtype=float),
+      ctx_done_in=done,
+      solver_niter_out=solver_niter,
+      overflow_out=overflow,
+      nsolving_out=nsolving,
+      ctx_done_out=done,
     )
 
     self.assertTrue(done.numpy()[0])
@@ -397,20 +401,23 @@ class SolverTest(parameterized.TestCase):
     done = wp.zeros(1, dtype=bool)
     overflow = wp.zeros(1, dtype=int)
 
-    wp.launch(
+    fusion.launch(
+      None,
+      None,
       solver._solve_done(types.OverflowType.NONE),
       dim=1,
-      inputs=[
-        wp.array([1.0e-6], dtype=float),
-        1,
-        wp.array([1.0], dtype=float),
-        wp.array([1.0], dtype=float),
-        wp.array([1.0], dtype=float),
-        wp.array([1.0], dtype=float),
-        wp.array([1.0], dtype=float),
-        done,
-      ],
-      outputs=[solver_niter, overflow, nsolving, done],
+      opt_tolerance=wp.array([1.0e-6], dtype=float),
+      opt_iterations=1,
+      ctx_inertia_scale_in=wp.array([1.0], dtype=float),
+      ctx_grad_dot_in=wp.array([1.0], dtype=float),
+      ctx_newton_decrement_in=wp.array([1.0], dtype=float),
+      ctx_improvement_in=wp.array([1.0], dtype=float),
+      ctx_alpha_in=wp.array([1.0], dtype=float),
+      ctx_done_in=done,
+      solver_niter_out=solver_niter,
+      overflow_out=overflow,
+      nsolving_out=nsolving,
+      ctx_done_out=done,
     )
 
     self.assertTrue(done.numpy()[0])
@@ -425,20 +432,23 @@ class SolverTest(parameterized.TestCase):
     done = wp.zeros(1, dtype=bool)
     overflow = wp.zeros(1, dtype=int)
 
-    wp.launch(
+    fusion.launch(
+      None,
+      None,
       solver._solve_done(types.OverflowType.NONE),
       dim=1,
-      inputs=[
-        wp.array([1.0e-6], dtype=float),
-        100,
-        wp.array([1.0], dtype=float),
-        wp.array([1.0], dtype=float),
-        wp.array([1.0], dtype=float),
-        wp.array([0.0], dtype=float),
-        wp.array([0.0], dtype=float),
-        done,
-      ],
-      outputs=[solver_niter, overflow, nsolving, done],
+      opt_tolerance=wp.array([1.0e-6], dtype=float),
+      opt_iterations=100,
+      ctx_inertia_scale_in=wp.array([1.0], dtype=float),
+      ctx_grad_dot_in=wp.array([1.0], dtype=float),
+      ctx_newton_decrement_in=wp.array([1.0], dtype=float),
+      ctx_improvement_in=wp.array([0.0], dtype=float),
+      ctx_alpha_in=wp.array([0.0], dtype=float),
+      ctx_done_in=done,
+      solver_niter_out=solver_niter,
+      overflow_out=overflow,
+      nsolving_out=nsolving,
+      ctx_done_out=done,
     )
 
     self.assertTrue(done.numpy()[0])
@@ -1643,11 +1653,13 @@ class SolverTest(parameterized.TestCase):
     fused_h = ctx.h.numpy().copy()
 
     ctx.done.fill_(False)
-    wp.launch(
+    fusion.launch(
+      m,
+      d,
       solver._update_gradient_init_h_sparse(False),
       dim=(d.nworld, m.nv_pad, solver._INIT_H_SECTOR),
-      inputs=[m.nv, m.M_elemid, d.nf, d.M, d.efc.D, d.efc.state, d.dof_frictionadr, d.cdof_dof, ctx.done],
-      outputs=[ctx.h],
+      ctx_done_in=ctx.done,
+      ctx_h_out=ctx.h,
     )
     jtdaj_kernel = solver._JTDACJ_sparse(False, ConeType.PYRAMIDAL, 3, m.block_dim.update_gradient_JTDAJ_sparse)
     groups_per_world = solver._jtdaj_groups_per_world(d.nworld, d.njmax, jtdaj_kernel)
@@ -1705,7 +1717,7 @@ class SolverTest(parameterized.TestCase):
     self.assertIs(occupancy_module, launch_module)
     self.assertEqual(len(kernel.module.execs), 1)
 
-    inc_kernel = solver._update_gradient_h_incremental_sparse(compact)
+    inc_kernel = fusion.kernel(solver._update_gradient_h_incremental_sparse(compact))
     solver._jtdaj_groups_per_world(1, 100, inc_kernel)
     occupancy_inc_module = inc_kernel.module.load(device)
     launch_inc_module = inc_kernel.module.load(device, block_dim=inc_kernel.module.options["block_dim"])
@@ -4126,24 +4138,16 @@ class CompactSolverTest(parameterized.TestCase):
       for nwords in (1, 2):
         col_mask = wp.zeros((nworld, ntiles, nwords), dtype=wp.uint64)
         offdiag = wp.zeros((nworld, ntiles), dtype=int)
-        wp.launch(
+        fusion.launch(
+          None,
+          d,
           solver._mark_h_tile_pattern_efc(nwords),
           dim=(nworld, d.njmax),
-          inputs=[
-            d.nefc,
-            d.contact.dim,
-            d.contact.efc_address,
-            d.efc.id,
-            d.efc.J_rownnz,
-            d.efc.J_rowadr,
-            d.efc.J_colind,
-            d.efc.J,
-            d.efc.state,
-            ctx.done,
-            d.nefc,
-            d.nefc,
-          ],
-          outputs=[col_mask, offdiag],
+          ctx_done_in=ctx.done,
+          quad_changed_count_in=d.nefc,
+          state_changed_count_in=d.nefc,
+          col_mask_out=col_mask,
+          tile_offdiag_out=offdiag,
         )
         marks.append((col_mask.numpy(), offdiag.numpy()))
       np.testing.assert_array_equal(marks[0][0][..., 0], marks[1][0][..., 0])

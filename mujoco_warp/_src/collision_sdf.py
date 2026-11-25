@@ -17,6 +17,7 @@ from typing import Tuple
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import contact_params
 from mujoco_warp._src.collision_core import geom_collision_pair
@@ -757,8 +758,9 @@ def gradient_descent(
   return dist, pos3, n
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _sdf_candidates(
+  collisionid: int,
   # Model:
   geom_type: wp.array[int],
   # Data in:
@@ -771,7 +773,6 @@ def _sdf_candidates(
   sdf_collisionid_out: wp.array[int],
 ):
   """Lists the collision candidates that involve an SDF geom."""
-  collisionid = wp.tid()
   if collisionid >= wp.min(ncollision_in[0], naconmax_in):
     return
   if geom_type[collision_pair_in[collisionid][1]] == GeomType.SDF:
@@ -779,8 +780,10 @@ def _sdf_candidates(
     sdf_collisionid_out[sdfid] = collisionid
 
 
-@wp.kernel
+@fusion.stage("nsdf", "ni")
 def _sdf_narrowphase(
+  sdfid: int,
+  i: int,
   # Model:
   nmeshface: int,
   oct_child: wp.array[vec8i],
@@ -858,7 +861,6 @@ def _sdf_narrowphase(
   nacon_out: wp.array[int],
 ):
   # a candidate's initial points are adjacent threads, so a warp works on one geom pair
-  sdfid, i = wp.tid()
   if sdfid >= nsdf_in[0]:
     return
   contact_tid = sdf_collisionid_in[sdfid]
@@ -1073,91 +1075,19 @@ def sdf_narrowphase(m: Model, d: Data, ctx: CollisionContext):
     prepare_sdf_context(d, ctx)
 
   # list the SDF candidates so that the threads of a warp do not wait for one candidate
-  ctx.nsdf.zero_()
-  wp.launch(
-    _sdf_candidates,
-    dim=d.naconmax,
-    inputs=[m.geom_type, d.naconmax, d.ncollision, ctx.collision_pair],
-    outputs=[ctx.nsdf, ctx.sdf_collisionid],
-  )
+  fusion.zero(ctx.nsdf)
+  fusion.launch(m, ctx, _sdf_candidates, dim=d.naconmax, naconmax_in=d.naconmax, ncollision_in=d.ncollision)
 
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _sdf_narrowphase,
     dim=(d.naconmax, m.opt.sdf_initpoints),
-    inputs=[
-      m.nmeshface,
-      m.oct_child,
-      m.oct_aabb,
-      m.oct_coeff,
-      m.geom_type,
-      m.geom_condim,
-      m.geom_dataid,
-      m.geom_priority,
-      m.geom_solmix,
-      m.geom_solref,
-      m.geom_solimp,
-      m.geom_size,
-      m.geom_aabb,
-      m.geom_friction,
-      m.geom_margin,
-      m.geom_gap,
-      m.geom_adhesion,
-      m.mesh_vertadr,
-      m.mesh_vertnum,
-      m.mesh_faceadr,
-      m.mesh_octadr,
-      m.mesh_graphadr,
-      m.mesh_vert,
-      m.mesh_face,
-      m.mesh_graph,
-      m.mesh_polynum,
-      m.mesh_polyadr,
-      m.mesh_polynormal,
-      m.mesh_polyvertadr,
-      m.mesh_polyvertnum,
-      m.mesh_polyvert,
-      m.mesh_polymapadr,
-      m.mesh_polymapnum,
-      m.mesh_polymap,
-      m.pair_dim,
-      m.pair_solref,
-      m.pair_solreffriction,
-      m.pair_solimp,
-      m.pair_margin,
-      m.pair_gap,
-      m.pair_adhesion,
-      m.pair_friction,
-      m.plugin,
-      m.plugin_attr,
-      m.geom_plugin_index,
-      d.geom_xpos,
-      d.geom_xquat,
-      d.naconmax,
-      ctx.collision_pair,
-      ctx.collision_pairid,
-      ctx.collision_worldid,
-      ctx.nsdf,
-      ctx.sdf_collisionid,
-      m.opt.sdf_iterations,
-      # initial line-search step; passed at launch so NVRTC 13.1+ cannot unroll the line search
-      2.0,
-    ],
-    outputs=[
-      d.contact.dist,
-      d.contact.pos,
-      d.contact.frame,
-      d.contact.includemargin,
-      d.contact.friction,
-      d.contact.solref,
-      d.contact.solreffriction,
-      d.contact.solimp,
-      d.contact.dim,
-      d.contact.geom,
-      d.contact.efc_address,
-      d.contact.worldid,
-      d.contact.type,
-      d.contact.geomcollisionid,
-      d.contact.adhesion,
-      d.nacon,
-    ],
+    collision_pair_in=ctx.collision_pair,
+    collision_pairid_in=ctx.collision_pairid,
+    collision_worldid_in=ctx.collision_worldid,
+    nsdf_in=ctx.nsdf,
+    sdf_collisionid_in=ctx.sdf_collisionid,
+    sdf_iterations=m.opt.sdf_iterations,
+    linesearch_alpha0=2.0,
   )

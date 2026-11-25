@@ -21,6 +21,7 @@ import mujoco
 import numpy as np
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src import math as mjmath
 from mujoco_warp._src import render_optix
 from mujoco_warp._src.types import MJ_MAXVAL
@@ -473,14 +474,14 @@ def _mesh_bvh_frame_area(
     areas_out[0] = total[0]
 
 
-@wp.kernel
+@fusion.stage("nv")
 def _rotate_mesh_verts(
+  vid: int,
   # In:
   rot: wp.mat33,
   # Out:
   verts_out: wp.array[wp.vec3],
 ):
-  vid = wp.tid()
   verts_out[vid] = rot * verts_out[vid]
 
 
@@ -523,7 +524,7 @@ def build_mesh_bvh(
     )
     areas_np = areas.numpy()[0]
     if float(areas_np[0]) / max(float(areas_np[1]), 1e-12) >= _REFRAME_MIN_GAIN:
-      wp.launch(_rotate_mesh_verts, dim=points.shape[0], inputs=[rot_wp], outputs=[points])
+      fusion.launch(None, None, _rotate_mesh_verts, dim=points.shape[0], rot=rot_wp, verts_out=points)
       bvh_rot = wp.mat33(np.ascontiguousarray(rot_m.T, dtype=np.float32))
       reframed = True
 
@@ -710,8 +711,10 @@ def accumulate_flex_vertex_normals(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nelem", options={**module_options})
   def kernel(
+    worldid: int,
+    elemid: int,
     # Model:
     nflex: int,
     flex_dim: wp.array[int],
@@ -726,8 +729,6 @@ def accumulate_flex_vertex_normals(deterministic: bool = False):
     flexvert_norm_out: wp.array2d[wp.vec3],
   ):
     """Accumulate per-vertex normals by summing adjacent face normals."""
-    worldid, elemid = wp.tid()
-
     for i in range(nflex):
       locid = elemid - flex_elemadr[i]
       if locid >= 0 and locid < flex_elemnum[i]:
@@ -1117,11 +1118,19 @@ def build_flex_bvh(
   flexvert_norm = wp.zeros((nworld, nflexvert), dtype=wp.vec3)
   flex_shell = wp.array(mjm.flex_shell, dtype=int)
 
-  wp.launch(
-    kernel=accumulate_flex_vertex_normals(deterministic),
+  fusion.launch(
+    mjm,
+    None,
+    accumulate_flex_vertex_normals(deterministic),
     dim=(nworld, mjm.nflexelem),
-    inputs=[mjm.nflex, flex_dim, flex_vertadr, flex_elemadr, flex_elemnum, flex_elemdataadr, flex_elem, flexvert_xpos],
-    outputs=[flexvert_norm],
+    flex_dim=flex_dim,
+    flex_vertadr=flex_vertadr,
+    flex_elemadr=flex_elemadr,
+    flex_elemnum=flex_elemnum,
+    flex_elemdataadr=flex_elemdataadr,
+    flex_elem=flex_elem,
+    flexvert_xpos_in=flexvert_xpos,
+    flexvert_norm_out=flexvert_norm,
   )
 
   wp.launch(
@@ -1204,20 +1213,12 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
   """Refit per-flex BVHs."""
   flexvert_norm = wp.zeros(d.flexvert_xpos.shape, dtype=wp.vec3)
 
-  wp.launch(
-    kernel=accumulate_flex_vertex_normals(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+  fusion.launch(
+    m,
+    d,
+    accumulate_flex_vertex_normals(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
     dim=(d.nworld, m.nflexelem),
-    inputs=[
-      m.nflex,
-      m.flex_dim,
-      m.flex_vertadr,
-      m.flex_elemadr,
-      m.flex_elemnum,
-      m.flex_elemdataadr,
-      m.flex_elem,
-      d.flexvert_xpos,
-    ],
-    outputs=[flexvert_norm],
+    flexvert_norm_out=flexvert_norm,
   )
 
   wp.launch(
@@ -1270,8 +1271,9 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
     mesh.refit()
 
 
-@wp.kernel
+@fusion.stage("nt")
 def _compute_splat_bounds(
+  tid: int,
   # In:
   splat_position: wp.array[wp.vec3],
   splat_rotation: wp.array[wp.quat],
@@ -1281,7 +1283,6 @@ def _compute_splat_bounds(
   lower_out: wp.array[wp.vec3],
   upper_out: wp.array[wp.vec3],
 ):
-  tid = wp.tid()
   pos = splat_position[tid]
   rot = splat_rotation[tid]
   scale = splat_scale[tid]
@@ -1332,11 +1333,17 @@ def build_splat_bvh(
   groups = wp.array(splat_group, dtype=int)
   lower = wp.empty(count, dtype=wp.vec3)
   upper = wp.empty(count, dtype=wp.vec3)
-  wp.launch(
+  fusion.launch(
+    None,
+    None,
     _compute_splat_bounds,
     dim=count,
-    inputs=[splat_position, splat_rotation, splat_scale, splat_rgba],
-    outputs=[lower, upper],
+    splat_position=splat_position,
+    splat_rotation=splat_rotation,
+    splat_scale=splat_scale,
+    splat_rgba=splat_rgba,
+    lower_out=lower,
+    upper_out=upper,
   )
 
   splat_bvh = wp.Bvh(lower, upper, groups=groups, constructor=constructor)
@@ -1355,10 +1362,5 @@ def build_splat_bvh(
 
 def refit_splat_bvh(rc: RenderContext):
   """Refits splat BVHs."""
-  wp.launch(
-    _compute_splat_bounds,
-    dim=rc.splat_count,
-    inputs=[rc.splat_position, rc.splat_rotation, rc.splat_scale, rc.splat_rgba],
-    outputs=[rc.splat_lower, rc.splat_upper],
-  )
+  fusion.launch(rc, None, _compute_splat_bounds, dim=rc.splat_count, lower_out=rc.splat_lower, upper_out=rc.splat_upper)
   rc.splat_bvh.refit()

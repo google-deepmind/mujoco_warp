@@ -17,6 +17,7 @@ from typing import Tuple
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_core import contact_margin_gap
@@ -1240,7 +1241,7 @@ def _ccd_grid_size(kernel, naconmax: int, device) -> int:
     # Warp forces CPU block_dim to 1 and has no CUDA occupancy information.
     return naconmax
 
-  block_size, min_grid_size = wp.get_suggested_block_size(kernel, device)
+  block_size, min_grid_size = wp.get_suggested_block_size(fusion.kernel(kernel), device)
   return max(1, min(naconmax, _CCD_OVERSUBSCRIBE_WAVES * block_size * min_grid_size))
 
 
@@ -1342,7 +1343,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
   if ctx.epa_vert is None:
     prepare_convex_context(m, d, ctx, collision_table)
 
-  ctx.nccd.zero_()
+  fusion.zero(ctx.nccd)
 
   # Contact outputs
   contact_outputs = [
@@ -1370,7 +1371,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
     g2 = geom_pair[1].value
     count, geomgeomid = _pair_count(g1, g2)
     if (g1 == GeomType.HFIELD or g2 == GeomType.HFIELD) and count:
-      wp.launch(
+      fusion.launch_kernel(
         ccd_hfield_kernel_builder(g1, g2, m.opt.ccd_iterations, epa_iterations, geomgeomid, int(m.opt.warn_overflow)),
         dim=d.naconmax,
         inputs=[
@@ -1451,7 +1452,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
         int(m.opt.warn_overflow),
       )
       ccd_grid = _ccd_grid_size(ccd_k, d.naconmax, d.ncollision.device)
-      wp.launch(
+      fusion.launch_kernel(
         ccd_k,
         dim=ccd_grid,
         block_dim=m.block_dim.convex_ccd,

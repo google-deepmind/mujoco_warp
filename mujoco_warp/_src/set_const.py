@@ -20,6 +20,7 @@ import warnings
 import numpy as np
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src import math as mjmath
 from mujoco_warp._src import smooth
 from mujoco_warp._src import types
@@ -30,14 +31,15 @@ wp.set_module_options({"default_grid_stride": False})
 
 # TODO: Update kernel_analyzer to support Model fields as outputs so it can be enabled here.
 # kernel_analyzer: off
-@wp.kernel
+@fusion.stage("nworld", "nbody")
 def _subtreemass(
+  worldid: int,
+  bodyid: int,
   body_subtreenum: wp.array[int],
   body_mass_in: wp.array2d[float],
   body_subtreemass_out: wp.array2d[float],
 ):
   """Sums body_mass over the subtree, the contiguous body range [b, b + body_subtreenum[b])."""
-  worldid, bodyid = wp.tid()
   body_mass_id = worldid % body_mass_in.shape[0]
   mass = float(0.0)
   for j in range(bodyid, bodyid + body_subtreenum[bodyid]):
@@ -45,43 +47,48 @@ def _subtreemass(
   body_subtreemass_out[worldid % body_subtreemass_out.shape[0], bodyid] = mass
 
 
-@wp.kernel
+@fusion.stage("nworld", "nq")
 def _copy_qpos0_to_qpos(
+  worldid: int,
+  i: int,
   qpos0: wp.array2d[float],
   qpos_out: wp.array2d[float],
 ):
-  worldid, i = wp.tid()
   qpos0_id = worldid % qpos0.shape[0]
   qpos_out[worldid, i] = qpos0[qpos0_id, i]
 
 
-@wp.kernel
+@fusion.stage("nworld", "nbody")
 def _copy_body_to_mocap(
+  worldid: int,
+  bodyid: int,
   body_mocapid: wp.array[int],
   body_pos: wp.array2d[wp.vec3],
   body_quat: wp.array2d[wp.quat],
   mocap_pos_out: wp.array2d[wp.vec3],
   mocap_quat_out: wp.array2d[wp.quat],
 ):
-  worldid, bodyid = wp.tid()
   mocapid = body_mocapid[bodyid]
   if mocapid >= 0:
     mocap_pos_out[worldid, mocapid] = body_pos[worldid % body_pos.shape[0], bodyid]
     mocap_quat_out[worldid, mocapid] = body_quat[worldid % body_quat.shape[0], bodyid]
 
 
-@wp.kernel
+@fusion.stage("nworld", "nten")
 def _copy_tendon_length0(
+  worldid: int,
+  tenid: int,
   ten_length_in: wp.array2d[float],
   tendon_length0_out: wp.array2d[float],
 ):
-  worldid, tenid = wp.tid()
   tendon_length0_id = worldid % tendon_length0_out.shape[0]
   tendon_length0_out[tendon_length0_id, tenid] = ten_length_in[worldid, tenid]
 
 
-@wp.kernel
+@fusion.stage("nworld", "neq")
 def _compute_eq_data0(
+  worldid: int,
+  eqid: int,
   # Model:
   eq_type: wp.array[int],
   eq_obj1id: wp.array[int],
@@ -98,8 +105,6 @@ def _compute_eq_data0(
   The anchor of connects in the second body, and the relative pose of welds which are marked in
   data[11] for it to be computed. Kinematics must have been evaluated at qpos0.
   """
-  worldid, eqid = wp.tid()
-
   if eq_objtype[eqid] != int(types.ObjType.BODY.value):
     return
 
@@ -140,8 +145,10 @@ def _compute_eq_data0(
     eq_data_out[eq_data_id, eqid] = data
 
 
-@wp.kernel
+@fusion.stage("nworld", "ngeom")
 def _compute_geom_bound(
+  worldid: int,
+  geomid: int,
   # Model:
   geom_type: wp.array[int],
   geom_dataid: wp.array2d[int],
@@ -156,7 +163,6 @@ def _compute_geom_bound(
   The size of a height field geom follows its height field. Mesh and SDF geoms keep the bounds of
   their mesh.
   """
-  worldid, geomid = wp.tid()
   gtype = geom_type[geomid]
   if gtype == int(types.GeomType.MESH.value) or gtype == int(types.GeomType.SDF.value):
     return
@@ -221,8 +227,10 @@ def _minv_entry(
   return Minv_in[worldid, Minv_block_adr[i] + (i - start) * tree_dofnum[treeid] + (j - start)]
 
 
-@wp.kernel
+@fusion.stage("nworld", "ndof")
 def _finalize_dof_invweight0(
+  worldid: int,
+  dofid: int,
   dof_jntid: wp.array[int],
   jnt_type: wp.array[int],
   jnt_dofadr: wp.array[int],
@@ -233,7 +241,6 @@ def _finalize_dof_invweight0(
   Minv_in: wp.array2d[float],
   dof_invweight0_out: wp.array2d[float],
 ):
-  worldid, dofid = wp.tid()
   jntid = dof_jntid[dofid]
   jtype = jnt_type[jntid]
   dofadr = jnt_dofadr[jntid]
@@ -254,8 +261,10 @@ def _finalize_dof_invweight0(
   dof_invweight0_out[worldid % dof_invweight0_out.shape[0], dofid] = avg / float(num)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nbody")
 def _compute_body_invweight0(
+  worldid: int,
+  bodyid: int,
   body_rootid: wp.array[int],
   body_weldid: wp.array[int],
   body_dofnum: wp.array[int],
@@ -271,7 +280,6 @@ def _compute_body_invweight0(
   Minv_in: wp.array2d[float],
   body_invweight0_out: wp.array2d[wp.vec2],
 ):
-  worldid, bodyid = wp.tid()
   body_invweight0_id = worldid % body_invweight0_out.shape[0]
 
   # World body and static bodies have zero invweight
@@ -330,8 +338,10 @@ def _compute_body_invweight0(
   body_invweight0_out[body_invweight0_id, bodyid] = wp.vec2(inv_trans, inv_rot)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nten")
 def _compute_tendon_invweight0(
+  worldid: int,
+  tenid: int,
   ten_J_rownnz: wp.array[int],
   ten_J_rowadr: wp.array[int],
   ten_J_colind: wp.array[int],
@@ -343,7 +353,6 @@ def _compute_tendon_invweight0(
   Minv_in: wp.array2d[float],
   tendon_invweight0_out: wp.array2d[float],
 ):
-  worldid, tenid = wp.tid()
   rownnz = ten_J_rownnz[tenid]
   rowadr = ten_J_rowadr[tenid]
 
@@ -359,8 +368,10 @@ def _compute_tendon_invweight0(
   tendon_invweight0_out[worldid % tendon_invweight0_out.shape[0], tenid] = value
 
 
-@wp.kernel
+@fusion.stage("nworld", "ncam")
 def _compute_cam_pos0(
+  worldid: int,
+  camid: int,
   cam_bodyid: wp.array[int],
   cam_targetbodyid: wp.array[int],
   cam_pos: wp.array2d[wp.vec3],
@@ -372,7 +383,6 @@ def _compute_cam_pos0(
   cam_poscom0_out: wp.array2d[wp.vec3],
   cam_mat0_out: wp.array2d[wp.mat33],
 ):
-  worldid, camid = wp.tid()
   bodyid = cam_bodyid[camid]
   targetid = cam_targetbodyid[camid]
   xpos = xpos_in[worldid, bodyid]
@@ -389,8 +399,10 @@ def _compute_cam_pos0(
   cam_mat0_out[worldid % cam_mat0_out.shape[0], camid] = cam_xmat
 
 
-@wp.kernel
+@fusion.stage("nworld", "nlight")
 def _compute_light_pos0(
+  worldid: int,
+  lightid: int,
   light_bodyid: wp.array[int],
   light_targetbodyid: wp.array[int],
   light_pos: wp.array2d[wp.vec3],
@@ -402,7 +414,6 @@ def _compute_light_pos0(
   light_poscom0_out: wp.array2d[wp.vec3],
   light_dir0_out: wp.array2d[wp.vec3],
 ):
-  worldid, lightid = wp.tid()
   bodyid = light_bodyid[lightid]
   targetid = light_targetbodyid[lightid]
   xpos = xpos_in[worldid, bodyid]
@@ -419,8 +430,10 @@ def _compute_light_pos0(
   light_dir0_out[worldid % light_dir0_out.shape[0], lightid] = light_xdir
 
 
-@wp.kernel
+@fusion.stage("nworld", "nact")
 def _compute_actuator_acc0(
+  worldid: int,
+  actid: int,
   nv: int,
   dof_treeid: wp.array[int],
   tree_dofadr: wp.array[int],
@@ -433,7 +446,6 @@ def _compute_actuator_acc0(
   Minv_in: wp.array2d[float],
   actuator_acc0_out: wp.array2d[float],
 ):
-  worldid, actid = wp.tid()
   rownnz = moment_rownnz_in[worldid, actid]
   rowadr = moment_rowadr_in[worldid, actid]
 
@@ -459,8 +471,10 @@ def _compute_actuator_acc0(
   actuator_acc0_out[worldid, actid] = wp.sqrt(norm_sq)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nactuator")
 def _set_length_range(
+  worldid: int,
+  actid: int,
   actuator_trntype: wp.array[int],
   actuator_trnid: wp.array[wp.vec2i],
   actuator_gear: wp.array2d[wp.spatial_vector],
@@ -471,7 +485,6 @@ def _set_length_range(
   ntendon: int,
   actuator_lengthrange_out: wp.array2d[wp.vec2],
 ):
-  worldid, actid = wp.tid()
   trntype = actuator_trntype[actid]
   id0 = actuator_trnid[actid][0]
   gear0 = actuator_gear[worldid % actuator_gear.shape[0], actid][0]
@@ -502,35 +515,20 @@ def _set_length_range(
 def _set_bound(m: types.Model):
   """Compute geom bounding boxes and spheres."""
   nworld_geom = np.max([m.geom_dataid.shape[0], m.geom_size.shape[0], m.geom_aabb.shape[0], m.geom_rbound.shape[0]])
-  wp.launch(
-    _compute_geom_bound,
-    dim=(nworld_geom, m.ngeom),
-    inputs=[m.geom_type, m.geom_dataid, m.hfield_size],
-    outputs=[m.geom_size, m.geom_aabb, m.geom_rbound],
-  )
+  fusion.launch(m, m, _compute_geom_bound, dim=(nworld_geom, m.ngeom))
 
 
 def _set_fixed(m: types.Model):
   """Compute fixed quantities (do not depend on qpos0)."""
   nworld_subtreemass = m.body_subtreemass.shape[0]
-  wp.launch(
-    _subtreemass,
-    dim=(nworld_subtreemass, m.nbody),
-    inputs=[m.body_subtreenum, m.body_mass],
-    outputs=[m.body_subtreemass],
-  )
+  fusion.launch(m, m, _subtreemass, dim=(nworld_subtreemass, m.nbody))
 
 
 def _kinematics0(m: types.Model, d: types.Data):
   """Run kinematics and tendon lengths in qpos0."""
-  wp.launch(_copy_qpos0_to_qpos, dim=(d.nworld, m.nq), inputs=[m.qpos0], outputs=[d.qpos])
+  fusion.launch(m, d, _copy_qpos0_to_qpos)
   if m.nmocap:
-    wp.launch(
-      _copy_body_to_mocap,
-      dim=(d.nworld, m.nbody),
-      inputs=[m.body_mocapid, m.body_pos, m.body_quat],
-      outputs=[d.mocap_pos, d.mocap_quat],
-    )
+    fusion.launch(m, d, _copy_body_to_mocap)
   smooth.kinematics(m, d)
   smooth.com_pos(m, d)
   smooth.tendon(m, d)
@@ -538,29 +536,30 @@ def _kinematics0(m: types.Model, d: types.Data):
 
 def _set_kinematics0(m: types.Model, d: types.Data):
   """Compute kinematic quantities in qpos0 (requires _kinematics0)."""
-  wp.launch(_copy_tendon_length0, dim=(m.tendon_length0.shape[0], m.ntendon), inputs=[d.ten_length], outputs=[m.tendon_length0])
+  fusion.launch(m, d, _copy_tendon_length0, dim=(m.tendon_length0.shape[0], m.ntendon), tendon_length0_out=m.tendon_length0)
 
-  wp.launch(
-    _compute_eq_data0,
-    dim=(m.eq_data.shape[0], m.neq),
-    inputs=[m.eq_type, m.eq_obj1id, m.eq_obj2id, m.eq_objtype, d.xpos, d.xquat],
-    outputs=[m.eq_data],
-  )
+  fusion.launch(m, d, _compute_eq_data0, dim=(m.eq_data.shape[0], m.neq), eq_data_out=m.eq_data)
 
   nworld_cam = np.max([m.cam_pos0.shape[0], m.cam_poscom0.shape[0], m.cam_mat0.shape[0]])
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _compute_cam_pos0,
     dim=(nworld_cam, m.ncam),
-    inputs=[m.cam_bodyid, m.cam_targetbodyid, m.cam_pos, m.cam_quat, d.xpos, d.xquat, d.subtree_com],
-    outputs=[m.cam_pos0, m.cam_poscom0, m.cam_mat0],
+    cam_pos0_out=m.cam_pos0,
+    cam_poscom0_out=m.cam_poscom0,
+    cam_mat0_out=m.cam_mat0,
   )
 
   nworld_light = np.max([m.light_pos0.shape[0], m.light_poscom0.shape[0], m.light_dir0.shape[0]])
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _compute_light_pos0,
     dim=(nworld_light, m.nlight),
-    inputs=[m.light_bodyid, m.light_targetbodyid, m.light_pos, m.light_dir, d.xpos, d.xquat, d.subtree_com],
-    outputs=[m.light_pos0, m.light_poscom0, m.light_dir0],
+    light_pos0_out=m.light_pos0,
+    light_poscom0_out=m.light_poscom0,
+    light_dir0_out=m.light_dir0,
   )
 
 
@@ -578,71 +577,32 @@ def _set_inertia0(m: types.Model, d: types.Data):
   # FREE: 6 DOFs, trans gets mean(A[0:3]), rot gets mean(A[3:6])
   # BALL: 3 DOFs, all get mean(A[0:3])
   # HINGE/SLIDE: 1 DOF, gets A[0,0]
-  wp.launch(
-    _finalize_dof_invweight0,
-    dim=(m.dof_invweight0.shape[0], m.nv),
-    inputs=[m.dof_jntid, m.jnt_type, m.jnt_dofadr, m.dof_treeid, m.tree_dofadr, m.tree_dofnum, m.Minv_block_adr, Minv],
-    outputs=[m.dof_invweight0],
-  )
+  fusion.launch(m, m, _finalize_dof_invweight0, dim=(m.dof_invweight0.shape[0], m.nv), Minv_in=Minv)
 
   # body_invweight0: computed as mean diagonal of J * inv(M) * J'
   # where J is the 6xnv body Jacobian (3 rows translation, 3 rows rotation)
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _compute_body_invweight0,
     dim=(m.body_invweight0.shape[0], m.nbody),
-    inputs=[
-      m.body_rootid,
-      m.body_weldid,
-      m.body_dofnum,
-      m.body_dofadr,
-      m.dof_parentid,
-      m.dof_treeid,
-      m.tree_dofadr,
-      m.tree_dofnum,
-      m.Minv_block_adr,
-      d.xipos,
-      d.subtree_com,
-      d.cdof,
-      Minv,
-    ],
-    outputs=[m.body_invweight0],
+    Minv_in=Minv,
+    body_invweight0_out=m.body_invweight0,
   )
 
   # tendon_invweight0[t] = J_t * inv(M) * J_t'
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _compute_tendon_invweight0,
     dim=(m.tendon_invweight0.shape[0], m.ntendon),
-    inputs=[
-      m.ten_J_rownnz,
-      m.ten_J_rowadr,
-      m.ten_J_colind,
-      m.dof_treeid,
-      m.tree_dofadr,
-      m.tree_dofnum,
-      m.Minv_block_adr,
-      d.ten_J,
-      Minv,
-    ],
-    outputs=[m.tendon_invweight0],
+    Minv_in=Minv,
+    tendon_invweight0_out=m.tendon_invweight0,
   )
 
   # actuator_acc0[i] = ||inv(M) * actuator_moment[i]|| - acceleration from unit actuator force
-  wp.launch(
-    _compute_actuator_acc0,
-    dim=(m.actuator_acc0.shape[0], m.nactuator),
-    inputs=[
-      m.nv,
-      m.dof_treeid,
-      m.tree_dofadr,
-      m.tree_dofnum,
-      m.Minv_block_adr,
-      d.moment_rownnz,
-      d.moment_rowadr,
-      d.moment_colind,
-      d.actuator_moment,
-      Minv,
-    ],
-    outputs=[m.actuator_acc0],
+  fusion.launch(
+    m, d, _compute_actuator_acc0, dim=(m.actuator_acc0.shape[0], m.nactuator), Minv_in=Minv, actuator_acc0_out=m.actuator_acc0
   )
 
 
@@ -806,18 +766,4 @@ def set_length_range(m: types.Model, d: types.Data, index: int = -1):
     d: The data object (unused, kept for API compatibility with MuJoCo C).
     index: Actuator index to compute for, or -1 for all actuators.
   """
-  wp.launch(
-    _set_length_range,
-    dim=(d.nworld, m.nactuator),
-    inputs=[
-      m.actuator_trntype,
-      m.actuator_trnid,
-      m.actuator_gear,
-      m.jnt_limited,
-      m.jnt_range,
-      m.tendon_limited,
-      m.tendon_range,
-      m.ntendon,
-    ],
-    outputs=[m.actuator_lengthrange],
-  )
+  fusion.launch(m, m, _set_length_range, dim=(d.nworld, m.nactuator))

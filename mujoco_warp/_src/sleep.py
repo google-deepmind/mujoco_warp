@@ -17,6 +17,7 @@ from typing import Optional
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src.types import ContactType
@@ -93,8 +94,9 @@ def _tendon_limit_active(
 
 @cache_kernel
 def _zero_sleep_counters(has_woke: bool = False):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld")
   def kernel(
+    worldid: int,
     # In:
     woke_in: wp.array[int],
     # Data out:
@@ -102,7 +104,6 @@ def _zero_sleep_counters(has_woke: bool = False):
     nbody_awake_out: wp.array[int],
     nv_awake_out: wp.array[int],
   ):
-    worldid = wp.tid()
     if wp.static(has_woke):
       if woke_in[0] == 0:
         return
@@ -115,8 +116,10 @@ def _zero_sleep_counters(has_woke: bool = False):
 
 @cache_kernel
 def _update_sleep_trees(has_woke: bool = False):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld", "ntree")
   def kernel(
+    worldid: int,
+    treeid: int,
     # Data in:
     tree_asleep_in: wp.array2d[int],
     # In:
@@ -125,7 +128,6 @@ def _update_sleep_trees(has_woke: bool = False):
     ntree_awake_out: wp.array[int],
     tree_awake_out: wp.array2d[int],
   ):
-    worldid, treeid = wp.tid()
     if wp.static(has_woke):
       if woke_in[0] == 0:
         return
@@ -143,8 +145,10 @@ def _update_sleep_bodies(has_woke: bool = False, deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nbody", options={**module_options})
   def kernel(
+    worldid: int,
+    bodyid: int,
     # Model:
     body_parentid: wp.array[int],
     body_rootid: wp.array[int],
@@ -160,7 +164,6 @@ def _update_sleep_bodies(has_woke: bool = False, deterministic: bool = False):
     body_awake_out: wp.array2d[int],
     body_awake_ind_out: wp.array2d[int],
   ):
-    worldid, bodyid = wp.tid()
     if wp.static(has_woke):
       if woke_in[0] == 0:
         return
@@ -193,8 +196,10 @@ def _update_sleep_dofs(has_woke: bool = False, deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nv", options={**module_options})
   def kernel(
+    worldid: int,
+    dofid: int,
     # Model:
     body_treeid: wp.array[int],
     dof_bodyid: wp.array[int],
@@ -206,7 +211,6 @@ def _update_sleep_dofs(has_woke: bool = False, deterministic: bool = False):
     nv_awake_out: wp.array[int],
     dof_awake_ind_out: wp.array2d[int],
   ):
-    worldid, dofid = wp.tid()
     if wp.static(has_woke):
       if woke_in[0] == 0:
         return
@@ -230,50 +234,13 @@ def update_sleep(
   woke_arr = woke if woke is not None else d.nacon
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
 
-  wp.launch(
-    _zero_sleep_counters(has_woke),
-    dim=d.nworld,
-    inputs=[woke_arr],
-    outputs=[d.ntree_awake, d.nbody_awake, d.nv_awake],
-  )
+  fusion.launch(m, d, _zero_sleep_counters(has_woke), woke_in=woke_arr)
 
-  wp.launch(
-    _update_sleep_trees(has_woke),
-    dim=(d.nworld, m.ntree),
-    inputs=[d.tree_asleep, woke_arr],
-    outputs=[d.ntree_awake, d.tree_awake],
-  )
+  fusion.launch(m, d, _update_sleep_trees(has_woke), woke_in=woke_arr)
 
-  wp.launch(
-    _update_sleep_bodies(has_woke, det_atomics),
-    dim=(d.nworld, m.nbody),
-    inputs=[
-      m.body_parentid,
-      m.body_rootid,
-      m.body_mocapid,
-      m.body_treeid,
-      d.tree_awake,
-      flg_staticawake,
-      woke_arr,
-    ],
-    outputs=[
-      d.nbody_awake,
-      d.body_awake,
-      d.body_awake_ind,
-    ],
-  )
+  fusion.launch(m, d, _update_sleep_bodies(has_woke, det_atomics), flg_staticawake=flg_staticawake, woke_in=woke_arr)
 
-  wp.launch(
-    _update_sleep_dofs(has_woke, det_atomics),
-    dim=(d.nworld, m.nv),
-    inputs=[
-      m.body_treeid,
-      m.dof_bodyid,
-      d.body_awake,
-      woke_arr,
-    ],
-    outputs=[d.nv_awake, d.dof_awake_ind],
-  )
+  fusion.launch(m, d, _update_sleep_dofs(has_woke, det_atomics), woke_in=woke_arr)
 
 
 @wp.func
@@ -365,8 +332,10 @@ def _tree_can_sleep(
   return True
 
 
-@wp.kernel
+@fusion.stage("nworld", "ntree")
 def _wake_kernel(
+  worldid: int,
+  treeid: int,
   # Model:
   nbody: int,
   ntree: int,
@@ -385,8 +354,6 @@ def _wake_kernel(
   # Out:
   woke_out: wp.array[int],
 ):
-  worldid, treeid = wp.tid()
-
   asleep = int(tree_asleep_out[worldid, treeid] >= 0)
   if asleep == 0:
     if tree_awake_in[worldid, treeid] == 0:
@@ -412,8 +379,9 @@ def _wake_kernel(
       woke_out[0] = 1
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _wake_non_metric_flex(
+  worldid: int,
   # Model:
   ntree: int,
   nflex: int,
@@ -441,7 +409,6 @@ def _wake_non_metric_flex(
   # Out:
   woke_out: wp.array[int],
 ):
-  worldid = wp.tid()
   if flg_wake != 0 and ntree_awake_in[worldid] >= ntree:
     return
   for f in range(nflex):
@@ -527,8 +494,9 @@ def _flex_contact_body(
   return flex_nodebodyid[nadr]
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _wake_collision_kernel(
+  conid: int,
   # Model:
   ntree: int,
   body_treeid: wp.array[int],
@@ -557,7 +525,6 @@ def _wake_collision_kernel(
   # Out:
   woke_out: wp.array[int],
 ):
-  conid = wp.tid()
   if conid >= nacon_in[0]:
     return
   ctype = contact_type_in[conid]
@@ -646,8 +613,10 @@ def _wake_collision_kernel(
     woke_out[0] = 1
 
 
-@wp.kernel
+@fusion.stage("nworld", "ntendon")
 def _wake_tendon_kernel(
+  worldid: int,
+  tenid: int,
   # Model:
   ntree: int,
   ntendon: int,
@@ -678,8 +647,6 @@ def _wake_tendon_kernel(
   # Out:
   woke_out: wp.array[int],
 ):
-  worldid, tenid = wp.tid()
-
   adr = tendon_adr[tenid]
   num = tendon_num[tenid]
 
@@ -842,8 +809,10 @@ def _wake_tendon_trees(
   return nwoke
 
 
-@wp.kernel
+@fusion.stage("nworld", "neq")
 def _wake_equality_kernel(
+  worldid: int,
+  eqid: int,
   # Model:
   ntree: int,
   neq: int,
@@ -878,8 +847,6 @@ def _wake_equality_kernel(
   # Out:
   woke_out: wp.array[int],
 ):
-  worldid, eqid = wp.tid()
-
   if not eq_active_in[worldid, eqid]:
     return
 
@@ -1059,51 +1026,9 @@ def wake(m: types.Model, d: types.Data, woke: Optional[wp.array] = None):
   """Wakes sleeping trees due to user changes/perturbations."""
   if woke is None:
     woke = wp.empty(1, dtype=int)
-  wp.launch(
-    _wake_kernel,
-    dim=(d.nworld, m.ntree),
-    inputs=[
-      m.nbody,
-      m.ntree,
-      m.body_treeid,
-      m.dof_length,
-      m.tree_dofadr,
-      m.tree_dofnum,
-      m.tree_sleep_policy,
-      d.qvel,
-      d.qfrc_applied,
-      d.xfrc_applied,
-      d.tree_awake,
-    ],
-    outputs=[d.tree_asleep, woke],
-  )
+  fusion.launch(m, d, _wake_kernel, woke_out=woke)
   if m.nflex > 0 and m.opt.integrator != IntegratorType.DISCRETE:
-    wp.launch(
-      _wake_non_metric_flex,
-      dim=d.nworld,
-      inputs=[
-        m.ntree,
-        m.nflex,
-        m.body_treeid,
-        m.jnt_bodyid,
-        m.flex_interp,
-        m.flex_nodeadr,
-        m.flex_nodenum,
-        m.flex_vertadr,
-        m.flex_vertnum,
-        m.flex_nodebodyid,
-        m.flex_vertbodyid,
-        m.flex_edgeequality,
-        m.flex_rod_has_twist,
-        m.flex_eff_possible,
-        m.flex_rod_edgeadr,
-        m.flex_rod_edgenum,
-        m.flex_rodedge_jnt,
-        d.ntree_awake,
-        1,
-      ],
-      outputs=[d.tree_asleep, woke],
-    )
+    fusion.launch(m, d, _wake_non_metric_flex, flg_wake=1, woke_out=woke)
 
 
 @event_scope
@@ -1111,34 +1036,7 @@ def wake_collision(m: types.Model, d: types.Data, woke: Optional[wp.array] = Non
   """Wakes sleeping trees that touch awake trees."""
   if woke is None:
     woke = wp.empty(1, dtype=int)
-  wp.launch(
-    _wake_collision_kernel,
-    dim=d.naconmax,
-    inputs=[
-      m.ntree,
-      m.body_treeid,
-      m.geom_bodyid,
-      m.flex_dim,
-      m.flex_interp,
-      m.flex_nodeadr,
-      m.flex_nodenum,
-      m.flex_vertadr,
-      m.flex_elemdataadr,
-      m.flex_nodebodyid,
-      m.flex_vertbodyid,
-      m.flex_elem,
-      d.tree_awake,
-      d.body_awake,
-      d.contact.geom,
-      d.contact.flex,
-      d.contact.elem,
-      d.contact.vert,
-      d.contact.worldid,
-      d.contact.type,
-      d.nacon,
-    ],
-    outputs=[d.tree_asleep, woke],
-  )
+  fusion.launch(m, d, _wake_collision_kernel, woke_out=woke)
 
 
 @event_scope
@@ -1150,36 +1048,7 @@ def wake_tendon(m: types.Model, d: types.Data, woke: Optional[wp.array] = None):
 
   if woke is None:
     woke = wp.empty(1, dtype=int)
-  wp.launch(
-    _wake_tendon_kernel,
-    dim=(d.nworld, m.ntendon),
-    inputs=[
-      m.ntree,
-      m.ntendon,
-      m.opt.integrator,
-      m.opt.disableflags,
-      m.body_treeid,
-      m.jnt_bodyid,
-      m.geom_bodyid,
-      m.site_bodyid,
-      m.tendon_adr,
-      m.tendon_num,
-      m.tendon_actuatorid,
-      m.tendon_limited,
-      m.tendon_range,
-      m.tendon_margin,
-      m.tendon_stiffness,
-      m.tendon_stiffnesspoly,
-      m.tendon_damping,
-      m.tendon_dampingpoly,
-      m.tendon_frictionloss,
-      m.wrap_type,
-      m.wrap_objid,
-      d.ten_length,
-      d.tree_awake,
-    ],
-    outputs=[d.tree_asleep, woke],
-  )
+  fusion.launch(m, d, _wake_tendon_kernel, woke_out=woke)
 
 
 @event_scope
@@ -1190,44 +1059,13 @@ def wake_equality(m: types.Model, d: types.Data, woke: Optional[wp.array] = None
 
   if woke is None:
     woke = wp.empty(1, dtype=int)
-  wp.launch(
-    _wake_equality_kernel,
-    dim=(d.nworld, m.neq),
-    inputs=[
-      m.ntree,
-      m.neq,
-      m.body_treeid,
-      m.jnt_bodyid,
-      m.geom_bodyid,
-      m.site_bodyid,
-      m.flex_interp,
-      m.flex_nodeadr,
-      m.flex_nodenum,
-      m.flex_vertadr,
-      m.flex_vertnum,
-      m.flex_nodebodyid,
-      m.flex_vertbodyid,
-      m.eq_type,
-      m.eq_obj1id,
-      m.eq_obj2id,
-      m.eq_objtype,
-      m.tendon_adr,
-      m.tendon_num,
-      m.wrap_type,
-      m.wrap_objid,
-      m.flex_rod_has_twist,
-      m.flex_rod_edgeadr,
-      m.flex_rod_edgenum,
-      m.flex_rodedge_jnt,
-      d.eq_active,
-      d.tree_awake,
-    ],
-    outputs=[d.tree_asleep, woke],
-  )
+  fusion.launch(m, d, _wake_equality_kernel, woke_out=woke)
 
 
-@wp.kernel
+@fusion.stage("nworld", "ntree")
 def _sweep_awake_trees(  # kernel_analyzer: ignore
+  worldid: int,
+  treeid: int,
   # Model:
   nbody: int,
   body_treeid: wp.array[int],
@@ -1248,7 +1086,6 @@ def _sweep_awake_trees(  # kernel_analyzer: ignore
   # Out:
   has_sleep_candidate_out: wp.array[int],
 ):
-  worldid, treeid = wp.tid()
   # Constrained worlds without island discovery cannot sleep
   if nefc_in[worldid] > 0 and nisland_in[worldid] == 0:
     return
@@ -1280,8 +1117,10 @@ def _sweep_awake_trees(  # kernel_analyzer: ignore
     tree_asleep_out[worldid, treeid] = K_AWAKE_VAL
 
 
-@wp.kernel
+@fusion.stage("nworld", "ntree")
 def _check_island_can_sleep(
+  worldid: int,
+  treeid: int,
   # Model:
   ntree: int,
   # Data in:
@@ -1291,7 +1130,6 @@ def _check_island_can_sleep(
   # Out:
   island_can_sleep_out: wp.array2d[int],
 ):
-  worldid, treeid = wp.tid()
   nisland = nisland_in[worldid]
   island_id = tree_island_in[worldid, treeid]
   if island_id >= 0 and island_id < nisland:
@@ -1301,8 +1139,9 @@ def _check_island_can_sleep(
       wp.atomic_min(island_can_sleep_out, worldid, island_id, 0)  # kernel_analyzer: ignore[atomic]
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _build_cycles(  # kernel_analyzer: ignore
+  worldid: int,
   # Model:
   ntree: int,
   tree_dofadr: wp.array[int],
@@ -1321,8 +1160,6 @@ def _build_cycles(  # kernel_analyzer: ignore
   # Out:
   nslept_out: wp.array[int],
 ):
-  worldid = wp.tid()
-
   if has_sleep_candidate_in[0] == 0:
     return
   if nefc_in[worldid] > 0 and nisland_in[worldid] == 0:
@@ -1380,87 +1217,17 @@ def sleep(m: types.Model, d: types.Data) -> wp.array:
   nslept = wp.zeros(1, dtype=int)
 
   # Sweep over awake trees and increment counter if they can sleep
-  wp.launch(
-    _sweep_awake_trees,
-    dim=(d.nworld, m.ntree),
-    inputs=[
-      m.nbody,
-      m.body_treeid,
-      m.dof_length,
-      m.tree_dofadr,
-      m.tree_dofnum,
-      m.tree_sleep_policy,
-      d.nefc,
-      d.nisland,
-      d.qvel,
-      d.qfrc_applied,
-      d.xfrc_applied,
-      m.opt.sleep_tolerance,
-    ],
-    outputs=[d.tree_asleep, has_sleep_candidate],
-  )
+  fusion.launch(m, d, _sweep_awake_trees, has_sleep_candidate_out=has_sleep_candidate)
 
   if m.nflex > 0 and m.opt.integrator != IntegratorType.DISCRETE:
-    wp.launch(
-      _wake_non_metric_flex,
-      dim=d.nworld,
-      inputs=[
-        m.ntree,
-        m.nflex,
-        m.body_treeid,
-        m.jnt_bodyid,
-        m.flex_interp,
-        m.flex_nodeadr,
-        m.flex_nodenum,
-        m.flex_vertadr,
-        m.flex_vertnum,
-        m.flex_nodebodyid,
-        m.flex_vertbodyid,
-        m.flex_edgeequality,
-        m.flex_rod_has_twist,
-        m.flex_eff_possible,
-        m.flex_rod_edgeadr,
-        m.flex_rod_edgenum,
-        m.flex_rodedge_jnt,
-        d.ntree_awake,
-        0,
-      ],
-      outputs=[d.tree_asleep, has_sleep_candidate],
-    )
+    fusion.launch(m, d, _wake_non_metric_flex, flg_wake=0, woke_out=has_sleep_candidate)
 
   # Check which constraint islands can sleep (all trees in island must be asleep)
   island_can_sleep = wp.ones((d.nworld, m.ntree), dtype=int)
-  wp.launch(
-    _check_island_can_sleep,
-    dim=(d.nworld, m.ntree),
-    inputs=[
-      m.ntree,
-      d.nisland,
-      d.tree_asleep,
-      d.tree_island,
-    ],
-    outputs=[island_can_sleep],
-  )
+  fusion.launch(m, d, _check_island_can_sleep, island_can_sleep_out=island_can_sleep)
 
   # Build sleep cycles for sleeping islands and sleep unconstrained trees
-  wp.launch(
-    _build_cycles,
-    dim=d.nworld,
-    inputs=[
-      m.ntree,
-      m.tree_dofadr,
-      m.tree_dofnum,
-      d.nefc,
-      d.nisland,
-      d.tree_island,
-      island_can_sleep,
-      has_sleep_candidate,
-    ],
-    outputs=[
-      d.tree_asleep,
-      d.qvel,
-      d.qacc,
-      nslept,
-    ],
+  fusion.launch(
+    m, d, _build_cycles, island_can_sleep_in=island_can_sleep, has_sleep_candidate_in=has_sleep_candidate, nslept_out=nslept
   )
   return nslept

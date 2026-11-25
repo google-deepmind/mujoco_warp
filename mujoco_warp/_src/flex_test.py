@@ -29,6 +29,7 @@ from mujoco_warp._src import bvh
 from mujoco_warp._src import collision_core
 from mujoco_warp._src import collision_flex
 from mujoco_warp._src import derivative
+from mujoco_warp._src import fusion
 from mujoco_warp._src import io
 from mujoco_warp._src import passive
 from mujoco_warp._src import types
@@ -4602,36 +4603,19 @@ class FlexContactParityTest(parameterized.TestCase):
     elem_aabb_upper = wp.empty((d.nworld, nelem), dtype=wp.vec3)
     sap_seg_index = wp.empty(d.nworld + 1, dtype=int)
 
-    wp.launch(
+    fusion.launch(
+      m,
+      d,
       collision_flex._flex_sap_project,
       dim=(d.nworld, nelem),
-      inputs=[
-        m.flex_margin,
-        m.flex_gap,
-        m.flex_activelayers,
-        m.flex_dim,
-        m.flex_vertadr,
-        m.flex_elemadr,
-        m.flex_elemdataadr,
-        m.flex_elem,
-        m.flex_elemlayer,
-        m.flex_radius,
-        m.flex_elemflexid,
-        m.flex_rod_is_box,
-        m.flex_rod_box_size,
-        d.flexvert_xpos,
-        d.nworld,
-        nelem,
-        wp.vec3(1.0, 0.0, 0.0),
-      ],
-      outputs=[
-        sap_lower.reshape((-1, nelem)),
-        sap_upper,
-        sap_sort_index.reshape((-1, nelem)),
-        elem_aabb_lower,
-        elem_aabb_upper,
-        sap_seg_index,
-      ],
+      nelem=nelem,
+      direction=wp.vec3(1.0, 0.0, 0.0),
+      projection_lower_out=sap_lower.reshape((-1, nelem)),
+      projection_upper_out=sap_upper,
+      sort_index_out=sap_sort_index.reshape((-1, nelem)),
+      elem_aabb_lower_out=elem_aabb_lower,
+      elem_aabb_upper_out=elem_aabb_upper,
+      segmented_index_out=sap_seg_index,
     )
 
     layers = m.flex_elemlayer.numpy()
@@ -5631,11 +5615,20 @@ class FlexBVHTest(parameterized.TestCase):
     flex_dim = wp.array([2], dtype=int)
     flexvert_norm = wp.zeros((nworld, nvert), dtype=wp.vec3)
 
-    wp.launch(
-      kernel=bvh.accumulate_flex_vertex_normals(),
+    fusion.launch(
+      None,
+      None,
+      bvh.accumulate_flex_vertex_normals(),
       dim=(nworld, nelem),
-      inputs=[1, flex_dim, flex_vertadr, flex_elemadr, flex_elemnum, flex_elemdataadr, flex_elem, flexvert_xpos],
-      outputs=[flexvert_norm],
+      nflex=1,
+      flex_dim=flex_dim,
+      flex_vertadr=flex_vertadr,
+      flex_elemadr=flex_elemadr,
+      flex_elemnum=flex_elemnum,
+      flex_elemdataadr=flex_elemdataadr,
+      flex_elem=flex_elem,
+      flexvert_xpos_in=flexvert_xpos,
+      flexvert_norm_out=flexvert_norm,
     )
 
     normals = flexvert_norm.numpy()

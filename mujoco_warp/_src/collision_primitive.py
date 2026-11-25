@@ -17,6 +17,7 @@ from typing import Tuple
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_core import contact_params
@@ -1286,8 +1287,9 @@ _PRIMITIVE_COLLISIONS = {
 
 @cache_kernel
 def _primitive_narrowphase(primitive_collisions_types, primitive_collisions_func):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("naconmax")
   def primitive_narrowphase(
+    tid: int,
     # Model:
     geom_type: wp.array[int],
     geom_condim: wp.array[int],
@@ -1350,8 +1352,6 @@ def _primitive_narrowphase(primitive_collisions_types, primitive_collisions_func
     contact_adhesion_out: wp.array[float],
     nacon_out: wp.array[int],
   ):
-    tid = wp.tid()
-
     if tid >= ncollision_in[0]:
       return
 
@@ -1479,68 +1479,11 @@ def primitive_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_ta
       primitive_collision_types.append(types)
       primitive_collision_func.append(func)
 
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _primitive_narrowphase(primitive_collision_types, primitive_collision_func),
-    dim=d.naconmax,
-    inputs=[
-      m.geom_type,
-      m.geom_condim,
-      m.geom_dataid,
-      m.geom_priority,
-      m.geom_solmix,
-      m.geom_solref,
-      m.geom_solimp,
-      m.geom_size,
-      m.geom_friction,
-      m.geom_margin,
-      m.geom_gap,
-      m.geom_adhesion,
-      m.mesh_vertadr,
-      m.mesh_vertnum,
-      m.mesh_graphadr,
-      m.mesh_vert,
-      m.mesh_graph,
-      m.mesh_polynum,
-      m.mesh_polyadr,
-      m.mesh_polynormal,
-      m.mesh_polyvertadr,
-      m.mesh_polyvertnum,
-      m.mesh_polyvert,
-      m.mesh_polymapadr,
-      m.mesh_polymapnum,
-      m.mesh_polymap,
-      m.pair_dim,
-      m.pair_solref,
-      m.pair_solreffriction,
-      m.pair_solimp,
-      m.pair_margin,
-      m.pair_gap,
-      m.pair_adhesion,
-      m.pair_friction,
-      d.geom_xpos,
-      d.geom_xquat,
-      d.naconmax,
-      d.ncollision,
-      ctx.collision_pair,
-      ctx.collision_pairid,
-      ctx.collision_worldid,
-    ],
-    outputs=[
-      d.contact.dist,
-      d.contact.pos,
-      d.contact.frame,
-      d.contact.includemargin,
-      d.contact.friction,
-      d.contact.solref,
-      d.contact.solreffriction,
-      d.contact.solimp,
-      d.contact.dim,
-      d.contact.geom,
-      d.contact.efc_address,
-      d.contact.worldid,
-      d.contact.type,
-      d.contact.geomcollisionid,
-      d.contact.adhesion,
-      d.nacon,
-    ],
+    collision_pair_in=ctx.collision_pair,
+    collision_pairid_in=ctx.collision_pairid,
+    collision_worldid_in=ctx.collision_worldid,
   )

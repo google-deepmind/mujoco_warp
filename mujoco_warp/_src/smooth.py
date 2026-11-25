@@ -245,8 +245,10 @@ def _site_local_to_global(
   site_xquat_out[worldid, siteid] = math.mul_quat(xquat, site_quat[worldid % site_quat.shape[0], siteid])
 
 
-@wp.kernel
+@fusion.stage("nworld", "nflexvert")
 def _flex_vertices(
+  worldid: int,
+  vertid: int,
   # Model:
   nflex: int,
   flex_interp: wp.array[int],
@@ -266,8 +268,6 @@ def _flex_vertices(
   # Data out:
   flexvert_xpos_out: wp.array2d[wp.vec3],
 ):
-  worldid, vertid = wp.tid()
-
   for f in range(nflex):
     locid = vertid - flex_vertadr[f]
     if locid >= 0 and locid < flex_vertnum[f]:
@@ -357,8 +357,10 @@ def _flex_vertices(
       flexvert_xpos_out[worldid, vertid] = xmat @ local_pos + xpos
 
 
-@wp.kernel
+@fusion.stage("nworld", "nflexnode")
 def _flex_nodes(
+  worldid: int,
+  nodeid: int,
   # Model:
   nflex: int,
   flex_nodeadr: wp.array[int],
@@ -372,8 +374,6 @@ def _flex_nodes(
   # Data out:
   flexnode_xpos_out: wp.array2d[wp.vec3],
 ):
-  worldid, nodeid = wp.tid()
-
   for f in range(nflex):
     locid = nodeid - flex_nodeadr[f]
     if locid >= 0 and locid < flex_nodenum[f]:
@@ -393,8 +393,10 @@ def _flex_nodes(
       flexnode_xpos_out[worldid, nodeid] = xmat @ local_pos + xpos
 
 
-@wp.kernel
+@fusion.stage("nworld", "nflexedge")
 def _flex_edges(
+  worldid: int,
+  edgeid: int,
   # Model:
   body_rootid: wp.array[int],
   flex_vertadr: wp.array[int],
@@ -415,7 +417,6 @@ def _flex_edges(
   flexedge_length_out: wp.array2d[float],
   flexedge_velocity_out: wp.array2d[float],
 ):
-  worldid, edgeid = wp.tid()
   f = flex_edgeflexid[edgeid]
 
   vbase = flex_vertadr[f]
@@ -473,7 +474,9 @@ def kinematics1(m: Model, d: Data):
 @event_scope
 def kinematics2(m: Model, d: Data):
   """Computes global body inertial frames, geoms, and sites from body poses."""
-  fusion.launch(m, d, _compute_body_inertial_frames, _geom_local_to_global, _site_local_to_global)
+  fusion.launch(m, d, _compute_body_inertial_frames)
+  fusion.launch(m, d, _geom_local_to_global)
+  fusion.launch(m, d, _site_local_to_global)
 
 
 @event_scope
@@ -483,8 +486,10 @@ def kinematics(m: Model, d: Data):
   kinematics2(m, d)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nflexface")
 def _flex_face_kinematics(
+  worldid: int,
+  face_id: int,
   # Model:
   flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
@@ -497,8 +502,6 @@ def _flex_face_kinematics(
   face_xpos_out: wp.array3d[wp.vec3],
   face_quat_out: wp.array2d[wp.quat],
 ):
-  worldid, face_id = wp.tid()
-
   mapping = flex_face_map[face_id]
   f = mapping[0]
   face_elem_idx = mapping[1]
@@ -635,8 +638,10 @@ def _rod_vert_pos0(
   return pos + math.rot_vec_quat(flex_vert[vertid], quat)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nflex")
 def _flex_rod_ref(
+  worldid: int,
+  f: int,
   # Model:
   body_parentid: wp.array[int],
   body_pos: wp.array2d[wp.vec3],
@@ -664,7 +669,6 @@ def _flex_rod_ref(
   Mirrors rodChain, rodRootDirector and rodTailDirector, which recompute them from body_pos and
   body_quat; also invalidates the cached rod chain evaluation (passive.eval_rod_chains).
   """
-  worldid, f = wp.tid()
   z3 = wp.vec3(0.0)
   flex_rod_chain_valid_out[worldid, f] = False
   flex_rod_ref_ok_out[worldid, f] = False
@@ -763,115 +767,17 @@ def _flex_rod_ref(
 @event_scope
 def flex(m: Model, d: Data):
   if m.nflex > 0:
-    d.flex_hessian_valid.zero_()
+    fusion.zero(d.flex_hessian_valid)
   # Compute node positions first (needed for interpolated vertex positions)
-  wp.launch(
-    _flex_nodes,
-    dim=(d.nworld, m.nflexnode),
-    inputs=[
-      m.nflex,
-      m.flex_nodeadr,
-      m.flex_nodenum,
-      m.flex_nodebodyid,
-      m.flex_node,
-      m.flex_centered,
-      d.xpos,
-      d.xquat,
-    ],
-    outputs=[d.flexnode_xpos],
-  )
+  fusion.launch(m, d, _flex_nodes)
 
-  wp.launch(
-    _flex_vertices,
-    dim=(d.nworld, m.nflexvert),
-    inputs=[
-      m.nflex,
-      m.flex_interp,
-      m.flex_cellnum,
-      m.flex_nodeadr,
-      m.flex_vertadr,
-      m.flex_vertnum,
-      m.flex_vertbodyid,
-      m.flex_vertcell,
-      m.flex_vert,
-      m.flex_vert0,
-      m.flex_centered,
-      d.xpos,
-      d.xquat,
-      d.flexnode_xpos,
-    ],
-    outputs=[d.flexvert_xpos],
-  )
-  wp.launch(
-    _flex_edges,
-    dim=(d.nworld, m.nflexedge),
-    inputs=[
-      m.body_rootid,
-      m.flex_vertadr,
-      m.flex_vertbodyid,
-      m.flex_edge,
-      m.flexedge_J_rownnz,
-      m.flexedge_J_rowadr,
-      m.flexedge_J_colind,
-      m.body_isdofancestor,
-      m.flex_edgeflexid,
-      d.qvel,
-      d.subtree_com,
-      d.cdof,
-      d.flexvert_xpos,
-    ],
-    outputs=[
-      d.flexedge_J,
-      d.flexedge_length,
-      d.flexedge_velocity,
-    ],
-  )
+  fusion.launch(m, d, _flex_vertices)
+  fusion.launch(m, d, _flex_edges)
 
-  wp.launch(
-    _flex_face_kinematics,
-    dim=(d.nworld, m.nflexface),
-    inputs=[
-      m.flex_interp,
-      m.flex_cellnum,
-      m.flex_node0,
-      m.flex_face_map,
-      m.flex_face,
-      d.flexnode_xpos,
-    ],
-    outputs=[
-      d.face_xpos,
-      d.face_quat,
-    ],
-  )
+  fusion.launch(m, d, _flex_face_kinematics)
 
   if m.nflexrodedge > 0:
-    wp.launch(
-      _flex_rod_ref,
-      dim=(d.nworld, m.nflex),
-      inputs=[
-        m.body_parentid,
-        m.body_pos,
-        m.body_quat,
-        m.flex_vertadr,
-        m.flex_bendingadr,
-        m.flex_vertbodyid,
-        m.flex_vert,
-        m.flex_bending,
-        m.flex_rod_tail_clamped,
-        m.flex_rod_hingeadr,
-        m.flex_rod_edgeadr,
-        m.flex_rod_edgenum,
-        m.flex_rodedge_vert,
-      ],
-      outputs=[
-        d.flex_rod_chain_valid,
-        d.flex_rod_ref_ok,
-        d.flex_rod_frame0_loc,
-        d.flex_rod_frame0_ref,
-        d.flex_rod_tail_loc,
-        d.flex_rodhinge_om0,
-      ],
-    )
+    fusion.launch(m, d, _flex_rod_ref)
 
 
 @fusion.stage("nworld", "nbody")
@@ -1078,8 +984,7 @@ def com_pos(m: Model, d: Data):
   """
   fusion.launch(m, d, _subtree_com)
   if m.nbody > 1 and m.body_tree[1].shape[0] > WORLD_SUM_BLOCK:
-    fusion.flush()
-    wp.launch_tiled(
+    fusion.launch_tiled(
       _subtree_com_world_tiled,
       dim=d.nworld,
       inputs=[m.body_mass, m.body_subtreemass, d.xipos, d.subtree_com, m.body_tree[1]],
@@ -1088,7 +993,8 @@ def com_pos(m: Model, d: Data):
     )
   else:
     fusion.launch(m, d, _subtree_com_world)
-  fusion.launch(m, d, _cinert, _cdof)
+  fusion.launch(m, d, _cinert)
+  fusion.launch(m, d, _cdof)
 
 
 @fusion.stage("nworld", "ncam")
@@ -1226,13 +1132,16 @@ def camlight(m: Model, d: Data):
   Updates the global positions and orientations for all cameras and lights in the model,
   including special handling for tracking and target modes.
   """
-  fusion.launch(m, d, _cam_local_to_global, _light_local_to_global)
+  fusion.launch(m, d, _cam_local_to_global)
+  fusion.launch(m, d, _light_local_to_global)
 
 
 @cache_kernel
 def _crb_subtree(enable_sleep: bool = False):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld", "nbody")
   def kernel(
+    worldid: int,
+    bodyid: int,
     # Model:
     body_treeid: wp.array[int],
     body_subtreenum: wp.array[int],
@@ -1243,7 +1152,6 @@ def _crb_subtree(enable_sleep: bool = False):
     crb_out: wp.array2d[vec10],
   ):
     """Sums cinert over the subtree, the contiguous body range [b, b + body_subtreenum[b])."""
-    worldid, bodyid = wp.tid()
     if wp.static(enable_sleep):
       if _tree_asleep(tree_awake_in, worldid, body_treeid[bodyid]):
         return
@@ -1258,8 +1166,10 @@ def _crb_subtree(enable_sleep: bool = False):
 
 @cache_kernel
 def _M(enable_sleep: bool = False):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld", "nv")
   def kernel(
+    worldid: int,
+    dofid: int,
     # Model:
     jnt_actuatorid: wp.array[int],
     dof_bodyid: wp.array[int],
@@ -1280,7 +1190,6 @@ def _M(enable_sleep: bool = False):
     # Data out:
     M_out: wp.array2d[float],
   ):
-    worldid, dofid = wp.tid()
     if wp.static(enable_sleep):
       if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
         return
@@ -1325,35 +1234,9 @@ def crb(m: Model, d: Data):
   in either sparse or dense format, depending on model options.
   """
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
-  wp.launch(
-    _crb_subtree(enable_sleep),
-    dim=(d.nworld, m.nbody),
-    inputs=[m.body_treeid, m.body_subtreenum, d.cinert, d.tree_awake],
-    outputs=[d.crb],
-  )
+  fusion.launch(m, d, _crb_subtree(enable_sleep))
 
-  wp.launch(
-    _M(enable_sleep),
-    dim=(d.nworld, m.nv),
-    inputs=[
-      m.jnt_actuatorid,
-      m.dof_bodyid,
-      m.dof_jntid,
-      m.dof_parentid,
-      m.dof_treeid,
-      m.dof_armature,
-      m.actuator_trntype,
-      m.actuator_trnid,
-      m.actuator_armature,
-      m.actuator_gear,
-      m.M_rownnz,
-      m.M_rowadr,
-      d.cdof,
-      d.crb,
-      d.tree_awake,
-    ],
-    outputs=[d.M],
-  )
+  fusion.launch(m, d, _M(enable_sleep))
 
 
 @cache_kernel
@@ -1363,8 +1246,10 @@ def _tendon_armature(nM: int, enable_sleep: bool = False, deterministic: bool = 
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = nM
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "ntendon", options={**module_options})
   def kernel(
+    worldid: int,
+    tenid: int,
     # Model:
     dof_parentid: wp.array[int],
     dof_treeid: wp.array[int],
@@ -1385,8 +1270,6 @@ def _tendon_armature(nM: int, enable_sleep: bool = False, deterministic: bool = 
     # Data out:
     M_out: wp.array2d[float],
   ):
-    worldid, tenid = wp.tid()
-
     armature = util_misc.tendon_armature_total(
       tendon_actuatorid, tendon_armature, actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, worldid, tenid
     )
@@ -1442,32 +1325,13 @@ def tendon_armature(m: Model, d: Data):
   """Add tendon armature to M."""
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  wp.launch(
-    _tendon_armature(m.nM if det_atomics else 0, enable_sleep, det_atomics),
-    dim=(d.nworld, m.ntendon),
-    inputs=[
-      m.dof_parentid,
-      m.dof_treeid,
-      m.tendon_actuatorid,
-      m.ten_J_rownnz,
-      m.ten_J_rowadr,
-      m.ten_J_colind,
-      m.tendon_armature,
-      m.actuator_trntype,
-      m.actuator_trnid,
-      m.actuator_armature,
-      m.actuator_gear,
-      m.M_rownnz,
-      m.M_rowadr,
-      d.ten_J,
-      d.tree_awake,
-    ],
-    outputs=[d.M],
-  )
+  fusion.launch(m, d, _tendon_armature(m.nM if det_atomics else 0, enable_sleep, det_atomics))
 
 
-@wp.kernel
+@fusion.stage("nworld", "nv")
 def _copy_M_sparse_awake(
+  worldid: int,
+  dofid: int,
   # Model:
   dof_treeid: wp.array[int],
   M_rownnz: wp.array[int],
@@ -1478,7 +1342,6 @@ def _copy_M_sparse_awake(
   # Out:
   L_out: wp.array2d[float],
 ):
-  worldid, dofid = wp.tid()
   if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
     return
   rowadr = M_rowadr[dofid]
@@ -1488,12 +1351,7 @@ def _copy_M_sparse_awake(
 
 def copy_M_awake(m: Model, d: Data, M_out: wp.array2d[float], M_in: Optional[wp.array2d[float]] = None):
   """Copies awake rows of M into M_out, leaving sleeping rows untouched."""
-  wp.launch(
-    _copy_M_sparse_awake,
-    dim=(d.nworld, m.nv),
-    inputs=[m.dof_treeid, m.M_rownnz, m.M_rowadr, d.M if M_in is None else M_in, d.tree_awake],
-    outputs=[M_out],
-  )
+  fusion.launch(m, d, _copy_M_sparse_awake, M_in=d.M if M_in is None else M_in, L_out=M_out)
 
 
 @cache_kernel
@@ -1596,7 +1454,7 @@ def _factor_i_sparse(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[floa
   """Sparse L'*D*L factorization of inertia-like matrix M, assumed spd."""
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   block_dim = m.block_dim.factor_LD_sparse_fused if L.device.is_cuda else 1
-  wp.launch(
+  fusion.launch_kernel(
     _factor_LD_sparse_fused(enable_sleep),
     dim=(d.nworld, m.qLD_fused_level_adr.size - 1, block_dim),
     inputs=[
@@ -1714,7 +1572,7 @@ def _factor_blocks(
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   for tile in m.M_tiles:
     if tile.elemid.size == 0:
-      wp.launch(
+      fusion.launch_kernel(
         _small_cholesky_factorize_block(tile.size, enable_sleep),
         dim=(d.nworld, tile.adr.size),
         inputs=[m.dof_treeid, m.M_rowadr, m.qLD_block_adr, M, d.tree_awake, tile.adr],
@@ -1722,7 +1580,7 @@ def _factor_blocks(
         block_dim=m.block_dim.small_cholesky,
       )
     else:
-      wp.launch_tiled(
+      fusion.launch_tiled(
         _tile_cholesky_factorize_block(tile, enable_sleep),
         dim=(d.nworld, tile.adr.size),
         inputs=[m.dof_treeid, m.qLD_block_adr, M, d.tree_awake, tile.elemid, tile.adr],
@@ -1744,26 +1602,28 @@ def factor_m(m: Model, d: Data):
     _factor_i_sparse(m, d, d.M, d.qLD[:, m.qLD_block_total :], d.qLDiagInv)
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _cacc_world(
+  worldid: int,
   # In:
   gravity: wp.array[wp.vec3],
   # Data out:
   cacc_out: wp.array2d[wp.spatial_vector],
 ):
-  worldid = wp.tid()
   cacc_out[worldid, 0] = wp.spatial_vector(wp.vec3(0.0), -gravity[worldid % gravity.shape[0]])
 
 
 def _rne_cacc_world(m: Model, d: Data):
   if m.opt.disableflags & DisableBit.GRAVITY:
-    d.cacc.zero_()
+    fusion.zero(d.cacc)
   else:
-    wp.launch(_cacc_world, dim=[d.nworld], inputs=[m.opt.gravity], outputs=[d.cacc])
+    fusion.launch(m.opt, d, _cacc_world)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nbranch")
 def _cacc_branch(
+  worldid: int,
+  branchid: int,
   # Model:
   body_parentid: wp.array[int],
   body_dofnum: wp.array[int],
@@ -1780,8 +1640,6 @@ def _cacc_branch(
   # Data out:
   cacc_out: wp.array2d[wp.spatial_vector],
 ):
-  worldid, branchid = wp.tid()
-
   start = body_branch_start[branchid]
   end = body_branch_start[branchid + 1]
 
@@ -1800,27 +1658,13 @@ def _cacc_branch(
 
 
 def _rne_cacc_forward(m: Model, d: Data, flg_acc: bool = False):
-  wp.launch(
-    _cacc_branch,
-    dim=(d.nworld, m.nbranch),
-    inputs=[
-      m.body_parentid,
-      m.body_dofnum,
-      m.body_dofadr,
-      m.body_branches,
-      m.body_branch_start,
-      d.qvel,
-      d.qacc,
-      d.cdof,
-      d.cdof_dot,
-      flg_acc,
-    ],
-    outputs=[d.cacc],
-  )
+  fusion.launch(m, d, _cacc_branch, flg_acc=flg_acc)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nbody")
 def _cfrc(
+  worldid: int,
+  bodyid: int,
   # Data in:
   cinert_in: wp.array2d[vec10],
   cvel_in: wp.array2d[wp.spatial_vector],
@@ -1831,7 +1675,6 @@ def _cfrc(
   # Out:
   cfrc_body_out: wp.array2d[wp.spatial_vector],
 ):
-  worldid, bodyid = wp.tid()
   if bodyid == 0:
     cfrc_body_out[worldid, 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     return
@@ -1846,8 +1689,10 @@ def _cfrc(
   cfrc_body_out[worldid, bodyid] = frc
 
 
-@wp.kernel
+@fusion.stage("nworld", "nbody")
 def _cfrc_subtree(
+  worldid: int,
+  bodyid: int,
   # Model:
   body_subtreenum: wp.array[int],
   # In:
@@ -1856,7 +1701,6 @@ def _cfrc_subtree(
   cfrc_int_out: wp.array2d[wp.spatial_vector],
 ):
   """Sums cfrc_body over the subtree, the contiguous body range [b, b + body_subtreenum[b])."""
-  worldid, bodyid = wp.tid()
   if bodyid == 0:  # summed from the tree roots in _cfrc_world
     return
 
@@ -1866,8 +1710,9 @@ def _cfrc_subtree(
   cfrc_int_out[worldid, bodyid] = frc
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _cfrc_world(
+  worldid: int,
   # Model:
   nbody: int,
   body_subtreenum: wp.array[int],
@@ -1876,7 +1721,6 @@ def _cfrc_world(
   # Data out:
   cfrc_int_out: wp.array2d[wp.spatial_vector],
 ):
-  worldid = wp.tid()
   frc = wp.spatial_vector()
   rootid = int(1)
   while rootid < nbody:
@@ -1910,18 +1754,20 @@ def _cfrc_world_tiled(
 def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False, cfrc_body: Optional[wp.array2d[wp.spatial_vector]] = None):
   """Computes cfrc_int: each body's force plus the forces of its subtree."""
   cfrc_body = cfrc_body if cfrc_body is not None else wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
-  wp.launch(_cfrc, dim=[d.nworld, m.nbody], inputs=[d.cinert, d.cvel, d.cacc, d.cfrc_ext, flg_cfrc_ext], outputs=[cfrc_body])
-  wp.launch(_cfrc_subtree, dim=(d.nworld, m.nbody), inputs=[m.body_subtreenum, cfrc_body], outputs=[d.cfrc_int])
+  fusion.launch(m, d, _cfrc, flg_cfrc_ext=flg_cfrc_ext, cfrc_body_out=cfrc_body)
+  fusion.launch(m, d, _cfrc_subtree, cfrc_body_in=cfrc_body)
   if m.nbody > 1 and m.body_tree[1].shape[0] > WORLD_SUM_BLOCK:
-    wp.launch_tiled(
+    fusion.launch_tiled(
       _cfrc_world_tiled, dim=d.nworld, inputs=[d.cfrc_int, m.body_tree[1]], outputs=[d.cfrc_int], block_dim=WORLD_SUM_BLOCK
     )
   else:
-    wp.launch(_cfrc_world, dim=d.nworld, inputs=[m.nbody, m.body_subtreenum, d.cfrc_int], outputs=[d.cfrc_int])
+    fusion.launch(m, d, _cfrc_world)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nv")
 def _qfrc_bias(
+  worldid: int,
+  dofid: int,
   # Model:
   dof_bodyid: wp.array[int],
   # Data in:
@@ -1930,7 +1776,6 @@ def _qfrc_bias(
   # Data out:
   qfrc_bias_out: wp.array2d[float],
 ):
-  worldid, dofid = wp.tid()
   bodyid = dof_bodyid[dofid]
   qfrc_bias_out[worldid, dofid] = wp.dot(cdof_in[worldid, dofid], cfrc_int_in[worldid, bodyid])
 
@@ -1951,11 +1796,13 @@ def rne(m: Model, d: Data, flg_acc: bool = False, cfrc_int_in: Optional[wp.array
   _rne_cacc_world(m, d)
   _rne_cacc_forward(m, d, flg_acc=flg_acc)
   _rne_cfrc(m, d, cfrc_body=cfrc_int_in)
-  wp.launch(_qfrc_bias, dim=[d.nworld, m.nv], inputs=[m.dof_bodyid, d.cdof, d.cfrc_int], outputs=[d.qfrc_bias])
+  fusion.launch(m, d, _qfrc_bias)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nbody")
 def _cfrc_ext(
+  worldid: int,
+  bodyid: int,
   # Model:
   body_rootid: wp.array[int],
   # Data in:
@@ -1965,7 +1812,6 @@ def _cfrc_ext(
   # Data out:
   cfrc_ext_out: wp.array2d[wp.spatial_vector],
 ):
-  worldid, bodyid = wp.tid()
   if bodyid == 0:
     cfrc_ext_out[worldid, 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
   else:
@@ -1975,8 +1821,10 @@ def _cfrc_ext(
     cfrc_ext_out[worldid, bodyid] = support.transform_force(xfrc_applied, subtree_com - xipos)
 
 
-@wp.kernel
+@fusion.stage("nworld", "njmax")
 def _count_equality_constraints(
+  worldid: int,
+  efcid: int,
   # Model:
   eq_type: wp.array[int],
   # Data in:
@@ -1988,8 +1836,6 @@ def _count_equality_constraints(
   ne_weld_out: wp.array[int],
 ):
   """Counts connect and weld equality constraints from efc data."""
-  worldid, efcid = wp.tid()
-
   # Only process rows within the equality constraint range
   if efcid >= ne_in[worldid]:
     return
@@ -2011,8 +1857,10 @@ def _cfrc_ext_equality(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "neq", options={**module_options})
   def kernel(
+    worldid: int,
+    eqid: int,
     # Model:
     body_rootid: wp.array[int],
     site_bodyid: wp.array[int],
@@ -2034,8 +1882,6 @@ def _cfrc_ext_equality(deterministic: bool = False):
     # Data out:
     cfrc_ext_out: wp.array2d[wp.spatial_vector],
   ):
-    worldid, eqid = wp.tid()
-
     ne_connect = ne_connect_in[worldid]
     ne_weld = ne_weld_in[worldid]
     num_connect = ne_connect // 3
@@ -2147,8 +1993,9 @@ def _cfrc_ext_contact(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("naconmax", options={**module_options})
   def kernel(
+    contactid: int,
     # Model:
     opt_cone: int,
     body_rootid: wp.array[int],
@@ -2169,8 +2016,6 @@ def _cfrc_ext_contact(deterministic: bool = False):
     # Data out:
     cfrc_ext_out: wp.array2d[wp.spatial_vector],
   ):
-    contactid = wp.tid()
-
     if contactid >= nacon_in[0]:
       return
 
@@ -2219,8 +2064,10 @@ def _cfrc_ext_tendon_constraint(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "njmax", options={**module_options})
   def kernel(
+    worldid: int,
+    efcid: int,
     # Model:
     eq_type: wp.array[int],
     eq_obj1id: wp.array[int],
@@ -2238,7 +2085,6 @@ def _cfrc_ext_tendon_constraint(deterministic: bool = False):
     # Out:
     ten_frc_out: wp.array2d[float],
   ):
-    worldid, efcid = wp.tid()
     if efcid >= nefc_in[worldid]:
       return
 
@@ -2286,8 +2132,10 @@ def _cfrc_ext_tendon_actuator(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nactuator", options={**module_options})
   def kernel(
+    worldid: int,
+    actid: int,
     # Model:
     actuator_trntype: wp.array[int],
     actuator_trnid: wp.array[wp.vec2i],
@@ -2297,7 +2145,6 @@ def _cfrc_ext_tendon_actuator(deterministic: bool = False):
     # Out:
     ten_frc_out: wp.array2d[float],
   ):
-    worldid, actid = wp.tid()
     if actuator_trntype[actid] != TrnType.TENDON:
       return
 
@@ -2318,8 +2165,10 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = 4 * nwrap
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "ntendon", options={**module_options})
   def kernel(
+    worldid: int,
+    tenid: int,
     # Model:
     body_parentid: wp.array[int],
     body_rootid: wp.array[int],
@@ -2376,8 +2225,6 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     # Data out:
     cfrc_ext_out: wp.array2d[wp.spatial_vector],
   ):
-    worldid, tenid = wp.tid()
-
     # fixed tendon: acts through the joints
     if tendon_type[tenid] == TendonType.FIXED:
       return
@@ -2532,12 +2379,7 @@ def rne_postconstraint(m: Model, d: Data):
   constraints, contacts, and spatial tendons.
   """
   # cfrc_ext = perturb
-  wp.launch(
-    _cfrc_ext,
-    dim=(d.nworld, m.nbody),
-    inputs=[m.body_rootid, d.xfrc_applied, d.xipos, d.subtree_com],
-    outputs=[d.cfrc_ext],
-  )
+  fusion.launch(m, d, _cfrc_ext)
 
   # Equality constraint forces - only if model has equality constraints
   if m.neq > 0:
@@ -2545,156 +2387,38 @@ def rne_postconstraint(m: Model, d: Data):
     ne_connect = wp.zeros((d.nworld,), dtype=int)
     ne_weld = wp.zeros((d.nworld,), dtype=int)
 
-    wp.launch(
-      _count_equality_constraints,
-      dim=(d.nworld, d.njmax),  # TODO(team): launch over max equality constraints
-      inputs=[m.eq_type, d.ne, d.efc.type, d.efc.id],
-      outputs=[ne_connect, ne_weld],
-    )
+    fusion.launch(m, d, _count_equality_constraints, ne_connect_out=ne_connect, ne_weld_out=ne_weld)
 
-    wp.launch(
+    fusion.launch(
+      m,
+      d,
       _cfrc_ext_equality(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-      dim=(d.nworld, m.neq),
-      inputs=[
-        m.body_rootid,
-        m.site_bodyid,
-        m.eq_obj1id,
-        m.eq_obj2id,
-        m.eq_objtype,
-        m.eq_data,
-        d.xpos,
-        d.xquat,
-        d.site_xpos,
-        d.site_xquat,
-        d.subtree_com,
-        d.efc.id,
-        d.efc.force,
-        ne_connect,
-        ne_weld,
-      ],
-      outputs=[d.cfrc_ext],
+      ne_connect_in=ne_connect,
+      ne_weld_in=ne_weld,
     )
 
   # cfrc_ext += contacts
-  wp.launch(
-    _cfrc_ext_contact(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-    dim=(d.naconmax,),
-    inputs=[
-      m.opt.cone,
-      m.body_rootid,
-      m.geom_bodyid,
-      d.subtree_com,
-      d.contact.pos,
-      d.contact.frame,
-      d.contact.friction,
-      d.contact.dim,
-      d.contact.geom,
-      d.contact.efc_address,
-      d.contact.worldid,
-      d.contact.adhesion,
-      d.efc.force,
-      d.njmax,
-      d.nacon,
-    ],
-    outputs=[d.cfrc_ext],
-  )
+  fusion.launch(m, d, _cfrc_ext_contact(bool(m.opt.deterministic & DeterminismType.ATOMICS)))
 
   # cfrc_ext += spatial tendons
   if m.ntendon > 0:
     ten_frc = wp.zeros((d.nworld, m.ntendon), dtype=float)
 
-    wp.launch(
-      _cfrc_ext_tendon_constraint(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-      dim=(d.nworld, d.njmax),
-      inputs=[
-        m.eq_type,
-        m.eq_obj1id,
-        m.eq_obj2id,
-        m.eq_data,
-        m.tendon_range,
-        m.tendon_margin,
-        m.tendon_length0,
-        d.nefc,
-        d.ten_length,
-        d.efc.type,
-        d.efc.id,
-        d.efc.force,
-      ],
-      outputs=[ten_frc],
-    )
+    fusion.launch(m, d, _cfrc_ext_tendon_constraint(bool(m.opt.deterministic & DeterminismType.ATOMICS)), ten_frc_out=ten_frc)
 
-    wp.launch(
-      _cfrc_ext_tendon_actuator(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-      dim=(d.nworld, m.nactuator),
-      inputs=[
-        m.actuator_trntype,
-        m.actuator_trnid,
-        m.actuator_gear,
-        d.actuator_force,
-      ],
-      outputs=[ten_frc],
-    )
+    fusion.launch(m, d, _cfrc_ext_tendon_actuator(bool(m.opt.deterministic & DeterminismType.ATOMICS)), ten_frc_out=ten_frc)
 
     dsbl_spring = bool(m.opt.disableflags & DisableBit.SPRING)
     dsbl_damper = bool(m.opt.disableflags & DisableBit.DAMPER)
 
     det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-    wp.launch(
+    fusion.launch(
+      m,
+      d,
       _cfrc_ext_spatial_tendon(m.nwrap if det_atomics else 0, det_atomics),
-      dim=(d.nworld, m.ntendon),
-      inputs=[
-        m.body_parentid,
-        m.body_rootid,
-        m.body_dofnum,
-        m.body_dofadr,
-        m.jnt_type,
-        m.jnt_dofadr,
-        m.dof_jntid,
-        m.geom_bodyid,
-        m.site_bodyid,
-        m.tendon_type,
-        m.tendon_adr,
-        m.tendon_num,
-        m.tendon_actuatorid,
-        m.tendon_plasticadr,
-        m.ten_J_rownnz,
-        m.ten_J_rowadr,
-        m.ten_J_colind,
-        m.tendon_stiffness,
-        m.tendon_stiffnesspoly,
-        m.tendon_damping,
-        m.tendon_dampingpoly,
-        m.tendon_armature,
-        m.tendon_lengthspring,
-        m.wrap_type,
-        m.wrap_objid,
-        m.wrap_prm,
-        m.actuator_trntype,
-        m.actuator_trnid,
-        m.actuator_damping,
-        m.actuator_dampingpoly,
-        m.actuator_armature,
-        m.actuator_gear,
-        d.qvel,
-        d.plastic,
-        d.qacc,
-        d.site_xpos,
-        d.subtree_com,
-        d.cdof,
-        d.ten_wrapadr,
-        d.ten_wrapnum,
-        d.ten_J,
-        d.ten_length,
-        d.wrap_obj,
-        d.wrap_xpos,
-        d.ten_velocity,
-        d.cvel,
-        d.cdof_dot,
-        dsbl_spring,
-        dsbl_damper,
-        ten_frc,
-      ],
-      outputs=[d.cfrc_ext],
+      dsbl_spring=dsbl_spring,
+      dsbl_damper=dsbl_damper,
+      ten_frc_in=ten_frc,
     )
 
   # forward pass over bodies: compute cacc, cfrc_int
@@ -2918,8 +2642,10 @@ def _tendon_bias(max_ten_J_rownnz: int, deterministic: bool = False):
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = max_ten_J_rownnz
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "ntendon", options={**module_options})
   def kernel(
+    worldid: int,
+    tenid: int,
     # Model:
     body_parentid: wp.array[int],
     body_rootid: wp.array[int],
@@ -2955,8 +2681,6 @@ def _tendon_bias(max_ten_J_rownnz: int, deterministic: bool = False):
     # Out:
     qfrc_out: wp.array2d[float],
   ):
-    worldid, tenid = wp.tid()
-
     armature = util_misc.tendon_armature_total(
       tendon_actuatorid, tendon_armature, actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, worldid, tenid
     )
@@ -3018,55 +2742,20 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
     return
 
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  wp.launch(
-    _tendon_bias(m.max_ten_J_rownnz if det_atomics else 0, det_atomics),
-    dim=(d.nworld, m.ntendon),
-    inputs=[
-      m.body_parentid,
-      m.body_rootid,
-      m.body_dofnum,
-      m.body_dofadr,
-      m.jnt_type,
-      m.jnt_dofadr,
-      m.dof_jntid,
-      m.site_bodyid,
-      m.tendon_type,
-      m.tendon_adr,
-      m.tendon_num,
-      m.tendon_actuatorid,
-      m.ten_J_rownnz,
-      m.ten_J_rowadr,
-      m.ten_J_colind,
-      m.tendon_armature,
-      m.wrap_type,
-      m.wrap_objid,
-      m.wrap_prm,
-      m.actuator_trntype,
-      m.actuator_trnid,
-      m.actuator_armature,
-      m.actuator_gear,
-      d.qvel,
-      d.site_xpos,
-      d.subtree_com,
-      d.cdof,
-      d.ten_J,
-      d.cvel,
-      d.cdof_dot,
-    ],
-    outputs=[qfrc],
-  )
+  fusion.launch(m, d, _tendon_bias(m.max_ten_J_rownnz if det_atomics else 0, det_atomics), qfrc_out=qfrc)
 
 
-@wp.kernel
-def _comvel_root(cvel_out: wp.array2d[wp.spatial_vector]):
-  worldid, elementid = wp.tid()
+@fusion.stage("nworld", "nelement")
+def _comvel_root(worldid: int, elementid: int, cvel_out: wp.array2d[wp.spatial_vector]):
   cvel_out[worldid, 0][elementid] = 0.0
 
 
 @cache_kernel
 def _comvel_branch(enable_sleep: bool = False):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld", "nbranch")
   def kernel(
+    worldid: int,
+    branchid: int,
     # Model:
     body_jntnum: wp.array[int],
     body_jntadr: wp.array[int],
@@ -3083,8 +2772,6 @@ def _comvel_branch(enable_sleep: bool = False):
     cvel_out: wp.array2d[wp.spatial_vector],
     cdof_dot_out: wp.array2d[wp.spatial_vector],
   ):
-    worldid, branchid = wp.tid()
-
     start = body_branch_start[branchid]
     end = body_branch_start[branchid + 1]
 
@@ -3155,25 +2842,9 @@ def com_vel(m: Model, d: Data):
   derivative for each body.
   """
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
-  wp.launch(_comvel_root, dim=(d.nworld, 6), inputs=[], outputs=[d.cvel])
+  fusion.launch(m, d, _comvel_root, dim=(d.nworld, 6))
 
-  wp.launch(
-    _comvel_branch(enable_sleep),
-    dim=(d.nworld, m.nbranch),
-    inputs=[
-      m.body_jntnum,
-      m.body_jntadr,
-      m.body_dofadr,
-      m.body_treeid,
-      m.jnt_type,
-      m.body_branches,
-      m.body_branch_start,
-      d.qvel,
-      d.cdof,
-      d.tree_awake,
-    ],
-    outputs=[d.cvel, d.cdof_dot],
-  )
+  fusion.launch(m, d, _comvel_branch(enable_sleep))
 
 
 @cache_kernel
@@ -3629,8 +3300,11 @@ def _transmission_body_moment(nmaxpyramid: int, deterministic: bool = False):
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = 2 * nmaxpyramid
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nacttrnbody", "naconmax", "nv", options={**module_options})
   def kernel(
+    trnbodyid: int,
+    conid: int,
+    dofid: int,
     # Model:
     opt_cone: int,
     body_parentid: wp.array[int],
@@ -3664,7 +3338,6 @@ def _transmission_body_moment(nmaxpyramid: int, deterministic: bool = False):
     # Out:
     actuator_trntype_body_ncon_out: wp.array2d[int],
   ):
-    trnbodyid, conid, dofid = wp.tid()
     actid = actuator_trntype_body_adr[trnbodyid]
     bodyid = actuator_trnid[actid][0]
 
@@ -3768,8 +3441,11 @@ def _transmission_body_moment(nmaxpyramid: int, deterministic: bool = False):
   return kernel
 
 
-@wp.kernel
+@fusion.stage("nworld", "nacttrnbody", "nv")
 def _transmission_body_moment_scale(
+  worldid: int,
+  trnbodyid: int,
+  dofid: int,
   # Model:
   actuator_trntype_body_adr: wp.array[int],
   # Data in:
@@ -3779,8 +3455,6 @@ def _transmission_body_moment_scale(
   # Data out:
   actuator_moment_out: wp.array2d[float],
 ):
-  worldid, trnbodyid, dofid = wp.tid()
-
   ncon = actuator_trntype_body_ncon_in[worldid, trnbodyid]
 
   if ncon > 0:
@@ -3799,7 +3473,7 @@ def transmission(m: Model, d: Data):
   # TODO(team): investigate pre-computing moment_rownnz, moment_rowadr, moment_colind
   moment_nnz = wp.zeros((d.nworld,), dtype=int)
 
-  wp.launch(
+  fusion.launch_kernel(
     _transmission(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
     dim=(d.nworld, m.nactuator),
     inputs=[
@@ -3840,46 +3514,16 @@ def transmission(m: Model, d: Data):
     ncon = wp.zeros((d.nworld, m.nacttrnbody), dtype=int)
 
     det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-    wp.launch(
+    fusion.launch(
+      m,
+      d,
       _transmission_body_moment(m.nmaxpyramid if det_atomics else 0, det_atomics),
-      dim=(m.nacttrnbody, d.naconmax, m.nv),
-      inputs=[
-        m.opt.cone,
-        m.body_parentid,
-        m.body_rootid,
-        m.dof_bodyid,
-        m.geom_bodyid,
-        m.actuator_trnid,
-        m.body_isdofancestor,
-        m.actuator_trntype_body_adr,
-        d.subtree_com,
-        d.cdof,
-        d.moment_rowadr,
-        d.contact.dist,
-        d.contact.pos,
-        d.contact.frame,
-        d.contact.includemargin,
-        d.contact.dim,
-        d.contact.geom,
-        d.contact.efc_address,
-        d.contact.worldid,
-        d.efc.J_rownnz,
-        d.efc.J_rowadr,
-        d.efc.J_colind,
-        d.efc.J,
-        d.nacon,
-        m.is_sparse,
-      ],
-      outputs=[d.actuator_moment, ncon],
+      efc_is_sparse=m.is_sparse,
+      actuator_trntype_body_ncon_out=ncon,
     )
 
     # scale moments
-    wp.launch(
-      _transmission_body_moment_scale,
-      dim=(d.nworld, m.nacttrnbody, m.nv),
-      inputs=[m.actuator_trntype_body_adr, d.moment_rowadr, ncon],
-      outputs=[d.actuator_moment],
-    )
+    fusion.launch(m, d, _transmission_body_moment_scale, actuator_trntype_body_ncon_in=ncon)
 
 
 @wp.func
@@ -3933,8 +3577,10 @@ def _solve_LD_sparse_update_fn(
 
 @cache_kernel
 def _solve_LD_sparse_copy(enable_sleep: bool = False):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld", "nv")
   def kernel(
+    worldid: int,
+    dofid: int,
     # Model:
     dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
@@ -3945,7 +3591,6 @@ def _solve_LD_sparse_copy(enable_sleep: bool = False):
     # Out:
     x_out: wp.array2d[float],
   ):
-    worldid, dofid = wp.tid()
     if wp.static(enable_sleep):
       if qLD_block_adr[dofid] == Q_LD_BLOCK_SPARSE and _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
         x_out[worldid, dofid] = 0.0
@@ -3957,8 +3602,10 @@ def _solve_LD_sparse_copy(enable_sleep: bool = False):
 
 @cache_kernel
 def _solve_LD_sparse_diag(enable_sleep: bool = False):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld", "nv")
   def kernel(
+    worldid: int,
+    dofid: int,
     # Model:
     dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
@@ -3970,7 +3617,6 @@ def _solve_LD_sparse_diag(enable_sleep: bool = False):
     # Out:
     x_out: wp.array2d[float],
   ):
-    worldid, dofid = wp.tid()
     if wp.static(enable_sleep):
       if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
         return
@@ -3985,8 +3631,10 @@ def _solve_LD_sparse_level(up: bool, enable_sleep: bool = False, deterministic: 
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "size", options={**module_options})
   def kernel(
+    worldid: int,
+    nodeid: int,
     # Model:
     dof_treeid: wp.array[int],
     # Data in:
@@ -3998,7 +3646,6 @@ def _solve_LD_sparse_level(up: bool, enable_sleep: bool = False, deterministic: 
     # Out:
     x_out: wp.array2d[float],
   ):
-    worldid, nodeid = wp.tid()
     update = qLD_updates_[nodeid]
     if wp.static(enable_sleep):
       if _tree_asleep(tree_awake_in, worldid, dof_treeid[update[0]]):
@@ -4104,33 +3751,31 @@ def _solve_LD_sparse(
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   if m.opt.deterministic & DeterminismType.ATOMICS:
     x_in = x_scratch if x_scratch is not None else wp.empty_like(x)
-    wp.launch(
-      _solve_LD_sparse_copy(enable_sleep),
-      dim=(d.nworld, m.nv),
-      inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, y],
-      outputs=[x],
-    )
+    fusion.launch(m, d, _solve_LD_sparse_copy(enable_sleep), y_in=y, x_out=x)
     for qLD_updates in reversed(m.qLD_updates):
-      wp.copy(x_in, x)
-      wp.launch(
+      fusion.copy(x_in, x)
+      fusion.launch(
+        m,
+        d,
         _solve_LD_sparse_level(True, enable_sleep, True),
         dim=(d.nworld, qLD_updates.size),
-        inputs=[m.dof_treeid, d.tree_awake, L, qLD_updates, x_in],
-        outputs=[x],
+        L_in=L,
+        qLD_updates_=qLD_updates,
+        x_in=x_in,
+        x_out=x,
       )
-    wp.launch(
-      _solve_LD_sparse_diag(enable_sleep),
-      dim=(d.nworld, m.nv),
-      inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, D, x],
-      outputs=[x],
-    )
+    fusion.launch(m, d, _solve_LD_sparse_diag(enable_sleep), D_in=D, x_in=x, x_out=x)
     for qLD_updates in m.qLD_updates:
-      wp.copy(x_in, x)
-      wp.launch(
+      fusion.copy(x_in, x)
+      fusion.launch(
+        m,
+        d,
         _solve_LD_sparse_level(False, enable_sleep, True),
         dim=(d.nworld, qLD_updates.size),
-        inputs=[m.dof_treeid, d.tree_awake, L, qLD_updates, x_in],
-        outputs=[x],
+        L_in=L,
+        qLD_updates_=qLD_updates,
+        x_in=x_in,
+        x_out=x,
       )
     return
 
@@ -4141,7 +3786,7 @@ def _solve_LD_sparse(
     # Fallback for CPU
     dim_block = 1
 
-  wp.launch(
+  fusion.launch_kernel(
     _solve_LD_sparse_fused(m.nv, nlevels, enable_sleep),
     dim=(d.nworld, dim_block),
     inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
@@ -4259,7 +3904,7 @@ def _solve_blocks(
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   for tile in m.M_tiles:
     if tile.elemid.size == 0:
-      wp.launch(
+      fusion.launch_kernel(
         _small_cholesky_solve_block(tile.size, enable_sleep),
         dim=(d.nworld, tile.adr.size),
         inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, tile.adr, D, L, y],
@@ -4270,7 +3915,7 @@ def _solve_blocks(
       # The triangular back-substitution is largely sequential, so large blocks prefer fewer threads
       # for better occupancy while moderate blocks still want a couple warps (16/27->64, 60->32).
       block_dim = m.block_dim.cholesky_solve if tile.size <= 40 else 32
-      wp.launch_tiled(
+      fusion.launch_tiled(
         _tile_cholesky_solve_block(tile, enable_sleep),
         dim=(d.nworld, tile.adr.size),
         inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, tile.adr, L, y],
@@ -4334,8 +3979,10 @@ def solve_m(m: Model, d: Data, x: wp.array2d[float], y: wp.array2d[float], x_scr
   solve_LD(m, d, d.qLD, d.qLDiagInv, x, y, x_scratch=x_scratch)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nv")
 def _store_inv_m_column(
+  worldid: int,
+  dofid: int,
   # Model:
   dof_treeid: wp.array[int],
   tree_dofadr: wp.array[int],
@@ -4349,7 +3996,6 @@ def _store_inv_m_column(
   unit_out: wp.array2d[float],
 ):
   """Stores column colid of each tree's inverse block and sets the next column's unit vector."""
-  worldid, dofid = wp.tid()
   treeid = dof_treeid[dofid]
   start = tree_dofadr[treeid]
   size = tree_dofnum[treeid]
@@ -4376,12 +4022,7 @@ def inv_m(m: Model, d: Data, Minv: wp.array2d[float]):
   for colid in range(-1, m.Minv_block_dofmax):
     if colid >= 0:
       solve_m(m, d, col, unit)
-    wp.launch(
-      _store_inv_m_column,
-      dim=(d.nworld, m.nv),
-      inputs=[m.dof_treeid, m.tree_dofadr, m.tree_dofnum, m.Minv_block_adr, colid, col],
-      outputs=[Minv, unit],
-    )
+    fusion.launch(m, d, _store_inv_m_column, colid=colid, col_in=col, Minv_out=Minv, unit_out=unit)
 
 
 @cache_kernel
@@ -4508,7 +4149,7 @@ def _factor_solve_blocks(
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   for tile in m.M_tiles:
     if tile.elemid.size == 0:
-      wp.launch(
+      fusion.launch_kernel(
         _small_cholesky_factorize_solve_block(tile.size, enable_sleep),
         dim=(d.nworld, tile.adr.size),
         inputs=[m.dof_treeid, m.M_rowadr, m.qLD_block_adr, M, d.tree_awake, tile.adr, y],
@@ -4516,7 +4157,7 @@ def _factor_solve_blocks(
         block_dim=m.block_dim.small_cholesky,
       )
     else:
-      wp.launch_tiled(
+      fusion.launch_tiled(
         _tile_cholesky_factorize_solve_block(tile, enable_sleep, store_factor),
         dim=(d.nworld, tile.adr.size),
         inputs=[m.dof_treeid, m.qLD_block_adr, M, d.tree_awake, tile.elemid, tile.adr, y],
@@ -4553,8 +4194,9 @@ def factor_solve_i(m, d, M, L, D, x, y, store_factor: bool = True):
 def _factor_solve_lu_sparse_fused(nv: int, enable_sleep: bool = False):
   """Fused sparse LU factorization and solve in a single kernel."""
 
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld")
   def kernel(
+    worldid: int,
     # Model:
     dof_treeid: wp.array[int],
     D_rownnz: wp.array[int],
@@ -4569,7 +4211,6 @@ def _factor_solve_lu_sparse_fused(nv: int, enable_sleep: bool = False):
     qacc_out: wp.array2d[float],
     qLU_out: wp.array2d[float],
   ):
-    worldid = wp.tid()
     NV = wp.static(nv)
 
     # Phase 1: LU factorization (in-place on qLU_out)
@@ -4685,16 +4326,13 @@ def factor_solve_lu(m: Model, d: Data, qLU: wp.array2d[float], qacc: wp.array2d[
     qfrc: input right-hand side.
   """
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
-  wp.launch(
-    _factor_solve_lu_sparse_fused(m.nv, enable_sleep),
-    dim=(d.nworld,),
-    inputs=[m.dof_treeid, m.D_rownnz, m.D_rowadr, m.D_diag, m.D_colind, d.tree_awake, qfrc],
-    outputs=[qacc, qLU],
-  )
+  fusion.launch(m, d, _factor_solve_lu_sparse_fused(m.nv, enable_sleep), qfrc=qfrc, qacc_out=qacc, qLU_out=qLU)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nbody")
 def _subtree_vel_forward(
+  worldid: int,
+  bodyid: int,
   # Model:
   body_rootid: wp.array[int],
   body_mass: wp.array2d[float],
@@ -4708,7 +4346,6 @@ def _subtree_vel_forward(
   body_mom_out: wp.array2d[wp.spatial_vector],
 ):
   """Per-body angular momentum about the body com (top) and linear momentum (bottom)."""
-  worldid, bodyid = wp.tid()
   body_mass_id = worldid % body_mass.shape[0]
   body_inertia_id = worldid % body_inertia.shape[0]
 
@@ -4728,8 +4365,10 @@ def _subtree_vel_forward(
   body_mom_out[worldid, bodyid] = wp.spatial_vector(ximat @ dv, body_mass[body_mass_id, bodyid] * lin)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nbody")
 def _subtree_momentum(
+  worldid: int,
+  bodyid: int,
   # Model:
   body_subtreemass: wp.array2d[float],
   body_subtreenum: wp.array[int],
@@ -4747,7 +4386,6 @@ def _subtree_momentum(
   Sums over the contiguous body range [b, b + body_subtreenum[b]). The com velocity term drops out
   of sum_j m_j (x_j - c) x (v_j - v_c) since sum_j m_j (x_j - c) = 0.
   """
-  worldid, bodyid = wp.tid()
   if bodyid == 0:  # shifted from the tree roots in _subtree_momentum_world
     return
   com = subtree_com_in[worldid, bodyid]
@@ -4765,8 +4403,9 @@ def _subtree_momentum(
   subtree_angmom_out[worldid, bodyid] = angmom
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _subtree_momentum_world(
+  worldid: int,
   # Model:
   nbody: int,
   body_subtreemass: wp.array2d[float],
@@ -4782,7 +4421,6 @@ def _subtree_momentum_world(
   subtree_angmom_out: wp.array2d[wp.vec3],
 ):
   """World body: the tree roots' momenta shifted to the world subtree com."""
-  worldid = wp.tid()
   subtreemass_id = worldid % body_subtreemass.shape[0]
 
   linmom = wp.spatial_bottom(body_mom_in[worldid, 0])
@@ -4812,24 +4450,9 @@ def subtree_vel(m: Model, d: Data):
   about the subtree center of mass.
   """
   body_mom = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
-  wp.launch(
-    _subtree_vel_forward,
-    dim=(d.nworld, m.nbody),
-    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.xiquat, d.subtree_com, d.cvel],
-    outputs=[body_mom],
-  )
-  wp.launch(
-    _subtree_momentum,
-    dim=(d.nworld, m.nbody),
-    inputs=[m.body_subtreemass, m.body_subtreenum, d.xipos, d.subtree_com, body_mom],
-    outputs=[d.subtree_linvel, d.subtree_angmom],
-  )
-  wp.launch(
-    _subtree_momentum_world,
-    dim=d.nworld,
-    inputs=[m.nbody, m.body_subtreemass, m.body_subtreenum, d.subtree_com, d.subtree_linvel, d.subtree_angmom, body_mom],
-    outputs=[d.subtree_linvel, d.subtree_angmom],
-  )
+  fusion.launch(m, d, _subtree_vel_forward, body_mom_out=body_mom)
+  fusion.launch(m, d, _subtree_momentum, body_mom_in=body_mom)
+  fusion.launch(m, d, _subtree_momentum_world, body_mom_in=body_mom)
 
 
 @cache_kernel
@@ -4838,8 +4461,10 @@ def _joint_tendon(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nwrap", options={**module_options})
   def kernel(
+    worldid: int,
+    wrapid: int,
     # Model:
     jnt_qposadr: wp.array[int],
     jnt_dofadr: wp.array[int],
@@ -4856,8 +4481,6 @@ def _joint_tendon(deterministic: bool = False):
     ten_J_out: wp.array2d[float],
     ten_length_out: wp.array2d[float],
   ):
-    worldid, wrapid = wp.tid()
-
     tenid = tendon_jnt_adr[wrapid]
     wrapjntid = wrap_jnt_adr[wrapid]
     wrapobjid = wrap_objid[wrapjntid]
@@ -4932,8 +4555,10 @@ def _spatial_site_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = 2 * max_ten_J_rownnz
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nelement", options={**module_options})
   def kernel(
+    worldid: int,
+    elementid: int,
     # Model:
     body_parentid: wp.array[int],
     body_rootid: wp.array[int],
@@ -4955,8 +4580,6 @@ def _spatial_site_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
     ten_J_out: wp.array2d[float],
     ten_length_out: wp.array2d[float],
   ):
-    worldid, elementid = wp.tid()
-
     # site pairs
     site_pair_adr = wrap_site_pair_adr[elementid]
     tenid = tendon_site_pair_adr[elementid]
@@ -5024,8 +4647,10 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = 4 * max_ten_J_rownnz
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nelement", options={**module_options})
   def kernel(
+    worldid: int,
+    elementid: int,
     # Model:
     body_parentid: wp.array[int],
     body_rootid: wp.array[int],
@@ -5055,7 +4680,6 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
     # Out:
     wrap_geom_xpos_out: wp.array2d[wp.spatial_vector],
   ):
-    worldid, elementid = wp.tid()
     wrap_adr = wrap_geom_adr[elementid]
     tenid = tendon_geom_adr[elementid]
 
@@ -5259,8 +4883,10 @@ def _write_wrap_point(
   wrap_obj_out[worldid, row][col] = objid
 
 
-@wp.kernel
+@fusion.stage("nworld", "ntendon")
 def _spatial_tendon_wrapnum(
+  worldid: int,
+  tenid: int,
   # Model:
   tendon_type: wp.array[int],
   tendon_adr: wp.array[int],
@@ -5272,8 +4898,6 @@ def _spatial_tendon_wrapnum(
   # Data out:
   ten_wrapnum_out: wp.array2d[int],
 ):
-  worldid, tenid = wp.tid()
-
   # fixed tendon has no wrap points
   if tendon_type[tenid] == TendonType.FIXED:
     ten_wrapnum_out[worldid, tenid] = 0
@@ -5295,8 +4919,9 @@ def _spatial_tendon_wrapnum(
   ten_wrapnum_out[worldid, tenid] = wrapnum
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _spatial_tendon_wrapadr(
+  worldid: int,
   # Model:
   ntendon: int,
   # Data in:
@@ -5304,15 +4929,16 @@ def _spatial_tendon_wrapadr(
   # Data out:
   ten_wrapadr_out: wp.array2d[int],
 ):
-  worldid = wp.tid()
   wrapcount = int(0)
   for i in range(ntendon):
     ten_wrapadr_out[worldid, i] = wrapcount
     wrapcount += ten_wrapnum_in[worldid, i]
 
 
-@wp.kernel
+@fusion.stage("nworld", "ntendon")
 def _spatial_tendon_wrap(
+  worldid: int,
+  tenid: int,
   # Model:
   tendon_type: wp.array[int],
   tendon_adr: wp.array[int],
@@ -5330,8 +4956,6 @@ def _spatial_tendon_wrap(
   wrap_obj_out: wp.array2d[wp.vec2i],
   wrap_xpos_out: wp.array2d[wp.spatial_vector],
 ):
-  worldid, tenid = wp.tid()
-
   # zero the unused tail of the path, split across the tendon threads of this world
   ntendon = ten_wrapadr_in.shape[1]
   total = ten_wrapadr_in[worldid, ntendon - 1] + ten_wrapnum_in[worldid, ntendon - 1]
@@ -5418,112 +5042,35 @@ def tendon(m: Model, d: Data):
   if not m.ntendon:
     return
 
-  d.ten_length.zero_()
-  d.ten_J.zero_()
+  fusion.zero(d.ten_length)
+  fusion.zero(d.ten_J)
 
   # Cartesian 3D points for geom wrap points
   wrap_geom_xpos = wp.empty((d.nworld, m.nwrap), dtype=wp.spatial_vector)
 
   # process joint tendons
-  wp.launch(
-    _joint_tendon(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-    dim=(d.nworld, m.wrap_jnt_adr.size),
-    inputs=[
-      m.jnt_qposadr,
-      m.jnt_dofadr,
-      m.ten_J_rownnz,
-      m.ten_J_rowadr,
-      m.ten_J_colind,
-      m.wrap_objid,
-      m.wrap_prm,
-      m.tendon_jnt_adr,
-      m.wrap_jnt_adr,
-      d.qpos,
-    ],
-    outputs=[d.ten_J, d.ten_length],
-  )
+  fusion.launch(m, d, _joint_tendon(bool(m.opt.deterministic & DeterminismType.ATOMICS)), dim=(d.nworld, m.wrap_jnt_adr.size))
 
   spatial_site = m.wrap_site_pair_adr.size > 0
   spatial_geom = m.wrap_geom_adr.size > 0
 
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
   # process spatial site tendons
-  wp.launch(
-    _spatial_site_tendon(m.max_ten_J_rownnz if det_atomics else 0, det_atomics),
-    dim=(d.nworld, m.wrap_site_pair_adr.size),
-    inputs=[
-      m.body_parentid,
-      m.body_rootid,
-      m.body_dofnum,
-      m.body_dofadr,
-      m.site_bodyid,
-      m.ten_J_rownnz,
-      m.ten_J_rowadr,
-      m.ten_J_colind,
-      m.wrap_objid,
-      m.tendon_site_pair_adr,
-      m.wrap_site_pair_adr,
-      m.wrap_pulley_scale,
-      d.site_xpos,
-      d.subtree_com,
-      d.cdof,
-    ],
-    outputs=[d.ten_J, d.ten_length],
+  fusion.launch(
+    m, d, _spatial_site_tendon(m.max_ten_J_rownnz if det_atomics else 0, det_atomics), dim=(d.nworld, m.wrap_site_pair_adr.size)
   )
 
   # process spatial geom tendons
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _spatial_geom_tendon(m.max_ten_J_rownnz if det_atomics else 0, det_atomics),
     dim=(d.nworld, m.wrap_geom_adr.size),
-    inputs=[
-      m.body_parentid,
-      m.body_rootid,
-      m.body_dofnum,
-      m.body_dofadr,
-      m.geom_bodyid,
-      m.geom_size,
-      m.site_bodyid,
-      m.ten_J_rownnz,
-      m.ten_J_rowadr,
-      m.ten_J_colind,
-      m.wrap_type,
-      m.wrap_objid,
-      m.wrap_prm,
-      m.tendon_geom_adr,
-      m.wrap_geom_adr,
-      m.wrap_pulley_scale,
-      d.geom_xpos,
-      d.geom_xquat,
-      d.site_xpos,
-      d.subtree_com,
-      d.cdof,
-    ],
-    outputs=[d.ten_J, d.ten_length, wrap_geom_xpos],
+    wrap_geom_xpos_out=wrap_geom_xpos,
   )
 
   if spatial_site or spatial_geom:
     # wrap path: count points per (world, tendon), scan per world, then write per (world, tendon)
-    wp.launch(
-      _spatial_tendon_wrapnum,
-      dim=(d.nworld, m.ntendon),
-      inputs=[m.tendon_type, m.tendon_adr, m.tendon_num, m.wrap_type, m.tendon_geom_wrapadr, wrap_geom_xpos],
-      outputs=[d.ten_wrapnum],
-    )
-    wp.launch(_spatial_tendon_wrapadr, dim=d.nworld, inputs=[m.ntendon, d.ten_wrapnum], outputs=[d.ten_wrapadr])
-    wp.launch(
-      _spatial_tendon_wrap,
-      dim=(d.nworld, m.ntendon),
-      inputs=[
-        m.tendon_type,
-        m.tendon_adr,
-        m.tendon_num,
-        m.wrap_type,
-        m.wrap_objid,
-        m.tendon_geom_wrapadr,
-        d.site_xpos,
-        d.ten_wrapadr,
-        d.ten_wrapnum,
-        wrap_geom_xpos,
-      ],
-      outputs=[d.wrap_obj, d.wrap_xpos],
-    )
+    fusion.launch(m, d, _spatial_tendon_wrapnum, wrap_geom_xpos_in=wrap_geom_xpos)
+    fusion.launch(m, d, _spatial_tendon_wrapadr)
+    fusion.launch(m, d, _spatial_tendon_wrap, wrap_geom_xpos_in=wrap_geom_xpos)

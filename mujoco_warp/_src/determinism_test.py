@@ -36,6 +36,7 @@ from mujoco_warp import test_data
 from mujoco_warp._src import bvh
 from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
+from mujoco_warp._src import fusion
 from mujoco_warp._src import render_util
 from mujoco_warp._src import set_const
 from mujoco_warp._src import sleep
@@ -152,10 +153,12 @@ def _record_launches():
     def wrapper(*args, **kwargs):
       kernel = kwargs["kernel"] if "kernel" in kwargs else args[0]
       dim = kwargs["dim"] if "dim" in kwargs else args[1]
-      module = kernel.func.__module__.rsplit(".", 1)[-1]
-      factory = kernel.func.__qualname__.split(".<locals>")[0]
       mode = kernel.module.options.get("deterministic", wp.DeterministicMode.NOT_GUARANTEED)
-      launches.append((f"{module}.{factory}", mode, bool(np.prod(dim))))
+      # a fused kernel runs the bodies of several stages
+      for func in [s.func.func for s in getattr(kernel, "stages", ())] or [kernel.func]:
+        module = func.__module__.rsplit(".", 1)[-1]
+        factory = func.__qualname__.split(".<locals>")[0]
+        launches.append((f"{module}.{factory}", mode, bool(np.prod(dim))))
       return launch(*args, **kwargs)
 
     return wrapper
@@ -164,13 +167,19 @@ def _record_launches():
     yield launches
 
 
+def _flushed_snapshot(arrays):
+  """Snapshots arrays after launching the stages queued so far, as spies read mid-step."""
+  fusion.flush()
+  return _snapshot(arrays)
+
+
 def _spy(module, name, tag, events, d):
   """Patches module.name to append (tag, called with d, Data snapshot) to events after each call."""
   fn = vars(module)[name]
 
   def wrapper(*args, **kwargs):
     out = fn(*args, **kwargs)
-    events.append((tag, any(arg is d for arg in args), _snapshot(_flatten(d, "d"))))
+    events.append((tag, any(arg is d for arg in args), _flushed_snapshot(_flatten(d, "d"))))
     return out
 
   return mock.patch.object(module, name, wrapper)
@@ -193,9 +202,9 @@ class _Replay:
 
   def _wrap(self, stage, fn):
     def wrapper(*args, **kwargs):
-      pre = _snapshot(_flatten(self._d, "d"))
+      pre = _flushed_snapshot(_flatten(self._d, "d"))
       fn(*args, **kwargs)
-      post = _snapshot(_flatten(self._d, "d"))
+      post = _flushed_snapshot(_flatten(self._d, "d"))
       if self._recording:
         self._calls.append((stage, pre, post))
         return
@@ -602,7 +611,10 @@ class DeterminismTest(parameterized.TestCase):
       rc1 = render_util.create_render_context(mjm, nworld=2, cam_res=(8, 8), deterministic=True)
       self.assertIn(("bvh.accumulate_flex_vertex_normals", _RUN_TO_RUN, True), launches)
       self.assertEqual(
-        _bitwise_diff(_snapshot(_flatten(rc.flex_group_root, "root")), _snapshot(_flatten(rc1.flex_group_root, "root"))), []
+        _bitwise_diff(
+          _flushed_snapshot(_flatten(rc.flex_group_root, "root")), _flushed_snapshot(_flatten(rc1.flex_group_root, "root"))
+        ),
+        [],
       )
     self._check_scene(mjm, m, d, covers, extra=lambda m, d: bvh.refit_bvh(m, d, rc), rc=rc)
 
@@ -1060,9 +1072,9 @@ class DeterminismTest(parameterized.TestCase):
     _perturb(d)
     m.opt.deterministic = DeterminismType.ATOMICS
     m.opt.graph_conditional = graph_conditional
-    init = _snapshot(_flatten(d, "d"))
+    init = _flushed_snapshot(_flatten(d, "d"))
     mjw.step(m, d)
-    ref = _snapshot(_flatten(d, "d"))
+    ref = _flushed_snapshot(_flatten(d, "d"))
     self.assertFalse(np.array_equal(ref["d.qacc"][0], ref["d.qacc"][1]))
 
     with wp.ScopedCapture() as capture:
@@ -1070,7 +1082,7 @@ class DeterminismTest(parameterized.TestCase):
     for _ in range(_NREPEAT):
       _restore(_flatten(d, "d"), init)
       wp.capture_launch(capture.graph)
-      self.assertEqual(_bitwise_diff(ref, _snapshot(_flatten(d, "d"))), [])
+      self.assertEqual(_bitwise_diff(ref, _flushed_snapshot(_flatten(d, "d"))), [])
 
   def test_mode_toggle(self):
     """Changing opt.deterministic between steps switches kernels without stale state."""
@@ -1115,7 +1127,7 @@ class DeterminismTest(parameterized.TestCase):
       ctrl_noise=0.5,
     )
     _perturb(d)
-    init = _snapshot(_flatten(d, "d"))
+    init = _flushed_snapshot(_flatten(d, "d"))
     modes = (DeterminismType.NONE, DeterminismType.ATOMICS, DeterminismType.NONE, DeterminismType.ALL, DeterminismType.NONE)
     for mode in modes:
       m.opt.deterministic = mode
@@ -1123,13 +1135,13 @@ class DeterminismTest(parameterized.TestCase):
         mjw.step(m, d)
       for name, launch_mode, _ in launches:
         self.assertEqual(launch_mode == _RUN_TO_RUN, bool(mode & DeterminismType.ATOMICS) and name in _DET_FACTORIES, name)
-    toggled = _snapshot(_flatten(d, "d"))
+    toggled = _flushed_snapshot(_flatten(d, "d"))
 
     _restore(_flatten(d, "d"), init)
     m.opt.deterministic = DeterminismType.NONE
     for _ in modes:
       mjw.step(m, d)
-    none = _snapshot(_flatten(d, "d"))
+    none = _flushed_snapshot(_flatten(d, "d"))
 
     for field in ("qpos", "qvel", "qacc", "actuator_force", "qfrc_constraint"):
       np.testing.assert_allclose(toggled[f"d.{field}"], none[f"d.{field}"], rtol=1e-4, atol=1e-4, err_msg=field)

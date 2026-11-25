@@ -17,6 +17,7 @@ from typing import Tuple
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src import math
 from mujoco_warp._src import sort
 from mujoco_warp._src import support
@@ -34,8 +35,9 @@ from mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _zero_constraint_counts(
+  worldid: int,
   # Data out:
   ne_out: wp.array[int],
   nf_out: wp.array[int],
@@ -45,8 +47,6 @@ def _zero_constraint_counts(
   # Out:
   efc_nnz_out: wp.array[int],
 ):
-  worldid = wp.tid()
-
   # Zero all constraint counters
   ne_out[worldid] = 0
   nf_out[worldid] = 0
@@ -104,8 +104,9 @@ def _reserve_nnz(
 
 @cache_kernel
 def _efc_nnz_overflow(warn_overflow: int):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld")
   def kernel(
+    worldid: int,
     # Data in:
     njmax_nnz_in: int,
     # In:
@@ -113,8 +114,6 @@ def _efc_nnz_overflow(warn_overflow: int):
     # Data out:
     overflow_out: wp.array[int],
   ):
-    worldid = wp.tid()
-
     # the counter only exceeds njmax_nnz once a reservation failed and its rows were dropped
     if efc_nnz_in[worldid] > njmax_nnz_in:
       if wp.static(bool(warn_overflow & OverflowType.NJMAX_NNZ)):
@@ -287,8 +286,10 @@ def _efc_row(
 
 @cache_kernel
 def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "neqconnect", options={"default_grid_stride": False})
   def kernel(
+    worldid: int,
+    eqconnectid: int,
     # Model:
     nv: int,
     nsite: int,
@@ -349,7 +350,6 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_nnz_out: wp.array[int],
   ):
     """Calculates constraint rows for connect equality constraints."""
-    worldid, eqconnectid = wp.tid()
     eqid = eq_connect_adr[eqconnectid]
 
     if not eq_active_in[worldid, eqid]:
@@ -624,8 +624,10 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 @cache_kernel
 def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "neqjnt", options={"default_grid_stride": False})
   def kernel(
+    worldid: int,
+    eqjntid: int,
     # Model:
     nv: int,
     opt_timestep: wp.array[float],
@@ -667,7 +669,6 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # Out:
     efc_nnz_out: wp.array[int],
   ):
-    worldid, eqjntid = wp.tid()
     eqid = eq_jnt_adr[eqjntid]
 
     if not eq_active_in[worldid, eqid]:
@@ -770,8 +771,10 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 @cache_kernel
 def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "neqten", options={"default_grid_stride": False})
   def kernel(
+    worldid: int,
+    eqtenid: int,
     # Model:
     nv: int,
     opt_timestep: wp.array[float],
@@ -815,7 +818,6 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # Out:
     efc_nnz_out: wp.array[int],
   ):
-    worldid, eqtenid = wp.tid()
     eqid = eq_ten_adr[eqtenid]
 
     if not eq_active_in[worldid, eqid]:
@@ -971,8 +973,10 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 @cache_kernel
 def _equality_flex_alloc(is_sparse: bool, newton: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld", "neqflex")
   def kernel(
+    worldid: int,
+    eqflexid: int,
     # Model:
     flex_edgeadr: wp.array[int],
     flex_edgenum: wp.array[int],
@@ -999,7 +1003,6 @@ def _equality_flex_alloc(is_sparse: bool, newton: bool):
     block_out holds the first efc row, sparse Jacobian address, and jtdaj block of the rows, or -1
     as first efc row if no rows were allocated.
     """
-    worldid, eqflexid = wp.tid()
     block_out[worldid, eqflexid] = wp.vec3i(-1, 0, 0)
 
     eqid = eq_flex_adr[eqflexid]
@@ -1045,8 +1048,11 @@ def _equality_flex_alloc(is_sparse: bool, newton: bool):
 
 @cache_kernel
 def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "neqflex", "nedge", options={"default_grid_stride": False})
   def kernel(
+    worldid: int,
+    eqflexid: int,
+    edgeid: int,
     # Model:
     nv: int,
     opt_timestep: wp.array[float],
@@ -1087,8 +1093,6 @@ def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
   ):
-    worldid, eqflexid, edgeid = wp.tid()
-
     # rows were allocated by _equality_flex_alloc
     block = block_in[worldid, eqflexid]
     if block[0] < 0:
@@ -1180,8 +1184,10 @@ def _equality_flex(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 @cache_kernel
 def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "neqweld", options={"default_grid_stride": False})
   def kernel(
+    worldid: int,
+    eqweldid: int,
     # Model:
     nv: int,
     nsite: int,
@@ -1242,7 +1248,6 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # Out:
     efc_nnz_out: wp.array[int],
   ):
-    worldid, eqweldid = wp.tid()
     eqid = eq_wld_adr[eqweldid]
 
     if not eq_active_in[worldid, eqid]:
@@ -1631,8 +1636,10 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 @cache_kernel
 def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = False):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "neqstrain", options={"default_grid_stride": False})
   def kernel(
+    worldid: int,
+    eqstrainid: int,
     # Model:
     nv: int,
     opt_timestep: wp.array[float],
@@ -1692,7 +1699,6 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
     # Out:
     efc_nnz_out: wp.array[int],
   ):
-    worldid, eqstrainid = wp.tid()
     eqid = eq_flexstrain_adr[eqstrainid]
 
     if not eq_active_in[worldid, eqid]:
@@ -1965,8 +1971,10 @@ def _equality_flexstrain(is_sparse: bool, newton: bool, is_discrete: bool = Fals
 @cache_kernel
 def _friction_dof(is_sparse: bool, is_discrete: bool = False):
   # sparse Newton adds these rows to the Hessian diagonal directly, so they get no JTDAJ block
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "nv", options={"default_grid_stride": False})
   def kernel(
+    worldid: int,
+    dofid: int,
     # Model:
     nv: int,
     opt_timestep: wp.array[float],
@@ -1998,8 +2006,6 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
     # Out:
     efc_nnz_out: wp.array[int],
   ):
-    worldid, dofid = wp.tid()
-
     dof_frictionloss_id = worldid % dof_frictionloss.shape[0]
 
     if dof_frictionloss[dof_frictionloss_id, dofid] <= 0.0:
@@ -2069,8 +2075,10 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
 
 @cache_kernel
 def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "ntendon", options={"default_grid_stride": False})
   def kernel(
+    worldid: int,
+    tenid: int,
     # Model:
     nv: int,
     opt_timestep: wp.array[float],
@@ -2108,8 +2116,6 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # Out:
     efc_nnz_out: wp.array[int],
   ):
-    worldid, tenid = wp.tid()
-
     tendon_frictionloss_id = worldid % tendon_frictionloss.shape[0]
 
     frictionloss = tendon_frictionloss[tendon_frictionloss_id, tenid]
@@ -2202,8 +2208,10 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 @cache_kernel
 def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "njntlimited", options={"default_grid_stride": False})
   def kernel(
+    worldid: int,
+    jntlimitedid: int,
     # Model:
     nv: int,
     opt_timestep: wp.array[float],
@@ -2242,7 +2250,6 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
     # Out:
     efc_nnz_out: wp.array[int],
   ):
-    worldid, jntlimitedid = wp.tid()
     jntid = jnt_limited_slide_hinge_adr[jntlimitedid]
     jnt_range_id = worldid % jnt_range.shape[0]
     jntrange = jnt_range[jnt_range_id, jntid]
@@ -2336,8 +2343,10 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
 
 @cache_kernel
 def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "njntlimited", options={"default_grid_stride": False})
   def kernel(
+    worldid: int,
+    jntlimitedid: int,
     # Model:
     nv: int,
     opt_timestep: wp.array[float],
@@ -2376,7 +2385,6 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # Out:
     efc_nnz_out: wp.array[int],
   ):
-    worldid, jntlimitedid = wp.tid()
     jntid = jnt_limited_ball_adr[jntlimitedid]
     qposadr = jnt_qposadr[jntid]
 
@@ -2477,8 +2485,10 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 @cache_kernel
 def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "ntenlimited", options={"default_grid_stride": False})
   def kernel(
+    worldid: int,
+    tenlimitedid: int,
     # Model:
     nv: int,
     opt_timestep: wp.array[float],
@@ -2519,7 +2529,6 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     # Out:
     efc_nnz_out: wp.array[int],
   ):
-    worldid, tenlimitedid = wp.tid()
     tenid = tendon_limited_adr[tenlimitedid]
 
     tendon_range_id = worldid % tendon_range.shape[0]
@@ -2636,8 +2645,9 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
 
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=True)
+  @fusion.stage("naconmax", options={"default_grid_stride": True})
   def kernel(
+    conid: int,
     # Model:
     body_weldid: wp.array[int],
     body_dofnum: wp.array[int],
@@ -2669,8 +2679,6 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
     # Out:
     efc_nnz_out: wp.array[int],
   ):
-    conid = wp.tid()
-
     if conid >= nacon_in[0]:
       return
 
@@ -2888,8 +2896,9 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
   IS_SPARSE = is_sparse
   HAS_FLEX = True
 
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("naconmax", options={"default_grid_stride": False})
   def kernel(
+    conid: int,
     # Model:
     body_parentid: wp.array[int],
     body_weldid: wp.array[int],
@@ -2947,8 +2956,6 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
     # Out:
     efc_nnz_out: wp.array[int],
   ):
-    conid = wp.tid()
-
     if conid >= nacon_in[0]:
       return
 
@@ -3644,8 +3651,10 @@ def _efc_contact_jac_sparse_flex(cone_type: types.ConeType):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   HAS_FLEX = True
 
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("ncon", "ndim", options={"default_grid_stride": False})
   def kernel(
+    conid: int,
+    dimid: int,
     # Model:
     body_parentid: wp.array[int],
     body_rootid: wp.array[int],
@@ -3706,8 +3715,6 @@ def _efc_contact_jac_sparse_flex(cone_type: types.ConeType):
     efc_J_out: wp.array3d[float],
     efc_Jqvel_out: wp.array2d[float],
   ):
-    conid, dimid = wp.tid()
-
     if conid >= nacon_in[0]:
       return
 
@@ -4744,8 +4751,10 @@ def _efc_contact_jac_dense_flex(nv_pad: int, cone_type: types.ConeType, nmaxcond
 def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discrete: bool = False):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "nt", options={"default_grid_stride": False})
   def kernel(
+    worldid: int,
+    tid: int,
     # Model:
     opt_timestep: wp.array[float],
     opt_disableflags: int,
@@ -4781,7 +4790,6 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discre
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
   ):
-    worldid, tid = wp.tid()
     efcid_start = ne_in[worldid] + nf_in[worldid] + nl_in[worldid] + tid
     efcid_end = wp.min(nefc_in[worldid], njmax_in)
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
@@ -4961,8 +4969,10 @@ def _flex_interp_invweight(
 def _efc_contact_update_flex(cone_type: types.ConeType, flg_adhesion: bool = False, is_discrete: bool = False):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
 
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("ncon", "ndim", options={"default_grid_stride": False})
   def kernel(
+    conid: int,
+    dimid: int,
     # Model:
     opt_timestep: wp.array[float],
     opt_disableflags: int,
@@ -5021,8 +5031,6 @@ def _efc_contact_update_flex(cone_type: types.ConeType, flg_adhesion: bool = Fal
     efc_aref_out: wp.array2d[float],
     efc_frictionloss_out: wp.array2d[float],
   ):
-    conid, dimid = wp.tid()
-
     if conid >= nacon_in[0]:
       return
 
@@ -5300,8 +5308,9 @@ def _efc_contact_update_flex(cone_type: types.ConeType, flg_adhesion: bool = Fal
 
 @cache_kernel
 def _add_surface_vel(is_pyramidal: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("naconmax")
   def kernel(
+    conid: int,
     # Data in:
     contact_friction_in: wp.array[vec5],
     contact_dim_in: wp.array[int],
@@ -5314,8 +5323,6 @@ def _add_surface_vel(is_pyramidal: bool):
     # Data out:
     efc_Jqvel_out: wp.array2d[float],
   ):
-    conid = wp.tid()
-
     if conid >= wp.min(nacon_in[0], naconmax_in):
       return
 
@@ -5366,563 +5373,71 @@ def make_constraint(m: types.Model, d: types.Data):
   is_discrete = m.opt.integrator == types.IntegratorType.DISCRETE
   efc_nnz = wp.empty((d.nworld,), dtype=int)
 
-  wp.launch(
-    _zero_constraint_counts,
-    dim=d.nworld,
-    inputs=[d.ne, d.nf, d.nl, d.nefc, d.efc.jtdaj_nblock, efc_nnz],
-  )
+  fusion.launch(m, d, _zero_constraint_counts, efc_nnz_out=efc_nnz)
 
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
     if not (m.opt.disableflags & types.DisableBit.EQUALITY):
-      wp.launch(
-        _equality_connect(m.is_sparse, newton, is_discrete),
-        dim=(d.nworld, m.eq_connect_adr.size),
-        inputs=[
-          m.nv,
-          m.nsite,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.body_parentid,
-          m.body_rootid,
-          m.body_weldid,
-          m.body_dofnum,
-          m.body_dofadr,
-          m.body_invweight0,
-          m.jnt_type,
-          m.jnt_dofadr,
-          m.dof_bodyid,
-          m.dof_jntid,
-          m.dof_parentid,
-          m.site_bodyid,
-          m.eq_obj1id,
-          m.eq_obj2id,
-          m.eq_objtype,
-          m.eq_solref,
-          m.eq_solimp,
-          m.eq_data,
-          m.body_isdofancestor,
-          m.eq_connect_adr,
-          d.qvel,
-          d.eq_active,
-          d.xpos,
-          d.xquat,
-          d.site_xpos,
-          d.subtree_com,
-          d.cdof,
-          d.cvel,
-          d.cdof_dot,
-          d.subtree_linvel,
-          d.njmax,
-          d.njmax_nnz,
-        ],
-        outputs=[
-          d.ne,
-          d.nefc,
-          d.efc.type,
-          d.efc.id,
-          d.efc.jtdaj_adr,
-          d.efc.jtdaj_nrow,
-          d.efc.jtdaj_nblock,
-          d.efc.J_rownnz,
-          d.efc.J_rowadr,
-          d.efc.J_colind,
-          d.efc.J,
-          d.efc.pos,
-          d.efc.margin,
-          d.efc.D,
-          d.efc.vel,
-          d.efc.aref,
-          d.efc.frictionloss,
-          efc_nnz,
-        ],
+      fusion.launch(
+        m, d, _equality_connect(m.is_sparse, newton, is_discrete), dim=(d.nworld, m.eq_connect_adr.size), efc_nnz_out=efc_nnz
       )
-      wp.launch(
-        _equality_weld(m.is_sparse, newton, is_discrete),
-        dim=(d.nworld, m.eq_wld_adr.size),
-        inputs=[
-          m.nv,
-          m.nsite,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.body_parentid,
-          m.body_rootid,
-          m.body_weldid,
-          m.body_dofnum,
-          m.body_dofadr,
-          m.body_invweight0,
-          m.jnt_type,
-          m.jnt_dofadr,
-          m.dof_bodyid,
-          m.dof_jntid,
-          m.dof_parentid,
-          m.site_bodyid,
-          m.eq_obj1id,
-          m.eq_obj2id,
-          m.eq_objtype,
-          m.eq_solref,
-          m.eq_solimp,
-          m.eq_data,
-          m.body_isdofancestor,
-          m.eq_wld_adr,
-          d.qvel,
-          d.eq_active,
-          d.xpos,
-          d.xquat,
-          d.site_xpos,
-          d.site_xquat,
-          d.subtree_com,
-          d.cdof,
-          d.cvel,
-          d.cdof_dot,
-          d.subtree_linvel,
-          d.njmax,
-          d.njmax_nnz,
-        ],
-        outputs=[
-          d.ne,
-          d.nefc,
-          d.efc.type,
-          d.efc.id,
-          d.efc.jtdaj_adr,
-          d.efc.jtdaj_nrow,
-          d.efc.jtdaj_nblock,
-          d.efc.J_rownnz,
-          d.efc.J_rowadr,
-          d.efc.J_colind,
-          d.efc.J,
-          d.efc.pos,
-          d.efc.margin,
-          d.efc.D,
-          d.efc.vel,
-          d.efc.aref,
-          d.efc.frictionloss,
-          efc_nnz,
-        ],
+      fusion.launch(
+        m, d, _equality_weld(m.is_sparse, newton, is_discrete), dim=(d.nworld, m.eq_wld_adr.size), efc_nnz_out=efc_nnz
       )
-      wp.launch(
-        _equality_joint(m.is_sparse, newton, is_discrete),
-        dim=(d.nworld, m.eq_jnt_adr.size),
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.qpos0,
-          m.jnt_qposadr,
-          m.jnt_dofadr,
-          m.dof_invweight0,
-          m.eq_obj1id,
-          m.eq_obj2id,
-          m.eq_solref,
-          m.eq_solimp,
-          m.eq_data,
-          m.eq_jnt_adr,
-          d.qpos,
-          d.qvel,
-          d.eq_active,
-          d.njmax,
-          d.njmax_nnz,
-        ],
-        outputs=[
-          d.ne,
-          d.nefc,
-          d.efc.type,
-          d.efc.id,
-          d.efc.jtdaj_adr,
-          d.efc.jtdaj_nrow,
-          d.efc.jtdaj_nblock,
-          d.efc.J_rownnz,
-          d.efc.J_rowadr,
-          d.efc.J_colind,
-          d.efc.J,
-          d.efc.pos,
-          d.efc.margin,
-          d.efc.D,
-          d.efc.vel,
-          d.efc.aref,
-          d.efc.frictionloss,
-          efc_nnz,
-        ],
+      fusion.launch(
+        m, d, _equality_joint(m.is_sparse, newton, is_discrete), dim=(d.nworld, m.eq_jnt_adr.size), efc_nnz_out=efc_nnz
       )
-      wp.launch(
-        _equality_tendon(m.is_sparse, newton, is_discrete),
-        dim=(d.nworld, m.eq_ten_adr.size),
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.eq_obj1id,
-          m.eq_obj2id,
-          m.eq_solref,
-          m.eq_solimp,
-          m.eq_data,
-          m.ten_J_rownnz,
-          m.ten_J_rowadr,
-          m.ten_J_colind,
-          m.tendon_length0,
-          m.tendon_invweight0,
-          m.eq_ten_adr,
-          d.qvel,
-          d.eq_active,
-          d.ten_J,
-          d.ten_length,
-          d.njmax,
-          d.njmax_nnz,
-        ],
-        outputs=[
-          d.ne,
-          d.nefc,
-          d.efc.type,
-          d.efc.id,
-          d.efc.jtdaj_adr,
-          d.efc.jtdaj_nrow,
-          d.efc.jtdaj_nblock,
-          d.efc.J_rownnz,
-          d.efc.J_rowadr,
-          d.efc.J_colind,
-          d.efc.J,
-          d.efc.pos,
-          d.efc.margin,
-          d.efc.D,
-          d.efc.vel,
-          d.efc.aref,
-          d.efc.frictionloss,
-          efc_nnz,
-        ],
+      fusion.launch(
+        m, d, _equality_tendon(m.is_sparse, newton, is_discrete), dim=(d.nworld, m.eq_ten_adr.size), efc_nnz_out=efc_nnz
       )
 
       if m.nflex > 0:
         flex_block = wp.empty((d.nworld, m.eq_flex_adr.size), dtype=wp.vec3i)
-        wp.launch(
+        fusion.launch(
+          m,
+          d,
           _equality_flex_alloc(m.is_sparse, newton),
           dim=(d.nworld, m.eq_flex_adr.size),
-          inputs=[
-            m.flex_edgeadr,
-            m.flex_edgenum,
-            m.flexedge_J_rownnz,
-            m.eq_obj1id,
-            m.eq_flex_adr,
-            m.flex_efcnum,
-            m.flex_efcnnz,
-            m.flexedge_efcadr,
-            d.eq_active,
-            d.njmax,
-            d.njmax_nnz,
-          ],
-          outputs=[d.ne, d.nefc, d.efc.jtdaj_nblock, flex_block, efc_nnz],
+          block_out=flex_block,
+          efc_nnz_out=efc_nnz,
         )
-        wp.launch(
+        fusion.launch(
+          m,
+          d,
           _equality_flex(m.is_sparse, newton, is_discrete),
           dim=(d.nworld, m.eq_flex_adr.size, m.nflexedge),
-          inputs=[
-            m.nv,
-            m.opt.timestep,
-            m.opt.disableflags,
-            m.flex_edgeadr,
-            m.flex_edgenum,
-            m.flexedge_length0,
-            m.flexedge_invweight0,
-            m.flexedge_J_rownnz,
-            m.flexedge_J_rowadr,
-            m.flexedge_J_colind,
-            m.eq_obj1id,
-            m.eq_solref,
-            m.eq_solimp,
-            m.eq_flex_adr,
-            m.flexedge_efcadr,
-            m.flexedge_efcnnzadr,
-            d.qvel,
-            d.flexedge_J,
-            d.flexedge_length,
-            d.njmax,
-            flex_block,
-          ],
-          outputs=[
-            d.efc.type,
-            d.efc.id,
-            d.efc.jtdaj_adr,
-            d.efc.jtdaj_nrow,
-            d.efc.J_rownnz,
-            d.efc.J_rowadr,
-            d.efc.J_colind,
-            d.efc.J,
-            d.efc.pos,
-            d.efc.margin,
-            d.efc.D,
-            d.efc.vel,
-            d.efc.aref,
-            d.efc.frictionloss,
-          ],
+          block_in=flex_block,
         )
 
         if m.eq_flexstrain_adr.size:
-          wp.launch(
+          fusion.launch(
+            m,
+            d,
             _equality_flexstrain(m.is_sparse, newton, is_discrete),
             dim=(d.nworld, m.eq_flexstrain_adr.size),
-            inputs=[
-              m.nv,
-              m.opt.timestep,
-              m.opt.disableflags,
-              m.body_parentid,
-              m.body_rootid,
-              m.body_dofnum,
-              m.body_dofadr,
-              m.body_invweight0,
-              m.dof_bodyid,
-              m.flex_interp,
-              m.flex_cellnum,
-              m.flex_nodeadr,
-              m.flex_nodenum,
-              m.flex_stiffnessadr,
-              m.flex_nodebodyid,
-              m.flex_node,
-              m.flex_node0,
-              m.flex_stiffness,
-              m.flex_centered,
-              m.eq_obj1id,
-              m.eq_solref,
-              m.eq_solimp,
-              m.eq_data,
-              m.body_isdofancestor,
-              m.eq_flexstrain_adr,
-              m.flexstrain_J_rownnz,
-              m.flexstrain_J_rowadr,
-              m.flexstrain_J_colind,
-              d.qvel,
-              d.eq_active,
-              d.subtree_com,
-              d.cdof,
-              d.njmax,
-              d.njmax_nnz,
-              d.flexnode_xpos,
-              d.face_quat,
-            ],
-            outputs=[
-              d.ne,
-              d.nefc,
-              d.efc.type,
-              d.efc.id,
-              d.efc.jtdaj_adr,
-              d.efc.jtdaj_nrow,
-              d.efc.jtdaj_nblock,
-              d.efc.J_rownnz,
-              d.efc.J_rowadr,
-              d.efc.J_colind,
-              d.efc.J,
-              d.efc.pos,
-              d.efc.margin,
-              d.efc.D,
-              d.efc.vel,
-              d.efc.aref,
-              d.efc.frictionloss,
-              efc_nnz,
-            ],
+            efc_nnz_out=efc_nnz,
           )
 
     if not (m.opt.disableflags & types.DisableBit.FRICTIONLOSS):
-      wp.launch(
-        _friction_dof(m.is_sparse, is_discrete),
-        dim=(d.nworld, m.nv),
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.dof_solref,
-          m.dof_solimp,
-          m.dof_frictionloss,
-          m.dof_invweight0,
-          d.qvel,
-          d.njmax,
-          d.njmax_nnz,
-        ],
-        outputs=[
-          d.nf,
-          d.nefc,
-          d.efc.type,
-          d.efc.id,
-          d.efc.J_rownnz,
-          d.efc.J_rowadr,
-          d.efc.J_colind,
-          d.efc.J,
-          d.efc.pos,
-          d.efc.margin,
-          d.efc.D,
-          d.efc.vel,
-          d.efc.aref,
-          d.efc.frictionloss,
-          d.dof_frictionadr,
-          efc_nnz,
-        ],
-      )
+      fusion.launch(m, d, _friction_dof(m.is_sparse, is_discrete), efc_nnz_out=efc_nnz)
 
-      wp.launch(
-        _friction_tendon(m.is_sparse, newton, is_discrete),
-        dim=(d.nworld, m.ntendon),
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.ten_J_rownnz,
-          m.ten_J_rowadr,
-          m.ten_J_colind,
-          m.tendon_solref_fri,
-          m.tendon_solimp_fri,
-          m.tendon_frictionloss,
-          m.tendon_invweight0,
-          d.qvel,
-          d.ten_J,
-          d.njmax,
-          d.njmax_nnz,
-        ],
-        outputs=[
-          d.nf,
-          d.nefc,
-          d.efc.type,
-          d.efc.id,
-          d.efc.jtdaj_adr,
-          d.efc.jtdaj_nrow,
-          d.efc.jtdaj_nblock,
-          d.efc.J_rownnz,
-          d.efc.J_rowadr,
-          d.efc.J_colind,
-          d.efc.J,
-          d.efc.pos,
-          d.efc.margin,
-          d.efc.D,
-          d.efc.vel,
-          d.efc.aref,
-          d.efc.frictionloss,
-          efc_nnz,
-        ],
-      )
+      fusion.launch(m, d, _friction_tendon(m.is_sparse, newton, is_discrete), efc_nnz_out=efc_nnz)
 
     # limit
     if not (m.opt.disableflags & types.DisableBit.LIMIT):
-      wp.launch(
-        _limit_ball(m.is_sparse, newton, is_discrete),
-        dim=(d.nworld, m.jnt_limited_ball_adr.size),
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.jnt_qposadr,
-          m.jnt_dofadr,
-          m.jnt_solref,
-          m.jnt_solimp,
-          m.jnt_range,
-          m.jnt_margin,
-          m.dof_invweight0,
-          m.jnt_limited_ball_adr,
-          d.qpos,
-          d.qvel,
-          d.njmax,
-          d.njmax_nnz,
-        ],
-        outputs=[
-          d.nl,
-          d.nefc,
-          d.efc.type,
-          d.efc.id,
-          d.efc.jtdaj_adr,
-          d.efc.jtdaj_nrow,
-          d.efc.jtdaj_nblock,
-          d.efc.J_rownnz,
-          d.efc.J_rowadr,
-          d.efc.J_colind,
-          d.efc.J,
-          d.efc.pos,
-          d.efc.margin,
-          d.efc.D,
-          d.efc.vel,
-          d.efc.aref,
-          d.efc.frictionloss,
-          efc_nnz,
-        ],
+      fusion.launch(
+        m, d, _limit_ball(m.is_sparse, newton, is_discrete), dim=(d.nworld, m.jnt_limited_ball_adr.size), efc_nnz_out=efc_nnz
       )
 
-      wp.launch(
+      fusion.launch(
+        m,
+        d,
         _limit_slide_hinge(m.is_sparse, newton, is_discrete),
         dim=(d.nworld, m.jnt_limited_slide_hinge_adr.size),
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.jnt_qposadr,
-          m.jnt_dofadr,
-          m.jnt_solref,
-          m.jnt_solimp,
-          m.jnt_range,
-          m.jnt_margin,
-          m.dof_invweight0,
-          m.jnt_limited_slide_hinge_adr,
-          d.qpos,
-          d.qvel,
-          d.njmax,
-          d.njmax_nnz,
-        ],
-        outputs=[
-          d.nl,
-          d.nefc,
-          d.efc.type,
-          d.efc.id,
-          d.efc.jtdaj_adr,
-          d.efc.jtdaj_nrow,
-          d.efc.jtdaj_nblock,
-          d.efc.J_rownnz,
-          d.efc.J_rowadr,
-          d.efc.J_colind,
-          d.efc.J,
-          d.efc.pos,
-          d.efc.margin,
-          d.efc.D,
-          d.efc.vel,
-          d.efc.aref,
-          d.efc.frictionloss,
-          efc_nnz,
-        ],
+        efc_nnz_out=efc_nnz,
       )
 
-      wp.launch(
-        _limit_tendon(m.is_sparse, newton, is_discrete),
-        dim=(d.nworld, m.tendon_limited_adr.size),
-        inputs=[
-          m.nv,
-          m.opt.timestep,
-          m.opt.disableflags,
-          m.ten_J_rownnz,
-          m.ten_J_rowadr,
-          m.ten_J_colind,
-          m.tendon_solref_lim,
-          m.tendon_solimp_lim,
-          m.tendon_range,
-          m.tendon_margin,
-          m.tendon_invweight0,
-          m.tendon_limited_adr,
-          d.qvel,
-          d.ten_J,
-          d.ten_length,
-          d.njmax,
-          d.njmax_nnz,
-        ],
-        outputs=[
-          d.nl,
-          d.nefc,
-          d.efc.type,
-          d.efc.id,
-          d.efc.jtdaj_adr,
-          d.efc.jtdaj_nrow,
-          d.efc.jtdaj_nblock,
-          d.efc.J_rownnz,
-          d.efc.J_rowadr,
-          d.efc.J_colind,
-          d.efc.J,
-          d.efc.pos,
-          d.efc.margin,
-          d.efc.D,
-          d.efc.vel,
-          d.efc.aref,
-          d.efc.frictionloss,
-          efc_nnz,
-        ],
+      fusion.launch(
+        m, d, _limit_tendon(m.is_sparse, newton, is_discrete), dim=(d.nworld, m.tendon_limited_adr.size), efc_nnz_out=efc_nnz
       )
 
     # contact
@@ -5947,165 +5462,56 @@ def make_constraint(m: types.Model, d: types.Data):
 
       has_flex = m.nflex > 0
       if has_flex:
-        wp.launch(
+        fusion.launch(
+          m,
+          d,
           _efc_contact_init_flex(m.opt.cone, m.is_sparse, newton, m.flg_adhesion),
-          dim=d.naconmax,
-          inputs=[
-            m.body_parentid,
-            m.body_weldid,
-            m.body_dofnum,
-            m.body_dofadr,
-            m.jnt_bodyid,
-            m.dof_parentid,
-            m.geom_bodyid,
-            m.flex_dim,
-            m.flex_interp,
-            m.flex_cellnum,
-            m.flex_celladr,
-            m.flex_nodeadr,
-            m.flex_vertadr,
-            m.flex_elemadr,
-            m.flex_elemnum,
-            m.flex_elemdataadr,
-            m.flex_nodebodyid,
-            m.flex_vertbodyid,
-            m.flex_cellempty,
-            m.flex_elem,
-            m.flex_vert0,
-            m.flex_rod_has_twist,
-            m.flex_rod_edgeadr,
-            m.flex_rod_edgenum,
-            m.flex_rodedge_jnt,
-            m.flex_elem_rodedge,
-            m.flex_vert_rodelem,
-            d.flexvert_xpos,
-            d.njmax,
-            d.njmax_nnz,
-            d.nacon,
-            d.contact.dist,
-            d.contact.dim,
-            d.contact.includemargin,
-            d.contact.adhesion,
-            d.contact.worldid,
-            d.contact.geom,
-            d.contact.flex,
-            d.contact.elem,
-            d.contact.vert,
-            d.contact.pos,
-            d.contact.type,
-          ],
-          outputs=[
-            d.nefc,
-            d.contact.efc_address,
-            d.efc.id,
-            d.efc.jtdaj_adr,
-            d.efc.jtdaj_nrow,
-            d.efc.jtdaj_nblock,
-            d.efc.J_rownnz,
-            d.efc.J_rowadr,
-            efc_nnz,
-          ],
+          dist_in=d.contact.dist,
+          condim_in=d.contact.dim,
+          includemargin_in=d.contact.includemargin,
+          adhesion_in=d.contact.adhesion,
+          worldid_in=d.contact.worldid,
+          geom_in=d.contact.geom,
+          flex_in=d.contact.flex,
+          elem_in=d.contact.elem,
+          vert_in=d.contact.vert,
+          pos_in=d.contact.pos,
+          type_in=d.contact.type,
+          efc_nnz_out=efc_nnz,
         )
       else:
-        wp.launch(
+        fusion.launch(
+          m,
+          d,
           _efc_contact_init(m.opt.cone, m.is_sparse, newton, m.flg_adhesion),
-          dim=d.naconmax,
-          inputs=[
-            m.body_weldid,
-            m.body_dofnum,
-            m.body_dofadr,
-            m.dof_parentid,
-            m.geom_bodyid,
-            d.njmax,
-            d.njmax_nnz,
-            d.nacon,
-            d.contact.dist,
-            d.contact.dim,
-            d.contact.includemargin,
-            d.contact.adhesion,
-            d.contact.worldid,
-            d.contact.geom,
-            d.contact.type,
-          ],
-          outputs=[
-            d.nefc,
-            d.contact.efc_address,
-            d.efc.id,
-            d.efc.jtdaj_adr,
-            d.efc.jtdaj_nrow,
-            d.efc.jtdaj_nblock,
-            d.efc.J_rownnz,
-            d.efc.J_rowadr,
-            d.efc.Jqvel,
-            efc_nnz,
-          ],
+          dist_in=d.contact.dist,
+          condim_in=d.contact.dim,
+          includemargin_in=d.contact.includemargin,
+          adhesion_in=d.contact.adhesion,
+          worldid_in=d.contact.worldid,
+          geom_in=d.contact.geom,
+          type_in=d.contact.type,
+          efc_nnz_out=efc_nnz,
         )
 
       det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
       if m.is_sparse:
         if has_flex:
-          wp.launch(
+          fusion.launch(
+            m,
+            d,
             _efc_contact_jac_sparse_flex(m.opt.cone),
             dim=(d.naconmax, nmaxdim),
-            inputs=[
-              m.body_parentid,
-              m.body_rootid,
-              m.body_weldid,
-              m.body_dofnum,
-              m.body_dofadr,
-              m.jnt_dofadr,
-              m.jnt_bodyid,
-              m.dof_bodyid,
-              m.dof_parentid,
-              m.geom_type,
-              m.geom_bodyid,
-              m.flex_dim,
-              m.flex_interp,
-              m.flex_cellnum,
-              m.flex_celladr,
-              m.flex_nodeadr,
-              m.flex_vertadr,
-              m.flex_elemadr,
-              m.flex_elemnum,
-              m.flex_elemdataadr,
-              m.flex_plasticadr,
-              m.flex_nodebodyid,
-              m.flex_vertbodyid,
-              m.flex_cellempty,
-              m.flex_elem,
-              m.flex_vert0,
-              m.body_isdofancestor,
-              m.flex_rod_has_twist,
-              m.flex_rod_edgeadr,
-              m.flex_rod_edgenum,
-              m.flex_rodedge_jnt,
-              m.flex_elem_rodedge,
-              m.flex_vert_rodelem,
-              d.qvel,
-              d.plastic,
-              d.subtree_com,
-              d.cdof,
-              d.flexvert_xpos,
-              d.contact.efc_address,
-              d.efc.J_rownnz,
-              d.efc.J_rowadr,
-              d.nacon,
-              d.contact.dist,
-              d.contact.dim,
-              d.contact.geom,
-              d.contact.flex,
-              d.contact.elem,
-              d.contact.vert,
-              d.contact.pos,
-              contact_frame_2d,
-              contact_friction_2d,
-              d.contact.worldid,
-            ],
-            outputs=[
-              d.efc.J_colind,
-              d.efc.J,
-              d.efc.Jqvel,
-            ],
+            dist_in=d.contact.dist,
+            condim_in=d.contact.dim,
+            geom_in=d.contact.geom,
+            flex_in=d.contact.flex,
+            elem_in=d.contact.elem,
+            vert_in=d.contact.vert,
+            pos_in=d.contact.pos,
+            frame_in=contact_frame_2d,
+            friction_in=contact_friction_2d,
+            worldid_in=d.contact.worldid,
           )
         else:
           # Loop over the active contacts with a GPU-sized grid rather than launching naconmax
@@ -6115,7 +5521,7 @@ def make_constraint(m: types.Model, d: types.Data):
             ncontact_per_pass = min(ncontact_per_pass, 1024 * wp.get_device().sm_count)
           ncontact_stride = max(ncontact_per_pass, 1)
           max_records = ((d.naconmax + ncontact_stride - 1) // ncontact_stride) * nmaxdim if det_atomics else 0
-          wp.launch(
+          fusion.launch_kernel(
             _efc_contact_jac_sparse(m.opt.cone, nmaxdim, max_records, det_atomics),
             dim=ncontact_stride * _CONTACT_JAC_LANES,
             block_dim=m.block_dim.contact_jac_sparse,
@@ -6150,7 +5556,7 @@ def make_constraint(m: types.Model, d: types.Data):
           )
       else:
         if has_flex:
-          wp.launch_tiled(
+          fusion.launch_tiled(
             _efc_contact_jac_dense_flex(m.nv_pad, m.opt.cone, int(m.nmaxcondim)),
             dim=d.nworld,
             inputs=[
@@ -6210,7 +5616,7 @@ def make_constraint(m: types.Model, d: types.Data):
             block_dim=m.block_dim.contact_jac_tiled,
           )
         else:
-          wp.launch_tiled(
+          fusion.launch_tiled(
             _efc_contact_jac_dense(m.nv_pad, m.opt.cone, int(m.nmaxcondim)),
             dim=d.nworld,
             inputs=[
@@ -6241,135 +5647,50 @@ def make_constraint(m: types.Model, d: types.Data):
           )
 
       if m.flg_surfacevel:
-        wp.launch(
-          _add_surface_vel(m.opt.cone == types.ConeType.PYRAMIDAL),
-          dim=d.naconmax,
-          inputs=[
-            d.contact.friction,
-            d.contact.dim,
-            d.contact.efc_address,
-            d.contact.worldid,
-            d.contact.type,
-            d.contact.surfacevel,
-            d.naconmax,
-            d.nacon,
-          ],
-          outputs=[
-            d.efc.Jqvel,
-          ],
-        )
+        fusion.launch(m, d, _add_surface_vel(m.opt.cone == types.ConeType.PYRAMIDAL))
 
       if has_flex:
-        wp.launch(
+        fusion.launch(
+          m,
+          d.contact,
           _efc_contact_update_flex(m.opt.cone, m.flg_adhesion, is_discrete),
           dim=(d.naconmax, nmaxdim),
-          inputs=[
-            m.opt.timestep,
-            m.opt.disableflags,
-            m.opt.impratio_invsqrt,
-            m.body_invweight0,
-            m.jnt_bodyid,
-            m.geom_bodyid,
-            m.flex_dim,
-            m.flex_interp,
-            m.flex_cellnum,
-            m.flex_celladr,
-            m.flex_nodeadr,
-            m.flex_vertadr,
-            m.flex_elemadr,
-            m.flex_elemnum,
-            m.flex_elemdataadr,
-            m.flex_nodebodyid,
-            m.flex_vertbodyid,
-            m.flex_cellempty,
-            m.flex_elem,
-            m.flex_vert0,
-            m.flex_rod_has_twist,
-            m.flex_rod_edgeadr,
-            m.flex_rod_edgenum,
-            m.flex_rodedge_jnt,
-            m.flex_elem_rodedge,
-            m.flex_vert_rodelem,
-            d.flexvert_xpos,
-            d.contact.efc_address,
-            d.efc.Jqvel,
-            d.nacon,
-            d.contact.dist,
-            d.contact.pos,
-            d.contact.dim,
-            d.contact.includemargin,
-            d.contact.worldid,
-            d.contact.geom,
-            d.contact.flex,
-            d.contact.elem,
-            d.contact.vert,
-            d.contact.friction,
-            d.contact.solref,
-            d.contact.solreffriction,
-            d.contact.solimp,
-            d.contact.adhesion,
-            d.contact.type,
-          ],
-          outputs=[
-            d.efc.type,
-            d.efc.id,
-            d.efc.pos,
-            d.efc.margin,
-            d.efc.D,
-            d.efc.vel,
-            d.efc.aref,
-            d.efc.frictionloss,
-          ],
+          flexvert_xpos_in=d.flexvert_xpos,
+          contact_efc_address_in=d.contact.efc_address,
+          efc_Jqvel_in=d.efc.Jqvel,
+          nacon_in=d.nacon,
+          condim_in=d.contact.dim,
+          efc_type_out=d.efc.type,
+          efc_id_out=d.efc.id,
+          efc_pos_out=d.efc.pos,
+          efc_margin_out=d.efc.margin,
+          efc_D_out=d.efc.D,
+          efc_vel_out=d.efc.vel,
+          efc_aref_out=d.efc.aref,
+          efc_frictionloss_out=d.efc.frictionloss,
         )
       else:
         kernel = _efc_contact_update(m.opt.cone, m.flg_adhesion, is_discrete)
         efc_threads = efc_threads_per_world(d.nworld, d.njmax, d.qvel.device, kernel, num_waves=1)
-        wp.launch(
+        fusion.launch(
+          m,
+          d,
           kernel,
           dim=(d.nworld, efc_threads),
-          inputs=[
-            m.opt.timestep,
-            m.opt.disableflags,
-            m.opt.impratio_invsqrt,
-            m.body_invweight0,
-            m.geom_bodyid,
-            d.ne,
-            d.nf,
-            d.nl,
-            d.nefc,
-            d.contact.efc_address,
-            d.efc.Jqvel,
-            d.njmax,
-            d.contact.dist,
-            d.contact.dim,
-            d.contact.includemargin,
-            d.contact.geom,
-            d.contact.friction,
-            d.contact.solref,
-            d.contact.solreffriction,
-            d.contact.solimp,
-            d.contact.adhesion,
-            efc_threads,
-          ],
-          outputs=[
-            d.efc.type,
-            d.efc.id,
-            d.efc.pos,
-            d.efc.margin,
-            d.efc.D,
-            d.efc.vel,
-            d.efc.aref,
-            d.efc.frictionloss,
-          ],
+          dist_in=d.contact.dist,
+          condim_in=d.contact.dim,
+          includemargin_in=d.contact.includemargin,
+          geom_in=d.contact.geom,
+          friction_in=d.contact.friction,
+          solref_in=d.contact.solref,
+          solreffriction_in=d.contact.solreffriction,
+          solimp_in=d.contact.solimp,
+          adhesion_in=d.contact.adhesion,
+          efc_stride_in=efc_threads,
         )
 
   if m.is_sparse:
-    wp.launch(
-      _efc_nnz_overflow(int(m.opt.warn_overflow)),
-      dim=d.nworld,
-      inputs=[d.njmax_nnz, efc_nnz],
-      outputs=[d.overflow],
-    )
+    fusion.launch(m, d, _efc_nnz_overflow(int(m.opt.warn_overflow)), efc_nnz_in=efc_nnz)
 
   if m.opt.deterministic & types.DeterminismType.CONSTRAINT:
     sort.constraints(m, d, efc_nnz)
@@ -6377,8 +5698,10 @@ def make_constraint(m: types.Model, d: types.Data):
 
 @cache_kernel
 def _regularize_constraint(is_sparse: bool, flg_adhesion: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld", "nr")
   def kernel(
+    worldid: int,
+    r: int,
     # Model:
     nv: int,
     M_rownnz: wp.array[int],
@@ -6401,7 +5724,6 @@ def _regularize_constraint(is_sparse: bool, flg_adhesion: bool):
     D_out: wp.array2d[float],
     aref_out: wp.array2d[float],
   ):
-    worldid, r = wp.tid()
     if r >= nefc_in[worldid]:
       return
 
@@ -6456,25 +5778,15 @@ def _regularize_constraint(is_sparse: bool, flg_adhesion: bool):
 @event_scope
 def regularize_constraint(m: types.Model, d: types.Data):
   """Regularizes constraints against effective metric (discrete integrator)."""
-  wp.launch(
+  fusion.launch(
+    m,
+    d.efc,
     _regularize_constraint(m.is_sparse, m.flg_adhesion),
     dim=(d.nworld, d.efc.D.shape[1]),
-    inputs=[
-      m.nv,
-      m.M_rownnz,
-      m.M_rowadr,
-      d.nefc,
-      d.M,
-      d.qH,
-      d.efc.type,
-      d.efc.id,
-      d.efc.J_rownnz,
-      d.efc.J_rowadr,
-      d.efc.J_colind,
-      d.efc.J,
-      d.contact.dim,
-      d.contact.efc_address,
-      d.contact.adhesion,
-    ],
-    outputs=[d.efc.D, d.efc.aref],
+    nefc_in=d.nefc,
+    M_in=d.M,
+    qH_in=d.qH,
+    condim_in=d.contact.dim,
+    efc_address_in=d.contact.efc_address,
+    adhesion_in=d.contact.adhesion,
   )

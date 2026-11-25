@@ -28,6 +28,7 @@ import mujoco_warp as mjw
 from mujoco_warp import test_data
 from mujoco_warp._src import collision_driver
 from mujoco_warp._src import constraint
+from mujoco_warp._src import fusion
 from mujoco_warp._src import sort
 from mujoco_warp._src import types
 
@@ -1206,18 +1207,16 @@ class SortTest(parameterized.TestCase):
     copy = types.Contact(*(wp.clone(array) for array in _arrays(d.contact)))
     copy.worldid.assign(worldid)
     copy.efc_address.assign(address[source])
-    wp.launch(
+    fusion.launch(
+      None,
+      d,
       sort._contact_place,
-      dim=d.naconmax,
-      inputs=[
-        d.nacon,
-        sort._contact_keys(copy),
-        wp.array([0, 0, 3, 6], dtype=int),
-        wp.array([0, 3, 3, 0], dtype=int),
-        wp.array(source, dtype=int),
-        sort._contact_rows(copy),
-      ],
-      outputs=[sort._contact_rows(d.contact)],
+      keys_in=sort._contact_keys(copy),
+      offset_in=wp.array([0, 0, 3, 6], dtype=int),
+      count_in=wp.array([0, 3, 3, 0], dtype=int),
+      source_in=wp.array(source, dtype=int),
+      rows_in=sort._contact_rows(copy),
+      rows_out=sort._contact_rows(d.contact),
     )
     np.testing.assert_array_equal(d.contact.efc_address.numpy()[:count], address[:count])
     np.testing.assert_array_equal(d.contact.worldid.numpy()[:count], worldid[:count])
@@ -1257,11 +1256,16 @@ class SortTest(parameterized.TestCase):
     else:
       offsets = wp.empty((nworld, njmax), dtype=int)
       total = wp.empty(nworld, dtype=int)
-      wp.launch(
+      fusion.launch(
+        None,
+        None,
         sort._sparse_offsets,
         dim=nworld,
-        inputs=[wp.array(rownnz, dtype=int), wp.array(counts, dtype=int), wp.array(order, dtype=int)],
-        outputs=[offsets, total],
+        efc_J_rownnz_in=wp.array(rownnz, dtype=int),
+        count_in=wp.array(counts, dtype=int),
+        order_in=wp.array(order, dtype=int),
+        offsets_out=offsets,
+        nnz_out=total,
       )
       np.testing.assert_array_equal(total.numpy(), sorted_nnz[:nworld].sum(axis=1))
       for world in range(nworld):

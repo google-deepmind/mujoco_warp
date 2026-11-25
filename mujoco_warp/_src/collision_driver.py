@@ -18,6 +18,7 @@ from typing import Optional
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src import sort
 from mujoco_warp._src.collision_convex import convex_narrowphase
 from mujoco_warp._src.collision_convex import prepare_convex_context
@@ -429,8 +430,10 @@ def _geom_surface_velocity(
 
 @cache_kernel
 def _sap_pair_margin(npair_margin: int, npair_gap: int):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nbatch", "npair", options={"default_grid_stride": False})
   def sap_pair_margin(
+    batchid: int,
+    pairid: int,
     # Model:
     pair_geom1: wp.array[int],
     pair_geom2: wp.array[int],
@@ -439,7 +442,6 @@ def _sap_pair_margin(npair_margin: int, npair_gap: int):
     # Out:
     geom_pair_margin_out: wp.array2d[float],
   ):
-    batchid, pairid = wp.tid()
     pair_margin_id = batchid % npair_margin if wp.static(npair_margin > 1) else 0
     pair_gap_id = batchid % npair_gap if wp.static(npair_gap > 1) else 0
     margin = pair_margin[pair_margin_id, pairid] + pair_gap[pair_gap_id, pairid]  # kernel_analyzer: ignore
@@ -451,8 +453,10 @@ def _sap_pair_margin(npair_margin: int, npair_gap: int):
 
 @cache_kernel
 def _sap_project(opt_broadphase: int, ngeom_dataid: int, ngeom_pair_margin: int, check_woke: bool = False):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "ngeom", options={"default_grid_stride": False})
   def sap_project(
+    worldid: int,
+    geomid: int,
     # Model:
     ngeom: int,
     geom_type: wp.array[int],
@@ -473,8 +477,6 @@ def _sap_project(opt_broadphase: int, ngeom_dataid: int, ngeom_pair_margin: int,
     sort_index_out: wp.array2d[int],
     segmented_index_out: wp.array[int],
   ):
-    worldid, geomid = wp.tid()
-
     sort_index_out[worldid, geomid] = geomid
     if wp.static(opt_broadphase == BroadphaseType.SAP_SEGMENTED):
       if geomid == 0:
@@ -562,8 +564,9 @@ def _sap_broadphase(
   incremental: bool = False,
   check_woke: bool = False,
 ):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworldgeom", options={"default_grid_stride": False})
   def kernel(
+    worldgeomid: int,
     # Model:
     ngeom: int,
     geom_type: wp.array[int],
@@ -595,7 +598,6 @@ def _sap_broadphase(
     collision_pairid_out: wp.array[wp.vec2i],
     collision_worldid_out: wp.array[int],
   ):
-    worldgeomid = wp.tid()
     if wp.static(check_woke):
       if woke_in[0] == 0:
         return
@@ -774,39 +776,25 @@ def sap_broadphase(
   npair_margin, npair_gap = m.pair_margin.shape[0], m.pair_gap.shape[0]
   ngeom_pair_margin = d.nworld if max(npair_margin, npair_gap) > 1 else 1
   geom_pair_margin = wp.zeros((ngeom_pair_margin, m.ngeom), dtype=float)
-  wp.launch(
-    _sap_pair_margin(npair_margin, npair_gap),
-    dim=(ngeom_pair_margin, m.npair),
-    inputs=[m.pair_geom1, m.pair_geom2, m.pair_margin, m.pair_gap],
-    outputs=[geom_pair_margin],
+  fusion.launch(
+    m, d, _sap_pair_margin(npair_margin, npair_gap), dim=(ngeom_pair_margin, m.npair), geom_pair_margin_out=geom_pair_margin
   )
 
-  wp.launch(
-    kernel=_sap_project(m.opt.broadphase, m.geom_dataid.shape[0], ngeom_pair_margin, check_woke),
-    dim=(d.nworld, m.ngeom),
-    inputs=[
-      m.ngeom,
-      m.geom_type,
-      m.geom_dataid,
-      m.geom_rbound,
-      m.geom_margin,
-      m.geom_gap,
-      d.geom_xpos,
-      d.nworld,
-      direction,
-      geom_pair_margin,
-      woke_in,
-    ],
-    outputs=[
-      projection_lower.reshape((-1, m.ngeom)),
-      projection_upper,
-      sort_index.reshape((-1, m.ngeom)),
-      segmented_index,
-    ],
+  fusion.launch(
+    m,
+    d,
+    _sap_project(m.opt.broadphase, m.geom_dataid.shape[0], ngeom_pair_margin, check_woke),
+    direction_in=direction,
+    geom_pair_margin_in=geom_pair_margin,
+    woke_in=woke_in,
+    projection_lower_out=projection_lower.reshape((-1, m.ngeom)),
+    projection_upper_out=projection_upper,
+    sort_index_out=sort_index.reshape((-1, m.ngeom)),
+    segmented_index_out=segmented_index,
   )
 
   if m.opt.broadphase == BroadphaseType.SAP_TILE:
-    wp.launch_tiled(
+    fusion.launch_tiled(
       kernel=_segmented_sort(m.ngeom),
       dim=d.nworld,
       inputs=[projection_lower.reshape((-1, m.ngeom)), sort_index.reshape((-1, m.ngeom))],
@@ -814,25 +802,39 @@ def sap_broadphase(
       block_dim=m.block_dim.segmented_sort,
     )
   else:
-    wp.utils.segmented_sort_pairs(
-      projection_lower.reshape((-1, m.ngeom)), sort_index.reshape((-1, m.ngeom)), nworldgeom, segmented_index
+    fusion.call(
+      wp.utils.segmented_sort_pairs,
+      projection_lower.reshape((-1, m.ngeom)),
+      sort_index.reshape((-1, m.ngeom)),
+      nworldgeom,
+      segmented_index,
+      reads=(segmented_index,),
+      writes=(projection_lower, sort_index),
     )
 
-  wp.launch(
-    kernel=sap_range,
-    dim=(d.nworld, m.ngeom),
-    inputs=[m.ngeom, projection_lower.reshape((-1, m.ngeom)), projection_upper, sort_index.reshape((-1, m.ngeom))],
-    outputs=[range_],
+  fusion.launch(
+    m,
+    d,
+    sap_range,
+    n=m.ngeom,
+    lower_in=projection_lower.reshape((-1, m.ngeom)),
+    upper_in=projection_upper,
+    sort_index_in=sort_index.reshape((-1, m.ngeom)),
+    range_out=range_,
   )
 
   # scan is used for load balancing among the threads
-  wp.utils.array_scan(range_.reshape(-1), cumulative_sum.reshape(-1), True)
+  fusion.call(
+    wp.utils.array_scan, range_.reshape(-1), cumulative_sum.reshape(-1), True, reads=(range_,), writes=(cumulative_sum,)
+  )
 
   # estimate number of overlap checks
   # assumes each geom has 5 other geoms (batched over all worlds)
   nsweep = 5 * nworldgeom
-  wp.launch(
-    kernel=_sap_broadphase(
+  fusion.launch(
+    m,
+    d,
+    _sap_broadphase(
       m.opt.broadphase_filter,
       m.geom_aabb.shape[0],
       m.geom_rbound.shape[0],
@@ -846,35 +848,14 @@ def sap_broadphase(
       check_woke,
     ),
     dim=nsweep,
-    inputs=[
-      m.ngeom,
-      m.geom_type,
-      m.geom_bodyid,
-      m.geom_dataid,
-      m.geom_aabb,
-      m.geom_rbound,
-      m.geom_margin,
-      m.geom_gap,
-      m.pair_margin,
-      m.pair_gap,
-      m.nxn_pairid,
-      d.geom_xpos,
-      d.geom_xquat,
-      d.body_awake,
-      d.nworld,
-      d.naconmax,
-      sort_index.reshape((-1, m.ngeom)),
-      cumulative_sum.reshape(-1),
-      nsweep,
-      awake_prev_in,
-      woke_in,
-    ],
-    outputs=[
-      d.ncollision,
-      ctx.collision_pair,
-      ctx.collision_pairid,
-      ctx.collision_worldid,
-    ],
+    sort_index_in=sort_index.reshape((-1, m.ngeom)),
+    cumulative_sum_in=cumulative_sum.reshape(-1),
+    nsweep_in=nsweep,
+    body_awake_prev_in=awake_prev_in,
+    woke_in=woke_in,
+    collision_pair_out=ctx.collision_pair,
+    collision_pairid_out=ctx.collision_pairid,
+    collision_worldid_out=ctx.collision_worldid,
   )
 
 
@@ -993,8 +974,9 @@ def _nxn_broadphase(
   return kernel
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _contact_surfacevel(
+  conid: int,
   # Model:
   geom_surfacevel: wp.array2d[vec6],
   # Data in:
@@ -1009,7 +991,6 @@ def _contact_surfacevel(
   # Data out:
   contact_surfacevel_out: wp.array[wp.vec3],
 ):
-  conid = wp.tid()
   if conid >= wp.min(nacon_in[0], naconmax_in):
     return
 
@@ -1107,7 +1088,7 @@ def nxn_broadphase(
     check_woke,
   )
   block_size, min_grid_size = wp.get_suggested_block_size(kernel, d.geom_xpos.device)
-  wp.launch(
+  fusion.launch_kernel(
     kernel,
     dim=(d.nworld, m.nxn_geom_pair_filtered.shape[0]),
     block_dim=m.block_dim.nxn_broadphase,
@@ -1151,8 +1132,10 @@ def _collision_table_pairs(m: Model) -> tuple[list[tuple[GeomType, GeomType]], l
   return convex_pairs, primitive_pairs
 
 
-@wp.kernel
+@fusion.stage("nworld", "nbody")
 def _copy_body_awake_if_woke(
+  worldid: int,
+  bodyid: int,
   # Data in:
   body_awake_in: wp.array2d[int],
   # In:
@@ -1160,7 +1143,6 @@ def _copy_body_awake_if_woke(
   # Out:
   awake_prev_out: wp.array2d[int],
 ):
-  worldid, bodyid = wp.tid()
   if woke_in[0] == 0:
     return
   awake_prev_out[worldid, bodyid] = body_awake_in[worldid, bodyid]
@@ -1168,12 +1150,7 @@ def _copy_body_awake_if_woke(
 
 def copy_body_awake_if_woke(m: Model, d: Data, woke: wp.array, awake_prev: wp.array):
   """Snapshots d.body_awake into awake_prev when woke[0] != 0."""
-  wp.launch(
-    _copy_body_awake_if_woke,
-    dim=(d.nworld, m.nbody),
-    inputs=[d.body_awake, woke],
-    outputs=[awake_prev],
-  )
+  fusion.launch(m, d, _copy_body_awake_if_woke, woke_in=woke, awake_prev_out=awake_prev)
 
 
 @wp.kernel
@@ -1246,7 +1223,7 @@ def collision(
   workspace cannot be allocated.
   """
   if d.naconmax == 0 or m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT):
-    d.nacon.zero_()
+    fusion.zero(d.nacon)
     return
 
   if ctx is None:
@@ -1256,16 +1233,16 @@ def collision(
   if incremental:
     # Append newly-awakened contacts to d.contact while counting incremental broadphase pairs
     # separately so pass-1 broadphase overflow is preserved.
-    ctx.ncollision_inc.zero_()
+    fusion.zero(ctx.ncollision_inc)
     d_col = dataclasses.replace(d, ncollision=ctx.ncollision_inc)
   else:
-    d.ncollision.zero_()
-    d.nacon.zero_()
+    fusion.zero(d.ncollision)
+    fusion.zero(d.nacon)
     d_col = d
     if m.nflex > 0:
-      d.contact.flex.fill_(wp.vec2i(-1, -1))
-      d.contact.elem.fill_(wp.vec2i(-1, -1))
-      d.contact.vert.fill_(wp.vec2i(-1, -1))
+      fusion.fill(d.contact.flex, wp.vec2i(-1, -1))
+      fusion.fill(d.contact.elem, wp.vec2i(-1, -1))
+      fusion.fill(d.contact.vert, wp.vec2i(-1, -1))
 
   if m.opt.broadphase == BroadphaseType.NXN:
     nxn_broadphase(m, d_col, ctx, awake_prev, woke=woke)
@@ -1275,7 +1252,7 @@ def collision(
   _narrowphase(m, d_col, ctx)
 
   if incremental:
-    wp.launch(_accum_ncollision, dim=1, inputs=[ctx.ncollision_inc], outputs=[d.ncollision])
+    fusion.launch_kernel(_accum_ncollision, dim=1, inputs=[ctx.ncollision_inc], outputs=[d.ncollision])
 
   # Flex collision is not sleeping-aware: pass 1 emits every flex contact regardless of awake state,
   # so the incremental pass has nothing to add (and re-running it would duplicate those contacts).
@@ -1284,24 +1261,11 @@ def collision(
     flex_collision(m, d, ctx)
 
   if m.flg_surfacevel:
-    wp.launch(
-      _contact_surfacevel,
-      dim=d.naconmax,
-      inputs=[
-        m.geom_surfacevel,
-        d.geom_xpos,
-        d.geom_xquat,
-        d.contact.pos,
-        d.contact.frame,
-        d.contact.geom,
-        d.contact.worldid,
-        d.naconmax,
-        d.nacon,
-      ],
-      outputs=[d.contact.surfacevel],
-    )
+    fusion.launch(m, d, _contact_surfacevel)
 
   if m.callback.contactfilter:
+    # callbacks launch work of their own
+    fusion.flush()
     m.callback.contactfilter(m, d)
 
   if sort_contacts and (m.opt.deterministic & DeterminismType.CONTACTS):

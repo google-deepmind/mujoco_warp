@@ -17,6 +17,7 @@ from typing import Optional
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
@@ -90,8 +91,10 @@ def flex_bend_convex(flex_bending: wp.array[float], bend_offset: int) -> bool:
   return trace >= 0.0
 
 
-@wp.kernel
+@fusion.stage("nworld", "njnt")
 def _spring_damper_dof_passive(
+  worldid: int,
+  jntid: int,
   # Model:
   opt_disableflags: int,
   qpos_spring: wp.array2d[float],
@@ -117,7 +120,6 @@ def _spring_damper_dof_passive(
   qfrc_spring_out: wp.array2d[float],
   qfrc_damper_out: wp.array2d[float],
 ):
-  worldid, jntid = wp.tid()
   dofid = jnt_dofadr[jntid]
   jnttype = jnt_type[jntid]
   stiffness = jnt_stiffness[worldid % jnt_stiffness.shape[0], jntid]
@@ -244,8 +246,11 @@ def _spring_damper_tendon_passive(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "ntendon", "max_ten_J_rownnz", options={**module_options})
   def kernel(
+    worldid: int,
+    tenid: int,
+    dofid_sparse: int,
     # Model:
     tendon_actuatorid: wp.array[int],
     tendon_plasticadr: wp.array[int],
@@ -274,8 +279,6 @@ def _spring_damper_tendon_passive(deterministic: bool = False):
     qfrc_spring_out: wp.array2d[float],
     qfrc_damper_out: wp.array2d[float],
   ):
-    worldid, tenid, dofid_sparse = wp.tid()
-
     stiffness = tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid]
     spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
     damping, dpoly = util_misc.tendon_damping_total(
@@ -345,8 +348,10 @@ def _spring_damper_flexedge_passive(nv: int, deterministic: bool = False):
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = nv
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nflexedge", options={**module_options})
   def kernel(
+    worldid: int,
+    edgeid: int,
     # Model:
     flexedge_length0: wp.array[float],
     flex_edgestiffness: wp.array[float],
@@ -367,8 +372,6 @@ def _spring_damper_flexedge_passive(nv: int, deterministic: bool = False):
     qfrc_spring_out: wp.array2d[float],
     qfrc_damper_out: wp.array2d[float],
   ):
-    worldid, edgeid = wp.tid()
-
     if flexedge_rigid[edgeid]:
       return
 
@@ -413,8 +416,10 @@ def _spring_damper_flexedge_passive(nv: int, deterministic: bool = False):
   return kernel
 
 
-@wp.kernel
+@fusion.stage("nworld", "nv")
 def _gravity_force(
+  worldid: int,
+  dofid: int,
   # Model:
   opt_gravity: wp.array[wp.vec3],
   body_parentid: wp.array[int],
@@ -431,7 +436,6 @@ def _gravity_force(
   # Data out:
   qfrc_gravcomp_out: wp.array2d[float],
 ):
-  worldid, dofid = wp.tid()
   gravity = opt_gravity[worldid % opt_gravity.shape[0]]
 
   # the dof's subtree is the contiguous body range [b, b + body_subtreenum[b])
@@ -459,8 +463,10 @@ def _gravity_force(
   qfrc_gravcomp_out[worldid, dofid] = qfrc
 
 
-@wp.kernel
+@fusion.stage("nworld", "nbody")
 def _fluid_force(
+  worldid: int,
+  bodyid: int,
   # Model:
   opt_wind: wp.array[wp.vec3],
   opt_density: wp.array[float],
@@ -485,7 +491,6 @@ def _fluid_force(
   fluid_applied_out: wp.array2d[wp.spatial_vector],
 ):
   """Computes body-space fluid forces for both inertia-box and ellipsoid models."""
-  worldid, bodyid = wp.tid()
   zero_force = wp.spatial_vector(wp.vec3(0.0), wp.vec3(0.0))
 
   if bodyid == 0:
@@ -695,31 +700,7 @@ def _fluid_force(
 def _fluid(m: Model, d: Data):
   fluid_applied = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
 
-  wp.launch(
-    _fluid_force,
-    dim=(d.nworld, m.nbody),
-    inputs=[
-      m.opt.wind,
-      m.opt.density,
-      m.opt.viscosity,
-      m.body_rootid,
-      m.body_geomnum,
-      m.body_geomadr,
-      m.body_mass,
-      m.body_inertia,
-      m.geom_type,
-      m.geom_size,
-      m.geom_fluid,
-      m.body_fluid_ellipsoid,
-      d.xipos,
-      d.xiquat,
-      d.geom_xpos,
-      d.geom_xquat,
-      d.subtree_com,
-      d.cvel,
-    ],
-    outputs=[fluid_applied],
-  )
+  fusion.launch(m, d, _fluid_force, fluid_applied_out=fluid_applied)
 
   support.apply_ft(m, d, fluid_applied, d.qfrc_fluid, False)
 
@@ -731,8 +712,9 @@ def _qfrc_adhesion(nv: int, deterministic: bool = False):
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = 2 * nv
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("naconmax", options={**module_options})
   def kernel(
+    cid: int,
     # Model:
     body_parentid: wp.array[int],
     body_rootid: wp.array[int],
@@ -754,7 +736,6 @@ def _qfrc_adhesion(nv: int, deterministic: bool = False):
     # Data out:
     qfrc_adhesion_out: wp.array2d[float],
   ):
-    cid = wp.tid()
     if cid >= nacon_in[0]:
       return
 
@@ -821,8 +802,10 @@ def _qfrc_adhesion(nv: int, deterministic: bool = False):
 
 @cache_kernel
 def _qfrc_passive_kernel(has_fluid: bool, flg_adhesion: bool, gravity_enabled: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld", "nv")
   def kernel(
+    worldid: int,
+    dofid: int,
     # Model:
     jnt_actgravcomp: wp.array[int],
     dof_jntid: wp.array[int],
@@ -835,7 +818,6 @@ def _qfrc_passive_kernel(has_fluid: bool, flg_adhesion: bool, gravity_enabled: b
     # Data out:
     qfrc_passive_out: wp.array2d[float],
   ):
-    worldid, dofid = wp.tid()
     qfrc_passive = qfrc_spring_in[worldid, dofid]
     qfrc_passive += qfrc_damper_in[worldid, dofid]
 
@@ -1963,8 +1945,10 @@ def _rod_pad44(a: wp.mat33) -> wp.mat44:
   return res
 
 
-@wp.kernel
+@fusion.stage("nworld", "nflex")
 def _eval_rod_chains(
+  worldid: int,
+  f: int,
   # Model:
   qpos0: wp.array2d[float],
   jnt_qposadr: wp.array[int],
@@ -2008,7 +1992,6 @@ def _eval_rod_chains(
   Runs once per position state: smooth.flex invalidates flex_rod_chain_valid, and later calls
   return early until it does again.
   """
-  worldid, f = wp.tid()
   if flex_rod_chain_valid_in[worldid, f]:
     return
   flex_rod_chain_valid_out[worldid, f] = True
@@ -2282,50 +2265,9 @@ def eval_rod_chains(m: Model, d: Data):
   if m.nflex == 0:
     return
   if m.nflexrodedge == 0:
-    d.flex_rod_chain_ok.zero_()
+    fusion.zero(d.flex_rod_chain_ok)
     return
-  wp.launch(
-    _eval_rod_chains,
-    dim=(d.nworld, m.nflex),
-    inputs=[
-      m.qpos0,
-      m.jnt_qposadr,
-      m.flex_vertadr,
-      m.flex_bendingadr,
-      m.flex_plasticadr,
-      m.flex_vertbodyid,
-      m.flex_bending,
-      m.flex_rod_is_chain,
-      m.flex_rod_root_clamped,
-      m.flex_rod_tail_clamped,
-      m.flex_rod_hingeadr,
-      m.flex_rod_edgeadr,
-      m.flex_rod_edgenum,
-      m.flex_rodedge_vert,
-      m.flex_rodedge_jnt,
-      d.qpos,
-      d.plastic,
-      d.xquat,
-      d.flexvert_xpos,
-      d.flex_rod_chain_valid,
-      d.flex_rod_ref_ok,
-      d.flex_rod_frame0_loc,
-      d.flex_rod_frame0_ref,
-      d.flex_rod_tail_loc,
-      d.flex_rodhinge_om0,
-    ],
-    outputs=[
-      d.flex_rod_chain_ok,
-      d.flex_rodhinge_g,
-      d.flex_rodhinge_Wk,
-      d.flex_rodhinge_Wd,
-      d.flex_rodedge_ktheta,
-      d.flex_rodedge_grad,
-      d.flex_rodedge_frc,
-      d.flex_rod_end_torque,
-      d.flex_rod_chain_valid,
-    ],
-  )
+  fusion.launch(m, d, _eval_rod_chains)
 
 
 @wp.func
@@ -2423,8 +2365,10 @@ def rod_stencil_jacobian(J0: mat43, J1: mat43, J2: mat43, J3: mat43, i: int) -> 
 
 @cache_kernel
 def _flex_gather_kernel(check_skip: bool):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "nflexvert", options={"default_grid_stride": False})
   def kernel(
+    worldid: int,
+    gvert: int,
     # Model:
     body_rootid: wp.array[int],
     body_weldid: wp.array[int],
@@ -2443,7 +2387,6 @@ def _flex_gather_kernel(check_skip: bool):
     # Out:
     res_out: wp.array2d[wp.vec3],
   ):
-    worldid, gvert = wp.tid()
     if wp.static(check_skip):
       if skip[worldid]:
         return
@@ -2473,8 +2416,10 @@ def _flex_scatter_kernel(check_skip: bool, nv: int, deterministic: bool = False)
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = nv
 
-  @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
+  @fusion.stage("nworld", "nflexvert", options={**module_options, "default_grid_stride": False})
   def kernel(
+    worldid: int,
+    gvert: int,
     # Model:
     body_rootid: wp.array[int],
     body_weldid: wp.array[int],
@@ -2494,7 +2439,6 @@ def _flex_scatter_kernel(check_skip: bool, nv: int, deterministic: bool = False)
     # Out:
     res_out: wp.array2d[float],
   ):
-    worldid, gvert = wp.tid()
     if wp.static(check_skip):
       if skip[worldid]:
         return
@@ -2531,25 +2475,7 @@ def flex_gather(
     return
   check_skip = skip is not None
   skip_arr = skip if check_skip else m.body_is_free
-  wp.launch(
-    _flex_gather_kernel(check_skip),
-    dim=(d.nworld, m.nflexvert),
-    inputs=[
-      m.body_rootid,
-      m.body_weldid,
-      m.body_dofnum,
-      m.body_dofadr,
-      m.body_simple,
-      m.dof_parentid,
-      m.flex_vertbodyid,
-      d.subtree_com,
-      d.cdof,
-      d.flexvert_xpos,
-      vec,
-      skip_arr,
-    ],
-    outputs=[res],
-  )
+  fusion.launch(m, d, _flex_gather_kernel(check_skip), vec_in=vec, skip=skip_arr, res_out=res)
 
 
 def flex_scatter(
@@ -2566,25 +2492,14 @@ def flex_scatter(
   check_skip = skip is not None
   skip_arr = skip if check_skip else m.body_is_free
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _flex_scatter_kernel(check_skip, m.nv if det_atomics else 0, det_atomics),
-    dim=(d.nworld, m.nflexvert),
-    inputs=[
-      m.body_rootid,
-      m.body_weldid,
-      m.body_dofnum,
-      m.body_dofadr,
-      m.body_simple,
-      m.dof_parentid,
-      m.flex_vertbodyid,
-      d.subtree_com,
-      d.cdof,
-      d.flexvert_xpos,
-      vec,
-      scale,
-      skip_arr,
-    ],
-    outputs=[res],
+    vec_in=vec,
+    scale=scale,
+    skip=skip_arr,
+    res_out=res,
   )
 
 
@@ -2609,8 +2524,10 @@ def _flex_hessian_active(
   return flex_stiffness[stiffness_adr] != 0.0
 
 
-@wp.kernel
+@fusion.stage("nworld", "nt")
 def _flex_hessian_clear(
+  worldid: int,
+  tid: int,
   # Model:
   nflexvert: int,
   nflexedge: int,
@@ -2622,7 +2539,6 @@ def _flex_hessian_clear(
   flexvert_hessian_out: wp.array2d[vec6],
   flexedge_hessian_out: wp.array2d[wp.mat33],
 ):
-  worldid, tid = wp.tid()
   if tid < nflexvert:
     f_v = flex_vertflexid[tid]
     if f_v >= 0 and not flex_hessian_valid_in[worldid, f_v]:
@@ -2639,8 +2555,10 @@ def _flex_hessian_elem(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nflexelem", options={**module_options})
   def kernel(
+    worldid: int,
+    elemid: int,
     # Model:
     flex_dim: wp.array[int],
     flex_interp: wp.array[int],
@@ -2669,7 +2587,6 @@ def _flex_hessian_elem(deterministic: bool = False):
     # Data out:
     flexedge_hessian_out: wp.array2d[wp.mat33],
   ):
-    worldid, elemid = wp.tid()
     f = flex_elemflexid[elemid]
     if flex_hessian_valid_in[worldid, f]:
       return
@@ -2777,8 +2694,10 @@ def _flex_hessian_diag(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nflexedge", options={**module_options})
   def kernel(
+    worldid: int,
+    edgeid: int,
     # Model:
     flex_dim: wp.array[int],
     flex_interp: wp.array[int],
@@ -2794,7 +2713,6 @@ def _flex_hessian_diag(deterministic: bool = False):
     # Data out:
     flexvert_hessian_out: wp.array2d[vec6],
   ):
-    worldid, edgeid = wp.tid()
     f = flex_edgeflexid[edgeid]
     if flex_hessian_valid_in[worldid, f]:
       return
@@ -2839,68 +2757,12 @@ def flex_hessian(m: Model, d: Data):
     return
   nclear = max(m.nflexvert, m.nflexedge)
   if nclear > 0:
-    wp.launch(
-      _flex_hessian_clear,
-      dim=(d.nworld, nclear),
-      inputs=[
-        m.nflexvert,
-        m.nflexedge,
-        m.flex_edgeflexid,
-        m.flex_vertflexid,
-        d.flex_hessian_valid,
-      ],
-      outputs=[d.flexvert_hessian, d.flexedge_hessian],
-    )
+    fusion.launch(m, d, _flex_hessian_clear, dim=(d.nworld, nclear))
   if m.nflexelem > 0:
     det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-    wp.launch(
-      _flex_hessian_elem(det_atomics),
-      dim=(d.nworld, m.nflexelem),
-      inputs=[
-        m.flex_dim,
-        m.flex_interp,
-        m.flex_vertadr,
-        m.flex_edgeadr,
-        m.flex_elemadr,
-        m.flex_elemdataadr,
-        m.flex_stiffnessadr,
-        m.flex_elemedgeadr,
-        m.flex_plasticadr,
-        m.flex_plasticmode,
-        m.flex_edge,
-        m.flex_elem,
-        m.flex_elemedge,
-        m.flex_vert0,
-        m.flexedge_length0,
-        m.flex_size,
-        m.flex_stiffness,
-        m.flex_rigid,
-        m.flex_elemflexid,
-        d.plastic,
-        d.flexvert_xpos,
-        d.flex_hessian_valid,
-        d.flexedge_length,
-      ],
-      outputs=[d.flexedge_hessian],
-    )
-    wp.launch(
-      _flex_hessian_diag(det_atomics),
-      dim=(d.nworld, m.nflexedge),
-      inputs=[
-        m.flex_dim,
-        m.flex_interp,
-        m.flex_vertadr,
-        m.flex_stiffnessadr,
-        m.flex_edge,
-        m.flex_stiffness,
-        m.flex_rigid,
-        m.flex_edgeflexid,
-        d.flex_hessian_valid,
-        d.flexedge_hessian,
-      ],
-      outputs=[d.flexvert_hessian],
-    )
-  d.flex_hessian_valid.fill_(True)
+    fusion.launch(m, d, _flex_hessian_elem(det_atomics))
+    fusion.launch(m, d, _flex_hessian_diag(det_atomics))
+  fusion.fill(d.flex_hessian_valid, True)
 
 
 @wp.func
@@ -2953,8 +2815,10 @@ def _flex_stretch_mul_scale(
 
 @cache_kernel
 def _flex_hessian_mul_vert(check_skip: bool):
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
+  @fusion.stage("nworld", "nflexvert", options={"default_grid_stride": False})
   def kernel(
+    worldid: int,
+    vertid: int,
     # Model:
     opt_timestep: wp.array[float],
     opt_disableflags: int,
@@ -2979,7 +2843,6 @@ def _flex_hessian_mul_vert(check_skip: bool):
     # Out:
     res_out: wp.array2d[wp.vec3],
   ):
-    worldid, vertid = wp.tid()
     if wp.static(check_skip):
       if skip[worldid]:
         return
@@ -3022,8 +2885,10 @@ def _flex_hessian_mul_edge(check_skip: bool, deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
+  @fusion.stage("nworld", "nflexedge", options={**module_options, "default_grid_stride": False})
   def kernel(
+    worldid: int,
+    edgeid: int,
     # Model:
     opt_timestep: wp.array[float],
     opt_disableflags: int,
@@ -3050,7 +2915,6 @@ def _flex_hessian_mul_edge(check_skip: bool, deterministic: bool = False):
     # Out:
     res_out: wp.array2d[wp.vec3],
   ):
-    worldid, edgeid = wp.tid()
     if wp.static(check_skip):
       if skip[worldid]:
         return
@@ -3105,57 +2969,31 @@ def flex_hessian_mul(
     return
   check_skip = skip is not None
   skip_arr = skip if check_skip else m.body_is_free
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _flex_hessian_mul_vert(check_skip),
-    dim=(d.nworld, m.nflexvert),
-    inputs=[
-      m.opt.timestep,
-      m.opt.disableflags,
-      m.flex_dim,
-      m.flex_interp,
-      m.flex_stiffnessadr,
-      m.flex_stiffness,
-      m.flex_damping,
-      m.flex_rigid,
-      m.flex_vertflexid,
-      m.flex_simple,
-      d.flexvert_hessian,
-      vec,
-      skip_arr,
-      s1_in,
-      s2_in,
-      use_timestep,
-      non_simple_only,
-      snh_only,
-    ],
-    outputs=[res],
+    vec_in=vec,
+    skip=skip_arr,
+    s1_in=s1_in,
+    s2_in=s2_in,
+    use_timestep=use_timestep,
+    non_simple_only=non_simple_only,
+    snh_only=snh_only,
+    res_out=res,
   )
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _flex_hessian_mul_edge(check_skip, bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-    dim=(d.nworld, m.nflexedge),
-    inputs=[
-      m.opt.timestep,
-      m.opt.disableflags,
-      m.flex_dim,
-      m.flex_interp,
-      m.flex_vertadr,
-      m.flex_stiffnessadr,
-      m.flex_edge,
-      m.flex_stiffness,
-      m.flex_damping,
-      m.flex_rigid,
-      m.flex_edgeflexid,
-      m.flex_simple,
-      d.flexedge_hessian,
-      vec,
-      skip_arr,
-      s1_in,
-      s2_in,
-      use_timestep,
-      non_simple_only,
-      snh_only,
-    ],
-    outputs=[res],
+    vec_in=vec,
+    skip=skip_arr,
+    s1_in=s1_in,
+    s2_in=s2_in,
+    use_timestep=use_timestep,
+    non_simple_only=non_simple_only,
+    snh_only=snh_only,
+    res_out=res,
   )
 
 
@@ -3210,8 +3048,10 @@ def _flex_bend_mul(check_skip: bool, nv: int, deterministic: bool = False):
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = 4 * nv
 
-  @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
+  @fusion.stage("nworld", "nflexedge", options={**module_options, "default_grid_stride": False})
   def kernel(
+    worldid: int,
+    edgeid: int,
     # Model:
     opt_timestep: wp.array[float],
     opt_disableflags: int,
@@ -3248,7 +3088,6 @@ def _flex_bend_mul(check_skip: bool, nv: int, deterministic: bool = False):
     # Out:
     res_out: wp.array2d[float],
   ):
-    worldid, edgeid = wp.tid()
     if wp.static(check_skip):
       if skip[worldid]:
         return
@@ -3349,42 +3188,17 @@ def flex_bend_mul(
   check_skip = skip is not None
   skip_arr = skip if check_skip else m.body_is_free
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _flex_bend_mul(check_skip, m.nv if det_atomics else 0, det_atomics),
-    dim=(d.nworld, m.nflexedge),
-    inputs=[
-      m.opt.timestep,
-      m.opt.disableflags,
-      m.body_rootid,
-      m.body_weldid,
-      m.body_dofnum,
-      m.body_dofadr,
-      m.body_simple,
-      m.dof_parentid,
-      m.flex_dim,
-      m.flex_interp,
-      m.flex_vertadr,
-      m.flex_edgeadr,
-      m.flex_bendingadr,
-      m.flex_vertbodyid,
-      m.flex_edge,
-      m.flex_edgeflap,
-      m.flex_bending,
-      m.flex_damping,
-      m.flex_rigid,
-      m.flex_edgeflexid,
-      m.flex_simple,
-      d.subtree_com,
-      d.cdof,
-      d.flexvert_xpos,
-      vec,
-      skip_arr,
-      s1_in,
-      s2_in,
-      use_timestep,
-      non_simple_only,
-    ],
-    outputs=[res],
+    vec_in=vec,
+    skip=skip_arr,
+    s1_in=s1_in,
+    s2_in=s2_in,
+    use_timestep=use_timestep,
+    non_simple_only=non_simple_only,
+    res_out=res,
   )
 
 
@@ -3395,8 +3209,10 @@ def _flex_rod_mul(check_skip: bool, nv: int, deterministic: bool = False):
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = 4 * nv
 
-  @wp.kernel(module="unique", module_options=module_options, grid_stride=False)
+  @fusion.stage("nworld", "nflexrodhinge", options={**module_options, "default_grid_stride": False})
   def kernel(
+    worldid: int,
+    hingeid: int,
     # Model:
     opt_timestep: wp.array[float],
     opt_disableflags: int,
@@ -3429,7 +3245,6 @@ def _flex_rod_mul(check_skip: bool, nv: int, deterministic: bool = False):
     # Out:
     res_out: wp.array2d[float],
   ):
-    worldid, hingeid = wp.tid()
     if wp.static(check_skip):
       if skip[worldid]:
         return
@@ -3545,38 +3360,17 @@ def flex_rod_mul(
   check_skip = skip is not None
   skip_arr = skip if check_skip else m.body_is_free
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _flex_rod_mul(check_skip, m.nv if det_atomics else 0, det_atomics),
-    dim=(d.nworld, m.nflexrodhinge),
-    inputs=[
-      m.opt.timestep,
-      m.opt.disableflags,
-      m.body_rootid,
-      m.body_weldid,
-      m.body_dofnum,
-      m.body_dofadr,
-      m.body_simple,
-      m.dof_parentid,
-      m.flex_vertadr,
-      m.flex_vertbodyid,
-      m.flex_bending,
-      m.flex_damping,
-      m.flex_simple,
-      m.flex_rodhinge_map,
-      d.subtree_com,
-      d.cdof,
-      d.flexvert_xpos,
-      d.flex_rod_chain_ok,
-      d.flex_rodhinge_Wk,
-      d.flex_rodhinge_Wd,
-      vec,
-      skip_arr,
-      s1_in,
-      s2_in,
-      use_timestep,
-      non_simple_only,
-    ],
-    outputs=[res],
+    vec_in=vec,
+    skip=skip_arr,
+    s1_in=s1_in,
+    s2_in=s2_in,
+    use_timestep=use_timestep,
+    non_simple_only=non_simple_only,
+    res_out=res,
   )
 
 
@@ -3586,8 +3380,10 @@ def _flex_elasticity(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nflexelem", options={**module_options})
   def kernel(
+    worldid: int,
+    elemid: int,
     # Model:
     opt_timestep: wp.array[float],
     flex_dim: wp.array[int],
@@ -3620,7 +3416,6 @@ def _flex_elasticity(deterministic: bool = False):
     flex_spring_body_force_out: wp.array2d[wp.spatial_vector],
     flex_damper_body_force_out: wp.array2d[wp.spatial_vector],
   ):
-    worldid, elemid = wp.tid()
     timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
     f = flex_elemflexid[elemid]
@@ -3757,8 +3552,10 @@ def _flex_rod_bending(nv: int, deterministic: bool = False):
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = 12 * nv + 4
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nflexrodhinge", options={**module_options})
   def kernel(
+    worldid: int,
+    hingeid: int,
     # Model:
     body_rootid: wp.array[int],
     body_weldid: wp.array[int],
@@ -3799,7 +3596,6 @@ def _flex_rod_bending(nv: int, deterministic: bool = False):
     qfrc_damper_out: wp.array2d[float],
   ):
     """Passive forces of 1D rod bending, see rod_stencil; damping excludes rigid rotations."""
-    worldid, hingeid = wp.tid()
     mapping = flex_rodhinge_map[hingeid]
     f = mapping[0]
     adr = mapping[1]
@@ -4042,8 +3838,10 @@ def _flex_bending(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nflexedge", options={**module_options})
   def kernel(
+    worldid: int,
+    edgeid: int,
     # Model:
     body_rootid: wp.array[int],
     body_weldid: wp.array[int],
@@ -4077,8 +3875,6 @@ def _flex_bending(deterministic: bool = False):
     flex_spring_body_force_out: wp.array2d[wp.spatial_vector],
     flex_damper_body_force_out: wp.array2d[wp.spatial_vector],
   ):
-    worldid, edgeid = wp.tid()
-
     f = flex_edgeflexid[edgeid]
     eid = edgeid - flex_edgeadr[f]
 
@@ -4185,8 +3981,10 @@ def _flex_passive_interp(deterministic: bool = False):
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = FLEX_INTERP_MAX_NODES
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nflexintcell", options={**module_options})
   def kernel(
+    worldid: int,
+    cellid: int,
     # Model:
     nflex: int,
     body_rootid: wp.array[int],
@@ -4222,8 +4020,6 @@ def _flex_passive_interp(deterministic: bool = False):
     vel_corot_scratch_out: wp.array3d[wp.vec3],
   ):
     """Corotational passive forces for interpolated flex (trilinear/quadratic)."""
-    worldid, cellid = wp.tid()
-
     mapping = flex_cell_map[cellid]
     f = mapping[0]
     ci = mapping[1]
@@ -4443,8 +4239,10 @@ def _flex_passive_bend_interp(deterministic: bool = False):
             wp.atomic_add(body_force_out, worldid, bid, spatial_frc)
             idx += 1
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nflexbend_interp", options={**module_options})
   def kernel(
+    worldid: int,
+    bend_edge_id: int,
     # Model:
     nflex: int,
     flex_interp: wp.array[int],
@@ -4467,8 +4265,6 @@ def _flex_passive_bend_interp(deterministic: bool = False):
     # Out:
     flex_spring_body_force_out: wp.array2d[wp.spatial_vector],
   ):
-    worldid, bend_edge_id = wp.tid()
-
     mapping = flex_bend_interp_map[bend_edge_id]
     f = mapping[0]
     e = mapping[1]
@@ -4841,8 +4637,9 @@ def flex_passive_contact(m: Model) -> bool:
   )
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _eff_contact_build(
+  cid: int,
   # Model:
   opt_timestep: wp.array[float],
   body_rootid: wp.array[int],
@@ -4894,7 +4691,6 @@ def _eff_contact_build(
   efm_con_nnz_out: wp.array[int],
 ):
   """Builds rank-1 passive flex contact metric terms, normal Jacobians, and forces."""
-  cid = wp.tid()
   if cid >= nacon_in[0]:
     return
 
@@ -5155,59 +4951,15 @@ def build_efm_contact(
   efm_con_force = wp.zeros(d.naconmax, dtype=float)
   efm_con_nnz = wp.zeros(d.naconmax, dtype=int)
   if rebuild and flex_passive_contact(m):
-    wp.launch(
+    fusion.launch(
+      m,
+      d,
       _eff_contact_build,
-      dim=d.naconmax,
-      inputs=[
-        m.opt.timestep,
-        m.body_rootid,
-        m.body_weldid,
-        m.body_dofnum,
-        m.body_dofadr,
-        m.body_simple,
-        m.jnt_dofadr,
-        m.dof_parentid,
-        m.geom_type,
-        m.flex_dim,
-        m.flex_vertadr,
-        m.flex_elemadr,
-        m.flex_elemnum,
-        m.flex_elemdataadr,
-        m.flex_plasticadr,
-        m.flex_vertbodyid,
-        m.flex_elem,
-        m.M_rownnz,
-        m.M_rowadr,
-        m.efm_con_max_dof,
-        m.flex_rod_has_twist,
-        m.flex_rod_edgeadr,
-        m.flex_rod_edgenum,
-        m.flex_rodedge_jnt,
-        m.flex_elem_rodedge,
-        m.flex_vert_rodelem,
-        d.plastic,
-        d.subtree_com,
-        d.cdof,
-        d.flexvert_xpos,
-        d.M,
-        d.contact.dist,
-        d.contact.pos,
-        d.contact.frame,
-        d.contact.geom,
-        d.contact.flex,
-        d.contact.elem,
-        d.contact.vert,
-        d.contact.worldid,
-        d.contact.type,
-        d.nacon,
-      ],
-      outputs=[
-        efm_con_dof,
-        efm_con_val,
-        efm_con_scale,
-        efm_con_force,
-        efm_con_nnz,
-      ],
+      efm_con_dof_out=efm_con_dof,
+      efm_con_val_out=efm_con_val,
+      efm_con_scale_out=efm_con_scale,
+      efm_con_force_out=efm_con_force,
+      efm_con_nnz_out=efm_con_nnz,
     )
   return efm_con_dof, efm_con_val, efm_con_scale, efm_con_force, efm_con_nnz
 
@@ -5220,8 +4972,9 @@ def _eff_contact_force(max_dof: int, deterministic: bool = False):
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
     module_options["deterministic_max_records"] = max_dof
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("naconmax", options={**module_options})
   def kernel(
+    cid: int,
     # Data in:
     contact_worldid_in: wp.array[int],
     # In:
@@ -5232,7 +4985,6 @@ def _eff_contact_force(max_dof: int, deterministic: bool = False):
     # Data out:
     qfrc_spring_out: wp.array2d[float],
   ):
-    cid = wp.tid()
     nnz = efm_con_nnz_in[cid]
     if nnz == 0:
       return
@@ -5255,138 +5007,31 @@ def passive(m: Model, d: Data):
   dsbl_damper = m.opt.disableflags & DisableBit.DAMPER
 
   if dsbl_spring and dsbl_damper:
-    d.qfrc_spring.zero_()
-    d.qfrc_damper.zero_()
-    d.qfrc_gravcomp.zero_()
-    d.qfrc_fluid.zero_()
-    d.qfrc_passive.zero_()
+    fusion.zero(d.qfrc_spring)
+    fusion.zero(d.qfrc_damper)
+    fusion.zero(d.qfrc_gravcomp)
+    fusion.zero(d.qfrc_fluid)
+    fusion.zero(d.qfrc_passive)
     return
 
-  wp.launch(
-    _spring_damper_dof_passive,
-    dim=(d.nworld, m.njnt),
-    inputs=[
-      m.opt.disableflags,
-      m.qpos_spring,
-      m.jnt_type,
-      m.jnt_qposadr,
-      m.jnt_dofadr,
-      m.jnt_actuatorid,
-      m.jnt_plasticadr,
-      m.jnt_stiffness,
-      m.jnt_stiffnesspoly,
-      m.dof_damping,
-      m.dof_dampingpoly,
-      m.actuator_trntype,
-      m.actuator_trnid,
-      m.actuator_damping,
-      m.actuator_dampingpoly,
-      m.actuator_gear,
-      d.qpos,
-      d.qvel,
-      d.plastic,
-    ],
-    outputs=[d.qfrc_spring, d.qfrc_damper],
-  )
+  fusion.launch(m, d, _spring_damper_dof_passive)
 
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
   if m.ntendon:
-    wp.launch(
-      _spring_damper_tendon_passive(det_atomics),
-      dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
-      inputs=[
-        m.tendon_actuatorid,
-        m.tendon_plasticadr,
-        m.ten_J_rownnz,
-        m.ten_J_rowadr,
-        m.ten_J_colind,
-        m.tendon_stiffness,
-        m.tendon_stiffnesspoly,
-        m.tendon_damping,
-        m.tendon_dampingpoly,
-        m.tendon_lengthspring,
-        m.actuator_trntype,
-        m.actuator_trnid,
-        m.actuator_damping,
-        m.actuator_dampingpoly,
-        m.actuator_gear,
-        d.plastic,
-        d.ten_J,
-        d.ten_length,
-        d.ten_velocity,
-        dsbl_spring,
-        dsbl_damper,
-      ],
-      outputs=[
-        d.qfrc_spring,
-        d.qfrc_damper,
-      ],
-    )
+    fusion.launch(m, d, _spring_damper_tendon_passive(det_atomics), dsbl_spring=dsbl_spring, dsbl_damper=dsbl_damper)
 
   if not (dsbl_spring and dsbl_damper):
-    wp.launch(
+    fusion.launch(
+      m,
+      d,
       _spring_damper_flexedge_passive(m.nv if det_atomics else 0, det_atomics),
-      dim=(d.nworld, m.nflexedge),
-      inputs=[
-        m.flexedge_length0,
-        m.flex_edgestiffness,
-        m.flex_edgedamping,
-        m.flexedge_rigid,
-        m.flexedge_J_rownnz,
-        m.flexedge_J_rowadr,
-        m.flexedge_J_colind,
-        m.flex_edgeflexid,
-        d.flexedge_J,
-        d.flexedge_length,
-        d.flexedge_velocity,
-        dsbl_spring,
-        dsbl_damper,
-      ],
-      outputs=[
-        d.qfrc_spring,
-        d.qfrc_damper,
-      ],
+      dsbl_spring=dsbl_spring,
+      dsbl_damper=dsbl_damper,
     )
     if m.nflexrodhinge > 0:
       eval_rod_chains(m, d)
-      wp.launch(
-        _flex_rod_bending(m.nv if det_atomics else 0, det_atomics),
-        dim=(d.nworld, m.nflexrodhinge),
-        inputs=[
-          m.body_rootid,
-          m.body_weldid,
-          m.body_dofnum,
-          m.body_dofadr,
-          m.body_simple,
-          m.jnt_dofadr,
-          m.dof_parentid,
-          m.flex_vertadr,
-          m.flex_vertbodyid,
-          m.flex_bending,
-          m.flex_damping,
-          m.flex_rodhinge_map,
-          m.flex_rod_root_clamped,
-          m.flex_rod_tail_clamped,
-          m.flex_rod_hingeadr,
-          m.flex_rod_edgeadr,
-          m.flex_rod_edgenum,
-          m.flex_rodedge_vert,
-          m.flex_rodedge_jnt,
-          d.qvel,
-          d.subtree_com,
-          d.cdof,
-          d.flexvert_xpos,
-          d.cvel,
-          d.flex_rod_chain_ok,
-          d.flex_rodhinge_g,
-          d.flex_rodhinge_Wd,
-          d.flex_rodedge_grad,
-          d.flex_rodedge_frc,
-          d.flex_rod_end_torque,
-          dsbl_spring,
-          dsbl_damper,
-        ],
-        outputs=[d.qfrc_spring, d.qfrc_damper],
+      fusion.launch(
+        m, d, _flex_rod_bending(m.nv if det_atomics else 0, det_atomics), dsbl_spring=dsbl_spring, dsbl_damper=dsbl_damper
       )
 
   flex_spring_body_force = None
@@ -5396,166 +5041,47 @@ def passive(m: Model, d: Data):
     flex_damper_body_force = wp.zeros((d.nworld, m.nbody), dtype=wp.spatial_vector, device=d.qfrc_spring.device)
 
   if not dsbl_spring or not dsbl_damper:
-    wp.launch(
+    fusion.launch(
+      m,
+      d,
       _flex_elasticity(det_atomics),
-      dim=(d.nworld, m.nflexelem),
-      inputs=[
-        m.opt.timestep,
-        m.flex_dim,
-        m.flex_interp,
-        m.flex_vertadr,
-        m.flex_edgeadr,
-        m.flex_elemadr,
-        m.flex_elemdataadr,
-        m.flex_stiffnessadr,
-        m.flex_elemedgeadr,
-        m.flex_plasticadr,
-        m.flex_plasticmode,
-        m.flex_vertbodyid,
-        m.flex_elem,
-        m.flex_elemedge,
-        m.flexedge_length0,
-        m.flex_stiffness,
-        m.flex_damping,
-        m.flex_elemflexid,
-        d.plastic,
-        d.xipos,
-        d.flexvert_xpos,
-        d.flexedge_length,
-        d.flexedge_velocity,
-        dsbl_spring,
-        dsbl_damper,
-      ],
-      outputs=[
-        flex_spring_body_force,
-        flex_damper_body_force,
-      ],
+      dsbl_spring=dsbl_spring,
+      dsbl_damper=dsbl_damper,
+      flex_spring_body_force_out=flex_spring_body_force,
+      flex_damper_body_force_out=flex_damper_body_force,
     )
 
-    wp.launch(
+    fusion.launch(
+      m,
+      d,
       _flex_bending(det_atomics),
-      dim=(d.nworld, m.nflexedge),
-      inputs=[
-        m.body_rootid,
-        m.body_weldid,
-        m.body_dofnum,
-        m.flex_dim,
-        m.flex_interp,
-        m.flex_vertadr,
-        m.flex_edgeadr,
-        m.flex_elemnum,
-        m.flex_stiffnessadr,
-        m.flex_bendingadr,
-        m.flex_plasticadr,
-        m.flex_plasticmode,
-        m.flex_vertbodyid,
-        m.flex_edge,
-        m.flex_edgeflap,
-        m.flex_stiffness,
-        m.flex_bending,
-        m.flex_damping,
-        m.flex_edgeflexid,
-        d.plastic,
-        d.xipos,
-        d.subtree_com,
-        d.flexvert_xpos,
-        d.cvel,
-        dsbl_spring,
-        dsbl_damper,
-      ],
-      outputs=[
-        flex_spring_body_force,
-        flex_damper_body_force,
-      ],
+      dsbl_spring=dsbl_spring,
+      dsbl_damper=dsbl_damper,
+      flex_spring_body_force_out=flex_spring_body_force,
+      flex_damper_body_force_out=flex_damper_body_force,
     )
-    wp.launch(
-      _flex_passive_bend_interp(det_atomics),
-      dim=(d.nworld, m.nflexbend_interp),
-      inputs=[
-        m.nflex,
-        m.flex_interp,
-        m.flex_cellnum,
-        m.flex_nodeadr,
-        m.flex_nodenum,
-        m.flex_bendingadr,
-        m.flex_nodebodyid,
-        m.flex_node,
-        m.flex_bending,
-        m.flex_centered,
-        m.flex_faceadr,
-        m.flex_bend_interp_map,
-        m.flex_face,
-        d.xipos,
-        d.flexnode_xpos,
-        d.face_xpos,
-        d.face_quat,
-      ],
-      outputs=[flex_spring_body_force],
-    )
+    fusion.launch(m, d, _flex_passive_bend_interp(det_atomics), flex_spring_body_force_out=flex_spring_body_force)
 
   gravity_enabled = not (m.opt.disableflags & DisableBit.GRAVITY)
   if gravity_enabled:
-    wp.launch(
-      _gravity_force,
-      dim=(d.nworld, m.nv),
-      inputs=[
-        m.opt.gravity,
-        m.body_parentid,
-        m.body_rootid,
-        m.body_mass,
-        m.body_gravcomp,
-        m.dof_bodyid,
-        m.body_subtreenum,
-        m.body_isdofancestor,
-        d.xipos,
-        d.subtree_com,
-        d.cdof,
-      ],
-      outputs=[d.qfrc_gravcomp],
-    )
+    fusion.launch(m, d, _gravity_force)
   else:
-    d.qfrc_gravcomp.zero_()
+    fusion.zero(d.qfrc_gravcomp)
 
   # Launch passive interp kernel for interpolated flex (trilinear/quadratic)
   if m.nflex and m.nflexintcell > 0:
     displ_scratch = wp.empty((d.nworld, m.nflexintcell, FLEX_INTERP_MAX_NODES), dtype=wp.vec3)
     vel_corot_scratch = wp.empty((d.nworld, m.nflexintcell, FLEX_INTERP_MAX_NODES), dtype=wp.vec3)
-    wp.launch(
+    fusion.launch(
+      m,
+      d,
       _flex_passive_interp(det_atomics),
-      dim=(d.nworld, m.nflexintcell),
-      inputs=[
-        m.nflex,
-        m.body_rootid,
-        m.flex_interp,
-        m.flex_cellnum,
-        m.flex_nodeadr,
-        m.flex_stiffnessadr,
-        m.flex_plasticadr,
-        m.flex_nodebodyid,
-        m.flex_node,
-        m.flex_node0,
-        m.flex_stiffness,
-        m.flex_damping,
-        m.flex_edgeequality,
-        m.flex_centered,
-        m.flex_faceadr,
-        m.flex_cell_map,
-        m.flex_face,
-        d.plastic,
-        d.xipos,
-        d.subtree_com,
-        d.cvel,
-        d.flexnode_xpos,
-        d.face_quat,
-        dsbl_spring,
-        dsbl_damper,
-      ],
-      outputs=[
-        flex_spring_body_force,
-        flex_damper_body_force,
-        displ_scratch,
-        vel_corot_scratch,
-      ],
+      dsbl_spring=dsbl_spring,
+      dsbl_damper=dsbl_damper,
+      flex_spring_body_force_out=flex_spring_body_force,
+      flex_damper_body_force_out=flex_damper_body_force,
+      displ_scratch_out=displ_scratch,
+      vel_corot_scratch_out=vel_corot_scratch,
     )
 
   if m.nflex > 0:
@@ -5577,66 +5103,26 @@ def passive(m: Model, d: Data):
       )
     if m.opt.integrator == IntegratorType.DISCRETE and flex_passive_contact(m):
       efm_con_dof, efm_con_val, _, efm_con_force, efm_con_nnz = build_efm_contact(m, d, rebuild=True)
-      wp.launch(
+      fusion.launch(
+        m,
+        d,
         _eff_contact_force(m.efm_con_max_dof if det_atomics else 0, det_atomics),
-        dim=d.naconmax,
-        inputs=[
-          d.contact.worldid,
-          efm_con_dof,
-          efm_con_val,
-          efm_con_force,
-          efm_con_nnz,
-        ],
-        outputs=[d.qfrc_spring],
+        efm_con_dof_in=efm_con_dof,
+        efm_con_val_in=efm_con_val,
+        efm_con_force_in=efm_con_force,
+        efm_con_nnz_in=efm_con_nnz,
       )
 
   if m.has_fluid:
     _fluid(m, d)
 
-  d.qfrc_adhesion.zero_()
+  fusion.zero(d.qfrc_adhesion)
   if m.flg_adhesion and (not (m.opt.disableflags & DisableBit.CONTACT)) and m.nv > 0:
-    wp.launch(
-      _qfrc_adhesion(m.nv if det_atomics else 0, det_atomics),
-      dim=d.naconmax,
-      inputs=[
-        m.body_parentid,
-        m.body_rootid,
-        m.body_weldid,
-        m.body_dofnum,
-        m.body_dofadr,
-        m.dof_bodyid,
-        m.geom_bodyid,
-        m.body_isdofancestor,
-        d.subtree_com,
-        d.cdof,
-        d.contact.pos,
-        d.contact.frame,
-        d.contact.geom,
-        d.contact.worldid,
-        d.contact.adhesion,
-        d.nacon,
-      ],
-      outputs=[
-        d.qfrc_adhesion,
-      ],
-    )
+    fusion.launch(m, d, _qfrc_adhesion(m.nv if det_atomics else 0, det_atomics))
 
-  wp.launch(
-    _qfrc_passive_kernel(m.has_fluid, m.flg_adhesion, gravity_enabled),
-    dim=(d.nworld, m.nv),
-    inputs=[
-      m.jnt_actgravcomp,
-      m.dof_jntid,
-      d.qfrc_spring,
-      d.qfrc_damper,
-      d.qfrc_gravcomp,
-      d.qfrc_fluid,
-      d.qfrc_adhesion,
-    ],
-    outputs=[
-      d.qfrc_passive,
-    ],
-  )
+  fusion.launch(m, d, _qfrc_passive_kernel(m.has_fluid, m.flg_adhesion, gravity_enabled))
 
   if m.callback.passive:
+    # callbacks launch work of their own
+    fusion.flush()
     m.callback.passive(m, d)

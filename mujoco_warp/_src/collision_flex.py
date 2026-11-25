@@ -19,6 +19,7 @@ import math
 import warp as wp
 
 from mujoco_warp._src import collision_primitive_core
+from mujoco_warp._src import fusion
 from mujoco_warp._src import support
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_core import sap_binary_search
@@ -242,8 +243,10 @@ def _triangle_sat_separated(
   return False
 
 
-@wp.kernel
+@fusion.stage("nworld", "nflex")
 def _flex_broadphase_bounds(
+  worldid: int,
+  flexid: int,
   # Model:
   flex_margin: wp.array[float],
   flex_gap: wp.array[float],
@@ -258,8 +261,6 @@ def _flex_broadphase_bounds(
   flex_aabb_min_out: wp.array2d[wp.vec3],
   flex_aabb_max_out: wp.array2d[wp.vec3],
 ):
-  worldid, flexid = wp.tid()
-
   start = flex_vertadr[flexid]
   num = flex_vertnum[flexid]
   if num == 0:
@@ -1090,8 +1091,10 @@ def _is_passive_flex_cand(
 
 @cache_kernel
 def _flex_plane_narrowphase(warn_overflow: int):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld", "nflexvert")
   def kernel(
+    worldid: int,
+    vertid: int,
     # Model:
     ngeom: int,
     qpos0: wp.array2d[float],
@@ -1151,8 +1154,6 @@ def _flex_plane_narrowphase(warn_overflow: int):
     cand_worldid_out: wp.array[int],
     ncand_out: wp.array[int],
   ):
-    worldid, vertid = wp.tid()
-
     flexid = flex_vertflexid[vertid]
     radius = flex_radius[flexid]
     flex_margin_val = flex_margin[flexid] + flex_gap[flexid]
@@ -1410,8 +1411,10 @@ def _elem_active(
   return flex_elemlayer[flex_elemadr[flexid] + elemid] < flex_activelayers[flexid]
 
 
-@wp.kernel
+@fusion.stage("nworld", "nelem")
 def _flex_sap_project(
+  worldid: int,
+  elemid: int,
   # Model:
   flex_margin: wp.array[float],
   flex_gap: wp.array[float],
@@ -1440,8 +1443,6 @@ def _flex_sap_project(
   elem_aabb_upper_out: wp.array2d[wp.vec3],
   segmented_index_out: wp.array[int],
 ):
-  worldid, elemid = wp.tid()
-
   flexid = flex_elemflexid[elemid]
 
   # Initialize sort index
@@ -1507,8 +1508,9 @@ def _flex_sap_project(
 
 @cache_kernel
 def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworldelem")
   def kernel(
+    worldelemid: int,
     # Model:
     flex_contype: wp.array[int],
     flex_conaffinity: wp.array[int],
@@ -1542,8 +1544,6 @@ def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
     collision_pair_out: wp.array[wp.vec2i],
     collision_worldid_out: wp.array[int],
   ):
-    worldelemid = wp.tid()
-
     nworldelem = cumulative_sum_in.shape[0]
     nworkpackages = cumulative_sum_in[nworldelem - 1]
 
@@ -1691,8 +1691,9 @@ def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
 
 @cache_kernel
 def _flex_narrowphase(warn_overflow: int):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("naconmax")
   def kernel(
+    pairid: int,
     # Model:
     opt_ccd_tolerance: wp.array[float],
     qpos0: wp.array2d[float],
@@ -1757,8 +1758,6 @@ def _flex_narrowphase(warn_overflow: int):
     ncand_out: wp.array[int],
   ):
     """Process broadphase-identified flex pairs through narrowphase."""
-    pairid = wp.tid()
-
     # Check bounds
     if pairid >= ncollision_in[0]:
       return
@@ -2688,8 +2687,9 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
   return kernel
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _compute_filter_key(
+  i: int,
   # Model:
   ngeom: int,
   nflex: int,
@@ -2707,7 +2707,6 @@ def _compute_filter_key(
 
   Groups candidates by (worldid, flex_id, geom_id) in high bits and spatial projection in low bits.
   """
-  i = wp.tid()
   if i >= ncand[0]:
     key_out[i] = wp.int64(9223372036854775807)  # (largest int64 value): sort unused entries to end
     val_out[i] = i
@@ -2763,8 +2762,9 @@ def _compare_candidate(
 # TODO(thowell): Figure out an FPS version that utilizes a configurable mj_maxconpair.
 @cache_kernel
 def _filter_flex_candidates_sorted(has_passive_flex: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("naconmax")
   def kernel(
+    si: int,
     # Model:
     opt_integrator: int,
     body_weldid: wp.array[int],
@@ -2793,7 +2793,6 @@ def _filter_flex_candidates_sorted(has_passive_flex: bool):
     Each candidate only compares with neighbors sharing the same key, reducing
     complexity from O(n^2) to O(n * k) where k is the average group size.
     """
-    si = wp.tid()
     ncand_limit = wp.min(ncand[0], cand_active_out.shape[0])
     if si >= ncand_limit:
       if si < cand_active_out.shape[0]:
@@ -2878,8 +2877,9 @@ def _filter_flex_candidates_sorted(has_passive_flex: bool):
 
 @cache_kernel
 def _write_filtered_contacts(warn_overflow: int, has_passive_flex: bool):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("naconmax")
   def kernel(
+    i: int,
     # Model:
     opt_integrator: int,
     body_weldid: wp.array[int],
@@ -2938,7 +2938,6 @@ def _write_filtered_contacts(warn_overflow: int, has_passive_flex: bool):
     nacon_out: wp.array[int],
     overflow_out: wp.array[int],
   ):
-    i = wp.tid()
     if i >= ncand[0]:
       return
 
@@ -3064,8 +3063,9 @@ def _write_filtered_contacts(warn_overflow: int, has_passive_flex: bool):
   return kernel
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _populate_active_sorted(
+  si: int,
   # In:
   ncand: wp.array[int],
   sort_val: wp.array[int],
@@ -3073,7 +3073,6 @@ def _populate_active_sorted(
   # Out:
   cand_active_sorted_out: wp.array[int],
 ):
-  si = wp.tid()
   ncand_limit = wp.min(ncand[0], cand_active_sorted_out.shape[0])
   if si < ncand_limit:
     cand_active_sorted_out[si] = cand_active[sort_val[si]]
@@ -3082,15 +3081,15 @@ def _populate_active_sorted(
       cand_active_sorted_out[si] = 0
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _find_group_starts(
+  si: int,
   # In:
   ncand: wp.array[int],
   sort_key: wp.array[wp.int64],
   # Out:
   flex_group_temp_out: wp.array[int],
 ):
-  si = wp.tid()
   ncand_limit = wp.min(ncand[0], flex_group_temp_out.shape[0])
   if si >= ncand_limit:
     return
@@ -3110,8 +3109,9 @@ def _find_group_starts(
 
 @cache_kernel
 def _populate_group_starts(warn_overflow: int):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("naconmax")
   def kernel(
+    si: int,
     # In:
     flex_group_temp_in: wp.array[int],
     flex_group_ids_in: wp.array[int],
@@ -3124,7 +3124,6 @@ def _populate_group_starts(warn_overflow: int):
     flex_group_start_indices_out: wp.array[int],
     flex_num_groups_out: wp.array[int],
   ):
-    si = wp.tid()
     ncand_limit = wp.min(ncand[0], flex_group_temp_in.shape[0])
     if si >= ncand_limit:
       return
@@ -3407,24 +3406,7 @@ def _parallel_fps(has_passive_flex: bool):
 
 def flex_broadphase_aabb(m: Model, d: Data):
   """Precompute dynamic flex object bounding boxes."""
-  wp.launch(
-    _flex_broadphase_bounds,
-    dim=(d.nworld, m.nflex),
-    inputs=[
-      m.flex_margin,
-      m.flex_gap,
-      m.flex_vertadr,
-      m.flex_vertnum,
-      m.flex_radius,
-      m.flex_rod_is_box,
-      m.flex_rod_box_size,
-      d.flexvert_xpos,
-    ],
-    outputs=[
-      d.flex_aabb_min,
-      d.flex_aabb_max,
-    ],
-  )
+  fusion.launch(m, d, _flex_broadphase_bounds)
 
 
 @dataclasses.dataclass
@@ -3535,7 +3517,7 @@ def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
 
 def _run_filter_flex_fps(m: Model, ws: FlexWorkspace, has_passive_flex: bool):
   """Applies Far Point Sampling to limit contact points per group to MJ_MAXCONPAIR in parallel."""
-  wp.launch_tiled(
+  fusion.launch_tiled(
     _parallel_fps(has_passive_flex),
     dim=ws.flex_group_start_indices.shape[0],
     inputs=[
@@ -3573,151 +3555,68 @@ def _filter_and_write_contacts(
   enable_fps: bool = False,
 ):
   """Deduplicates candidates, optionally applies FPS filtering, and writes contacts to d.contact."""
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _compute_filter_key,
-    dim=d.naconmax,
-    inputs=[
-      m.ngeom,
-      m.nflex,
-      ws.ncand,
-      ws.geom,
-      ws.flex,
-      ws.pos,
-      ws.worldid,
-    ],
-    outputs=[
-      ws.filter_key,
-      ws.filter_val,
-    ],
+    ncand=ws.ncand,
+    cand_geom=ws.geom,
+    cand_flex=ws.flex,
+    cand_pos=ws.pos,
+    cand_worldid=ws.worldid,
+    key_out=ws.filter_key,
+    val_out=ws.filter_val,
   )
 
-  wp.utils.radix_sort_pairs(ws.filter_key, ws.filter_val, d.naconmax)
+  fusion.call(wp.utils.radix_sort_pairs, ws.filter_key, ws.filter_val, d.naconmax, writes=(ws.filter_key, ws.filter_val))
 
   has_passive_flex = bool(m.opt.integrator == IntegratorType.DISCRETE and m.has_flex_passive)
-  wp.launch(
+  fusion.launch(
+    m,
+    ws,
     _filter_flex_candidates_sorted(has_passive_flex),
     dim=d.naconmax,
-    inputs=[
-      m.opt.integrator,
-      m.body_weldid,
-      m.geom_bodyid,
-      m.flex_passive,
-      m.flex_dim,
-      m.flex_interp,
-      m.flex_rigid,
-      ws.ncand,
-      _FLEX_CONTACT_DEDUP_TOLERANCE,
-      ws.filter_key,
-      ws.filter_val,
-      ws.dist,
-      ws.pos,
-      ws.geom,
-      ws.flex,
-      ws.elem,
-      ws.vert,
-    ],
-    outputs=[ws.cand_active],
+    ncand=ws.ncand,
+    epsilon=_FLEX_CONTACT_DEDUP_TOLERANCE,
+    sort_key=ws.filter_key,
+    sort_val=ws.filter_val,
+    cand_dist=ws.dist,
+    cand_pos=ws.pos,
+    cand_geom=ws.geom,
+    cand_flex=ws.flex,
+    cand_elem=ws.elem,
+    cand_vert=ws.vert,
   )
 
   if enable_fps:
-    wp.launch(
-      _populate_active_sorted,
-      dim=d.naconmax,
-      inputs=[ws.ncand, ws.filter_val, ws.cand_active],
-      outputs=[ws.cand_active_sorted],
+    fusion.launch(ws, ws, _populate_active_sorted, dim=d.naconmax, sort_val=ws.filter_val)
+
+    fusion.launch(ws, ws, _find_group_starts, dim=d.naconmax, sort_key=ws.filter_key)
+
+    fusion.call(
+      wp.utils.array_scan, ws.flex_group_temp, ws.flex_group_ids, True, reads=(ws.flex_group_temp,), writes=(ws.flex_group_ids,)
     )
 
-    wp.launch(
-      _find_group_starts,
-      dim=d.naconmax,
-      inputs=[
-        ws.ncand,
-        ws.filter_key,
-      ],
-      outputs=[ws.flex_group_temp],
-    )
-
-    wp.utils.array_scan(ws.flex_group_temp, ws.flex_group_ids, True)
-
-    wp.launch(
-      _populate_group_starts(int(m.opt.warn_overflow)),
-      dim=d.naconmax,
-      inputs=[
-        ws.flex_group_temp,
-        ws.flex_group_ids,
-        ws.ncand,
-        ws.filter_val,
-        ws.worldid,
-      ],
-      outputs=[
-        d.overflow,
-        ws.flex_group_start_indices,
-        ws.flex_num_groups,
-      ],
+    fusion.launch(
+      ws, ws, _populate_group_starts(int(m.opt.warn_overflow)), dim=d.naconmax, cand_worldid=ws.worldid, overflow_out=d.overflow
     )
 
     _run_filter_flex_fps(m, ws, has_passive_flex)
 
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _write_filtered_contacts(int(m.opt.warn_overflow), has_passive_flex),
-    dim=d.naconmax,
-    inputs=[
-      m.opt.integrator,
-      m.body_weldid,
-      m.geom_condim,
-      m.geom_bodyid,
-      m.geom_priority,
-      m.geom_solmix,
-      m.geom_solref,
-      m.geom_solimp,
-      m.geom_friction,
-      m.geom_margin,
-      m.geom_gap,
-      m.flex_condim,
-      m.flex_priority,
-      m.flex_solmix,
-      m.flex_solref,
-      m.flex_solimp,
-      m.flex_friction,
-      m.flex_margin,
-      m.flex_gap,
-      m.flex_passive,
-      m.flex_dim,
-      m.flex_interp,
-      m.flex_rigid,
-      d.naconmax,
-      ws.ncand,
-      ws.dist,
-      ws.pos,
-      ws.nrm,
-      ws.geom,
-      ws.flex,
-      ws.elem,
-      ws.vert,
-      ws.worldid,
-      ws.cand_active,
-    ],
-    outputs=[
-      d.contact.dist,
-      d.contact.pos,
-      d.contact.frame,
-      d.contact.includemargin,
-      d.contact.friction,
-      d.contact.solref,
-      d.contact.solreffriction,
-      d.contact.solimp,
-      d.contact.dim,
-      d.contact.geom,
-      d.contact.flex,
-      d.contact.elem,
-      d.contact.vert,
-      d.contact.efc_address,
-      d.contact.worldid,
-      d.contact.type,
-      d.contact.geomcollisionid,
-      d.nacon,
-      d.overflow,
-    ],
+    ncand=ws.ncand,
+    cand_dist=ws.dist,
+    cand_pos=ws.pos,
+    cand_nrm=ws.nrm,
+    cand_geom=ws.geom,
+    cand_flex=ws.flex,
+    cand_elem=ws.elem,
+    cand_vert=ws.vert,
+    cand_worldid=ws.worldid,
+    cand_active=ws.cand_active,
   )
 
 
@@ -3730,66 +3629,20 @@ def _detect_plane_flex_candidates(
   if m.nflexvert == 0 or not m.has_plane_geom:
     return
 
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _flex_plane_narrowphase(int(m.opt.warn_overflow)),
-    dim=(d.nworld, m.nflexvert),
-    inputs=[
-      m.ngeom,
-      m.qpos0,
-      m.jnt_qposadr,
-      m.geom_type,
-      m.geom_contype,
-      m.geom_conaffinity,
-      m.geom_margin,
-      m.geom_gap,
-      m.flex_contype,
-      m.flex_conaffinity,
-      m.flex_margin,
-      m.flex_gap,
-      m.flex_vertadr,
-      m.flex_elemadr,
-      m.flex_elemnum,
-      m.flex_elemdataadr,
-      m.flex_plasticadr,
-      m.flex_vertbodyid,
-      m.flex_elem,
-      m.flex_radius,
-      m.flex_vertflexid,
-      m.flex_rod_is_box,
-      m.flex_rod_root_clamped,
-      m.flex_rod_tail_clamped,
-      m.flex_rod_box_size,
-      m.flex_rod_edgeadr,
-      m.flex_rod_edgenum,
-      m.flex_rodedge_vert,
-      m.flex_rodedge_jnt,
-      m.flex_elem_rodedge,
-      m.flex_vert_rodelem,
-      d.qpos,
-      d.plastic,
-      d.xquat,
-      d.geom_xpos,
-      d.geom_xquat,
-      d.flexvert_xpos,
-      d.flex_aabb_min,
-      d.flex_aabb_max,
-      d.flex_rod_frame0_loc,
-      d.flex_rod_frame0_ref,
-      d.flex_rod_tail_loc,
-      d.naconmax,
-    ],
-    outputs=[
-      d.overflow,
-      ws.dist,
-      ws.pos,
-      ws.nrm,
-      ws.geom,
-      ws.flex,
-      ws.elem,
-      ws.vert,
-      ws.worldid,
-      ws.ncand,
-    ],
+    max_candidates=d.naconmax,
+    cand_dist_out=ws.dist,
+    cand_pos_out=ws.pos,
+    cand_nrm_out=ws.nrm,
+    cand_geom_out=ws.geom,
+    cand_flex_out=ws.flex,
+    cand_elem_out=ws.elem,
+    cand_vert_out=ws.vert,
+    cand_worldid_out=ws.worldid,
+    ncand_out=ws.ncand,
   )
 
 
@@ -3800,7 +3653,7 @@ def _detect_elem_geom_candidates(
 ):
   """Detect candidates between 1D/2D/3D flex elements and geoms."""
   epa_iterations = m.opt.ccd_iterations
-  wp.launch(
+  fusion.launch_kernel(
     _flex_narrowphase_elem_detect(int(m.opt.warn_overflow), bool(m.has_cylinder_geom), bool(m.has_ellipsoid_geom)),
     dim=(d.nworld, m.nflexelem),
     inputs=[
@@ -3911,63 +3764,45 @@ def _run_flex_sap_sort(
   elem_aabb_lower = wp.empty((d.nworld, nelem), dtype=wp.vec3)
   elem_aabb_upper = wp.empty((d.nworld, nelem), dtype=wp.vec3)
 
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _flex_sap_project,
     dim=(d.nworld, nelem),
-    inputs=[
-      m.flex_margin,
-      m.flex_gap,
-      m.flex_activelayers,
-      m.flex_dim,
-      m.flex_vertadr,
-      m.flex_elemadr,
-      m.flex_elemdataadr,
-      m.flex_elem,
-      m.flex_elemlayer,
-      m.flex_radius,
-      m.flex_elemflexid,
-      m.flex_rod_is_box,
-      m.flex_rod_box_size,
-      d.flexvert_xpos,
-      d.nworld,
-      nelem,
-      direction,
-    ],
-    outputs=[
-      sap_lower.reshape((-1, nelem)),
-      sap_upper,
-      sap_sort_index.reshape((-1, nelem)),
-      elem_aabb_lower,
-      elem_aabb_upper,
-      sap_seg_index,
-    ],
+    nelem=nelem,
+    direction=direction,
+    projection_lower_out=sap_lower.reshape((-1, nelem)),
+    projection_upper_out=sap_upper,
+    sort_index_out=sap_sort_index.reshape((-1, nelem)),
+    elem_aabb_lower_out=elem_aabb_lower,
+    elem_aabb_upper_out=elem_aabb_upper,
+    segmented_index_out=sap_seg_index,
   )
 
-  wp.utils.segmented_sort_pairs(
+  fusion.call(
+    wp.utils.segmented_sort_pairs,
     sap_lower.reshape((-1, nelem)),
     sap_sort_index.reshape((-1, nelem)),
     nworldelem,
     sap_seg_index,
+    reads=(sap_seg_index,),
+    writes=(sap_lower, sap_sort_index),
   )
 
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     sap_range,
     dim=(d.nworld, nelem),
-    inputs=[
-      nelem,
-      sap_lower.reshape((-1, nelem)),
-      sap_upper,
-      sap_sort_index.reshape((-1, nelem)),
-    ],
-    outputs=[
-      sap_range_arr,
-    ],
+    n=nelem,
+    lower_in=sap_lower.reshape((-1, nelem)),
+    upper_in=sap_upper,
+    sort_index_in=sap_sort_index.reshape((-1, nelem)),
+    range_out=sap_range_arr,
   )
 
-  wp.utils.array_scan(
-    sap_range_arr.reshape(-1),
-    sap_cumsum.reshape(-1),
-    True,
+  fusion.call(
+    wp.utils.array_scan, sap_range_arr.reshape(-1), sap_cumsum.reshape(-1), True, reads=(sap_range_arr,), writes=(sap_cumsum,)
   )
 
   return (
@@ -3987,70 +3822,31 @@ def _run_flex_narrowphase(
   """Executes narrowphase collision detection for element pairs."""
   epa_iterations = m.opt.ccd_iterations
   workspace_verts = wp.empty(d.naconmax * 8, dtype=wp.vec3)
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _flex_narrowphase(int(m.opt.warn_overflow)),
-    dim=d.naconmax,
-    inputs=[
-      m.opt.ccd_tolerance,
-      m.qpos0,
-      m.jnt_qposadr,
-      m.flex_margin,
-      m.flex_gap,
-      m.flex_activelayers,
-      m.flex_dim,
-      m.flex_vertadr,
-      m.flex_elemadr,
-      m.flex_elemnum,
-      m.flex_elemdataadr,
-      m.flex_plasticadr,
-      m.flex_vertbodyid,
-      m.flex_elem,
-      m.flex_elemlayer,
-      m.flex_radius,
-      m.flex_elemflexid,
-      m.flex_rod_is_box,
-      m.flex_rod_root_clamped,
-      m.flex_rod_tail_clamped,
-      m.flex_rod_box_size,
-      m.flex_rod_edgeadr,
-      m.flex_rod_edgenum,
-      m.flex_rodedge_vert,
-      m.flex_rodedge_jnt,
-      m.flex_elem_rodedge,
-      d.qpos,
-      d.plastic,
-      d.xquat,
-      d.flexvert_xpos,
-      d.naccdmax,
-      d.ncollision,
-      d.flex_rod_frame0_loc,
-      d.flex_rod_frame0_ref,
-      d.flex_rod_tail_loc,
-      d.naconmax,
-      m.opt.ccd_iterations,
-      epa_iterations,
-      ctx.collision_pair,
-      ctx.collision_worldid,
-    ],
-    outputs=[
-      d.overflow,
-      workspace_verts,
-      ws.epa_vert,
-      ws.epa_vert_index,
-      ws.epa_face,
-      ws.epa_pr,
-      ws.epa_norm2,
-      ws.epa_horizon,
-      ws.dist,
-      ws.pos,
-      ws.nrm,
-      ws.geom,
-      ws.flex,
-      ws.elem,
-      ws.vert,
-      ws.worldid,
-      ws.ncand,
-    ],
+    max_candidates=d.naconmax,
+    gjk_iterations=m.opt.ccd_iterations,
+    epa_iterations=epa_iterations,
+    collision_pair_in=ctx.collision_pair,
+    collision_worldid_in=ctx.collision_worldid,
+    workspace_verts_out=workspace_verts,
+    epa_vert_out=ws.epa_vert,
+    epa_vert_index_out=ws.epa_vert_index,
+    epa_face_out=ws.epa_face,
+    epa_pr_out=ws.epa_pr,
+    epa_norm2_out=ws.epa_norm2,
+    epa_horizon_out=ws.epa_horizon,
+    cand_dist_out=ws.dist,
+    cand_pos_out=ws.pos,
+    cand_nrm_out=ws.nrm,
+    cand_geom_out=ws.geom,
+    cand_flex_out=ws.flex,
+    cand_elem_out=ws.elem,
+    cand_vert_out=ws.vert,
+    cand_worldid_out=ws.worldid,
+    ncand_out=ws.ncand,
   )
 
 
@@ -4063,9 +3859,9 @@ def _flex_geom_collision(
   if m.nflex == 0:
     return
 
-  ws.ncand.zero_()
+  fusion.zero(ws.ncand)
   if ws.flex_num_groups is not None:
-    ws.flex_num_groups.zero_()
+    fusion.zero(ws.flex_num_groups)
 
   # Plane collisions (flex vertices vs infinite planes)
   _detect_plane_flex_candidates(m, d, ws)
@@ -4095,50 +3891,30 @@ def _flex_sap_collision(
   if enable_sat is None:
     enable_sat = ENABLE_SAT_PREFILTER
 
-  ws.ncand.zero_()
+  fusion.zero(ws.ncand)
   if ws.flex_num_groups is not None:
-    ws.flex_num_groups.zero_()
+    fusion.zero(ws.flex_num_groups)
 
   if sap_data is None:
     sap_data = _run_flex_sap_sort(m, d)
   sap_sort_index, sap_cumsum, elem_aabb_lower, elem_aabb_upper = sap_data
   nsweep = 5 * d.nworld * m.nflexelem
-  d.ncollision.zero_()
+  fusion.zero(d.ncollision)
 
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _flex_sap_sweep(is_self, int(m.opt.warn_overflow), enable_sat),
     dim=nsweep,
-    inputs=[
-      m.flex_contype,
-      m.flex_conaffinity,
-      m.flex_margin,
-      m.flex_gap,
-      m.flex_selfcollide,
-      m.flex_dim,
-      m.flex_vertadr,
-      m.flex_elemadr,
-      m.flex_elemdataadr,
-      m.flex_vertbodyid,
-      m.flex_elem,
-      m.flex_radius,
-      m.flex_elemflexid,
-      d.flexvert_xpos,
-      d.flex_aabb_min,
-      d.flex_aabb_max,
-      m.nflexelem,
-      sap_sort_index,
-      sap_cumsum,
-      nsweep,
-      elem_aabb_lower,
-      elem_aabb_upper,
-      d.naconmax,
-    ],
-    outputs=[
-      d.ncollision,
-      d.overflow,
-      ctx.collision_pair,
-      ctx.collision_worldid,
-    ],
+    nelem=m.nflexelem,
+    sort_index_in=sap_sort_index,
+    cumulative_sum_in=sap_cumsum,
+    nsweep_in=nsweep,
+    aabb_lower_in=elem_aabb_lower,
+    aabb_upper_in=elem_aabb_upper,
+    max_pairs=d.naconmax,
+    collision_pair_out=ctx.collision_pair,
+    collision_worldid_out=ctx.collision_worldid,
   )
 
   _run_flex_narrowphase(

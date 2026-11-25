@@ -337,9 +337,13 @@ def analyze(
           issues.append(DirectWpArrayForbidden(dummy_node, "", attr_name, cls_name))
   source_lines = source.splitlines()
 
+  def _is_stage(name: str) -> bool:
+    """Check if decorator is fusion.stage, a kernel body led by its thread index parameters."""
+    return name and name.startswith("fusion.stage(")
+
   def _is_kernel(name: str) -> bool:
-    """Check if decorator is wp.kernel."""
-    return name and (name == "wp.kernel" or name.startswith("wp.kernel("))
+    """Check if decorator is wp.kernel or fusion.stage."""
+    return name and (name == "wp.kernel" or name.startswith("wp.kernel(") or _is_stage(name))
 
   def _is_func(name: str) -> bool:
     """Check if decorator is wp.func."""
@@ -476,8 +480,8 @@ def analyze(
     else:
       return  # not a kernel/func
 
-    # Nested wp.kernel must have module="unique" (wp.func doesn't need it)
-    if _is_kernel(decorator):
+    # Nested wp.kernel must have module="unique" (wp.func and fusion.stage don't need it)
+    if _is_kernel(decorator) and not _is_stage(decorator):
       has_unique = 'module="unique"' in decorator or "module='unique'" in decorator
       if is_nested:
         if not has_unique:
@@ -515,11 +519,27 @@ def analyze(
           for sub in dyn_atomics:
             issues.append(MissingDeterministicMaxRecords(sub, node.name))
 
-    _analyze_kernel(node)
+    # a stage's leading parameters are its thread indices, one per launch dim
+    nindex = (
+      len(next(d for d in node.decorator_list if _is_stage(ast.get_source_segment(source, d))).args)
+      if _is_stage(decorator)
+      else 0
+    )
+    _analyze_kernel(node, nindex)
 
-  def _analyze_kernel(node: ast.FunctionDef):
+  def _analyze_kernel(node: ast.FunctionDef, nindex: int = 0):
     """Analyze kernel parameters and body."""
     kernel, args = node.name, node.args
+    if nindex:
+      args = ast.arguments(
+        posonlyargs=args.posonlyargs,
+        args=args.args[nindex:],
+        vararg=args.vararg,
+        kwonlyargs=args.kwonlyargs,
+        kw_defaults=args.kw_defaults,
+        kwarg=args.kwarg,
+        defaults=args.defaults,
+      )
 
     # defaults not allowed
     if args.defaults:

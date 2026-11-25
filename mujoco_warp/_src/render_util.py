@@ -20,6 +20,7 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import bvh
+from mujoco_warp._src import fusion
 from mujoco_warp._src import render_optix
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
@@ -29,8 +30,10 @@ from mujoco_warp._src.types import RenderContext
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
-@wp.kernel
+@fusion.stage("nx", "ny")
 def _convert_texture_data(
+  x: int,
+  y: int,
   # In:
   width: int,
   adr: int,
@@ -40,7 +43,6 @@ def _convert_texture_data(
   tex_data_out: wp.array3d[float],
 ):
   """Convert uint8 texture data to vec4 format for efficient sampling."""
-  x, y = wp.tid()
   offset = adr + (y * width + x) * nc
   r = tex_data_in[offset + 0] if nc > 0 else wp.uint8(0)
   g = tex_data_in[offset + 1] if nc > 1 else wp.uint8(0)
@@ -71,11 +73,16 @@ def create_warp_texture(mjm: mujoco.MjModel, tex_id: int) -> wp.Texture2D:
   tex_height, tex_width, nchannel = pixels.shape
   tex_data = wp.zeros((tex_height, tex_width, 4), dtype=float)
 
-  wp.launch(
+  fusion.launch(
+    None,
+    None,
     _convert_texture_data,
     dim=(tex_width, tex_height),
-    inputs=[tex_width, 0, nchannel, wp.array(pixels.ravel(), dtype=wp.uint8)],
-    outputs=[tex_data],
+    width=tex_width,
+    adr=0,
+    nc=nchannel,
+    tex_data_in=wp.array(pixels.ravel(), dtype=wp.uint8),
+    tex_data_out=tex_data,
   )
   return wp.Texture2D(tex_data, filter_mode=wp.TextureFilterMode.LINEAR)
 
@@ -177,8 +184,10 @@ def pack_rgba_to_uint32(r: float, g: float, b: float, a: float) -> wp.uint32:
   return wp.uint32((int(a) << int(24)) | (int(r) << int(16)) | (int(g) << int(8)) | int(b))
 
 
-@wp.kernel
+@fusion.stage("nworld", "npixel")
 def unpack_rgb_kernel(
+  worldid: int,
+  pixelid: int,
   # In:
   packed: wp.array2d[wp.uint32],
   rgb_adr: wp.array[int],
@@ -187,8 +196,6 @@ def unpack_rgb_kernel(
   rgb_out: wp.array3d[wp.vec3],
 ):
   """Unpack ABGR uint32 packed pixel data into separate R, G, and B channels."""
-  worldid, pixelid = wp.tid()
-
   xid = pixelid % rgb_out.shape[2]
   yid = pixelid // rgb_out.shape[2]
 
@@ -200,8 +207,10 @@ def unpack_rgb_kernel(
   rgb_out[worldid, yid, xid] = wp.vec3(r, g, b)
 
 
-@wp.kernel
+@fusion.stage("nworld", "npixel")
 def extract_depth_kernel(
+  worldid: int,
+  pixelid: int,
   # In:
   depth_data: wp.array2d[float],
   depth_adr: wp.array[int],
@@ -211,7 +220,6 @@ def extract_depth_kernel(
   depth_out: wp.array3d[float],
 ):
   """Extract the depth data from the render context buffers for a given camera index."""
-  worldid, pixelid = wp.tid()
   xid = pixelid % depth_out.shape[2]
   yid = pixelid // depth_out.shape[2]
 
@@ -228,11 +236,14 @@ def get_rgb(rc: RenderContext, camera_index: int, rgb_out: wp.array3d[wp.vec3]):
     camera_index: The index of the camera to get the RGB data for.
     rgb_out: The output array to store the RGB data in, with shape (nworld, height, width).
   """
-  wp.launch(
+  fusion.launch(
+    rc,
+    None,
     unpack_rgb_kernel,
     dim=(rgb_out.shape[0], rgb_out.shape[1] * rgb_out.shape[2]),
-    inputs=[rc.rgb_data, rc.rgb_adr, camera_index],
-    outputs=[rgb_out],
+    packed=rc.rgb_data,
+    camera_index=camera_index,
+    rgb_out=rgb_out,
   )
 
 
@@ -246,16 +257,21 @@ def get_depth(rc: RenderContext, camera_index: int, depth_scale: float, depth_ou
     depth_out: The output array to store the scaled and clamped depth data in
       with shape (nworld, height, width).
   """
-  wp.launch(
+  fusion.launch(
+    rc,
+    None,
     extract_depth_kernel,
     dim=(depth_out.shape[0], depth_out.shape[1] * depth_out.shape[2]),
-    inputs=[rc.depth_data, rc.depth_adr, camera_index, depth_scale],
-    outputs=[depth_out],
+    camera_index=camera_index,
+    depth_scale=depth_scale,
+    depth_out=depth_out,
   )
 
 
-@wp.kernel
+@fusion.stage("nworld", "npixel")
 def _extract_seg_kernel(
+  worldid: int,
+  pixelid: int,
   # In:
   seg_data: wp.array2d[wp.vec2i],
   seg_adr: wp.array[int],
@@ -264,7 +280,6 @@ def _extract_seg_kernel(
   seg_out: wp.array3d[wp.vec2i],
 ):
   """Extract per-pixel `(object_id, object_type)` pairs for a camera."""
-  worldid, pixelid = wp.tid()
   xid = pixelid % seg_out.shape[2]
   yid = pixelid // seg_out.shape[2]
 
@@ -285,11 +300,13 @@ def get_segmentation(rc: RenderContext, camera_index: int, seg_out: wp.array3d[w
     seg_out: The output array to store segmentation data in, with shape
       `(nworld, height, width)` and dtype `wp.vec2i`.
   """
-  wp.launch(
+  fusion.launch(
+    rc,
+    None,
     _extract_seg_kernel,
     dim=(seg_out.shape[0], seg_out.shape[1] * seg_out.shape[2]),
-    inputs=[rc.seg_data, rc.seg_adr, camera_index],
-    outputs=[seg_out],
+    camera_index=camera_index,
+    seg_out=seg_out,
   )
 
 

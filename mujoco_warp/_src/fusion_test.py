@@ -19,21 +19,23 @@ import warp as wp
 from absl.testing import absltest
 from absl.testing import parameterized
 
+import mujoco_warp as mjw
 from mujoco_warp import test_data
-from mujoco_warp._src import forward
 from mujoco_warp._src import fusion
+from mujoco_warp._src.types import DeterminismType
 
 _XML = """
 <mujoco>
   <worldbody>
     <light pos="0 0 3"/>
     <camera pos="1 1 1" mode="targetbodycom" target="b1"/>
-    <body name="b1" pos="0 0 1">
+    <geom type="plane" size="5 5 .1"/>
+    <body name="b1" pos="0 0 .09">
       <freejoint/>
       <geom type="capsule" size=".1 .2" pos=".1 0 0"/>
-      <site pos="0 .1 0"/>
+      <site name="s1" pos="0 .1 0"/>
       <body pos=".3 0 0">
-        <joint type="hinge" axis="0 1 0"/>
+        <joint name="hinge" type="hinge" axis="0 1 0" range="-1 1"/>
         <geom type="box" size=".1 .1 .1"/>
         <body pos=".3 0 0">
           <joint type="ball"/>
@@ -42,6 +44,14 @@ _XML = """
       </body>
     </body>
   </worldbody>
+  <actuator>
+    <motor joint="hinge"/>
+  </actuator>
+  <sensor>
+    <framepos objtype="site" objname="s1"/>
+    <jointvel joint="hinge"/>
+    <accelerometer site="s1"/>
+  </sensor>
 </mujoco>
 """
 
@@ -61,53 +71,76 @@ def _add_root(worldid: int, bodyid: int, b_in: wp.array2d[float], c_out: wp.arra
   c_out[worldid, bodyid] = b_in[worldid, 0] + 1.0
 
 
+def _kernels(entries):
+  return [[[e.stage for e in seg] for seg in g.segments] if hasattr(g, "segments") else "op" for g in fusion._plan(entries)]
+
+
 class FusionTest(parameterized.TestCase):
   def test_plan(self):
     """A stage reading only its own thread's result fuses into that thread, other reads don't."""
     _, _, m, d = test_data.fixture(xml=_XML, nworld=2)
     a = wp.array(np.arange(2 * m.nbody, dtype=np.float32).reshape(2, -1))
-    b = wp.empty_like(a)
-    c = wp.empty_like(a)
-    sizes = (d.nworld, m.nbody)
+    b, c, x = wp.empty_like(a), wp.empty_like(a), wp.empty_like(a)
 
-    own = [fusion._Launch(_double, {"a_in": a, "b_out": b}, sizes), fusion._Launch(_add_own, {"b_in": b, "c_out": c}, sizes)]
-    self.assertEqual([[[ln.stage for ln in seg] for seg in k] for k in fusion._plan(own)], [[[_double, _add_own]]])
-    root = [own[0], fusion._Launch(_add_root, {"b_in": b, "c_out": c}, sizes)]
-    self.assertEqual([[[ln.stage for ln in seg] for seg in k] for k in fusion._plan(root)], [[[_double]], [[_add_root]]])
-
-    fusion.launch(m, d, _double, _add_own, a_in=a, b_out=b, b_in=b, c_out=c)
+    with fusion.fuse():
+      fusion.launch(m, d, _double, a_in=a, b_out=b)
+      fusion.launch(m, d, _add_own, b_in=b, c_out=c)
+      self.assertEqual(_kernels(fusion._QUEUES[-1]), [[[_double, _add_own]]])
     np.testing.assert_array_equal(c.numpy(), 2.0 * a.numpy() + 1.0)
-    fusion.launch(m, d, _double, _add_root, a_in=a, b_out=b, b_in=b, c_out=c)
+
+    with fusion.fuse():
+      fusion.launch(m, d, _double, a_in=a, b_out=b)
+      fusion.launch(m, d, _add_root, b_in=b, c_out=c)
+      self.assertEqual(_kernels(fusion._QUEUES[-1]), [[[_double]], [[_add_root]]])
     np.testing.assert_array_equal(c.numpy(), np.broadcast_to(2.0 * a.numpy()[:, :1] + 1.0, c.shape))
 
+    # a stage moves ahead of queued work that doesn't touch its arrays, not of work that does
+    with fusion.fuse():
+      fusion.launch(m, d, _double, a_in=a, b_out=b)
+      fusion.zero(x)
+      fusion.launch(m, d, _double, a_in=a, b_out=c)
+      self.assertEqual(_kernels(fusion._QUEUES[-1]), [[[_double], [_double]], "op"])
+      fusion.zero(b)
+      fusion.launch(m, d, _add_own, b_in=b, c_out=c)
+      self.assertEqual(_kernels(fusion._QUEUES[-1]), [[[_double], [_double]], "op", "op", [[_add_own]]])
+    np.testing.assert_array_equal(c.numpy(), np.ones_like(c.numpy()))
+
   @parameterized.parameters(1, 2)
-  def test_fused_matches_unfused(self, nworld):
-    """Fused kinematics write the same values as one kernel per stage, in fewer launches."""
-    _, _, m, d = test_data.fixture(xml=_XML, nworld=nworld, qpos_noise=0.3)
-    if nworld == 2:
-      qpos = d.qpos.numpy()
-      qpos[1] += 0.2
-      d.qpos.assign(qpos)
+  def test_step_matches_immediate(self, nworld):
+    """Fused steps write the same Data as launching every stage when called, in fewer kernels."""
+    mjm, mjd, _, _ = test_data.fixture(xml=_XML, qvel_noise=0.5, ctrl_noise=0.5)
+    m = mjw.put_model(mjm)
+    m.opt.deterministic = DeterminismType.ATOMICS | DeterminismType.CONTACTS | DeterminismType.CONSTRAINT
 
-    fields = ("xpos", "xquat", "xipos", "geom_xpos", "site_xpos", "subtree_com", "cinert", "cdof", "cam_xpos", "light_xpos")
-    results, nlaunch = [], []
-    for fuse in (False, True):
-      fusion.FUSE = fuse
-      fusion._COMMANDS.clear()
+    results, nkernel = [], []
+    for mode in ("immediate", "unfused", "fused"):
+      d = mjw.put_data(mjm, mjd, nworld=nworld, nconmax=32, njmax=64)
+      if nworld == 2:
+        qvel = d.qvel.numpy()
+        qvel[1] += 0.3
+        d.qvel.assign(qvel)
+      fusion.MODE = mode
+      launch, count = fusion._launch_group, [0]
+      fusion._launch_group = lambda segments: count.__setitem__(0, count[0] + 1) or launch(segments)
       try:
-        for f in fields:
-          getattr(d, f).fill_(wp.inf)
-        forward.fwd_kinematics(m, d)
+        for _ in range(3):
+          mjw.step(m, d)
       finally:
-        fusion.FUSE = True
-      results.append({f: getattr(d, f).numpy() for f in fields})
-      nlaunch.append(sum(len(c) for c in fusion._COMMANDS.values()))
+        fusion.MODE = "fused"
+        fusion._launch_group = launch
+      results.append(d)
+      nkernel.append(count[0])
 
-    for f in fields:
-      np.testing.assert_array_equal(results[1][f], results[0][f], err_msg=f)
-    self.assertEqual(nlaunch, [10, 5])
+    immediate, unfused, fused = results
+    for field in ("qpos", "qvel", "act", "qacc", "qfrc_constraint", "sensordata", "cam_xpos", "nacon", "nefc"):
+      ref = getattr(immediate, field).numpy()
+      np.testing.assert_array_equal(getattr(unfused, field).numpy(), ref, err_msg=field)
+      np.testing.assert_array_equal(getattr(fused, field).numpy(), ref, err_msg=field)
+    self.assertGreater(fused.nacon.numpy()[0], 0)
+    self.assertEqual(nkernel[0], nkernel[1])
+    self.assertLess(nkernel[2], nkernel[1])
     if nworld == 2:
-      self.assertFalse(np.array_equal(results[1]["xpos"][0], results[1]["xpos"][1]))
+      self.assertFalse(np.array_equal(fused.qpos.numpy()[0], fused.qpos.numpy()[1]))
 
 
 if __name__ == "__main__":

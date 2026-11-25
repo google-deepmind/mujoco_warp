@@ -18,6 +18,7 @@ import warp as wp
 from mujoco_warp._src import constraint
 from mujoco_warp._src import derivative
 from mujoco_warp._src import forward
+from mujoco_warp._src import fusion
 from mujoco_warp._src import sensor
 from mujoco_warp._src import smooth
 from mujoco_warp._src import solver
@@ -33,8 +34,10 @@ from mujoco_warp._src.types import Model
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
-@wp.kernel
+@fusion.stage("nworld", "nv")
 def _qfrc_eulerdamp(
+  worldid: int,
+  dofid: int,
   # Model:
   opt_timestep: wp.array[float],
   jnt_actuatorid: wp.array[int],
@@ -52,7 +55,6 @@ def _qfrc_eulerdamp(
   # Out:
   qfrc_out: wp.array2d[float],
 ):
-  worldid, dofid = wp.tid()
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
   damping, dpoly = util_misc.dof_damping_total(
@@ -74,8 +76,10 @@ def _qfrc_eulerdamp(
   qfrc_out[worldid, dofid] += timestep * damp_deriv * qacc_in[worldid, dofid]
 
 
-@wp.kernel
+@fusion.stage("nworld", "nv")
 def _mul_qLU(
+  worldid: int,
+  dofid: int,
   # Model:
   D_rownnz: wp.array[int],
   D_rowadr: wp.array[int],
@@ -87,7 +91,6 @@ def _mul_qLU(
   # Out:
   res: wp.array2d[float],
 ):
-  worldid, dofid = wp.tid()
   rowadr = D_rowadr[dofid]
   val = float(0.0)
   for k in range(D_rownnz[dofid]):
@@ -96,8 +99,10 @@ def _mul_qLU(
   res[worldid, dofid] = val
 
 
-@wp.kernel
+@fusion.stage("nworld", "nv")
 def _qfrc_inverse(
+  worldid: int,
+  dofid: int,
   # Data in:
   qfrc_bias_in: wp.array2d[float],
   qfrc_passive_in: wp.array2d[float],
@@ -107,8 +112,6 @@ def _qfrc_inverse(
   # Data out:
   qfrc_inverse_out: wp.array2d[float],
 ):
-  worldid, dofid = wp.tid()
-
   qfrc_inverse = qfrc_bias_in[worldid, dofid]
   qfrc_inverse += Ma[worldid, dofid]
   qfrc_inverse -= qfrc_passive_in[worldid, dofid]
@@ -131,7 +134,7 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d[float]):
     raise NotImplementedError("discrete inverse dynamics is not supported by RK4 integrator")
   elif m.opt.integrator == IntegratorType.EULER:
     if m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER):
-      wp.copy(qacc, d.qacc)
+      fusion.copy(qacc, d.qacc)
       return
 
     # TODO(team): qacc = d.qacc if (m.dof_damping == 0.0).all()
@@ -142,37 +145,14 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d[float]):
     support.mul_m(m, d, qfrc, d.qacc)
 
     # qfrc += m.opt.timestep * damp_deriv * d.qacc
-    wp.launch(
-      _qfrc_eulerdamp,
-      dim=(d.nworld, m.nv),
-      inputs=[
-        m.opt.timestep,
-        m.jnt_actuatorid,
-        m.dof_jntid,
-        m.dof_damping,
-        m.dof_dampingpoly,
-        m.actuator_trntype,
-        m.actuator_trnid,
-        m.actuator_damping,
-        m.actuator_dampingpoly,
-        m.actuator_gear,
-        d.qvel,
-        d.qacc,
-      ],
-      outputs=[qfrc],
-    )
+    fusion.launch(m, d, _qfrc_eulerdamp, qfrc_out=qfrc)
   elif m.opt.integrator == IntegratorType.IMPLICIT:
     # set qLU = M - dt * qDeriv, in scratch: d.qLU holds the forward factorization
     qLU = wp.empty((d.nworld, m.nD), dtype=float)
     forward.implicit_qlu(m, d, qLU)
 
     # set qfrc = qLU * qacc
-    wp.launch(
-      _mul_qLU,
-      dim=(d.nworld, m.nv),
-      inputs=[m.D_rownnz, m.D_rowadr, m.D_colind, qLU, d.qacc],
-      outputs=[qfrc],
-    )
+    fusion.launch(m, d, _mul_qLU, qLU_in=qLU, vec=d.qacc, res=qfrc)
     forward.implicit_free_body(m, d, d.qacc, qfrc, solve=False)
   elif m.opt.integrator == IntegratorType.IMPLICITFAST:
     qDeriv = wp.empty((d.nworld, m.nC), dtype=float)
@@ -184,7 +164,7 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d[float]):
     forward.implicit_free_body(m, d, d.qacc, qfrc, solve=False)
   elif m.opt.integrator == IntegratorType.DISCRETE:
     # Under discrete, qacc is already the discrete step map: INVDISCRETE is implied.
-    wp.copy(qacc, d.qacc)
+    fusion.copy(qacc, d.qacc)
     return
   else:
     raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
@@ -193,8 +173,10 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d[float]):
   smooth.solve_m(m, d, qacc, qfrc)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nv")
 def _qfrc_inverse_discrete(
+  worldid: int,
+  dofid: int,
   # Data in:
   qfrc_bias_in: wp.array2d[float],
   qfrc_passive_in: wp.array2d[float],
@@ -206,8 +188,6 @@ def _qfrc_inverse_discrete(
   # Data out:
   qfrc_inverse_out: wp.array2d[float],
 ):
-  worldid, dofid = wp.tid()
-
   qfrc_inverse = qfrc_bias_in[worldid, dofid]
   qfrc_inverse += Ma[worldid, dofid]
   qfrc_inverse -= efm_c_in[worldid, dofid]
@@ -218,9 +198,8 @@ def _qfrc_inverse_discrete(
   qfrc_inverse_out[worldid, dofid] = qfrc_inverse
 
 
-@wp.kernel
-def _zero_qfrc_constraint_nefc(nefc_in: wp.array[int], qfrc_constraint_out: wp.array2d[float]):
-  worldid, dofid = wp.tid()
+@fusion.stage("nworld", "nv")
+def _zero_qfrc_constraint_nefc(worldid: int, dofid: int, nefc_in: wp.array[int], qfrc_constraint_out: wp.array2d[float]):
   if nefc_in[worldid] == 0:
     qfrc_constraint_out[worldid, dofid] = 0.0
 
@@ -229,16 +208,11 @@ def inv_constraint(m: Model, d: Data):
   """Inverse constraint solver."""
   # no constraints
   if d.njmax == 0:
-    d.qfrc_constraint.zero_()
+    fusion.zero(d.qfrc_constraint)
     return
 
   if m.is_sparse:
-    wp.launch(
-      _zero_qfrc_constraint_nefc,
-      dim=(d.nworld, m.nv),
-      inputs=[d.nefc],
-      outputs=[d.qfrc_constraint],
-    )
+    fusion.launch(m, d, _zero_qfrc_constraint_nefc)
 
   ctx = solver.create_inverse_context(m, d)
   solver.init_context(m, d, ctx, grad=False)
@@ -256,7 +230,7 @@ def inverse(m: Model, d: Data):
   invdiscrete = (m.opt.enableflags & EnableBit.INVDISCRETE) or is_discrete
   if invdiscrete:
     # save discrete-time qacc and compute continuous-time qacc
-    qacc_discrete = wp.clone(d.qacc)
+    qacc_discrete = fusion.clone(d.qacc)
     discrete_acc(m, d, d.qacc)
 
   if is_discrete:
@@ -271,33 +245,11 @@ def inverse(m: Model, d: Data):
   if is_discrete:
     derivative.eff_mul_m(m, d, d.qfrc_inverse, d.qacc)
     forward._launch_discrete_free_gyro(m, d, d.qfrc_inverse, d.qacc, True)
-    wp.launch(
-      _qfrc_inverse_discrete,
-      dim=(d.nworld, m.nv),
-      inputs=[
-        d.qfrc_bias,
-        d.qfrc_passive,
-        d.qfrc_constraint,
-        d.efm_c,
-        d.efm_ca,
-        d.qfrc_inverse,
-      ],
-      outputs=[d.qfrc_inverse],
-    )
+    fusion.launch(m, d, _qfrc_inverse_discrete, Ma=d.qfrc_inverse)
   else:
     support.mul_m(m, d, d.qfrc_inverse, d.qacc)
-    wp.launch(
-      _qfrc_inverse,
-      dim=(d.nworld, m.nv),
-      inputs=[
-        d.qfrc_bias,
-        d.qfrc_passive,
-        d.qfrc_constraint,
-        d.qfrc_inverse,
-      ],
-      outputs=[d.qfrc_inverse],
-    )
+    fusion.launch(m, d, _qfrc_inverse, Ma=d.qfrc_inverse)
 
   if invdiscrete:
     # restore discrete-time qacc
-    wp.copy(d.qacc, qacc_discrete)
+    fusion.copy(d.qacc, qacc_discrete)

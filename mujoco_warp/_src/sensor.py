@@ -17,6 +17,7 @@ from typing import Any, Tuple
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src import history
 from mujoco_warp._src import math
 from mujoco_warp._src import ray
@@ -191,8 +192,10 @@ def _cam_projection(
   return wp.vec2(pixel_x, pixel_y) / denom + 0.5 * wp.vec2(float(res[0]), float(res[1]))
 
 
-@wp.kernel
+@fusion.stage("nworld", "nrangefinder")
 def _sensor_rangefinder_init(
+  worldid: int,
+  rfid: int,
   # Model:
   cam_projection: wp.array[int],
   cam_fovy: wp.array2d[float],
@@ -212,7 +215,6 @@ def _sensor_rangefinder_init(
   pnt_out: wp.array2d[wp.vec3],
   vec_out: wp.array2d[wp.vec3],
 ):
-  worldid, rfid = wp.tid()
   sensorid = sensor_rangefinder_adr[rfid]
   objtype = sensor_objtype[sensorid]
   objid = sensor_objid[sensorid]
@@ -269,8 +271,10 @@ def _sensor_rangefinder_init(
       vec_out[worldid, rfid] = -cam_xmat[:, 2]
 
 
-@wp.kernel
+@fusion.stage("nworld", "nrangefinder")
 def _sensor_rangefinder(
+  worldid: int,
+  rfid: int,
   # Model:
   sensor_objtype: wp.array[int],
   sensor_objid: wp.array[int],
@@ -289,7 +293,6 @@ def _sensor_rangefinder(
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
-  worldid, rfid = wp.tid()
   sensorid = sensor_rangefinder_adr[rfid]
   dataspec = sensor_intprm[sensorid, 0]
   pixelid = rfid - rangefinder_sensor_adr[sensorid]
@@ -396,8 +399,11 @@ def _ball_quat(jnt_qposadr: wp.array[int], qpos_in: wp.array2d[float], worldid: 
   return wp.normalize(quat)
 
 
-@wp.kernel
+@fusion.stage("nworld", "nefc", "nlimitpos")
 def _limit_pos(
+  worldid: int,
+  efcid: int,
+  limitposid: int,
   # Model:
   sensor_type: wp.array[int],
   sensor_datatype: wp.array[int],
@@ -416,8 +422,6 @@ def _limit_pos(
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
-  worldid, efcid, limitposid = wp.tid()
-
   ne = ne_in[worldid]
   nf = nf_in[worldid]
   nl = nl_in[worldid]
@@ -637,8 +641,10 @@ def _clock(time_in: wp.array[float], worldid: int) -> float:
   return time_in[worldid]
 
 
-@wp.kernel
+@fusion.stage("nworld", "npos")
 def _sensor_pos(
+  worldid: int,
+  posid: int,
   # Model:
   ngeom: int,
   opt_magnetic: wp.array[wp.vec3],
@@ -688,7 +694,6 @@ def _sensor_pos(
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
-  worldid, posid = wp.tid()
   sensorid = sensor_pos_adr[posid]
   sensortype = sensor_type[sensorid]
   objid = sensor_objid[sensorid]
@@ -895,8 +900,9 @@ def _sensor_pos(
     _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, out)
 
 
-@wp.kernel
+@fusion.stage("naconmax")
 def _sensor_collision(
+  conid: int,
   # Model:
   ngeom: int,
   nxn_pairid: wp.array[wp.vec2i],
@@ -912,8 +918,6 @@ def _sensor_collision(
   # Out:
   sensor_collision_out: wp.array4d[float],
 ):
-  conid = wp.tid()
-
   if conid >= nacon_in[0]:
     return
 
@@ -958,26 +962,7 @@ def sensor_pos(m: Model, d: Data):
     rangefinder_normal = wp.empty((d.nworld, m.nrangefinder), dtype=wp.vec3)
 
     # get position and direction
-    wp.launch(
-      _sensor_rangefinder_init,
-      dim=(d.nworld, m.nrangefinder),
-      inputs=[
-        m.cam_projection,
-        m.cam_fovy,
-        m.cam_resolution,
-        m.cam_sensorsize,
-        m.cam_intrinsic,
-        m.sensor_objtype,
-        m.sensor_objid,
-        m.sensor_rangefinder_adr,
-        m.rangefinder_sensor_adr,
-        d.site_xpos,
-        d.site_xquat,
-        d.cam_xpos,
-        d.cam_xmat,
-      ],
-      outputs=[rangefinder_pnt, rangefinder_vec],
-    )
+    fusion.launch(m, d, _sensor_rangefinder_init, pnt_out=rangefinder_pnt, vec_out=rangefinder_vec)
 
     # get distances
     # TODO(team): use BVH for high-resolution camera rangefinders
@@ -994,24 +979,14 @@ def sensor_pos(m: Model, d: Data):
       rangefinder_normal,
     )
 
-    wp.launch(
+    fusion.launch(
+      m,
+      d,
       _sensor_rangefinder,
-      dim=(d.nworld, m.nrangefinder),
-      inputs=[
-        m.sensor_objtype,
-        m.sensor_objid,
-        m.sensor_intprm,
-        m.sensor_adr,
-        m.sensor_cutoff,
-        m.sensor_rangefinder_adr,
-        m.rangefinder_sensor_adr,
-        d.cam_xmat,
-        rangefinder_pnt,
-        rangefinder_vec,
-        rangefinder_dist,
-        rangefinder_normal,
-      ],
-      outputs=[d.sensordata],
+      rangefinder_pnt_in=rangefinder_pnt,
+      rangefinder_vec_in=rangefinder_vec,
+      rangefinder_dist_in=rangefinder_dist,
+      rangefinder_normal_in=rangefinder_normal,
     )
 
   if m.sensor_e_potential:
@@ -1023,98 +998,12 @@ def sensor_pos(m: Model, d: Data):
   # collision sensors (distance, normal, fromto)
   sensor_collision = wp.full((d.nworld, m.nsensorcollision, 8, 7), 1.0e32, dtype=float)
   if m.nsensorcollision:
-    wp.launch(
-      _sensor_collision,
-      dim=d.naconmax,
-      inputs=[
-        m.ngeom,
-        m.nxn_pairid,
-        d.contact.dist,
-        d.contact.pos,
-        d.contact.frame,
-        d.contact.geom,
-        d.contact.worldid,
-        d.contact.type,
-        d.contact.geomcollisionid,
-        d.nacon,
-      ],
-      outputs=[sensor_collision],
-    )
+    fusion.launch(m, d, _sensor_collision, sensor_collision_out=sensor_collision)
 
-  wp.launch(
-    _sensor_pos,
-    dim=(d.nworld, m.sensor_pos_adr.size),
-    inputs=[
-      m.ngeom,
-      m.opt.magnetic,
-      m.body_geomnum,
-      m.body_geomadr,
-      m.body_mass,
-      m.body_subtreemass,
-      m.jnt_qposadr,
-      m.geom_type,
-      m.site_type,
-      m.site_size,
-      m.cam_bodyid,
-      m.cam_quat,
-      m.cam_fovy,
-      m.cam_resolution,
-      m.cam_sensorsize,
-      m.cam_intrinsic,
-      m.sensor_type,
-      m.sensor_datatype,
-      m.sensor_objtype,
-      m.sensor_objid,
-      m.sensor_reftype,
-      m.sensor_refid,
-      m.sensor_adr,
-      m.sensor_cutoff,
-      m.nxn_pairid,
-      m.sensor_pos_adr,
-      d.time,
-      d.energy,
-      d.qpos,
-      d.xpos,
-      d.xquat,
-      d.xipos,
-      d.xiquat,
-      d.geom_xpos,
-      d.geom_xquat,
-      d.site_xpos,
-      d.site_xquat,
-      d.cam_xpos,
-      d.cam_xmat,
-      d.subtree_com,
-      d.ten_length,
-      d.actuator_length,
-      sensor_collision,
-    ],
-    outputs=[d.sensordata],
-  )
+  fusion.launch(m, d, _sensor_pos, dim=(d.nworld, m.sensor_pos_adr.size), sensor_collision_in=sensor_collision)
 
   # jointlimitpos and tendonlimitpos
-  wp.launch(
-    _limit_pos,
-    dim=(d.nworld, d.njmax, m.sensor_limitpos_adr.size),
-    inputs=[
-      m.sensor_type,
-      m.sensor_datatype,
-      m.sensor_objid,
-      m.sensor_adr,
-      m.sensor_cutoff,
-      m.sensor_limitpos_adr,
-      d.ne,
-      d.nf,
-      d.nl,
-      d.efc.type,
-      d.efc.id,
-      d.efc.pos,
-      d.efc.margin,
-    ],
-    outputs=[
-      d.sensordata,
-    ],
-  )
+  fusion.launch(m, d, _limit_pos, dim=(d.nworld, d.njmax, m.sensor_limitpos_adr.size))
 
   _eval_sensor_contact(m, d, m.sensor_contact_pos_adr)
 
@@ -1122,6 +1011,8 @@ def sensor_pos(m: Model, d: Data):
   history.apply_sensor_delay(m, d, m.sensor_stage_pos_adr)
 
   if m.callback.sensor:
+    # callbacks launch work of their own
+    fusion.flush()
     m.callback.sensor(m, d, Stage.POS)
 
 
@@ -1189,8 +1080,11 @@ def _ball_ang_vel(jnt_dofadr: wp.array[int], qvel_in: wp.array2d[float], worldid
   return wp.vec3(qvel_in[worldid, adr + 0], qvel_in[worldid, adr + 1], qvel_in[worldid, adr + 2])
 
 
-@wp.kernel
+@fusion.stage("nworld", "nefc", "nlimitvel")
 def _limit_vel(
+  worldid: int,
+  efcid: int,
+  limitvelid: int,
   # Model:
   sensor_type: wp.array[int],
   sensor_datatype: wp.array[int],
@@ -1208,8 +1102,6 @@ def _limit_vel(
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
-  worldid, efcid, limitvelid = wp.tid()
-
   ne = ne_in[worldid]
   nf = nf_in[worldid]
   nl = nl_in[worldid]
@@ -1472,8 +1364,10 @@ def _subtree_angmom(subtree_angmom_in: wp.array2d[wp.vec3], worldid: int, objid:
   return subtree_angmom_in[worldid, objid]
 
 
-@wp.kernel
+@fusion.stage("nworld", "nvel")
 def _sensor_vel(
+  worldid: int,
+  velid: int,
   # Model:
   body_rootid: wp.array[int],
   jnt_dofadr: wp.array[int],
@@ -1510,7 +1404,6 @@ def _sensor_vel(
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
-  worldid, velid = wp.tid()
   sensorid = sensor_vel_adr[velid]
   sensortype = sensor_type[sensorid]
   objid = sensor_objid[sensorid]
@@ -1607,140 +1500,26 @@ def sensor_vel(m: Model, d: Data):
   if m.sensor_subtree_vel:
     smooth.subtree_vel(m, d)
 
-  wp.launch(
-    _sensor_vel,
-    dim=(d.nworld, m.sensor_vel_adr.size),
-    inputs=[
-      m.body_rootid,
-      m.jnt_dofadr,
-      m.geom_bodyid,
-      m.site_bodyid,
-      m.cam_bodyid,
-      m.sensor_type,
-      m.sensor_datatype,
-      m.sensor_objtype,
-      m.sensor_objid,
-      m.sensor_reftype,
-      m.sensor_refid,
-      m.sensor_adr,
-      m.sensor_cutoff,
-      m.sensor_vel_adr,
-      d.qvel,
-      d.xpos,
-      d.xquat,
-      d.xipos,
-      d.xiquat,
-      d.geom_xpos,
-      d.geom_xquat,
-      d.site_xpos,
-      d.site_xquat,
-      d.cam_xpos,
-      d.cam_xmat,
-      d.subtree_com,
-      d.ten_velocity,
-      d.actuator_velocity,
-      d.cvel,
-      d.subtree_linvel,
-      d.subtree_angmom,
-    ],
-    outputs=[d.sensordata],
-  )
+  fusion.launch(m, d, _sensor_vel, dim=(d.nworld, m.sensor_vel_adr.size))
 
-  wp.launch(
-    _limit_vel,
-    dim=(d.nworld, d.njmax, m.sensor_limitvel_adr.size),
-    inputs=[
-      m.sensor_type,
-      m.sensor_datatype,
-      m.sensor_objid,
-      m.sensor_adr,
-      m.sensor_cutoff,
-      m.sensor_limitvel_adr,
-      d.ne,
-      d.nf,
-      d.nl,
-      d.efc.type,
-      d.efc.id,
-      d.efc.vel,
-    ],
-    outputs=[
-      d.sensordata,
-    ],
-  )
+  fusion.launch(m, d, _limit_vel, dim=(d.nworld, d.njmax, m.sensor_limitvel_adr.size))
 
   if m.nsensortaxel:
     weld_geom_count = wp.empty((d.nworld, m.ntactileweld), dtype=int)
     weld_geom_list = wp.empty((d.nworld, m.ntactileweld, MJ_MAXCONPAIR), dtype=int)
     nwords = (m.ngeom + 31) // 32
     weld_geom_seen = wp.zeros((d.nworld, m.ntactileweld, nwords), dtype=wp.uint32)
-    wp.launch(
-      _mark_tactile_contacts,
-      dim=d.naconmax,
-      inputs=[
-        m.body_weldid,
-        m.geom_bodyid,
-        m.weld_tactile_id,
-        d.contact.geom,
-        d.contact.worldid,
-        d.nacon,
-      ],
-      outputs=[weld_geom_seen],
-    )
-    wp.launch(
+    fusion.launch(m, d, _mark_tactile_contacts, weld_geom_seen_out=weld_geom_seen)
+    fusion.launch(
+      m,
+      d,
       _collect_tactile_contacts_kernel(int(m.opt.warn_overflow)),
-      dim=(d.nworld, m.ntactileweld),
-      inputs=[m.ngeom, weld_geom_seen],
-      outputs=[
-        d.overflow,
-        weld_geom_count,
-        weld_geom_list,
-      ],
+      weld_geom_seen_in=weld_geom_seen,
+      weld_geom_count_out=weld_geom_count,
+      weld_geom_list_out=weld_geom_list,
     )
 
-    wp.launch(
-      _sensor_tactile,
-      dim=(d.nworld, m.nsensortaxel),
-      inputs=[
-        m.body_rootid,
-        m.body_weldid,
-        m.oct_child,
-        m.oct_aabb,
-        m.oct_coeff,
-        m.geom_type,
-        m.geom_bodyid,
-        m.geom_dataid,
-        m.geom_size,
-        m.mesh_vertadr,
-        m.mesh_vertnum,
-        m.mesh_octadr,
-        m.mesh_normaladr,
-        m.mesh_normalnum,
-        m.mesh_vert,
-        m.mesh_normal,
-        m.mesh_pos,
-        m.mesh_quat,
-        m.sensor_objid,
-        m.sensor_refid,
-        m.sensor_dim,
-        m.sensor_adr,
-        m.sensor_cutoff,
-        m.plugin,
-        m.plugin_attr,
-        m.geom_plugin_index,
-        m.weld_tactile_id,
-        m.taxel_vertadr,
-        m.taxel_sensorid,
-        d.geom_xpos,
-        d.geom_xquat,
-        d.subtree_com,
-        d.cvel,
-        weld_geom_count,
-        weld_geom_list,
-      ],
-      outputs=[
-        d.sensordata,
-      ],
-    )
+    fusion.launch(m, d, _sensor_tactile, weld_geom_count_in=weld_geom_count, weld_geom_list_in=weld_geom_list)
 
   _eval_sensor_contact(m, d, m.sensor_contact_vel_adr)
 
@@ -1748,6 +1527,8 @@ def sensor_vel(m: Model, d: Data):
   history.apply_sensor_delay(m, d, m.sensor_stage_vel_adr)
 
   if m.callback.sensor:
+    # callbacks launch work of their own
+    fusion.flush()
     m.callback.sensor(m, d, Stage.VEL)
 
 
@@ -1845,8 +1626,11 @@ def _tendon_actuator_force(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "ntenactfrc", "nact", options={**module_options})
   def kernel(
+    worldid: int,
+    tenactfrcid: int,
+    actid: int,
     # Model:
     actuator_trntype: wp.array[int],
     actuator_trnid: wp.array[wp.vec2i],
@@ -1858,7 +1642,6 @@ def _tendon_actuator_force(deterministic: bool = False):
     # Data out:
     sensordata_out: wp.array2d[float],
   ):
-    worldid, tenactfrcid, actid = wp.tid()
     sensorid = sensor_tendonactfrc_adr[tenactfrcid]
 
     if actuator_trntype[actid] == TrnType.TENDON and actuator_trnid[actid][0] == sensor_objid[sensorid]:
@@ -1868,8 +1651,10 @@ def _tendon_actuator_force(deterministic: bool = False):
   return kernel
 
 
-@wp.kernel
+@fusion.stage("nworld", "ntenactfrc")
 def _tendon_actuator_force_cutoff(
+  worldid: int,
+  tenactfrcid: int,
   # Model:
   sensor_type: wp.array[int],
   sensor_datatype: wp.array[int],
@@ -1881,7 +1666,6 @@ def _tendon_actuator_force_cutoff(
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
-  worldid, tenactfrcid = wp.tid()
   sensorid = sensor_tendonactfrc_adr[tenactfrcid]
   adr = sensor_adr[sensorid]
   val = sensordata_in[worldid, adr]
@@ -1889,8 +1673,11 @@ def _tendon_actuator_force_cutoff(
   _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, sensordata_out[worldid])
 
 
-@wp.kernel
+@fusion.stage("nworld", "nefc", "nlimitfrc")
 def _limit_frc(
+  worldid: int,
+  efcid: int,
+  limitfrcid: int,
   # Model:
   sensor_type: wp.array[int],
   sensor_datatype: wp.array[int],
@@ -1908,8 +1695,6 @@ def _limit_frc(
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
-  worldid, efcid, limitfrcid = wp.tid()
-
   ne = ne_in[worldid]
   nf = nf_in[worldid]
   nl = nl_in[worldid]
@@ -2010,8 +1795,10 @@ def _frameangacc(
   return wp.spatial_top(cacc_in[worldid, bodyid])
 
 
-@wp.kernel
+@fusion.stage("nworld", "nacc")
 def _sensor_acc(
+  worldid: int,
+  accid: int,
   # Model:
   body_rootid: wp.array[int],
   jnt_dofadr: wp.array[int],
@@ -2041,7 +1828,6 @@ def _sensor_acc(
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
-  worldid, accid = wp.tid()
   sensorid = sensor_acc_adr[accid]
   sensortype = sensor_type[sensorid]
   objid = sensor_objid[sensorid]
@@ -2104,8 +1890,10 @@ def _sensor_touch(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("ncon", "nsensortouchadr", options={**module_options})
   def kernel(
+    conid: int,
+    sensortouchadrid: int,
     # Model:
     opt_cone: int,
     geom_bodyid: wp.array[int],
@@ -2129,8 +1917,6 @@ def _sensor_touch(deterministic: bool = False):
     # Data out:
     sensordata_out: wp.array2d[float],
   ):
-    conid, sensortouchadrid = wp.tid()
-
     if conid >= nacon_in[0]:
       return
 
@@ -2190,8 +1976,9 @@ def _transform_spatial(vec: wp.spatial_vector, dif: wp.vec3) -> wp.vec3:
   return wp.spatial_bottom(vec) - wp.cross(dif, wp.spatial_top(vec))
 
 
-@wp.kernel(enable_backward=False, grid_stride=True)
+@fusion.stage("naconmax", options={"default_grid_stride": True})
 def _mark_tactile_contacts(
+  conid: int,
   # Model:
   body_weldid: wp.array[int],
   geom_bodyid: wp.array[int],
@@ -2203,7 +1990,6 @@ def _mark_tactile_contacts(
   # Out:
   weld_geom_seen_out: wp.array3d[wp.uint32],
 ):
-  conid = wp.tid()
   if conid >= wp.min(nacon_in[0], contact_geom_in.shape[0]):
     return
 
@@ -2236,8 +2022,10 @@ def _mark_tactile_contacts(
 
 @cache_kernel
 def _collect_tactile_contacts_kernel(warn_overflow: int):
-  @wp.kernel(module="unique", enable_backward=False)
+  @fusion.stage("nworld", "ntactileweld")
   def _collect_tactile_contacts(
+    worldid: int,
+    tactile_idx: int,
     # Model:
     ngeom: int,
     # In:
@@ -2248,7 +2036,6 @@ def _collect_tactile_contacts_kernel(warn_overflow: int):
     weld_geom_count_out: wp.array2d[int],
     weld_geom_list_out: wp.array3d[int],
   ):
-    worldid, tactile_idx = wp.tid()
     idx = int(0)
     nwords = (ngeom + 31) // 32
     for word_idx in range(nwords):
@@ -2274,8 +2061,10 @@ def _collect_tactile_contacts_kernel(warn_overflow: int):
   return _collect_tactile_contacts
 
 
-@wp.kernel
+@fusion.stage("nworld", "nsensortaxel")
 def _sensor_tactile(
+  worldid: int,
+  taxelid: int,
   # Model:
   body_rootid: wp.array[int],
   body_weldid: wp.array[int],
@@ -2317,8 +2106,6 @@ def _sensor_tactile(
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
-  worldid, taxelid = wp.tid()
-
   sensor_id = taxel_sensorid[taxelid]
   mesh_id = sensor_objid[sensor_id]
   geom_id = sensor_refid[sensor_id]
@@ -2455,8 +2242,10 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("ncontactsensor", "ncontact", options={**module_options})
   def _contact_match(
+    contactsensorid: int,
+    contactid: int,
     # Model:
     opt_cone: int,
     opt_contact_sensor_maxmatch: int,
@@ -2494,7 +2283,6 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
     sensor_contact_matchid_out: wp.array3d[int],
     sensor_contact_criteria_out: wp.array3d[float],
   ):
-    contactsensorid, contactid = wp.tid()
     sensorid = sensor_contact_adr_in[contactsensorid]
 
     if contactid >= wp.min(nacon_in[0], contact_geom_in.shape[0]):
@@ -2639,8 +2427,10 @@ def _contact_sort(maxmatch: int):
   return contact_sort
 
 
-@wp.kernel
+@fusion.stage("nworld", "ncontactsensor")
 def _sensor_contact(
+  worldid: int,
+  contactsensorid: int,
   # Model:
   opt_cone: int,
   opt_contact_sensor_maxmatch: int,
@@ -2670,7 +2460,6 @@ def _sensor_contact(
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
-  worldid, contactsensorid = wp.tid()
   sensorid = sensor_contact_adr_in[contactsensorid]
   out = sensordata_out[worldid]
 
@@ -2909,43 +2698,20 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
   sensor_contact_matchid = wp.full((d.nworld, ncontact, maxmatch), -1, dtype=int)
   sensor_contact_criteria = wp.full((d.nworld, ncontact, maxmatch), 1.0e32, dtype=float)
 
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _contact_match_builder(int(m.opt.warn_overflow), bool(m.opt.deterministic & DeterminismType.ATOMICS)),
     dim=(ncontact, d.naconmax),
-    inputs=[
-      m.opt.cone,
-      maxmatch,
-      m.body_parentid,
-      m.geom_bodyid,
-      m.site_type,
-      m.site_size,
-      m.sensor_objtype,
-      m.sensor_objid,
-      m.sensor_reftype,
-      m.sensor_refid,
-      m.sensor_intprm,
-      d.site_xpos,
-      d.site_xquat,
-      d.contact.dist,
-      d.contact.pos,
-      d.contact.frame,
-      d.contact.friction,
-      d.contact.dim,
-      d.contact.geom,
-      d.contact.efc_address,
-      d.contact.worldid,
-      d.contact.type,
-      d.contact.adhesion,
-      d.efc.force,
-      d.njmax,
-      d.nacon,
-      sensor_contact_adr,
-    ],
-    outputs=[d.overflow, sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria],
+    opt_contact_sensor_maxmatch=maxmatch,
+    sensor_contact_adr_in=sensor_contact_adr,
+    sensor_contact_nmatch_out=sensor_contact_nmatch,
+    sensor_contact_matchid_out=sensor_contact_matchid,
+    sensor_contact_criteria_out=sensor_contact_criteria,
   )
 
   # sorting
-  wp.launch_tiled(
+  fusion.launch_tiled(
     _contact_sort(maxmatch),
     dim=(d.nworld, ncontact),
     inputs=[
@@ -2959,35 +2725,15 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
     block_dim=m.block_dim.contact_sort,
   )
 
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _sensor_contact,
     dim=(d.nworld, ncontact),
-    inputs=[
-      m.opt.cone,
-      maxmatch,
-      m.body_rootid,
-      m.geom_bodyid,
-      m.sensor_intprm,
-      m.sensor_dim,
-      m.sensor_adr,
-      d.subtree_com,
-      d.cvel,
-      d.contact.dist,
-      d.contact.pos,
-      d.contact.frame,
-      d.contact.friction,
-      d.contact.dim,
-      d.contact.geom,
-      d.contact.efc_address,
-      d.contact.adhesion,
-      d.efc.force,
-      d.njmax,
-      d.nacon,
-      sensor_contact_adr,
-      sensor_contact_nmatch,
-      sensor_contact_matchid,
-    ],
-    outputs=[d.sensordata],
+    opt_contact_sensor_maxmatch=maxmatch,
+    sensor_contact_adr_in=sensor_contact_adr,
+    sensor_contact_nmatch_in=sensor_contact_nmatch,
+    sensor_contact_matchid_in=sensor_contact_matchid,
   )
 
 
@@ -2997,32 +2743,8 @@ def sensor_acc(m: Model, d: Data, skip_rne_postconstraint: bool = False):
   if m.opt.disableflags & DisableBit.SENSOR:
     return
 
-  wp.launch(
-    _sensor_touch(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-    dim=(d.naconmax, m.sensor_touch_adr.size),
-    inputs=[
-      m.opt.cone,
-      m.geom_bodyid,
-      m.site_type,
-      m.site_bodyid,
-      m.site_size,
-      m.sensor_objid,
-      m.sensor_adr,
-      m.sensor_touch_adr,
-      d.site_xpos,
-      d.site_xquat,
-      d.contact.pos,
-      d.contact.frame,
-      d.contact.dim,
-      d.contact.geom,
-      d.contact.efc_address,
-      d.contact.worldid,
-      d.efc.force,
-      d.nacon,
-    ],
-    outputs=[
-      d.sensordata,
-    ],
+  fusion.launch(
+    m, d, _sensor_touch(bool(m.opt.deterministic & DeterminismType.ATOMICS)), dim=(d.naconmax, m.sensor_touch_adr.size)
   )
 
   _eval_sensor_contact(m, d, m.sensor_contact_acc_adr)
@@ -3030,103 +2752,34 @@ def sensor_acc(m: Model, d: Data, skip_rne_postconstraint: bool = False):
   if not skip_rne_postconstraint and m.sensor_rne_postconstraint:
     smooth.rne_postconstraint(m, d)
 
-  wp.launch(
-    _sensor_acc,
-    dim=(d.nworld, m.sensor_acc_adr.size),
-    inputs=[
-      m.body_rootid,
-      m.jnt_dofadr,
-      m.geom_bodyid,
-      m.site_bodyid,
-      m.cam_bodyid,
-      m.sensor_type,
-      m.sensor_datatype,
-      m.sensor_objtype,
-      m.sensor_objid,
-      m.sensor_adr,
-      m.sensor_cutoff,
-      m.sensor_acc_adr,
-      d.xpos,
-      d.xipos,
-      d.geom_xpos,
-      d.site_xpos,
-      d.site_xquat,
-      d.cam_xpos,
-      d.subtree_com,
-      d.cvel,
-      d.actuator_force,
-      d.qfrc_actuator,
-      d.cacc,
-      d.cfrc_int,
-    ],
-    outputs=[d.sensordata],
-  )
+  fusion.launch(m, d, _sensor_acc, dim=(d.nworld, m.sensor_acc_adr.size))
 
-  wp.launch(
+  fusion.launch(
+    m,
+    d,
     _tendon_actuator_force(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
     dim=(d.nworld, m.sensor_tendonactfrc_adr.size, m.nactuator),
-    inputs=[
-      m.actuator_trntype,
-      m.actuator_trnid,
-      m.sensor_objid,
-      m.sensor_adr,
-      m.sensor_tendonactfrc_adr,
-      d.actuator_force,
-    ],
-    outputs=[
-      d.sensordata,
-    ],
   )
 
-  wp.launch(
-    _tendon_actuator_force_cutoff,
-    dim=(d.nworld, m.sensor_tendonactfrc_adr.size),
-    inputs=[
-      m.sensor_type,
-      m.sensor_datatype,
-      m.sensor_adr,
-      m.sensor_cutoff,
-      m.sensor_tendonactfrc_adr,
-      d.sensordata,
-    ],
-    outputs=[d.sensordata],
-  )
+  fusion.launch(m, d, _tendon_actuator_force_cutoff, dim=(d.nworld, m.sensor_tendonactfrc_adr.size))
 
-  wp.launch(
-    _limit_frc,
-    dim=(d.nworld, d.njmax, m.sensor_limitfrc_adr.size),
-    inputs=[
-      m.sensor_type,
-      m.sensor_datatype,
-      m.sensor_objid,
-      m.sensor_adr,
-      m.sensor_cutoff,
-      m.sensor_limitfrc_adr,
-      d.ne,
-      d.nf,
-      d.nl,
-      d.efc.type,
-      d.efc.id,
-      d.efc.force,
-    ],
-    outputs=[
-      d.sensordata,
-    ],
-  )
+  fusion.launch(m, d, _limit_frc, dim=(d.nworld, d.njmax, m.sensor_limitfrc_adr.size))
 
   # apply sensor delay/interval for acceleration sensors
   history.apply_sensor_delay(m, d, m.sensor_stage_acc_adr)
 
   if m.callback.sensor:
+    # callbacks launch work of their own
+    fusion.flush()
     m.callback.sensor(m, d, Stage.ACC)
 
 
-@wp.kernel
+@fusion.stage("nworld")
 def _energy_pos_zero(
+  worldid: int,
   # Data out:
   energy_out: wp.array[wp.vec2],
 ):
-  worldid = wp.tid()
   energy_out[worldid][0] = 0.0
 
 
@@ -3136,8 +2789,10 @@ def _energy_pos_gravity(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nbody", options={**module_options})
   def kernel(
+    worldid: int,
+    bodyid: int,
     # Model:
     opt_gravity: wp.array[wp.vec3],
     body_mass: wp.array2d[float],
@@ -3146,7 +2801,6 @@ def _energy_pos_gravity(deterministic: bool = False):
     # Data out:
     energy_out: wp.array[wp.vec2],
   ):
-    worldid, bodyid = wp.tid()
     gravity = opt_gravity[worldid % opt_gravity.shape[0]]
     bodyid += 1  # skip world body
 
@@ -3166,8 +2820,10 @@ def _energy_pos_passive_joint(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "njnt", options={**module_options})
   def kernel(
+    worldid: int,
+    jntid: int,
     # Model:
     qpos_spring: wp.array2d[float],
     jnt_type: wp.array[int],
@@ -3181,7 +2837,6 @@ def _energy_pos_passive_joint(deterministic: bool = False):
     # Data out:
     energy_out: wp.array[wp.vec2],
   ):
-    worldid, jntid = wp.tid()
     jnt_stiffness_id = worldid % jnt_stiffness.shape[0]
     stiffness = jnt_stiffness[jnt_stiffness_id, jntid]
     spoly = jnt_stiffnesspoly[worldid % jnt_stiffnesspoly.shape[0], jntid]
@@ -3296,8 +2951,10 @@ def _energy_pos_passive_tendon(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "ntendon", options={**module_options})
   def kernel(
+    worldid: int,
+    tenid: int,
     # Model:
     tendon_plasticadr: wp.array[int],
     tendon_stiffness: wp.array2d[float],
@@ -3309,8 +2966,6 @@ def _energy_pos_passive_tendon(deterministic: bool = False):
     # Data out:
     energy_out: wp.array[wp.vec2],
   ):
-    worldid, tenid = wp.tid()
-
     tendon_stiffness_id = worldid % tendon_stiffness.shape[0]
     stiffness = tendon_stiffness[tendon_stiffness_id, tenid]
     spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
@@ -3350,8 +3005,10 @@ def _energy_pos_passive_flex(deterministic: bool = False):
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  @wp.kernel(module="unique", module_options=module_options)
+  @fusion.stage("nworld", "nflexedge", options={**module_options})
   def kernel(
+    worldid: int,
+    edgeid: int,
     # Model:
     flex_interp: wp.array[int],
     flexedge_length0: wp.array[float],
@@ -3363,8 +3020,6 @@ def _energy_pos_passive_flex(deterministic: bool = False):
     # Data out:
     energy_out: wp.array[wp.vec2],
   ):
-    worldid, edgeid = wp.tid()
-
     if flexedge_rigid[edgeid]:
       return
 
@@ -3388,65 +3043,22 @@ def _energy_pos_passive_flex(deterministic: bool = False):
 
 def energy_pos(m: Model, d: Data):
   """Position-dependent energy (potential)."""
-  wp.launch(_energy_pos_zero, dim=d.nworld, outputs=[d.energy])
+  fusion.launch(m, d, _energy_pos_zero)
 
   # init potential energy: -sum_i(body_i.mass * dot(gravity, body_i.pos))
   if not (m.opt.disableflags & DisableBit.GRAVITY):
-    wp.launch(
-      _energy_pos_gravity(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-      dim=(d.nworld, m.nbody - 1),
-      inputs=[m.opt.gravity, m.body_mass, d.xipos],
-      outputs=[d.energy],
-    )
+    fusion.launch(m, d, _energy_pos_gravity(bool(m.opt.deterministic & DeterminismType.ATOMICS)), dim=(d.nworld, m.nbody - 1))
 
   if not (m.opt.disableflags & DisableBit.SPRING):
     # add joint-level springs
-    wp.launch(
-      _energy_pos_passive_joint(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-      dim=(d.nworld, m.njnt),
-      inputs=[
-        m.qpos_spring,
-        m.jnt_type,
-        m.jnt_qposadr,
-        m.jnt_plasticadr,
-        m.jnt_stiffness,
-        m.jnt_stiffnesspoly,
-        d.qpos,
-        d.plastic,
-      ],
-      outputs=[d.energy],
-    )
+    fusion.launch(m, d, _energy_pos_passive_joint(bool(m.opt.deterministic & DeterminismType.ATOMICS)))
 
     # add tendon-level springs
     if m.ntendon:
-      wp.launch(
-        _energy_pos_passive_tendon(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-        dim=(d.nworld, m.ntendon),
-        inputs=[
-          m.tendon_plasticadr,
-          m.tendon_stiffness,
-          m.tendon_stiffnesspoly,
-          m.tendon_lengthspring,
-          d.plastic,
-          d.ten_length,
-        ],
-        outputs=[d.energy],
-      )
+      fusion.launch(m, d, _energy_pos_passive_tendon(bool(m.opt.deterministic & DeterminismType.ATOMICS)))
 
     # add flex-level edge springs
-    wp.launch(
-      _energy_pos_passive_flex(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-      dim=(d.nworld, m.nflexedge),
-      inputs=[
-        m.flex_interp,
-        m.flexedge_length0,
-        m.flex_edgestiffness,
-        m.flexedge_rigid,
-        m.flex_edgeflexid,
-        d.flexedge_length,
-      ],
-      outputs=[d.energy],
-    )
+    fusion.launch(m, d, _energy_pos_passive_flex(bool(m.opt.deterministic & DeterminismType.ATOMICS)))
 
 
 @cache_kernel
@@ -3484,7 +3096,7 @@ def energy_vel(m: Model, d: Data):
   mv = wp.zeros((d.nworld, m.nv), dtype=float)
   support.mul_m(m, d, mv, d.qvel)
 
-  wp.launch_tiled(
+  fusion.launch_tiled(
     _energy_vel_kinetic(m.nv),
     dim=d.nworld,
     inputs=[d.qvel, mv],

@@ -20,6 +20,7 @@ from typing import Any, Tuple
 
 import warp as wp
 
+from mujoco_warp._src import fusion
 from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.types import MJ_MINMU
@@ -544,8 +545,10 @@ def sap_binary_search(values: wp.array[Any], value: Any, lower: int, upper: int)
   return upper
 
 
-@wp.kernel
+@fusion.stage("nworld", "ngeom")
 def sap_range(
+  worldid: int,
+  sortedid: int,
   # In:
   n: int,
   lower_in: wp.array2d[float],
@@ -555,8 +558,6 @@ def sap_range(
   range_out: wp.array2d[int],
 ):
   """Compute the sweep range for each sorted element."""
-  worldid, sortedid = wp.tid()
-
   idx = sort_index_in[worldid, sortedid]
   upper = upper_in[worldid, idx]
 
