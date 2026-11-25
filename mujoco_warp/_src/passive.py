@@ -4945,11 +4945,11 @@ def build_efm_contact(
   m: Model, d: Data, rebuild: bool = True
 ) -> tuple[wp.array2d[int], wp.array2d[float], wp.array[float], wp.array[float], wp.array[int]]:
   """Allocates and builds rank-1 passive flex contact metric terms."""
-  efm_con_dof = wp.zeros((d.naconmax, m.efm_con_max_dof), dtype=int)
-  efm_con_val = wp.zeros((d.naconmax, m.efm_con_max_dof), dtype=float)
-  efm_con_scale = wp.zeros(d.naconmax, dtype=float)
-  efm_con_force = wp.zeros(d.naconmax, dtype=float)
-  efm_con_nnz = wp.zeros(d.naconmax, dtype=int)
+  efm_con_dof = fusion.zeros((d.naconmax, m.efm_con_max_dof), dtype=int)
+  efm_con_val = fusion.zeros((d.naconmax, m.efm_con_max_dof), dtype=float)
+  efm_con_scale = fusion.zeros(d.naconmax, dtype=float)
+  efm_con_force = fusion.zeros(d.naconmax, dtype=float)
+  efm_con_nnz = fusion.zeros(d.naconmax, dtype=int)
   if rebuild and flex_passive_contact(m):
     fusion.launch(
       m,
@@ -5037,8 +5037,8 @@ def passive(m: Model, d: Data):
   flex_spring_body_force = None
   flex_damper_body_force = None
   if m.nflex > 0:
-    flex_spring_body_force = wp.zeros((d.nworld, m.nbody), dtype=wp.spatial_vector, device=d.qfrc_spring.device)
-    flex_damper_body_force = wp.zeros((d.nworld, m.nbody), dtype=wp.spatial_vector, device=d.qfrc_spring.device)
+    flex_spring_body_force = fusion.zeros((d.nworld, m.nbody), dtype=wp.spatial_vector, device=d.qfrc_spring.device)
+    flex_damper_body_force = fusion.zeros((d.nworld, m.nbody), dtype=wp.spatial_vector, device=d.qfrc_spring.device)
 
   if not dsbl_spring or not dsbl_damper:
     fusion.launch(

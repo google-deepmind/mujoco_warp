@@ -964,10 +964,10 @@ def deriv_rne_vel(m: Model, d: Data, out: wp.array2d[float]):
   """
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   # TODO(team): consider caching these allocations
-  Dcvel = wp.zeros((d.nworld, m.nbody, m.nv), dtype=wp.spatial_vector)
-  Dcdof_dot = wp.zeros((d.nworld, m.nv, m.nv), dtype=wp.spatial_vector)
-  Dcacc = wp.zeros((d.nworld, m.nbody, m.nv), dtype=wp.spatial_vector)
-  Dcfrcbody = wp.zeros((d.nworld, m.nbody, m.nv), dtype=wp.spatial_vector)
+  Dcvel = fusion.zeros((d.nworld, m.nbody, m.nv), dtype=wp.spatial_vector)
+  Dcdof_dot = fusion.zeros((d.nworld, m.nv, m.nv), dtype=wp.spatial_vector)
+  Dcacc = fusion.zeros((d.nworld, m.nbody, m.nv), dtype=wp.spatial_vector)
+  Dcfrcbody = fusion.zeros((d.nworld, m.nbody, m.nv), dtype=wp.spatial_vector)
 
   # Forward pass 1: compute Dcvel and Dcdof_dot
   for body_tree in m.body_tree:

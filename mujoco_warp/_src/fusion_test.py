@@ -122,13 +122,27 @@ class FusionTest(parameterized.TestCase):
     # a stage moves ahead of queued work that doesn't touch its arrays, not of work that does
     with fusion.fuse():
       fusion.launch(m, d, _double, a_in=a, b_out=b)
-      fusion.zero(x)
+      fusion.call(x.zero_, writes=(x,))
       fusion.launch(m, d, _double, a_in=a, b_out=c)
       self.assertEqual(_kernels(fusion._QUEUES[-1]), [[[_double], [_double]], "op"])
-      fusion.zero(b)
+      fusion.call(b.zero_, writes=(b,))
       fusion.launch(m, d, _add_own, b_in=b, c_out=c)
       self.assertEqual(_kernels(fusion._QUEUES[-1]), [[[_double], [_double]], "op", "op", [[_add_own]]])
     np.testing.assert_array_equal(c.numpy(), np.ones_like(c.numpy()))
+
+    # zeros, fills and copies run in kernels too
+    with fusion.fuse():
+      fusion.launch(m, d, _double, a_in=a, b_out=b)
+      fusion.zero(x)
+      fusion.fill(c, 3.0)
+      fusion.copy(b, a)
+      self.assertEqual(
+        _kernels(fusion._QUEUES[-1]),
+        [[[_double], [fusion._fill_stage(wp.float32)], [fusion._fill_stage(wp.float32)]], [[fusion._copy_stage(wp.float32)]]],
+      )
+    np.testing.assert_array_equal(x.numpy(), 0.0)
+    np.testing.assert_array_equal(c.numpy(), 3.0)
+    np.testing.assert_array_equal(b.numpy(), a.numpy())
 
     # arrays in struct arguments are dependencies too
     rows = _Rows()
@@ -182,7 +196,6 @@ class FusionTest(parameterized.TestCase):
       np.testing.assert_array_equal(getattr(unfused, field).numpy(), ref, err_msg=field)
       np.testing.assert_array_equal(getattr(fused, field).numpy(), ref, err_msg=field)
     self.assertGreater(fused.nacon.numpy()[0], 0)
-    self.assertEqual(nkernel[0], nkernel[1])
     self.assertLess(nkernel[2], nkernel[1])
     if nworld == 2:
       self.assertFalse(np.array_equal(fused.qpos.numpy()[0], fused.qpos.numpy()[1]))

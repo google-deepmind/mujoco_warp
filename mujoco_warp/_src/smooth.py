@@ -2384,8 +2384,8 @@ def rne_postconstraint(m: Model, d: Data):
   # Equality constraint forces - only if model has equality constraints
   if m.neq > 0:
     # Allocate inline counters and count from efc data
-    ne_connect = wp.zeros((d.nworld,), dtype=int)
-    ne_weld = wp.zeros((d.nworld,), dtype=int)
+    ne_connect = fusion.zeros((d.nworld,), dtype=int)
+    ne_weld = fusion.zeros((d.nworld,), dtype=int)
 
     fusion.launch(m, d, _count_equality_constraints, ne_connect_out=ne_connect, ne_weld_out=ne_weld)
 
@@ -2402,7 +2402,7 @@ def rne_postconstraint(m: Model, d: Data):
 
   # cfrc_ext += spatial tendons
   if m.ntendon > 0:
-    ten_frc = wp.zeros((d.nworld, m.ntendon), dtype=float)
+    ten_frc = fusion.zeros((d.nworld, m.ntendon), dtype=float)
 
     fusion.launch(m, d, _cfrc_ext_tendon_constraint(bool(m.opt.deterministic & DeterminismType.ATOMICS)), ten_frc_out=ten_frc)
 
@@ -3471,7 +3471,7 @@ def transmission(m: Model, d: Data):
   and tendon transmissions.
   """
   # TODO(team): investigate pre-computing moment_rownnz, moment_rowadr, moment_colind
-  moment_nnz = wp.zeros((d.nworld,), dtype=int)
+  moment_nnz = fusion.zeros((d.nworld,), dtype=int)
 
   fusion.launch_kernel(
     _transmission(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
@@ -3511,7 +3511,7 @@ def transmission(m: Model, d: Data):
 
   if m.nacttrnbody:
     # compute moments
-    ncon = wp.zeros((d.nworld, m.nacttrnbody), dtype=int)
+    ncon = fusion.zeros((d.nworld, m.nacttrnbody), dtype=int)
 
     det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
     fusion.launch(

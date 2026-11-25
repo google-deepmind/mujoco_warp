@@ -775,7 +775,7 @@ def sap_broadphase(
   # pair margins or gaps are batched
   npair_margin, npair_gap = m.pair_margin.shape[0], m.pair_gap.shape[0]
   ngeom_pair_margin = d.nworld if max(npair_margin, npair_gap) > 1 else 1
-  geom_pair_margin = wp.zeros((ngeom_pair_margin, m.ngeom), dtype=float)
+  geom_pair_margin = fusion.zeros((ngeom_pair_margin, m.ngeom), dtype=float)
   fusion.launch(
     m, d, _sap_pair_margin(npair_margin, npair_gap), dim=(ngeom_pair_margin, m.npair), geom_pair_margin_out=geom_pair_margin
   )

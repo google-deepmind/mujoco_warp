@@ -1585,12 +1585,12 @@ def rungekutta4(m: Model, d: Data):
 
   qpos_t0 = fusion.clone(d.qpos)
   qvel_t0 = fusion.clone(d.qvel)
-  qvel_rk = wp.zeros((d.nworld, m.nv), dtype=float)
-  qacc_rk = wp.zeros((d.nworld, m.nv), dtype=float)
+  qvel_rk = fusion.zeros((d.nworld, m.nv), dtype=float)
+  qacc_rk = fusion.zeros((d.nworld, m.nv), dtype=float)
 
   if m.na:
     act_t0 = fusion.clone(d.act)
-    act_dot_rk = wp.zeros((d.nworld, m.na), dtype=float)
+    act_dot_rk = fusion.zeros((d.nworld, m.na), dtype=float)
   else:
     act_t0 = None
     act_dot_rk = None
@@ -2448,7 +2448,7 @@ def fwd_kinematics(m: Model, d: Data):
   """
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP)
   if sleep_enabled:
-    woke = wp.zeros(1, dtype=int) if m.opt.graph_conditional else None
+    woke = fusion.zeros(1, dtype=int) if m.opt.graph_conditional else None
     sleep.wake(m, d, woke=woke)
     if woke is not None:
       fusion.capture_if(woke, on_true=sleep.update_sleep, m=m, d=d)
@@ -2462,7 +2462,7 @@ def fwd_kinematics(m: Model, d: Data):
   smooth.tendon(m, d)
 
   if sleep_enabled and m.ntendon > 0:
-    woke_ten = wp.zeros(1, dtype=int) if m.opt.graph_conditional else None
+    woke_ten = fusion.zeros(1, dtype=int) if m.opt.graph_conditional else None
     sleep.wake_tendon(m, d, woke=woke_ten)
     if woke_ten is not None:
       fusion.capture_if(woke_ten, on_true=sleep.update_sleep, m=m, d=d)
@@ -2519,7 +2519,7 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
 
   if sleep_enabled:
     if m.neq > 0:
-      woke_eq = wp.zeros(1, dtype=int) if m.opt.graph_conditional else None
+      woke_eq = fusion.zeros(1, dtype=int) if m.opt.graph_conditional else None
       sleep.wake_equality(m, d, woke=woke_eq)
       if woke_eq is not None:
         fusion.capture_if(woke_eq, on_true=sleep.update_sleep, m=m, d=d)
@@ -3192,7 +3192,7 @@ def fwd_actuation(m: Model, d: Data):
     det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
     if m.ntendon:
       # total actuator force at tendon
-      ten_actfrc = wp.zeros((d.nworld, m.ntendon), dtype=float)
+      ten_actfrc = fusion.zeros((d.nworld, m.ntendon), dtype=float)
       fusion.launch(m, d, _tendon_actuator_force(det_atomics), ten_actfrc_out=ten_actfrc)
 
       fusion.launch(m, d, _tendon_actuator_force_clamp, ten_actfrc_in=ten_actfrc)

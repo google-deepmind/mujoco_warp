@@ -996,7 +996,7 @@ def sensor_pos(m: Model, d: Data):
     energy_vel(m, d)
 
   # collision sensors (distance, normal, fromto)
-  sensor_collision = wp.full((d.nworld, m.nsensorcollision, 8, 7), 1.0e32, dtype=float)
+  sensor_collision = fusion.full((d.nworld, m.nsensorcollision, 8, 7), 1.0e32, dtype=float)
   if m.nsensorcollision:
     fusion.launch(m, d, _sensor_collision, sensor_collision_out=sensor_collision)
 
@@ -1508,7 +1508,7 @@ def sensor_vel(m: Model, d: Data):
     weld_geom_count = wp.empty((d.nworld, m.ntactileweld), dtype=int)
     weld_geom_list = wp.empty((d.nworld, m.ntactileweld, MJ_MAXCONPAIR), dtype=int)
     nwords = (m.ngeom + 31) // 32
-    weld_geom_seen = wp.zeros((d.nworld, m.ntactileweld, nwords), dtype=wp.uint32)
+    weld_geom_seen = fusion.zeros((d.nworld, m.ntactileweld, nwords), dtype=wp.uint32)
     fusion.launch(m, d, _mark_tactile_contacts, weld_geom_seen_out=weld_geom_seen)
     fusion.launch(
       m,
@@ -2694,9 +2694,9 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
 
   ncontact = sensor_contact_adr.size
   maxmatch = m.opt.contact_sensor_maxmatch
-  sensor_contact_nmatch = wp.zeros((d.nworld, ncontact), dtype=int)
-  sensor_contact_matchid = wp.full((d.nworld, ncontact, maxmatch), -1, dtype=int)
-  sensor_contact_criteria = wp.full((d.nworld, ncontact, maxmatch), 1.0e32, dtype=float)
+  sensor_contact_nmatch = fusion.zeros((d.nworld, ncontact), dtype=int)
+  sensor_contact_matchid = fusion.full((d.nworld, ncontact, maxmatch), -1, dtype=int)
+  sensor_contact_criteria = fusion.full((d.nworld, ncontact, maxmatch), 1.0e32, dtype=float)
 
   fusion.launch(
     m,
@@ -3093,7 +3093,7 @@ def energy_vel(m: Model, d: Data):
   # kinetic energy: 0.5 * qvel.T @ M @ qvel
 
   # M @ qvel
-  mv = wp.zeros((d.nworld, m.nv), dtype=float)
+  mv = fusion.zeros((d.nworld, m.nv), dtype=float)
   support.mul_m(m, d, mv, d.qvel)
 
   fusion.launch_tiled(

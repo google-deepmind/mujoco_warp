@@ -38,6 +38,7 @@ the block ends, fused into as few kernels as their data dependencies allow:
 import ast
 import contextlib
 import dataclasses
+import functools
 import hashlib
 import inspect
 import linecache
@@ -55,7 +56,7 @@ from warp._src.codegen import StructInstance
 MODE = "auto"
 
 # module options a fused kernel takes from its stages, which only fuse with equal options
-_OPTIONS = ("default_grid_stride", "fast_math", "max_unroll", "fuse_fp", "deterministic", "deterministic_max_records")
+_OPTIONS = ("fast_math", "max_unroll", "fuse_fp", "deterministic", "deterministic_max_records")
 
 # kernel argument bytes a fused kernel may use, below the 4 KB CUDA limit of older toolkits
 _MAX_ARG_BYTES = 4000
@@ -94,7 +95,8 @@ def stage(*dim: str, options: Optional[dict] = None):
     opts.update({k: v for k, v in (options or {}).items() if k in _OPTIONS})
     return Stage(
       func=wp.func(f),
-      name=f.__name__,
+      # a stage made by a factory is named after it
+      name=f.__qualname__.split(".<locals>")[0] if f.__name__ == "kernel" else f.__name__,
       dim=dim,
       params={p: sig.parameters[p].annotation for p in params},
       fields={p: _path(p) for p in params},
@@ -349,12 +351,8 @@ def _kernel(structure, options: tuple) -> wp.Kernel:
   filename = f"<mujoco_warp {name}>"
   linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
   exec(compile(source, filename, "exec"), namespace)
-  opts = dict(options)
-  grid_stride = opts.pop("default_grid_stride")
-  module_options = {k: v for k, v in opts.items() if v is not None}
-  kernel = wp.kernel(
-    namespace[name], module="unique", module_options=module_options, enable_backward=False, grid_stride=grid_stride
-  )
+  module_options = {k: v for k, v in options if v is not None}
+  kernel = wp.kernel(namespace[name], module="unique", module_options=module_options, enable_backward=False, grid_stride=False)
   kernel.stages = [s for seg in structure for s, _, _ in seg]
   _KERNELS[structure] = kernel
   return kernel
@@ -590,19 +588,70 @@ def wait_stream(stream):
     queue.append(_Op(lambda: wp.wait_stream(stream), set(), set(), _stream(), barrier=True))
 
 
+@functools.cache
+def _fill_stage(dtype):
+  @stage("n")
+  def _fill(i: int, value: dtype, out: wp.array[dtype]):
+    out[i] = dtype(value)
+
+  return _fill
+
+
+@functools.cache
+def _copy_stage(dtype):
+  @stage("n")
+  def _copy(i: int, src: wp.array[dtype], out: wp.array[dtype]):
+    out[i] = dtype(src[i])
+
+  return _copy
+
+
+def _flat(a: wp.array) -> Optional[wp.array]:
+  """Returns a contiguous array as one dimension, so it fills and copies in a fused kernel."""
+  if _queue() is None or not a.is_contiguous or not a.size:
+    return None
+  return wp.array(ptr=a.ptr, dtype=a.dtype, shape=(a.size,), device=a.device)
+
+
 def zero(a: wp.array):
   """Zeros an array."""
-  call(a.zero_, writes=(a,))
+  flat = _flat(a)
+  if flat is None:
+    call(a.zero_, writes=(a,))
+  else:
+    launch(None, None, _fill_stage(a.dtype), dim=a.size, value=a.dtype(), out=flat)
 
 
 def fill(a: wp.array, value):
   """Fills an array with a value."""
-  call(a.fill_, value, writes=(a,))
+  flat = _flat(a)
+  if flat is None:
+    call(a.fill_, value, writes=(a,))
+  else:
+    launch(None, None, _fill_stage(a.dtype), dim=a.size, value=a.dtype(value), out=flat)
+
+
+def zeros(*args, **kwargs) -> wp.array:
+  """Returns a zeroed array, as `wp.zeros`."""
+  a = wp.empty(*args, **kwargs)
+  zero(a)
+  return a
+
+
+def full(shape, value, dtype, **kwargs) -> wp.array:
+  """Returns an array filled with a value, as `wp.full`."""
+  a = wp.empty(shape, dtype=dtype, **kwargs)
+  fill(a, value)
+  return a
 
 
 def copy(dest: wp.array, src: wp.array, *args, **kwargs):
   """Copies an array, as `wp.copy`."""
-  call(wp.copy, dest, src, *args, reads=(src,), writes=(dest,), **kwargs)
+  flat, flat_src = _flat(dest), _flat(src)
+  if flat is None or flat_src is None or args or kwargs or dest.shape != src.shape or dest.dtype != src.dtype:
+    call(wp.copy, dest, src, *args, reads=(src,), writes=(dest,), **kwargs)
+  else:
+    launch(None, None, _copy_stage(dest.dtype), dim=dest.size, src=flat_src, out=flat)
 
 
 def clone(src: wp.array) -> wp.array:

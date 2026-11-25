@@ -142,7 +142,7 @@ def create_solver_context(
     Jaref=wp.empty((nworld, njmax), dtype=float),
     search_dot=wp.empty((nworld,), dtype=float),
     done=wp.empty((nworld,), dtype=bool),
-    grad=wp.zeros((nworld, nv_pad), dtype=float),
+    grad=fusion.zeros((nworld, nv_pad), dtype=float),
     grad_dot=wp.empty((nworld,), dtype=float),
     newton_decrement=wp.empty((nworld,), dtype=float),
     Mgrad=wp.empty((nworld, nv_pad), dtype=float) if alloc_mgrad else wp.empty((nworld, 0), dtype=float),
@@ -153,7 +153,7 @@ def create_solver_context(
     alpha=wp.empty((nworld,), dtype=float),
     grad_scale=wp.empty((nworld,), dtype=float),
     improvement=wp.empty((nworld,), dtype=float),
-    ls_exhausted=wp.zeros((nworld,), dtype=bool),
+    ls_exhausted=fusion.zeros((nworld,), dtype=bool),
     search_unchanged=wp.empty((nworld,), dtype=bool),
     prev_grad=wp.empty((nworld, nv), dtype=float) if alloc_mgrad else wp.empty((nworld, 0), dtype=float),
     prev_Mgrad=wp.empty((nworld, nv), dtype=float) if alloc_mgrad else wp.empty((nworld, 0), dtype=float),
@@ -175,7 +175,7 @@ def create_solver_context(
     cone_weight=wp.empty((nworld, d.njmax_pad), dtype=float) if alloc_cone_rows else None,
     cone_base=wp.empty((nworld, njmax), dtype=int) if alloc_cone_rows else None,
     nsolving=wp.empty((1,), dtype=int),
-    qfrc_smooth_eff=wp.zeros((nworld, nv_pad), dtype=float) if m.opt.integrator == types.IntegratorType.DISCRETE else None,
+    qfrc_smooth_eff=fusion.zeros((nworld, nv_pad), dtype=float) if m.opt.integrator == types.IntegratorType.DISCRETE else None,
     flex_scratch=(
       passive.flex_stretch_scratch(m, d)
       if (m.opt.integrator == types.IntegratorType.DISCRETE and m.nflex > 0 and m.nflexvert > 0)
@@ -5329,14 +5329,14 @@ def _warmstart_best(m: types.Model, d: types.Data, ctx: SolverContext):
 def _init_jaref(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext):
   """Computes ctx.Jaref = d.efc.J @ d.qacc - d.efc.aref."""
   # ctx.done may be stale from a previous solve here, so no world is skipped
-  _mul_jac_vec(m, d, ctx, d.qacc, ctx.Jaref, wp.zeros(d.nworld, dtype=bool, device=d.qacc.device), subtract_aref=True)
+  _mul_jac_vec(m, d, ctx, d.qacc, ctx.Jaref, fusion.zeros(d.nworld, dtype=bool, device=d.qacc.device), subtract_aref=True)
 
 
 def _get_qfrc_smooth_eff(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext) -> wp.array2d[float]:
   is_solver_ctx = isinstance(ctx, types.SolverContext)
   qfrc_smooth_eff = ctx.qfrc_smooth_eff if is_solver_ctx else None
   if qfrc_smooth_eff is None:
-    qfrc_smooth_eff = wp.zeros((d.nworld, m.nv_pad), dtype=float, device=d.qacc.device)
+    qfrc_smooth_eff = fusion.zeros((d.nworld, m.nv_pad), dtype=float, device=d.qacc.device)
   fusion.launch(m, d, _add_qfrc_smooth_eff, qfrc_smooth_eff_out=qfrc_smooth_eff)
   return qfrc_smooth_eff
 
@@ -5446,7 +5446,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
     nsolving = ctx.nsolving
     fusion.fill(nsolving, d.nworld)
   else:
-    nsolving = wp.full(shape=(1,), value=d.nworld, dtype=int)
+    nsolving = fusion.full(shape=(1,), value=d.nworld, dtype=int)
   if run_qacc_smooth and m.opt.integrator == types.IntegratorType.DISCRETE:
     fusion.launch(m, d, _solve_skip_empty_efc, ctx_done_out=ctx.done, nsolving_out=nsolving)
 

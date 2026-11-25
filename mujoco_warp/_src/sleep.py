@@ -1211,10 +1211,10 @@ def _build_cycles(  # kernel_analyzer: ignore
 def sleep(m: types.Model, d: types.Data) -> wp.array:
   """Puts trees to sleep according to velocity tolerance."""
   if m.ntree == 0:
-    return wp.zeros(1, dtype=int)
+    return fusion.zeros(1, dtype=int)
 
-  has_sleep_candidate = wp.zeros(1, dtype=int)
-  nslept = wp.zeros(1, dtype=int)
+  has_sleep_candidate = fusion.zeros(1, dtype=int)
+  nslept = fusion.zeros(1, dtype=int)
 
   # Sweep over awake trees and increment counter if they can sleep
   fusion.launch(m, d, _sweep_awake_trees, has_sleep_candidate_out=has_sleep_candidate)

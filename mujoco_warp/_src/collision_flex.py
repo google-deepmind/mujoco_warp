@@ -3463,7 +3463,7 @@ def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
   capacity = d.naccdmax if has_epa else 1
 
   needs_nccd = m.nmesh > 0 or m.has_ellipsoid_geom or cylinder_elem or m.has_1d_flex or m.has_3d_flex
-  nccd = wp.zeros(1, dtype=int) if needs_nccd else None
+  nccd = fusion.zeros(1, dtype=int) if needs_nccd else None
 
   has_geom_fps = m.has_3d_flex and m.ngeom > 0
   has_sap_fps = m.has_flex_selfcollide or m.nflex > 1
@@ -3475,9 +3475,9 @@ def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
     cand_active_sorted = wp.empty(d.naconmax, dtype=int)
     flex_group_temp = wp.empty(d.naconmax, dtype=int)
     flex_group_ids = wp.empty(d.naconmax, dtype=int)
-    flex_group_start_indices = wp.full(nmax_groups, -1, dtype=int)
+    flex_group_start_indices = fusion.full(nmax_groups, -1, dtype=int)
     flex_fps_min_dist = wp.empty(d.naconmax, dtype=float)
-    flex_num_groups = wp.zeros(1, dtype=int)
+    flex_num_groups = fusion.zeros(1, dtype=int)
   else:
     cand_active_sorted = None
     flex_group_temp = None
@@ -3495,7 +3495,7 @@ def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
     elem=wp.empty(d.naconmax, dtype=wp.vec2i),
     vert=wp.empty(d.naconmax, dtype=wp.vec2i),
     worldid=wp.empty(d.naconmax, dtype=int),
-    ncand=wp.zeros(1, dtype=int),
+    ncand=fusion.zeros(1, dtype=int),
     filter_key=wp.empty(d.naconmax * 2, dtype=wp.int64),
     filter_val=wp.empty(d.naconmax * 2, dtype=int),
     cand_active=wp.empty(d.naconmax, dtype=int),

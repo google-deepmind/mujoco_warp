@@ -1072,7 +1072,7 @@ def init_sensor_history(
     phase_arr = phase
   else:
     has_phase = 1
-    phase_arr = wp.full(d.nworld, float(phase), dtype=float)
+    phase_arr = fusion.full(d.nworld, float(phase), dtype=float)
 
   fusion.launch(
     m,

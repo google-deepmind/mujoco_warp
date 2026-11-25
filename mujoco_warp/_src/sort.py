@@ -1096,7 +1096,7 @@ def contacts(d: types.Data):
     # Group the contacts of each world, then every contact counts the contacts of its world that
     # precede it: a few launches instead of one merge pass per doubling of the whole buffer, and
     # the comparisons stay within the neighbouring contacts of a world.
-    count = wp.zeros(d.nworld + 2, dtype=int)
+    count = fusion.zeros(d.nworld + 2, dtype=int)
     offset = wp.empty(d.nworld + 2, dtype=int)
     slot = wp.empty(d.naconmax, dtype=int)
     source = wp.empty(d.naconmax, dtype=int)
@@ -1132,7 +1132,7 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
   rank = wp.empty(d.naconmax, dtype=int)
   if d.contact.efc_address.size:
     contact_keys = _contact_keys(d.contact)
-    unsorted = wp.zeros(1, dtype=int)
+    unsorted = fusion.zeros(1, dtype=int)
     fusion.launch(m, d, _contact_unsorted, keys_in=contact_keys, unsorted_out=unsorted)
     if d.njmax <= _ROW_RANK_NJMAX:
       fusion.launch(m, d, _contact_row_rank, keys_in=contact_keys, nnz_in=nnz, unsorted_in=unsorted, rank_out=rank)
@@ -1214,7 +1214,7 @@ def constraints(m: types.Model, d: types.Data, nnz: wp.array | None = None):
   # One scan over the nonzeros of the sorted rows of all worlds gives their addresses. Rows past
   # the count of a world hold zero, and so does a last row that ends the scan.
   scan = m.is_sparse and d.nworld * d.njmax_nnz < _SCAN_MAX
-  rownnz = wp.zeros((d.nworld + 1, d.njmax), dtype=int) if scan else unused
+  rownnz = fusion.zeros((d.nworld + 1, d.njmax), dtype=int) if scan else unused
   fusion.launch_kernel(
     _constraint_gather, dim=shape, inputs=[d.efc.J_rownnz, count, order, rows], outputs=[ints, floats, rownnz]
   )
