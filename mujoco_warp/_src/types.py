@@ -1233,6 +1233,9 @@ class Model:
     nactuator: number of actuators
     na: number of activation states
     nbody: number of bodies
+    nbvh: number of total bounding volumes in all bodies
+    nbvhstatic: number of static bounding volumes (aabb stored in Model)
+    nbvhdynamic: number of dynamic bounding volumes (aabb computed per step)
     noct: number of total octree cells in all meshes
     njnt: number of joints
     ntree: number of kinematic trees
@@ -1311,6 +1314,8 @@ class Model:
     body_gravcomp: antigravity force, units of body weight   (*, nbody)
     body_contype: OR over all geom contypes                  (nbody,)
     body_conaffinity: OR over all geom conaffinities         (nbody,)
+    bvh_child: left and right children in tree               (nbvh, 2)
+    bvh_nodeid: geom or elem id of node; -1: non-leaf        (nbvh,)
     oct_child: octree children                               (noct, 8)
     oct_aabb: octree axis-aligned bounding boxes             (noct, 2, 3)
     oct_coeff: octree interpolation coefficients             (noct, 8)
@@ -1475,6 +1480,8 @@ class Model:
     flex_rigid: flex is rigid (all vertices on same body)    (nflex,)
     flexedge_rigid: edge is rigid (e.g. vertices welded to same body) (nflexedge,)
     flex_centered: flex vertices are centered at body origin (nflex,)
+    flex_bvhadr: address of bvh root; -1: no bvh             (nflex,)
+    flex_bvhnum: number of bounding volumes                  (nflex,)
     flexedge_J_rownnz: number of nonzeros in Jacobian row    (nflexedge,)
     flexedge_J_rowadr: row start address in colind array     (nflexedge,)
     flexedge_J_colind: column indices in sparse Jacobian     (nJfe,)
@@ -1782,6 +1789,8 @@ class Model:
     M_mulm_rowadr: sparse matmul row pointers
     M_mulm_entry: sparse matmul column (low 32 bits) and matrix address (high 32 bits)
     flex_elemflexid: maps each element index directly to its flexid         (nflexelem,)
+    flex_bvhflexid: maps each dynamic bvh node to its flexid                (nbvhdynamic,)
+    flex_bvh_tree: internal flex bvh node ids by tree depth
     flex_edgeflexid: maps each edge index directly to its flexid            (nflexedge,)
     flex_shellflexid: maps each shell index directly to its flexid          (nflexshelldata,)
     flex_vertflexid: maps each vertex index directly to its flexid          (nflexvert,)
@@ -1833,6 +1842,9 @@ class Model:
   nactuator: int
   na: int
   nbody: int
+  nbvh: int
+  nbvhstatic: int
+  nbvhdynamic: int
   noct: int
   njnt: int
   ntree: int
@@ -1912,6 +1924,8 @@ class Model:
   body_gravcomp: array("*", "nbody", float)
   body_contype: array("nbody", int)
   body_conaffinity: array("nbody", int)
+  bvh_child: array("nbvh", wp.vec2i)
+  bvh_nodeid: array("nbvh", int)
   oct_child: array("noct", vec8i)
   oct_aabb: array("noct", 2, wp.vec3)
   oct_coeff: array("noct", vec8)
@@ -2076,6 +2090,8 @@ class Model:
   flex_rigid: array("nflex", bool)
   flexedge_rigid: array("nflexedge", bool)
   flex_centered: array("nflex", bool)
+  flex_bvhadr: array("nflex", int)
+  flex_bvhnum: array("nflex", int)
   flexedge_J_rownnz: array("nflexedge", int)
   flexedge_J_rowadr: array("nflexedge", int)
   flexedge_J_colind: array("nJfe", int)
@@ -2372,6 +2388,8 @@ class Model:
   M_mulm_rowadr: array("nv_plus_1", int)  # start address for each row [nv+1]
   M_mulm_entry: array("nM_mulm", wp.uint64)
   flex_elemflexid: array("nflexelem", int)
+  flex_bvhflexid: array("nbvhdynamic", int)
+  flex_bvh_tree: tuple[array("nbvhdynamic", int), ...]
   flex_edgeflexid: array("nflexedge", int)
   flex_shellflexid: array("nflexshelldata", int)
   flex_vertflexid: array("nflexvert", int)
