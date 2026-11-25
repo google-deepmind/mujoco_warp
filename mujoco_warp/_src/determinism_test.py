@@ -249,7 +249,7 @@ _TREE_CASES = (
       "solver._JTDACJ_sparse",
       "solver._mul_jac_vec_kernel",
       "solver._update_constraint_efc",
-      "solver._update_constraint_init_qfrc_constraint_sparse",
+      "solver._update_constraint_init_qfrc_constraint_blocks",
       "solver._update_gradient_grad",
       "solver._update_gradient_h_incremental_sparse",
       "support._apply_ft_scatter",
@@ -285,7 +285,7 @@ _TREE_CASES = (
   dict(
     testcase_name="discrete_cg",
     overrides={"opt.integrator": "DISCRETE", "opt.solver": "CG", "opt.tolerance": "1e-10"},
-    covers=(),
+    covers=("solver._update_constraint_init_qfrc_constraint_sparse",),
   ),
   dict(
     testcase_name="dense_blocks",

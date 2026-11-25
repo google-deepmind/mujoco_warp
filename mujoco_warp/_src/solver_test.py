@@ -857,6 +857,11 @@ class SolverTest(parameterized.TestCase):
     columns = np.arange(d.njmax) % m.nv
     d.efc.J_colind.assign(np.tile(columns, (d.nworld, 1, 1)))
     d.efc.J.fill_(1.0)
+    # every row is its own JTDAJ block, the friction row like a tendon's
+    d.efc.jtdaj_adr.assign(np.tile(np.arange(d.njmax), (d.nworld, 1)))
+    d.efc.jtdaj_nrow.fill_(1)
+    d.efc.jtdaj_nblock.fill_(d.njmax)
+    d.dof_frictionadr.fill_(-1)
     d.efc.D.fill_(2.0)
     d.efc.frictionloss.fill_(1.0)
     jaref = np.full((d.nworld, d.njmax), -1.0)
@@ -895,6 +900,9 @@ class SolverTest(parameterized.TestCase):
         d.nf,
         d.nefc,
         d.qfrc_smooth,
+        d.efc.jtdaj_adr,
+        d.efc.jtdaj_nrow,
+        d.efc.jtdaj_nblock,
         d.efc.J_rownnz,
         d.efc.J_rowadr,
         d.efc.J_colind,
@@ -902,6 +910,8 @@ class SolverTest(parameterized.TestCase):
         d.efc.D,
         d.efc.frictionloss,
         d.efc.Ma,
+        d.dof_frictionadr,
+        d.dof_cdof,
         d.njmax,
         ctx.Jaref,
         ctx.ls_exhausted,
