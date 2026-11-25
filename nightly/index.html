@@ -448,6 +448,30 @@
       gap: 2rem;
     }
 
+    .workstation-legend {
+      display: flex;
+      justify-content: flex-end;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.25rem;
+      font-size: 0.825rem;
+      color: var(--text-dim);
+      font-weight: 600;
+    }
+
+    .workstation-legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .workstation-swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      display: inline-block;
+    }
+
     .chart-container {
       background: var(--bg-card);
       border: 1px solid var(--border);
@@ -656,6 +680,17 @@
         </div>
       </div>
 
+      <div class="workstation-legend">
+        <span class="workstation-legend-item">
+          <span class="workstation-swatch" style="background: #64748b;"></span>
+          Previous Workstation: RTX 6000 Ada 48 GB (&le; Sep 3, 2026)
+        </span>
+        <span class="workstation-legend-item">
+          <span class="workstation-swatch" style="background: #e06c4d;"></span>
+          Updated Workstation: RTX PRO 6000 Blackwell 96 GB (&ge; Sep 8, 2026)
+        </span>
+      </div>
+
       <div class="chart-grid">
         <div class="chart-container">
           <div class="chart-title" id="step-chart-title">Step Time Breakdown (ns/step)</div>
@@ -682,22 +717,36 @@
   </div>
 
   <footer>
-    <p>These benchmarks were recorded on a workstation with the following specifications:</p>
+    <p>These benchmarks are recorded on a workstation with the following specifications (updated September 2026 from NVIDIA RTX 6000 Ada 48 GB / AMD Ryzen Threadripper PRO 5995WX):</p>
     <div class="system-info">
-      <span><span class="system-label">GPU:</span> NVIDIA RTX 6000 Ada Generation</span>
-      <span><span class="system-label">VRAM:</span> 48 GB</span>
-      <span><span class="system-label">CPU:</span> AMD Ryzen Threadripper PRO 5995WX 64-Cores</span>
+      <span><span class="system-label">GPU:</span> NVIDIA RTX PRO 6000 Blackwell Workstation Edition</span>
+      <span><span class="system-label">VRAM:</span> 96 GB</span>
+      <span><span class="system-label">CPU:</span> AMD Ryzen Threadripper 3960X 24-Core Processor</span>
     </div>
   </footer>
 
   <script>
     const GITHUB_REPO = 'https://github.com/google-deepmind/mujoco_warp';
 
-    // Shared color palette for all charts
-    const COLORS = [
-      '#5FA8A8', '#5E8C6A', '#8B7355', '#4A7C9E', '#D4644A',
-      '#6B8E7C', '#9B6B6B', '#5D8AA6', '#A08662', '#7A8E77'
+    // Distinct color palettes for previous vs updated workstation
+    const COLORS_PREV = [
+      '#64748b', '#7c8ea6', '#5b7c99', '#8a9bae', '#4c6a85',
+      '#6f8596', '#94a3b8', '#526b82', '#7a8f9e', '#617a8c'
     ];
+    const COLORS_NEW = [
+      '#e06c4d', '#d99b26', '#2e9e6f', '#c94f7c', '#7c5cbf',
+      '#e68a2e', '#1f9d9d', '#b85c38', '#4f9a3d', '#d45b5b'
+    ];
+    const WORKSTATION_CUTOFF = new Date('2026-09-04T00:00:00Z').getTime();
+    const UPDATED_WORKSTATION_ONLY = new Set(['aloha_clutter_vision', 'franka_threading', 'sharpa_wave']);
+
+    function isUpdatedWorkstation(benchmarkName, timestamp) {
+      return UPDATED_WORKSTATION_ONLY.has(benchmarkName) || new Date(timestamp).getTime() >= WORKSTATION_CUTOFF;
+    }
+
+    function workstationLabel(updated) {
+      return updated ? 'RTX PRO 6000 Blackwell' : 'RTX 6000 Ada';
+    }
 
     // Benchmark metadata: [name, description, nbody, nv, ngeom, nu, isRender]
     const BENCHMARK_DATA = {
@@ -707,9 +756,11 @@
       aloha_clutter: ['Aloha Clutter', 'YCB and GSO objects scattered on a workbench. Exercises constraint islands and sleeping.', 42, 136, 548, 14],
       cloth: ['Cloth', 'A cloth draped over a humanoid. Tests deformable body performance.', 918, 2706, 21, 0],
       franka_emika_panda: ['Franka Emika Panda', 'Measures how quickly you can simulate nothing useful happening.', 12, 9, 23, 8],
+      franka_threading: ['Franka Threading', 'Franka Emika Panda threading an M16 nut onto a bolt. Exercises contact-rich convex thread manipulation.', 14, 15, 614, 8],
       humanoid: ['Humanoid', 'No benchmark suite is complete without the classic MuJoCo humanoid!', 17, 27, 20, 21],
       three_humanoids: ['Three Humanoids', 'Three humanoids on flat ground. Tests dense vs sparse matrix solver crossover.', 49, 81, 58, 63],
       myoarm: ['MyoArm', 'Musculoskeletal model of the human arm with 63 muscle-tendon actuators.', 40, 38, 161, 63],
+      sharpa_wave: ['Sharpa Wave', 'Sharpa Wave right hand grasping a mug with five fingertip tactile sensors (3,562 taxels).', 27, 34, 117, 28],
       unitree_g1_flat: ['Unitree G1 Flat', 'Unitree G1 humanoid replaying a shuffle dance on flat terrain.', 31, 35, 69, 29],
       unitree_g1_hfield: ['Unitree G1 Hfield', 'Unitree G1 humanoid on randomized heightfield terrain.', 31, 35, 69, 29],
       primitives: ['Primitives', 'Rendering of primitive shapes.', 126, 750, 127, 0, true],
@@ -720,8 +771,8 @@
 
     // Execution orders for breakdown charts (matching forward.py)
     const EXECUTION_ORDERS = {
-      fwd_position: ['kinematics', 'com_pos', 'camlight', 'flex', 'tendon', 'crb',
-        'tendon_armature', 'factor_m', 'collision', 'make_constraint', 'transmission'],
+      fwd_position: ['fwd_kinematics', 'kinematics', 'com_pos', 'camlight', 'flex', 'tendon', 'crb',
+        'tendon_armature', 'factor_m', 'collision', 'make_constraint', 'island', 'transmission'],
       fwd_velocity: ['actuator_velocity', 'tendon_velocity', 'com_vel', 'passive', 'rne', 'tendon_bias']
     };
 
@@ -1097,7 +1148,8 @@
                 } else {
                   formatted = `Total: ${Math.round(total).toLocaleString()} ns`;
                 }
-                return [formatted, ''];
+                const updated = tooltipItems[0]?.raw?.updated;
+                return [formatted, `Workstation: ${workstationLabel(updated)}`, ''];
               },
               footer: () => 'Click to view commit on GitHub'
             }
@@ -1129,6 +1181,71 @@
       };
     }
 
+    const workstationDividerPlugin = {
+      id: 'workstationDividerPlugin',
+      afterDraw(chart) {
+        const ds = chart.data.datasets[0];
+        if (!ds || !ds.data || ds.data.length === 0) return;
+        const firstNewIdx = ds.data.findIndex(pt => pt && pt.updated);
+        if (firstNewIdx <= 0) return;
+
+        const prevPt = ds.data[firstNewIdx - 1];
+        const newPt = ds.data[firstNewIdx];
+        if (!prevPt || !newPt || prevPt.updated) return;
+
+        const xScale = chart.scales.x;
+        const { top, bottom, left, right } = chart.chartArea;
+        const midTime = (prevPt.x.getTime() + newPt.x.getTime()) / 2;
+        const x = xScale.getPixelForValue(midTime);
+        if (x < left || x > right) return;
+
+        const ctx = chart.ctx;
+        ctx.save();
+        ctx.beginPath();
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.moveTo(x, top);
+        ctx.lineTo(x, bottom);
+        ctx.stroke();
+
+        ctx.setLineDash([]);
+        ctx.font = '600 10px "Plus Jakarta Sans", sans-serif';
+        ctx.textBaseline = 'top';
+        if (x - left > 95) {
+          ctx.textAlign = 'right';
+          ctx.fillStyle = '#64748b';
+          ctx.fillText('RTX 6000 Ada', x - 6, top + 6);
+        }
+        if (right - x > 140) {
+          ctx.textAlign = 'left';
+          ctx.fillStyle = '#e06c4d';
+          ctx.fillText('RTX PRO 6000 Blackwell', x + 6, top + 6);
+        }
+        ctx.restore();
+      }
+    };
+
+    function makeWorkstationSegment(prevColor, newColor, prevFill, newFill) {
+      return {
+        borderColor: ctx => {
+          const p0 = ctx.p0.raw?.updated;
+          const p1 = ctx.p1.raw?.updated;
+          if (p0 && p1) return newColor;
+          if (!p0 && !p1) return prevColor;
+          return 'rgba(148, 163, 184, 0.45)';
+        },
+        borderDash: ctx => (ctx.p0.raw?.updated !== ctx.p1.raw?.updated ? [4, 4] : undefined),
+        backgroundColor: ctx => {
+          const p0 = ctx.p0.raw?.updated;
+          const p1 = ctx.p1.raw?.updated;
+          if (p0 && p1) return newFill;
+          if (!p0 && !p1) return prevFill;
+          return 'rgba(148, 163, 184, 0.12)';
+        }
+      };
+    }
+
     function renderCharts(data, isRender) {
       const { textDim, border } = getChartColors();
       const timestamps = data.map(d => new Date(d.timestamp));
@@ -1155,17 +1272,22 @@
       renderJitChart(data, timestamps, commits, textDim, border);
     }
 
+    function collectKeys(data) {
+      const keys = new Set();
+      data.forEach(d => Object.keys(d).forEach(k => keys.add(k)));
+      return Array.from(keys);
+    }
+
     function renderStepChart(data, timestamps, commits, textDimColor, borderColor, isRender) {
       if (charts.step) {
         const datasets = charts.step.data.datasets;
         if (isRender) {
           datasets.forEach(ds => {
-            ds.data = timestamps.map((t, i) => ({ x: t, y: data[i][ds.key] || 0, commit: commits[i] }));
+            ds.data = timestamps.map((t, i) => ({ x: t, y: data[i][ds.key] || 0, commit: commits[i], updated: isUpdatedWorkstation(currentBenchmarkName, t) }));
           });
         } else {
           if (data.length === 0) return;
-          const sampleData = data[0];
-          const forwardChildren = Object.keys(sampleData)
+          const forwardChildren = collectKeys(data)
             .filter(k => k.startsWith('step.forward.') && !k.substring(13).includes('.'))
             .sort();
           const sensorKeys = forwardChildren.filter(k => k.includes('sensor_'));
@@ -1173,9 +1295,9 @@
           datasets.forEach(ds => {
             if (ds.key === 'sensor') {
               const sensorValues = data.map(d => sensorKeys.reduce((sum, k) => sum + (d[k] || 0), 0));
-              ds.data = timestamps.map((t, i) => ({ x: t, y: sensorValues[i], commit: commits[i] }));
+              ds.data = timestamps.map((t, i) => ({ x: t, y: sensorValues[i], commit: commits[i], updated: isUpdatedWorkstation(currentBenchmarkName, t) }));
             } else {
-              ds.data = timestamps.map((t, i) => ({ x: t, y: data[i][ds.key] || 0, commit: commits[i] }));
+              ds.data = timestamps.map((t, i) => ({ x: t, y: data[i][ds.key] || 0, commit: commits[i], updated: isUpdatedWorkstation(currentBenchmarkName, t) }));
             }
           });
         }
@@ -1191,12 +1313,12 @@
 
       const datasets = [];
       if (isRender) {
-        datasets.push(createStackedDataset('refit_bvh', data, 'refit_bvh', timestamps, commits, COLORS[0], 'render'));
-        datasets.push(createStackedDataset('render', data, 'render', timestamps, commits, COLORS[1], 'render'));
+        datasets.push(createStackedDataset('refit_bvh', data, 'refit_bvh', timestamps, commits, 0, 'render'));
+        datasets.push(createStackedDataset('render', data, 'render', timestamps, commits, 1, 'render'));
       } else {
         if (data.length === 0) return;
-        const sampleData = data[0];
-        const forwardChildren = Object.keys(sampleData)
+        const allKeys = collectKeys(data);
+        const forwardChildren = allKeys
           .filter(k => k.startsWith('step.forward.') && !k.substring(13).includes('.'))
           .sort();
         const sensorKeys = forwardChildren.filter(k => k.includes('sensor_'));
@@ -1209,24 +1331,28 @@
 
         executionOrder.forEach((key, idx) => {
           if (nonSensorKeys.includes(key)) {
-            datasets.push(createStackedDataset(key.replace('step.forward.', ''), data, key, timestamps, commits, COLORS[idx], 'step'));
+            datasets.push(createStackedDataset(key.replace('step.forward.', ''), data, key, timestamps, commits, idx, 'step'));
           }
         });
 
         if (sensorKeys.length > 0) {
           const sensorValues = data.map(d => sensorKeys.reduce((sum, k) => sum + (d[k] || 0), 0));
+          const prevColor = COLORS_PREV[5];
+          const newColor = COLORS_NEW[5];
           const ds = {
-            label: 'sensor', key: 'sensor', data: timestamps.map((t, i) => ({ x: t, y: sensorValues[i], commit: commits[i] })),
-            backgroundColor: COLORS[5], borderColor: COLORS[5], borderWidth: 0, pointRadius: 0, fill: true, stack: 'step'
+            label: 'sensor', key: 'sensor',
+            data: timestamps.map((t, i) => ({ x: t, y: sensorValues[i], commit: commits[i], updated: isUpdatedWorkstation(currentBenchmarkName, t) })),
+            backgroundColor: newColor, borderColor: newColor, borderWidth: 0, pointRadius: 0, fill: true, stack: 'step',
+            segment: makeWorkstationSegment(prevColor, newColor, prevColor, newColor)
           };
           datasets.push(ds);
         }
 
-        const integratorKeys = Object.keys(sampleData)
+        const integratorKeys = allKeys
           .filter(k => k.startsWith('step.') && k !== 'step' && !k.startsWith('step.forward') && !k.substring(5).includes('.'))
           .sort();
         integratorKeys.forEach((key, idx) => {
-          datasets.push(createStackedDataset(key.replace('step.', ''), data, key, timestamps, commits, COLORS[(6 + idx) % COLORS.length], 'step'));
+          datasets.push(createStackedDataset(key.replace('step.', ''), data, key, timestamps, commits, 6 + idx, 'step'));
         });
       }
 
@@ -1248,7 +1374,7 @@
       opts.scales.y.title = { display: true, text: isRender ? 'Time (ns/frame)' : 'Time (ns/step)', color: textDimColor, font: { family: "'Plus Jakarta Sans', sans-serif" } };
       opts.scales.y.ticks.callback = v => v.toLocaleString();
 
-      charts.step = new Chart(document.getElementById('step-chart'), { type: 'line', data: { datasets }, options: opts, plugins: [topHoverPlugin] });
+      charts.step = new Chart(document.getElementById('step-chart'), { type: 'line', data: { datasets }, options: opts, plugins: [topHoverPlugin, workstationDividerPlugin] });
     }
 
     function renderBreakdownChart(data, timestamps, commits, textDimColor, borderColor, phaseName) {
@@ -1258,7 +1384,7 @@
       if (charts[chartKey]) {
         const datasets = charts[chartKey].data.datasets;
         datasets.forEach(ds => {
-          ds.data = timestamps.map((t, i) => ({ x: t, y: data[i][ds.key] || 0, commit: commits[i] }));
+          ds.data = timestamps.map((t, i) => ({ x: t, y: data[i][ds.key] || 0, commit: commits[i], updated: isUpdatedWorkstation(currentBenchmarkName, t) }));
         });
         charts[chartKey].options.onClick = (event, elements) => {
           if (elements.length > 0) {
@@ -1274,15 +1400,16 @@
       const ctx = document.getElementById(chartId);
       if (!ctx || data.length === 0) return;
 
-      const sampleData = data[0];
-      const availableKeys = Object.keys(sampleData).filter(k => k.startsWith(prefix) && !k.substring(prefix.length).includes('.'));
+      const availableKeys = collectKeys(data)
+        .filter(k => k.startsWith(prefix) && !k.substring(prefix.length).includes('.'))
+        .sort();
 
       const order = EXECUTION_ORDERS[phaseName] || [];
       const orderedKeys = order.map(n => prefix + n).filter(k => availableKeys.includes(k));
       availableKeys.forEach(k => { if (!orderedKeys.includes(k)) orderedKeys.push(k); });
 
       const datasets = orderedKeys.map((key, idx) =>
-        createStackedDataset(key.replace(prefix, ''), data, key, timestamps, commits, COLORS[idx % COLORS.length], phaseName)
+        createStackedDataset(key.replace(prefix, ''), data, key, timestamps, commits, idx, phaseName)
       );
 
       // Configure hover point only for the top-most dataset using customHover properties
@@ -1299,20 +1426,23 @@
         }
       });
 
-      charts[chartKey] = new Chart(ctx, { type: 'line', data: { datasets }, options: baseChartOptions(commits, textDimColor, borderColor, true), plugins: [topHoverPlugin] });
+      charts[chartKey] = new Chart(ctx, { type: 'line', data: { datasets }, options: baseChartOptions(commits, textDimColor, borderColor, true), plugins: [topHoverPlugin, workstationDividerPlugin] });
     }
 
-    function createStackedDataset(label, data, key, timestamps, commits, color, stack) {
+    function createStackedDataset(label, data, key, timestamps, commits, colorIdx, stack) {
+      const prevColor = COLORS_PREV[colorIdx % COLORS_PREV.length];
+      const newColor = COLORS_NEW[colorIdx % COLORS_NEW.length];
       return {
         label,
         key,
-        data: timestamps.map((t, i) => ({ x: t, y: data[i][key] || 0, commit: commits[i] })),
-        backgroundColor: color,
-        borderColor: color,
+        data: timestamps.map((t, i) => ({ x: t, y: data[i][key] || 0, commit: commits[i], updated: isUpdatedWorkstation(currentBenchmarkName, t) })),
+        backgroundColor: newColor,
+        borderColor: newColor,
         borderWidth: 0,
         pointRadius: 0,
         fill: true,
-        stack
+        stack,
+        segment: makeWorkstationSegment(prevColor, newColor, prevColor, newColor)
       };
     }
 
@@ -1320,7 +1450,7 @@
       if (charts.memory) {
         const datasets = charts.memory.data.datasets;
         datasets.forEach(ds => {
-          ds.data = data.map((d, i) => ({ x: timestamps[i], y: d[ds.key], commit: commits[i] }));
+          ds.data = data.map((d, i) => ({ x: timestamps[i], y: d[ds.key], commit: commits[i], updated: isUpdatedWorkstation(currentBenchmarkName, timestamps[i]) }));
         });
         charts.memory.options.onClick = (event, elements) => {
           if (elements.length > 0) {
@@ -1333,16 +1463,18 @@
       }
 
       const datasets = [
-        { label: 'Model Memory', key: 'model_memory', bg: '#3fb95080', border: '#3fb950', stack: 'memory' },
-        { label: 'Data Memory', key: 'data_memory', bg: '#58a6ff80', border: '#58a6ff', stack: 'memory' },
-        { label: 'Total Memory', key: 'total_memory', bg: 'transparent', border: '#f85149', stack: null, dash: [5, 5] }
-      ].map(({ label, key, bg, border, stack, dash }, idx, arr) => {
+        { label: 'Model Memory', key: 'model_memory', prevBg: '#64748b55', prevBorder: '#64748b', bg: '#2e9e6f66', border: '#2e9e6f', stack: 'memory' },
+        { label: 'Data Memory', key: 'data_memory', prevBg: '#94a3b855', prevBorder: '#94a3b8', bg: '#d99b2666', border: '#d99b26', stack: 'memory' },
+        { label: 'Total Memory', key: 'total_memory', prevBg: 'transparent', prevBorder: '#475569', bg: 'transparent', border: '#e06c4d', stack: null, dash: [5, 5] }
+      ].map(({ label, key, prevBg, prevBorder, bg, border, stack, dash }, idx, arr) => {
         const isTop = idx === arr.length - 1;
         return {
-          label, key, data: data.map((d, i) => ({ x: timestamps[i], y: d[key], commit: commits[i] })),
+          label, key, data: data.map((d, i) => ({ x: timestamps[i], y: d[key], commit: commits[i], updated: isUpdatedWorkstation(currentBenchmarkName, timestamps[i]) })),
           backgroundColor: bg, borderColor: border, borderWidth: stack ? 1 : 2,
           pointRadius: isTop ? 1.5 : 0,
+          pointBackgroundColor: isTop ? (ctx => (ctx.raw?.updated ? border : prevBorder)) : undefined,
           pointHoverRadius: 0,
+          segment: makeWorkstationSegment(prevBorder, border, prevBg, bg),
           ...(isTop && {
             customHover: {
               radius: 8,
@@ -1359,11 +1491,11 @@
       opts.scales.y.title = { display: true, text: 'Memory (bytes)', color: textDimColor, font: { family: "'Plus Jakarta Sans', sans-serif" } };
       opts.scales.y.ticks.callback = v => (v / 1e9).toFixed(2) + ' GB';
 
-      charts.memory = new Chart(document.getElementById('memory-chart'), { type: 'line', data: { datasets }, options: opts, plugins: [topHoverPlugin] });
+      charts.memory = new Chart(document.getElementById('memory-chart'), { type: 'line', data: { datasets }, options: opts, plugins: [topHoverPlugin, workstationDividerPlugin] });
     }
 
     function renderJitChart(data, timestamps, commits, textDimColor, borderColor) {
-      const jitData = data.map((d, i) => ({ x: timestamps[i], y: d.jit_duration, commit: commits[i] }));
+      const jitData = data.map((d, i) => ({ x: timestamps[i], y: d.jit_duration, commit: commits[i], updated: isUpdatedWorkstation(currentBenchmarkName, timestamps[i]) }));
 
       let minDate = undefined;
       let maxDate = undefined;
@@ -1403,7 +1535,10 @@
             callbacks: {
               title: items => items[0]?.raw ? new Date(items[0].raw.x).toLocaleDateString() : '',
               label: item => `${item.raw.y.toFixed(2)} seconds`,
-              afterLabel: item => item.raw.commit ? `Commit: ${item.raw.commit.substring(0, 7)}` : '',
+              afterLabel: item => [
+                item.raw.commit ? `Commit: ${item.raw.commit.substring(0, 7)}` : '',
+                `Workstation: ${workstationLabel(item.raw.updated)}`
+              ].filter(Boolean),
               footer: () => 'Click to view commit on GitHub'
             }
           }
@@ -1433,14 +1568,16 @@
           datasets: [{ 
             label: 'JIT Duration', 
             data: jitData, 
-            borderColor: '#a371f7', 
-            backgroundColor: '#a371f720', 
+            borderColor: '#e06c4d', 
+            backgroundColor: '#e06c4d24', 
             borderWidth: 2, 
             pointRadius: 1.5, 
+            pointBackgroundColor: ctx => (ctx.raw?.updated ? '#e06c4d' : '#64748b'),
             pointHoverRadius: 0,
+            segment: makeWorkstationSegment('#64748b', '#e06c4d', '#64748b24', '#e06c4d24'),
             customHover: {
               radius: 8,
-              backgroundColor: '#a371f7',
+              backgroundColor: '#e06c4d',
               borderColor: '#ffffff',
               borderWidth: 3
             },
@@ -1449,7 +1586,7 @@
           }] 
         },
         options: opts,
-        plugins: [topHoverPlugin]
+        plugins: [topHoverPlugin, workstationDividerPlugin]
       });
     }
   </script>
