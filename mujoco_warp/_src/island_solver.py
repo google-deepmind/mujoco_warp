@@ -175,6 +175,24 @@ def _group_rows(ntile: int, ndof: int, blocked_rows: int) -> int:
   return wp.where(ntile > 0 and _blocked(ndof), blocked_rows, ntile * _TILE)
 
 
+@wp.func
+def _list_class(ntile: int, ndof: int) -> int:
+  """A listed group's list besides list 0: 1, 2 (one tile of that many tiles) or 3 (blocked)."""
+  return wp.where(ntile > 0 and _blocked(ndof), 3, ntile)
+
+
+@wp.func
+def _in_lists_12(ntile: int, ndof: int) -> int:
+  # lists 1 and 2 counted in 16-bit fields (a world has at most MAX_NTREE groups)
+  c = _list_class(ntile, ndof)
+  return wp.where(c == 1, 1, wp.where(c == 2, 1 << 16, 0))
+
+
+@wp.func
+def _in_list_3(ntile: int, ndof: int) -> int:
+  return int(_list_class(ntile, ndof) == 3)
+
+
 @cache_kernel
 def _group_layout(ntree: int, blocked_rows: int):
   @wp.kernel(module="unique", enable_backward=False)
@@ -254,7 +272,6 @@ def _group_layout(ntree: int, blocked_rows: int):
       state_changed_out[worldid, g] = False
       grad_scale_out[worldid, g] = 1.0
       if g < ngroup:
-        packed = worldid * ntree + g
         if group_asleep_in[worldid, g]:
           done_out[worldid, g] = True
         else:
@@ -264,17 +281,49 @@ def _group_layout(ntree: int, blocked_rows: int):
           improvement_out[worldid, g] = 0.0
           # MuJoCo scales an island's convergence tests by its inertia trace, not meaninertia * nv
           scale_out[worldid, g] = 1.0 / wp.max(types.MJ_MINVAL, trace[g])
-          group_list_out[0, wp.atomic_add(group_count_out, 0, 1)] = packed  # kernel_analyzer: ignore[atomic]
-          ndof = group_nv_in[worldid, g]
-          ntile = _ntile(ndof)
-          # lists 1, 2: factored as one tile; 3: blocked
-          c = wp.where(_blocked(ndof), 3, ntile)
-          group_list_out[c, wp.atomic_add(group_count_out, c, 1)] = packed  # kernel_analyzer: ignore[atomic]
-          if ntile > 1:
-            wp.atomic_add(group_count_out, 4, 1)  # kernel_analyzer: ignore[atomic]
+          ntile = _ntile(group_nv_in[worldid, g])
       ntile_out[worldid, g] = ntile
     _sync()
     tiles = wp.tile_load(ntile_out[worldid], shape=ntree)
+    # the world's groups take consecutive places in the lists: an atomic per list, not per group
+    # (atomics on a counter shared by all worlds serialize)
+    nvs = wp.tile_load(group_nv_in[worldid], shape=ntree)
+    flags12 = wp.tile_map(_in_lists_12, tiles, nvs)
+    flags3 = wp.tile_map(_in_list_3, tiles, nvs)
+    off12 = wp.tile_zeros(shape=(ntree,), dtype=int, storage="shared")
+    off3 = wp.tile_zeros(shape=(ntree,), dtype=int, storage="shared")
+    wp.tile_assign(off12, wp.tile_scan_exclusive(flags12))
+    wp.tile_assign(off3, wp.tile_scan_exclusive(flags3))
+    n12 = wp.tile_sum(flags12)[0]
+    n1 = n12 & 0xFFFF
+    n2 = n12 >> 16
+    n3 = wp.tile_sum(flags3)[0]
+    # list 0: all; lists 1, 2: factored as one tile; 3: blocked; count 4: groups of more than a tile
+    # (one lane: a CPU block is one thread)
+    start = wp.vec4i(0)
+    if lane == 0:
+      count = wp.vec4i(n1 + n2 + n3, n1, n2, n3)
+      for k in range(4):
+        if count[k] > 0:
+          start[k] = wp.atomic_add(group_count_out, k, count[k])  # kernel_analyzer: ignore[atomic]
+      if n2 + n3 > 0:
+        wp.atomic_add(group_count_out, 4, n2 + n3)  # kernel_analyzer: ignore[atomic]
+    base = wp.tile_zeros(shape=(4,), dtype=int, storage="shared")
+    for k in range(4):
+      wp.tile_scatter_add(base, k, start[k], lane == 0)
+    _sync()
+    for g in range(lane, ngroup, lanes):
+      ntile = ntile_out[worldid, g]
+      if ntile > 0:
+        c = _list_class(ntile, group_nv_in[worldid, g])
+        o12 = off12[g]
+        o1 = o12 & 0xFFFF
+        o2 = o12 >> 16
+        o3 = off3[g]
+        oc = wp.where(c == 1, o1, wp.where(c == 2, o2, o3))
+        packed = worldid * ntree + g
+        group_list_out[0, base[0] + o1 + o2 + o3] = packed
+        group_list_out[c, base[c] + oc] = packed
     wp.tile_store(tilebase_out[worldid], wp.tile_scan_exclusive(wp.tile_map(wp.mul, tiles, tiles)))
     # blocked_rows as a tile, not captured by a nested func: the kernel cache does not hash captures
     # of functions passed to tile_map
