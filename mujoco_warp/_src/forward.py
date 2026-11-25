@@ -3555,36 +3555,40 @@ def _qfrc_actuator(nv: int, deterministic: bool = False):
   return kernel
 
 
-@wp.kernel
-def _qfrc_actuator_gravcomp_limits(
-  # Model:
-  jnt_actfrclimited: wp.array[bool],
-  jnt_actgravcomp: wp.array[int],
-  jnt_actfrcrange: wp.array2d[wp.vec2],
-  dof_jntid: wp.array[int],
-  # Data in:
-  qfrc_gravcomp_in: wp.array2d[float],
-  qfrc_actuator_in: wp.array2d[float],
-  # In:
-  gravity_enabled: bool,
-  # Data out:
-  qfrc_actuator_out: wp.array2d[float],
-):
-  worldid, dofid = wp.tid()
-  jntid = dof_jntid[dofid]
+@cache_kernel
+def _qfrc_actuator_gravcomp_limits(gravity_enabled: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    jnt_actfrclimited: wp.array[bool],
+    jnt_actgravcomp: wp.array[int],
+    jnt_actfrcrange: wp.array2d[wp.vec2],
+    dof_jntid: wp.array[int],
+    flg_gravcomp: wp.array[int],
+    # Data in:
+    qfrc_gravcomp_in: wp.array2d[float],
+    qfrc_actuator_in: wp.array2d[float],
+    # Data out:
+    qfrc_actuator_out: wp.array2d[float],
+  ):
+    worldid, dofid = wp.tid()
+    jntid = dof_jntid[dofid]
 
-  qfrc = qfrc_actuator_in[worldid, dofid]
+    qfrc = qfrc_actuator_in[worldid, dofid]
 
-  # actuator-level gravity compensation, skip if added as passive force
-  if gravity_enabled and jnt_actgravcomp[jntid]:
-    qfrc += qfrc_gravcomp_in[worldid, dofid]
+    # actuator-level gravity compensation, skip if added as passive force
+    if wp.static(gravity_enabled):
+      if flg_gravcomp[0] != 0 and jnt_actgravcomp[jntid]:
+        qfrc += qfrc_gravcomp_in[worldid, dofid]
 
-  # limits
-  if jnt_actfrclimited[jntid]:
-    frcrange = jnt_actfrcrange[worldid % jnt_actfrcrange.shape[0], jntid]
-    qfrc = wp.clamp(qfrc, frcrange[0], frcrange[1])
+    # limits
+    if jnt_actfrclimited[jntid]:
+      frcrange = jnt_actfrcrange[worldid % jnt_actfrcrange.shape[0], jntid]
+      qfrc = wp.clamp(qfrc, frcrange[0], frcrange[1])
 
-  qfrc_actuator_out[worldid, dofid] = qfrc
+    qfrc_actuator_out[worldid, dofid] = qfrc
+
+  return kernel
 
 
 @event_scope
@@ -3700,16 +3704,16 @@ def fwd_actuation(m: Model, d: Data):
     )
     gravity_enabled = not (m.opt.disableflags & DisableBit.GRAVITY)
     wp.launch(
-      _qfrc_actuator_gravcomp_limits,
+      _qfrc_actuator_gravcomp_limits(gravity_enabled),
       dim=(d.nworld, m.nv),
       inputs=[
         m.jnt_actfrclimited,
         m.jnt_actgravcomp,
         m.jnt_actfrcrange,
         m.dof_jntid,
+        m.flg_gravcomp,
         d.qfrc_gravcomp,
         d.qfrc_actuator,
-        gravity_enabled,
       ],
       outputs=[d.qfrc_actuator],
     )

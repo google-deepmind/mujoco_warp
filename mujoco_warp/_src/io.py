@@ -934,6 +934,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     m.block_dim.linesearch_iterative = 256
   m.is_sparse = is_sparse(mjm)
   m.has_fluid = bool(mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0)
+  m.flg_gravcomp = np.array([int(np.any(mjm.body_gravcomp[1:] != 0))], dtype=np.int32)
   m.nflexintcell = _get_nflexintcell(mjm)
   efm_d = _get_efm_data(mjm)
   m.nefmK = int(efm_d.nefmK) if efm_d else 0

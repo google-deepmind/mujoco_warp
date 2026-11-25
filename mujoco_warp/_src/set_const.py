@@ -490,7 +490,30 @@ def _set_length_range(
   actuator_lengthrange_out[worldid, actid] = lr
 
 
+@wp.kernel
+def _flg_gravcomp(
+  body_gravcomp: wp.array2d[float],
+  flg_gravcomp_out: wp.array[int],
+):
+  worldid, bodyid = wp.tid()
+  if body_gravcomp[worldid % body_gravcomp.shape[0], bodyid + 1] != 0.0:
+    flg_gravcomp_out[0] = 1
+
+
 # kernel_analyzer: on
+
+
+@wp.kernel
+def _clear_qfrc_gravcomp(
+  # Model:
+  flg_gravcomp: wp.array[int],
+  # Data out:
+  qfrc_gravcomp_out: wp.array2d[float],
+):
+  if flg_gravcomp[0] != 0:
+    return
+  worldid, dofid = wp.tid()
+  qfrc_gravcomp_out[worldid, dofid] = 0.0
 
 
 def _set_bound(m: types.Model):
@@ -504,7 +527,7 @@ def _set_bound(m: types.Model):
   )
 
 
-def _set_fixed(m: types.Model):
+def _set_fixed(m: types.Model, d: types.Data):
   """Compute fixed quantities (do not depend on qpos0)."""
   nworld_subtreemass = m.body_subtreemass.shape[0]
   wp.launch(
@@ -512,6 +535,20 @@ def _set_fixed(m: types.Model):
     dim=(nworld_subtreemass, m.nbody),
     inputs=[m.body_subtreenum, m.body_mass],
     outputs=[m.body_subtreemass],
+  )
+  m.flg_gravcomp.zero_()
+  wp.launch(
+    _flg_gravcomp,
+    dim=(m.body_gravcomp.shape[0], m.nbody - 1),
+    inputs=[m.body_gravcomp],
+    outputs=[m.flg_gravcomp],
+  )
+  # Clear stale gravcomp forces if body_gravcomp was zeroed out
+  wp.launch(
+    _clear_qfrc_gravcomp,
+    dim=(d.nworld, m.nv),
+    inputs=[m.flg_gravcomp],
+    outputs=[d.qfrc_gravcomp],
   )
 
 
@@ -673,6 +710,7 @@ def set_const(
   body_mass, body_inertia,            Mass and inertia are usually scaled together
   body_ipos, body_iquat               since inertia is sum(m * r^2).
   body_pos, body_quat                 Unsafe for static bodies (invalidates BVH).
+  body_gravcomp                       Recomputes flg_gravcomp and clears qfrc_gravcomp.
   dof_armature, tendon_armature
   actuator_armature, actuator_gear    Actuator armature is added to joint and tendon
                                       armature. Not if changing from/to zero, since
@@ -691,6 +729,7 @@ def set_const(
   Modified Field        Groups
   ====================  =================================================
   body_mass             SetConstGroup.ALL
+  body_gravcomp         SetConstGroup.FIXED
   geom_size             SetConstGroup.FIXED (or ALL if tendon wraps geom)
   cam_pos, cam_quat     SetConstGroup.KIN0
   light_pos, light_dir  SetConstGroup.KIN0
@@ -703,6 +742,7 @@ def set_const(
   Computes:
     - Fixed quantities (SetConstGroup.FIXED):
       - body_subtreemass: mass of body and all descendants
+      - flg_gravcomp: whether any body has non-zero gravcomp
       - geom_aabb, geom_rbound, geom_size (hfield): geom bounds
     - Kinematic qpos0 quantities (SetConstGroup.KIN0):
       - tendon_length0: tendon resting lengths
@@ -728,7 +768,7 @@ def set_const(
   """
   if groups & types.SetConstGroup.FIXED:
     _set_bound(m)
-    _set_fixed(m)
+    _set_fixed(m, d)
 
   if groups & (types.SetConstGroup.KIN0 | types.SetConstGroup.INERT0):
     opt = dataclasses.replace(m.opt, enableflags=m.opt.enableflags & ~types.EnableBit.SLEEP)

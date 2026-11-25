@@ -361,6 +361,132 @@ class PassiveTest(parameterized.TestCase):
     _assert_eq(d.qfrc_gravcomp.numpy()[0], mjd.qfrc_gravcomp, "qfrc_gravcomp")
     _assert_eq(d.qfrc_actuator.numpy()[0], mjd.qfrc_actuator, "qfrc_actuator")
 
+  @parameterized.product(nworld=(1, 2), actuatorgravcomp=(False, True))
+  def test_gravcomp_zero_early_exit(self, nworld, actuatorgravcomp):
+    """Tests that flg_gravcomp == 0 skips gravcomp computation and reads."""
+    actgc_attr = ' actuatorgravcomp="true"' if actuatorgravcomp else ""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 -9.81">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body pos="0 0 1" gravcomp="0">
+            <joint name="j0" type="hinge" axis="0 1 0" stiffness="5" damping="1"{actgc_attr}/>
+            <geom type="sphere" size="0.1" pos="0.4 0 0" mass="2"/>
+            <body pos="0.5 0 0" gravcomp="0">
+              <joint name="j1" type="hinge" axis="0 1 0" stiffness="3" damping="0.5"/>
+              <geom type="sphere" size="0.1" pos="0.3 0 0" mass="1"/>
+            </body>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="j0"/>
+          <motor joint="j1"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    self.assertEqual(m.flg_gravcomp.numpy()[0], 0)
+
+    qpos_np = np.array([[0.3, -0.4], [-0.5, 0.7]][:nworld], dtype=np.float32)
+    qvel_np = np.array([[0.2, -0.1], [-0.4, 0.6]][:nworld], dtype=np.float32)
+    ctrl_np = np.array([[1.0, -0.5], [-0.8, 1.2]][:nworld], dtype=np.float32)
+    d.qpos.assign(qpos_np)
+    d.qvel.assign(qvel_np)
+    d.ctrl.assign(ctrl_np)
+
+    mjw.forward(m, d)
+    with wp.ScopedCapture() as capture:
+      mjw.forward(m, d)
+
+    # Poison outputs; use a finite sentinel in qfrc_gravcomp to verify it is untouched
+    d.qfrc_passive.fill_(wp.inf)
+    d.qfrc_actuator.fill_(wp.inf)
+    d.qfrc_gravcomp.fill_(123.0)
+
+    wp.capture_launch(capture.graph)
+
+    # qfrc_gravcomp must remain untouched when flg_gravcomp == 0
+    np.testing.assert_array_equal(d.qfrc_gravcomp.numpy(), np.full((nworld, m.nv), 123.0, dtype=np.float32))
+
+    for w in range(nworld):
+      mjd.qpos[:] = qpos_np[w]
+      mjd.qvel[:] = qvel_np[w]
+      mjd.ctrl[:] = ctrl_np[w]
+      mujoco.mj_forward(mjm, mjd)
+      _assert_eq(d.qfrc_passive.numpy()[w], mjd.qfrc_passive, f"qfrc_passive_w{w}")
+      _assert_eq(d.qfrc_actuator.numpy()[w], mjd.qfrc_actuator, f"qfrc_actuator_w{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qfrc_passive.numpy()[0], d.qfrc_passive.numpy()[1]))
+      self.assertFalse(np.allclose(d.qfrc_actuator.numpy()[0], d.qfrc_actuator.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_gravcomp_subtree_and_actfrcrange(self, nworld):
+    """Tests subtree gravcomp with negative gravcomp, actuatorgravcomp, and actfrcrange."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 -9.81">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body pos="0 0 1" gravcomp="0">
+            <joint name="j0" type="hinge" axis="0 1 0" actuatorgravcomp="true" actuatorfrcrange="-2 2"/>
+            <geom type="sphere" size="0.1" pos="0.3 0 0" mass="1"/>
+            <body pos="0.5 0 0" gravcomp="1.5">
+              <joint name="j1" type="hinge" axis="0 1 0"/>
+              <geom type="sphere" size="0.1" pos="0.2 0 0" mass="2"/>
+              <body pos="0.4 0 0" gravcomp="-0.5">
+                <joint name="j2" type="hinge" axis="0 1 0" actuatorgravcomp="true"/>
+                <geom type="sphere" size="0.1" pos="0.2 0 0" mass="1.5"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="j0"/>
+          <motor joint="j1"/>
+          <motor joint="j2"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    self.assertEqual(m.flg_gravcomp.numpy()[0], 1)
+
+    qpos_np = np.array([[0.2, -0.3, 0.5], [-0.4, 0.6, -0.2]][:nworld], dtype=np.float32)
+    ctrl_np = np.array([[0.5, -0.2, 0.3], [-0.5, 0.4, -0.6]][:nworld], dtype=np.float32)
+    d.qpos.assign(qpos_np)
+    d.ctrl.assign(ctrl_np)
+
+    mjw.forward(m, d)
+    with wp.ScopedCapture() as capture:
+      mjw.forward(m, d)
+
+    for arr in (d.qfrc_gravcomp, d.qfrc_passive, d.qfrc_actuator):
+      arr.fill_(wp.inf)
+
+    wp.capture_launch(capture.graph)
+
+    for w in range(nworld):
+      mjd.qpos[:] = qpos_np[w]
+      mjd.ctrl[:] = ctrl_np[w]
+      mujoco.mj_forward(mjm, mjd)
+      _assert_eq(d.qfrc_gravcomp.numpy()[w], mjd.qfrc_gravcomp, f"qfrc_gravcomp_w{w}")
+      _assert_eq(d.qfrc_passive.numpy()[w], mjd.qfrc_passive, f"qfrc_passive_w{w}")
+      _assert_eq(d.qfrc_actuator.numpy()[w], mjd.qfrc_actuator, f"qfrc_actuator_w{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qfrc_gravcomp.numpy()[0], d.qfrc_gravcomp.numpy()[1]))
+      self.assertFalse(np.allclose(d.qfrc_passive.numpy()[0], d.qfrc_passive.numpy()[1]))
+      self.assertFalse(np.allclose(d.qfrc_actuator.numpy()[0], d.qfrc_actuator.numpy()[1]))
+
   def test_polynomial_stiffness(self):
     """Tests polynomial stiffness."""
     xml = """

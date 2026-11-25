@@ -422,6 +422,7 @@ def _gravity_force(
   body_mass: wp.array2d[float],
   body_gravcomp: wp.array2d[float],
   dof_bodyid: wp.array[int],
+  flg_gravcomp: wp.array[int],
   body_subtreenum: wp.array[int],
   body_isdofancestor: wp.array2d[int],
   # Data in:
@@ -431,6 +432,8 @@ def _gravity_force(
   # Data out:
   qfrc_gravcomp_out: wp.array2d[float],
 ):
+  if flg_gravcomp[0] == 0:
+    return
   worldid, dofid = wp.tid()
   gravity = opt_gravity[worldid % opt_gravity.shape[0]]
 
@@ -826,6 +829,7 @@ def _qfrc_passive_kernel(has_fluid: bool, flg_adhesion: bool, gravity_enabled: b
     # Model:
     jnt_actgravcomp: wp.array[int],
     dof_jntid: wp.array[int],
+    flg_gravcomp: wp.array[int],
     # Data in:
     qfrc_spring_in: wp.array2d[float],
     qfrc_damper_in: wp.array2d[float],
@@ -841,8 +845,9 @@ def _qfrc_passive_kernel(has_fluid: bool, flg_adhesion: bool, gravity_enabled: b
 
     # add gravcomp unless added by actuators
     if wp.static(gravity_enabled):
-      if not jnt_actgravcomp[dof_jntid[dofid]]:
-        qfrc_passive += qfrc_gravcomp_in[worldid, dofid]
+      if flg_gravcomp[0] != 0:
+        if not jnt_actgravcomp[dof_jntid[dofid]]:
+          qfrc_passive += qfrc_gravcomp_in[worldid, dofid]
 
     # add fluid force
     if wp.static(has_fluid):
@@ -5505,6 +5510,7 @@ def passive(m: Model, d: Data):
         m.body_mass,
         m.body_gravcomp,
         m.dof_bodyid,
+        m.flg_gravcomp,
         m.body_subtreenum,
         m.body_isdofancestor,
         d.xipos,
@@ -5627,6 +5633,7 @@ def passive(m: Model, d: Data):
     inputs=[
       m.jnt_actgravcomp,
       m.dof_jntid,
+      m.flg_gravcomp,
       d.qfrc_spring,
       d.qfrc_damper,
       d.qfrc_gravcomp,
