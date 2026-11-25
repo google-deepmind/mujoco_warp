@@ -870,6 +870,7 @@ def create_render_context(
     has_spot_lights=has_spot_lights,
     has_orthographic_camera=has_orthographic_camera,
     any_rgb=any(render_rgb),
+    any_depth=any(render_depth),
     any_seg=any(render_seg),
     splat_position=splat_position,
     splat_rotation=splat_rotation,

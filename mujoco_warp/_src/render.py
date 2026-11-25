@@ -82,82 +82,96 @@ def ray_splat(
   return distance, alpha
 
 
-@wp.func
-def shade_splats(
-  # In:
-  splat_position: wp.array[wp.vec3],
-  splat_rotation: wp.array[wp.quat],
-  splat_scale: wp.array[wp.vec3],
-  splat_rgba: wp.array[wp.vec4],
-  bvh_id: wp.uint64,
-  group_root: int,
-  ray_origin: wp.vec3,
-  ray_direction: wp.vec3,
-  max_distance: float,
+def _make_shade_splats(
   min_transmittance: float,
   depth_transmittance_threshold: float,
-) -> tuple[wp.vec3, float, float]:
-  min_distance = float(0.0)
-  transmittance = float(1.0)
-  color = wp.vec3(0.0)
-  depth = float(-1.0)
+  any_rgb: bool,
+  any_depth: bool,
+) -> wp.Function:
+  @wp.func
+  def shade_splats(
+    # In:
+    splat_position: wp.array[wp.vec3],
+    splat_rotation: wp.array[wp.quat],
+    splat_scale: wp.array[wp.vec3],
+    splat_rgba: wp.array[wp.vec4],
+    bvh_id: wp.uint64,
+    group_root: int,
+    ray_origin: wp.vec3,
+    ray_direction: wp.vec3,
+    max_distance: float,
+  ) -> tuple[wp.vec3, float, float]:
+    min_distance = float(0.0)
+    transmittance = float(1.0)
+    color = wp.vec3(0.0)
+    depth = float(-1.0)
+    done = bool(False)
 
-  hit_distances = wp.vector(MJ_MAXVAL, length=_MAX_SPLAT_HITS, dtype=float)
-  hit_indices = wp.vector(-1, length=_MAX_SPLAT_HITS, dtype=int)
-  hit_alphas = wp.vector(0.0, length=_MAX_SPLAT_HITS, dtype=float)
+    hit_distances = wp.vector(MJ_MAXVAL, length=_MAX_SPLAT_HITS, dtype=float)
+    hit_indices = wp.vector(-1, length=_MAX_SPLAT_HITS, dtype=int)
+    hit_alphas = wp.vector(0.0, length=_MAX_SPLAT_HITS, dtype=float)
 
-  while transmittance > min_transmittance:
-    num_hits = int(0)
-    for i in range(wp.static(_MAX_SPLAT_HITS)):
-      hit_distances[i] = max_distance
-      hit_indices[i] = -1
-      hit_alphas[i] = 0.0
+    while not done:
+      num_hits = int(0)
+      for i in range(wp.static(_MAX_SPLAT_HITS)):
+        hit_distances[i] = max_distance
+        hit_indices[i] = -1
+        hit_alphas[i] = 0.0
 
-    index = int(0)
-    query = wp.bvh_query_ray(bvh_id, ray_origin, ray_direction, group_root)
-    while wp.bvh_query_next(query, index, hit_distances[_MAX_SPLAT_HITS - 1]):
-      distance, alpha = ray_splat(
-        splat_position[index],
-        splat_rotation[index],
-        splat_scale[index],
-        splat_rgba[index][3],
-        ray_origin,
-        ray_direction,
-        min_distance,
-        max_distance,
-      )
-      if distance > 0.0:
-        if num_hits < wp.static(_MAX_SPLAT_HITS):
-          num_hits += 1
-        for i in range(num_hits):
-          if distance < hit_distances[i]:
-            for j in range(num_hits - 1, i, -1):
-              hit_distances[j] = hit_distances[j - 1]
-              hit_indices[j] = hit_indices[j - 1]
-              hit_alphas[j] = hit_alphas[j - 1]
-            hit_distances[i] = distance
-            hit_indices[i] = index
-            hit_alphas[i] = alpha
-            break
+      index = int(0)
+      query = wp.bvh_query_ray(bvh_id, ray_origin, ray_direction, group_root)
+      while wp.bvh_query_next(query, index, hit_distances[_MAX_SPLAT_HITS - 1]):
+        distance, alpha = ray_splat(
+          splat_position[index],
+          splat_rotation[index],
+          splat_scale[index],
+          splat_rgba[index][3],
+          ray_origin,
+          ray_direction,
+          min_distance,
+          max_distance,
+        )
+        if distance > 0.0:
+          if num_hits < wp.static(_MAX_SPLAT_HITS):
+            num_hits += 1
+          for i in range(num_hits):
+            if distance < hit_distances[i]:
+              for j in range(num_hits - 1, i, -1):
+                hit_distances[j] = hit_distances[j - 1]
+                hit_indices[j] = hit_indices[j - 1]
+                hit_alphas[j] = hit_alphas[j - 1]
+              hit_distances[i] = distance
+              hit_indices[i] = index
+              hit_alphas[i] = alpha
+              break
 
-    if num_hits == 0:
-      break
-
-    for i in range(num_hits):
-      index = hit_indices[i]
-      alpha = hit_alphas[i]
-      color += wp.vec3(splat_rgba[index][0], splat_rgba[index][1], splat_rgba[index][2]) * alpha * transmittance
-      transmittance *= 1.0 - alpha
-      if depth < 0.0 and transmittance < depth_transmittance_threshold:
-        depth = hit_distances[i]
-      if transmittance <= min_transmittance:
+      if num_hits == 0:
         break
 
-    if num_hits < wp.static(_MAX_SPLAT_HITS):
-      break
-    min_distance = hit_distances[_MAX_SPLAT_HITS - 1] + 1.0e-6
+      for i in range(num_hits):
+        index = hit_indices[i]
+        alpha = hit_alphas[i]
+        if wp.static(any_rgb):
+          rgba = splat_rgba[index]
+          color += wp.vec3(rgba[0], rgba[1], rgba[2]) * alpha * transmittance
+        transmittance *= 1.0 - alpha
+        if wp.static(any_depth):
+          if depth < 0.0 and transmittance < wp.static(depth_transmittance_threshold):
+            depth = hit_distances[i]
+        done = transmittance <= wp.static(min_transmittance)
+        if wp.static(not any_rgb):
+          # Match the strict depth test, including equality at a BVH pass boundary.
+          done = done or transmittance < wp.static(depth_transmittance_threshold)
+        if done:
+          break
 
-  return color, transmittance, depth
+      if num_hits < wp.static(_MAX_SPLAT_HITS):
+        break
+      min_distance = hit_distances[_MAX_SPLAT_HITS - 1] + 1.0e-6
+
+    return color, transmittance, depth
+
+  return shade_splats
 
 
 # Default value for mat_shininess in MuJoCo is 0.5
@@ -997,7 +1011,7 @@ def _make_compute_lighting(cast_ray_first_hit: wp.Function) -> wp.Function:
 
 def _build_megakernel(nlight: int, rc: RenderContext, block_dim: int = 0):
   """Construct the specialised megakernel for this context."""
-  has_splats = rc.splat_count > 0
+  has_splats = rc.splat_count > 0 and (rc.any_rgb or rc.any_depth)
 
   # Specialize the ray-cast helpers to the geom types present in the scene so the
   # compiler eliminates intersection branches for absent types.
@@ -1006,6 +1020,16 @@ def _build_megakernel(nlight: int, rc: RenderContext, block_dim: int = 0):
   cast_ray_first_hit = _make_cast_ray(geom_ray_types, True, rc.has_reframed_meshes, rc.optix)
   compute_lighting = _make_compute_lighting(cast_ray_first_hit)
   sample_texture = _make_sample_texture(geom_ray_types)
+  shade_splats = (
+    _make_shade_splats(
+      rc.splat_min_transmittance,
+      rc.splat_depth_transmittance_threshold,
+      rc.any_rgb,
+      rc.any_depth,
+    )
+    if has_splats
+    else None
+  )
 
   # Static parameters extracted for JAX FFI closure.
   rc_static = {f.name: getattr(rc, f.name) for f in dataclasses.fields(rc) if f.type in (int, wp.uint32, bool, float, wp.vec3)}
@@ -1135,7 +1159,7 @@ def _build_megakernel(nlight: int, rc: RenderContext, block_dim: int = 0):
       return
 
     do_rgb = render_rgb[camid] if wp.static(rc_static["any_rgb"]) else False
-    do_depth = render_depth[camid]
+    do_depth = render_depth[camid] if wp.static(rc_static["any_depth"]) else False
     do_seg = render_seg[camid] if wp.static(rc_static["any_seg"]) else False
     if not do_rgb and not do_depth and not do_seg:
       return
@@ -1261,8 +1285,6 @@ def _build_megakernel(nlight: int, rc: RenderContext, block_dim: int = 0):
           ray_origin_world,
           ray_dir_world,
           dist,
-          wp.static(rc_static["splat_min_transmittance"]),
-          wp.static(rc_static["splat_depth_transmittance_threshold"]),
         )
 
       # Depth and seg are single-sample outputs: only the first sample writes them.

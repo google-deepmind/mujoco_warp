@@ -166,6 +166,109 @@ class RenderTest(parameterized.TestCase):
     else:
       self.assertEqual(int(rgb[1]), 0)
 
+  @parameterized.parameters((0.6, 1.0), (0.2, 1.5), (0.1, 1.9))
+  def test_splat_depth_only_transmittance(self, depth_threshold: float, expected_depth: float):
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <camera/>
+          <geom type="box" pos="0 0 -2" size="10 10 0.1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    splats = {
+      "splat_position": np.asarray([[0.0, 0.0, -1.0], [0.0, 0.0, -1.5]], dtype=np.float32),
+      "splat_rotation": np.asarray([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+      "splat_scale": np.asarray([[0.2, 0.2, 0.2], [0.2, 0.2, 0.2]], dtype=np.float32),
+      "splat_rgba": np.asarray([[1.0, 0.0, 0.0, 0.7], [0.0, 1.0, 0.0, 0.5]], dtype=np.float32),
+    }
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(3, 3),
+      render_rgb=False,
+      render_depth=True,
+      splat_depth_transmittance_threshold=depth_threshold,
+      **splats,
+    )
+    rc.depth_data.fill_(wp.inf)
+    mjw.render(m, d, rc)
+
+    np.testing.assert_allclose(rc.depth_data.numpy()[0, 4], expected_depth, atol=1e-5)
+
+  @parameterized.product(render_rgb=(False, True), nsplat=(2, 33), min_equals_depth=(False, True))
+  def test_splat_depth_threshold_equality(self, render_rgb: bool, nsplat: int, min_equals_depth: bool):
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <camera/>
+          <geom type="box" pos="0 0 -2" size="10 10 0.1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    positions = np.zeros((nsplat, 3), dtype=np.float32)
+    positions[:, 2] = np.linspace(-1.0, -1.5, nsplat)
+    # Each hit halves transmittance exactly. Equality must not stop depth-only
+    # traversal before the final hit, including across a 32-hit BVH pass, unless
+    # the minimum compositing transmittance has also been reached.
+    depth_threshold = 2.0 ** (1 - nsplat)
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(3, 3),
+      render_rgb=render_rgb,
+      render_depth=True,
+      splat_min_transmittance=depth_threshold if min_equals_depth else 2.0 ** (-nsplat - 1),
+      splat_depth_transmittance_threshold=depth_threshold,
+      splat_position=positions,
+      splat_rotation=np.tile(np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32), (nsplat, 1)),
+      splat_scale=np.full((nsplat, 3), 0.2, dtype=np.float32),
+      splat_rgba=np.tile(np.asarray([1.0, 0.0, 0.0, 0.5], dtype=np.float32), (nsplat, 1)),
+    )
+    rc.depth_data.fill_(wp.inf)
+    mjw.render(m, d, rc)
+
+    np.testing.assert_allclose(rc.depth_data.numpy()[0, 4], 1.9 if min_equals_depth else 1.5, atol=1e-5)
+
+  @parameterized.parameters((0.01, True), (0.4, False))
+  def test_splat_rgb_only_early_termination(self, min_transmittance: float, expect_rear_splat: bool):
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <camera/>
+          <geom type="box" pos="0 0 -2" size="10 10 0.1" rgba="0 0 0 1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    splats = {
+      "splat_position": np.asarray([[0.0, 0.0, -1.0], [0.0, 0.0, -1.5]], dtype=np.float32),
+      "splat_rotation": np.asarray([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+      "splat_scale": np.asarray([[0.2, 0.2, 0.2], [0.2, 0.2, 0.2]], dtype=np.float32),
+      "splat_rgba": np.asarray([[1.0, 0.0, 0.0, 0.7], [0.0, 1.0, 0.0, 0.5]], dtype=np.float32),
+    }
+    rc = mjw.create_render_context(
+      mjm,
+      cam_res=(3, 3),
+      render_rgb=True,
+      render_depth=False,
+      enable_specular=False,
+      splat_min_transmittance=min_transmittance,
+      splat_depth_transmittance_threshold=0.6,
+      **splats,
+    )
+    rc.rgb_data.fill_(wp.uint32(0xFFFFFFFF))
+    mjw.render(m, d, rc)
+
+    rgb = _unpack_rgb(rc.rgb_data.numpy())[0, 4]
+    if expect_rear_splat:
+      self.assertGreater(int(rgb[1]), 30)
+    else:
+      self.assertEqual(int(rgb[1]), 0)
+
   def test_splat_is_occluded_by_geometry(self):
     xml = """
     <mujoco>

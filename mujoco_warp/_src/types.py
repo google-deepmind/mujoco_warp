@@ -3053,6 +3053,7 @@ class RenderContext:
       Gaussian splat depth is recorded
     has_reframed_meshes: True iff any mesh BVH uses its authored frame
     any_rgb: True iff any active camera renders RGB
+    any_depth: True iff any active camera renders depth
     any_seg: True iff any active camera renders segmentation
     backend: Ray-casting backend, "warp" or "optix"
     optix: OptiX scene and pipeline when backend is "optix", else None
@@ -3142,6 +3143,7 @@ class RenderContext:
   splat_depth_transmittance_threshold: float
   has_reframed_meshes: bool = False
   any_rgb: bool = False
+  any_depth: bool = False
   any_seg: bool = False
   geom_ray_types: tuple = ()
   backend: str = "warp"
