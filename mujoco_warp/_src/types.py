@@ -1730,7 +1730,10 @@ class Model:
     wrap_jnt_adr: addresses for joint tendon wrap object
     wrap_site_adr: addresses for site tendon wrap object
     wrap_site_pair_adr: first address for site wrap pair
+    wrap_site_pair_lca: lowest common ancestor body of each site pair
     wrap_geom_adr: addresses for geom tendon wrap object
+    wrap_geom_lca: lowest common ancestor body of each geom wrap's
+                   (site0, geom), (geom, site1), (site0, site1) pairs
     wrap_pulley_scale: pulley scaling                        (nwrap,)
     actuator_trntype_body_adr: addresses for actuators
                                with body transmission
@@ -2324,7 +2327,9 @@ class Model:
   wrap_jnt_adr: array("nwrap_jnt", int)
   wrap_site_adr: array("nwrap_site", int)
   wrap_site_pair_adr: array("nwrap_site_pair", int)
+  wrap_site_pair_lca: array("nwrap_site_pair", int)
   wrap_geom_adr: array("nwrap_geom", int)
+  wrap_geom_lca: array("nwrap_geom", wp.vec3i)
   wrap_pulley_scale: array("nwrap", float)
   actuator_trntype_body_adr: array("nacttrnbody", int)
   sensor_pos_adr: array("nsensor_pos", int)

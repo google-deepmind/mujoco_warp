@@ -4977,24 +4977,6 @@ def _joint_tendon(deterministic: bool = False):
 
 
 @wp.func
-def _lowest_common_ancestor(
-  # Model:
-  body_parentid: wp.array[int],
-  # In:
-  body1: int,
-  body2: int,
-) -> int:
-  """Returns the deepest body that is an ancestor of both bodies (0 if only the world is shared)."""
-  # a body's id is always larger than its parent's
-  while body1 != body2:
-    if body1 > body2:
-      body1 = body_parentid[body1]
-    else:
-      body2 = body_parentid[body2]
-  return body1
-
-
-@wp.func
 def _accumulate_jac_chain(
   # Model:
   body_parentid: wp.array[int],
@@ -5062,6 +5044,7 @@ def _spatial_site_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
     wrap_objid: wp.array[int],
     tendon_site_pair_adr: wp.array[int],
     wrap_site_pair_adr: wp.array[int],
+    wrap_site_pair_lca: wp.array[int],
     wrap_pulley_scale: wp.array[float],
     # Data in:
     site_xpos_in: wp.array2d[wp.vec3],
@@ -5097,41 +5080,43 @@ def _spatial_site_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
     if body0 != body1:
       rownnz = ten_J_rownnz[tenid]
       rowadr = ten_J_rowadr[tenid]
-      offset0 = pnt0 - subtree_com_in[worldid, body_rootid[body0]]
-      offset1 = pnt1 - subtree_com_in[worldid, body_rootid[body1]]
-      ancestor = _lowest_common_ancestor(body_parentid, body0, body1)
-      _accumulate_jac_chain(
-        body_parentid,
-        body_dofnum,
-        body_dofadr,
-        ten_J_colind,
-        cdof_in,
-        offset0,
-        vec,
-        body0,
-        ancestor,
-        rowadr,
-        rownnz,
-        -pulley_scale,
-        worldid,
-        ten_J_out,
-      )
-      _accumulate_jac_chain(
-        body_parentid,
-        body_dofnum,
-        body_dofadr,
-        ten_J_colind,
-        cdof_in,
-        offset1,
-        vec,
-        body1,
-        ancestor,
-        rowadr,
-        rownnz,
-        pulley_scale,
-        worldid,
-        ten_J_out,
-      )
+      ancestor = wrap_site_pair_lca[elementid]
+      if body0 != ancestor:
+        offset0 = pnt0 - subtree_com_in[worldid, body_rootid[body0]]
+        _accumulate_jac_chain(
+          body_parentid,
+          body_dofnum,
+          body_dofadr,
+          ten_J_colind,
+          cdof_in,
+          offset0,
+          vec,
+          body0,
+          ancestor,
+          rowadr,
+          rownnz,
+          -pulley_scale,
+          worldid,
+          ten_J_out,
+        )
+      if body1 != ancestor:
+        offset1 = pnt1 - subtree_com_in[worldid, body_rootid[body1]]
+        _accumulate_jac_chain(
+          body_parentid,
+          body_dofnum,
+          body_dofadr,
+          ten_J_colind,
+          cdof_in,
+          offset1,
+          vec,
+          body1,
+          ancestor,
+          rowadr,
+          rownnz,
+          pulley_scale,
+          worldid,
+          ten_J_out,
+        )
 
   return kernel
 
@@ -5161,6 +5146,7 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
     wrap_prm: wp.array[float],
     tendon_geom_adr: wp.array[int],
     wrap_geom_adr: wp.array[int],
+    wrap_geom_lca: wp.array[wp.vec3i],
     wrap_pulley_scale: wp.array[float],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
@@ -5200,6 +5186,7 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
     bodyid_site0 = site_bodyid[wrap_objid_site0]
     bodyid_geom = geom_bodyid[wrap_objid_geom]
     bodyid_site1 = site_bodyid[wrap_objid_site1]
+    lca = wrap_geom_lca[elementid]
 
     # find wrap object sidesite (if it exists)
     sideid = int(wp.round(wrap_prm[wrap_adr]))
@@ -5243,79 +5230,83 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
 
       # site-geom segment
       if dif_body_sitegeom:
-        offset_site0 = site_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_site0]]
-        offset_geom0 = geom_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_geom]]
-        ancestor_sitegeom = _lowest_common_ancestor(body_parentid, bodyid_site0, bodyid_geom)
-        _accumulate_jac_chain(
-          body_parentid,
-          body_dofnum,
-          body_dofadr,
-          ten_J_colind,
-          cdof_in,
-          offset_site0,
-          vec_sitegeom,
-          bodyid_site0,
-          ancestor_sitegeom,
-          rowadr,
-          rownnz,
-          -pulley_scale,
-          worldid,
-          ten_J_out,
-        )
-        _accumulate_jac_chain(
-          body_parentid,
-          body_dofnum,
-          body_dofadr,
-          ten_J_colind,
-          cdof_in,
-          offset_geom0,
-          vec_sitegeom,
-          bodyid_geom,
-          ancestor_sitegeom,
-          rowadr,
-          rownnz,
-          pulley_scale,
-          worldid,
-          ten_J_out,
-        )
+        ancestor_sitegeom = lca[0]
+        if bodyid_site0 != ancestor_sitegeom:
+          offset_site0 = site_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_site0]]
+          _accumulate_jac_chain(
+            body_parentid,
+            body_dofnum,
+            body_dofadr,
+            ten_J_colind,
+            cdof_in,
+            offset_site0,
+            vec_sitegeom,
+            bodyid_site0,
+            ancestor_sitegeom,
+            rowadr,
+            rownnz,
+            -pulley_scale,
+            worldid,
+            ten_J_out,
+          )
+        if bodyid_geom != ancestor_sitegeom:
+          offset_geom0 = geom_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_geom]]
+          _accumulate_jac_chain(
+            body_parentid,
+            body_dofnum,
+            body_dofadr,
+            ten_J_colind,
+            cdof_in,
+            offset_geom0,
+            vec_sitegeom,
+            bodyid_geom,
+            ancestor_sitegeom,
+            rowadr,
+            rownnz,
+            pulley_scale,
+            worldid,
+            ten_J_out,
+          )
 
       # geom-site segment
       if dif_body_geomsite:
-        offset_geom1 = geom_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_geom]]
-        offset_site1 = site_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_site1]]
-        ancestor_geomsite = _lowest_common_ancestor(body_parentid, bodyid_geom, bodyid_site1)
-        _accumulate_jac_chain(
-          body_parentid,
-          body_dofnum,
-          body_dofadr,
-          ten_J_colind,
-          cdof_in,
-          offset_geom1,
-          vec_geomsite,
-          bodyid_geom,
-          ancestor_geomsite,
-          rowadr,
-          rownnz,
-          -pulley_scale,
-          worldid,
-          ten_J_out,
-        )
-        _accumulate_jac_chain(
-          body_parentid,
-          body_dofnum,
-          body_dofadr,
-          ten_J_colind,
-          cdof_in,
-          offset_site1,
-          vec_geomsite,
-          bodyid_site1,
-          ancestor_geomsite,
-          rowadr,
-          rownnz,
-          pulley_scale,
-          worldid,
-          ten_J_out,
-        )
+        ancestor_geomsite = lca[1]
+        if bodyid_geom != ancestor_geomsite:
+          offset_geom1 = geom_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_geom]]
+          _accumulate_jac_chain(
+            body_parentid,
+            body_dofnum,
+            body_dofadr,
+            ten_J_colind,
+            cdof_in,
+            offset_geom1,
+            vec_geomsite,
+            bodyid_geom,
+            ancestor_geomsite,
+            rowadr,
+            rownnz,
+            -pulley_scale,
+            worldid,
+            ten_J_out,
+          )
+        if bodyid_site1 != ancestor_geomsite:
+          offset_site1 = site_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_site1]]
+          _accumulate_jac_chain(
+            body_parentid,
+            body_dofnum,
+            body_dofadr,
+            ten_J_colind,
+            cdof_in,
+            offset_site1,
+            vec_geomsite,
+            bodyid_site1,
+            ancestor_geomsite,
+            rowadr,
+            rownnz,
+            pulley_scale,
+            worldid,
+            ten_J_out,
+          )
     else:
       dif_sitesite = site_pnt1 - site_pnt0
       vec_sitesite, length_sitesite = math.normalize_with_norm(dif_sitesite)
@@ -5329,41 +5320,43 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
         vec_sitesite = wp.vec3(1.0, 0.0, 0.0)
 
       if bodyid_site0 != bodyid_site1:
-        offset_site0 = site_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_site0]]
-        offset_site1 = site_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_site1]]
-        ancestor_sitesite = _lowest_common_ancestor(body_parentid, bodyid_site0, bodyid_site1)
-        _accumulate_jac_chain(
-          body_parentid,
-          body_dofnum,
-          body_dofadr,
-          ten_J_colind,
-          cdof_in,
-          offset_site0,
-          vec_sitesite,
-          bodyid_site0,
-          ancestor_sitesite,
-          rowadr,
-          rownnz,
-          -pulley_scale,
-          worldid,
-          ten_J_out,
-        )
-        _accumulate_jac_chain(
-          body_parentid,
-          body_dofnum,
-          body_dofadr,
-          ten_J_colind,
-          cdof_in,
-          offset_site1,
-          vec_sitesite,
-          bodyid_site1,
-          ancestor_sitesite,
-          rowadr,
-          rownnz,
-          pulley_scale,
-          worldid,
-          ten_J_out,
-        )
+        ancestor_sitesite = lca[2]
+        if bodyid_site0 != ancestor_sitesite:
+          offset_site0 = site_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_site0]]
+          _accumulate_jac_chain(
+            body_parentid,
+            body_dofnum,
+            body_dofadr,
+            ten_J_colind,
+            cdof_in,
+            offset_site0,
+            vec_sitesite,
+            bodyid_site0,
+            ancestor_sitesite,
+            rowadr,
+            rownnz,
+            -pulley_scale,
+            worldid,
+            ten_J_out,
+          )
+        if bodyid_site1 != ancestor_sitesite:
+          offset_site1 = site_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_site1]]
+          _accumulate_jac_chain(
+            body_parentid,
+            body_dofnum,
+            body_dofadr,
+            ten_J_colind,
+            cdof_in,
+            offset_site1,
+            vec_sitesite,
+            bodyid_site1,
+            ancestor_sitesite,
+            rowadr,
+            rownnz,
+            pulley_scale,
+            worldid,
+            ten_J_out,
+          )
 
   return kernel
 
@@ -5591,6 +5584,7 @@ def tendon(m: Model, d: Data):
       m.wrap_objid,
       m.tendon_site_pair_adr,
       m.wrap_site_pair_adr,
+      m.wrap_site_pair_lca,
       m.wrap_pulley_scale,
       d.site_xpos,
       d.subtree_com,
@@ -5619,6 +5613,7 @@ def tendon(m: Model, d: Data):
       m.wrap_prm,
       m.tendon_geom_adr,
       m.wrap_geom_adr,
+      m.wrap_geom_lca,
       m.wrap_pulley_scale,
       d.geom_xpos,
       d.geom_xquat,

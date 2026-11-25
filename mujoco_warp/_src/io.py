@@ -605,6 +605,16 @@ def m_block_layout(mjm: mujoco.MjModel) -> dict:
   }
 
 
+def _lowest_common_ancestor(body_parentid: np.ndarray, body1: int, body2: int) -> int:
+  """Returns the deepest body that is an ancestor of both bodies (0 if only the world is shared)."""
+  while body1 != body2:
+    if body1 > body2:
+      body1 = body_parentid[body1]
+    else:
+      body2 = body_parentid[body2]
+  return int(body1)
+
+
 def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) -> types.Model:
   """Creates a model on device.
 
@@ -1317,6 +1327,26 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.wrap_site_adr = np.nonzero(mjm.wrap_type == mujoco.mjtWrap.mjWRAP_SITE)[0]
   m.wrap_site_pair_adr = np.setdiff1d(m.wrap_site_adr[np.nonzero(np.diff(m.wrap_site_adr) == 1)[0]], mjm.tendon_adr[1:] - 1)
   m.wrap_geom_adr = np.nonzero(np.isin(mjm.wrap_type, [mujoco.mjtWrap.mjWRAP_SPHERE, mujoco.mjtWrap.mjWRAP_CYLINDER]))[0]
+
+  wrap_site_pair_lca = []
+  for adr in m.wrap_site_pair_adr:
+    site0_body = mjm.site_bodyid[mjm.wrap_objid[adr]]
+    site1_body = mjm.site_bodyid[mjm.wrap_objid[adr + 1]]
+    wrap_site_pair_lca.append(_lowest_common_ancestor(mjm.body_parentid, site0_body, site1_body))
+  m.wrap_site_pair_lca = np.array(wrap_site_pair_lca, dtype=np.int32)
+  wrap_geom_lca = []
+  for adr in m.wrap_geom_adr:
+    site0_body = mjm.site_bodyid[mjm.wrap_objid[adr - 1]]
+    geom_body = mjm.geom_bodyid[mjm.wrap_objid[adr]]
+    site1_body = mjm.site_bodyid[mjm.wrap_objid[adr + 1]]
+    wrap_geom_lca.append(
+      (
+        _lowest_common_ancestor(mjm.body_parentid, site0_body, geom_body),
+        _lowest_common_ancestor(mjm.body_parentid, geom_body, site1_body),
+        _lowest_common_ancestor(mjm.body_parentid, site0_body, site1_body),
+      )
+    )
+  m.wrap_geom_lca = np.array(wrap_geom_lca, dtype=np.int32).reshape(-1, 3)
 
   # pulley scaling
   m.wrap_pulley_scale = np.ones(mjm.nwrap, dtype=float)
