@@ -1884,6 +1884,9 @@ class ActiveDofTest(absltest.TestCase):
     geom[0] = (g0, g1)
     d.contact.geom = wp.array(geom, dtype=wp.vec2i)
     d.contact.worldid = wp.array(np.zeros(d.naconmax, dtype=int), dtype=int)
+    ctype = d.contact.type.numpy()
+    ctype[0] = int(types.ContactType.CONSTRAINT)
+    d.contact.type = wp.array(ctype, dtype=int)
 
   def _set_body_moving(self, m, d, geomid, speed=1.0):
     bodyid = m.geom_bodyid.numpy()[geomid]

@@ -19,11 +19,14 @@ import warp as wp
 
 from mujoco_warp._src.collision_core import CollisionContext
 from mujoco_warp._src.collision_core import Geom
+from mujoco_warp._src.collision_core import allocate_multiccd_scratch
 from mujoco_warp._src.collision_core import contact_margin_gap
 from mujoco_warp._src.collision_core import contact_material_params
 from mujoco_warp._src.collision_core import contact_params
 from mujoco_warp._src.collision_core import geom_collision_pair
 from mujoco_warp._src.collision_core import geom_collision_pair_from_types
+from mujoco_warp._src.collision_core import make_gjk_geom
+from mujoco_warp._src.collision_core import multiccd_scratch_dims
 from mujoco_warp._src.collision_core import write_contact
 from mujoco_warp._src.collision_gjk import _gjk_simplex_to_epa
 from mujoco_warp._src.collision_gjk import ccd
@@ -31,10 +34,6 @@ from mujoco_warp._src.collision_gjk import epa_phase
 from mujoco_warp._src.collision_gjk import gjk_phase
 from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
-from mujoco_warp._src.collision_primitive import Geom
-from mujoco_warp._src.collision_primitive import contact_params
-from mujoco_warp._src.collision_primitive import geom_collision_pair
-from mujoco_warp._src.collision_primitive import write_contact
 from mujoco_warp._src.math import make_frame
 from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.math import upper_trid_index
@@ -94,7 +93,6 @@ def _hfield_filter(
   # geom info
   rbound_id = worldid % geom_rbound.shape[0]
   margin_id = worldid % geom_margin.shape[0]
-  size_id = worldid % geom_size.shape[0]
 
   pos1 = geom_xpos_in[worldid, g1]
   mat1 = quat_to_mat(geom_xquat_in[worldid, g1])
@@ -118,27 +116,24 @@ def _hfield_filter(
   if -size1[3] > pos[2] + r2 + margin:  # down
     return True, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL, MJ_MAXVAL
 
-  mat2 = quat_to_mat(geom_xquat_in[worldid, g2])
-  mat = mat1T @ mat2
-
   # create geom in height field frame for support function queries
-  geom2 = Geom()
-  geom2.pos = pos
-  geom2.rot = mat
-  geom2.size = geom_size[size_id, g2]
-  geom2.margin = 0.0  # margin handled separately
-  geom2.index = -1
-
   geomtype2 = geom_type[g2]
-
-  # load mesh vertex data for support function queries
-  if geomtype2 == GeomType.MESH:
-    dataid = geom_dataid[dataid_setid, g2]
-    geom2.vertadr = wp.where(dataid >= 0, mesh_vertadr[dataid], -1)
-    geom2.vertnum = wp.where(dataid >= 0, mesh_vertnum[dataid], -1)
-    geom2.graphadr = wp.where(dataid >= 0, mesh_graphadr[dataid], -1)
-    geom2.vert = mesh_vert
-    geom2.graph = mesh_graph
+  geom2 = make_gjk_geom(
+    geom_dataid,
+    geom_size,
+    mesh_vertadr,
+    mesh_vertnum,
+    mesh_graphadr,
+    mesh_vert,
+    mesh_graph,
+    geom_xpos_in,
+    geom_xquat_in,
+    geomtype2,
+    g2,
+    worldid,
+  )
+  geom2.pos = pos
+  geom2.rot = mat1T @ geom2.rot
 
   # use support functions for tight AABB bounds
   xmax = support(geom2, geomtype2, wp.vec3(1.0, 0.0, 0.0)).point[0]
@@ -952,7 +947,6 @@ def ccd_kernel_builder(
           multiccd_endvert_in[ccdid],
           multiccd_face1_in[ccdid],
           multiccd_face2_in[ccdid],
-          epa_vert_in[ccdid],
           epa_vert_index_in[ccdid],
           epa_face_in[ccdid, multiccd_idx],
           w1,
@@ -1236,7 +1230,7 @@ def ccd_kernel_builder(
   return ccd_kernel
 
 
-def _ccd_grid_size(kernel, naconmax: int, device) -> int:
+def ccd_grid_size(kernel, naconmax: int, device) -> int:
   # Grid-stride launch width for the CCD kernel: a few device waves, capped at the contact
   # capacity. The kernel strides over the actual candidate count, so we avoid launching one
   # (mostly idle) thread per naconmax slot.
@@ -1257,37 +1251,13 @@ def _convex_scratch_dims(m: Model, collision_table: list[tuple[GeomType, GeomTyp
   if ncollision == 0:
     return 0, 0, False, 0, 0
 
-  # compute npolygonmax and nmeshdegmax given the geom pairs for the model
   nboxbox, _ = _pair_count(GeomType.BOX.value, GeomType.BOX.value)
   if (GeomType.BOX, GeomType.BOX) not in collision_table:
     nboxbox = 0
-  nboxmesh, _ = _pair_count(GeomType.BOX.value, GeomType.MESH.value)
-  nmeshmesh, _ = _pair_count(GeomType.MESH.value, GeomType.MESH.value)
-  ncylcyl, _ = _pair_count(GeomType.CYLINDER.value, GeomType.CYLINDER.value)
-  ncylbox, _ = _pair_count(GeomType.CYLINDER.value, GeomType.BOX.value)
-  ncylmesh, _ = _pair_count(GeomType.CYLINDER.value, GeomType.MESH.value)
-  ncapcyl, _ = _pair_count(GeomType.CAPSULE.value, GeomType.CYLINDER.value)
-  ncapmesh, _ = _pair_count(GeomType.CAPSULE.value, GeomType.MESH.value)
 
   epa_iterations = 16 if nboxbox == ncollision else m.opt.ccd_iterations
-
-  # set to true to enable multiccd
   use_multiccd = (m.opt.disableflags & DisableBit.MULTICCD) == 0
-
-  # note: box<->box multicontact is independent of the use_multiccd flag
-  # need at least 4 (square sides) if there's a box collision needing multiccd
-  npolygonmax = 4 if nboxbox > 0 else 0
-  nmeshdegmax = 3 if nboxbox > 0 else 0
-
-  # need to allocate more memory if there are cylinders or meshes
-  if use_multiccd and ncylcyl + ncylbox + ncylmesh + ncapcyl > 0:
-    npolygonmax = max(m.npolygonmax, 16)
-    nmeshdegmax = max(m.nmeshdegmax, 3)
-  elif use_multiccd and nmeshmesh + nboxmesh + ncapmesh > 0:
-    minval = 4 if nboxmesh else npolygonmax
-    npolygonmax = max(m.npolygonmax, minval)
-    nmeshdegmax = max(m.nmeshdegmax, 3)
-
+  npolygonmax, nmeshdegmax = multiccd_scratch_dims(m, collision_table, speculative=False)
   return ncollision, epa_iterations, use_multiccd, npolygonmax, nmeshdegmax
 
 
@@ -1304,18 +1274,7 @@ def prepare_convex_context(m: Model, d: Data, ctx: CollisionContext, collision_t
   ctx.epa_pr = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3)
   ctx.epa_norm2 = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float)
   ctx.epa_horizon = wp.empty(shape=(d.naccdmax, MJ_MAX_EPAHORIZON), dtype=int)
-  ctx.multiccd_polygon = wp.empty(shape=(d.naccdmax, 2 * npolygonmax), dtype=wp.vec3)
-  ctx.multiccd_clipped = wp.empty(shape=(d.naccdmax, 2 * npolygonmax), dtype=wp.vec3)
-  ctx.multiccd_pnormal = wp.empty(shape=(d.naccdmax, npolygonmax), dtype=wp.vec3)
-  ctx.multiccd_pdist = wp.empty(shape=(d.naccdmax, npolygonmax), dtype=float)
-  ctx.multiccd_idx1 = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=int)
-  ctx.multiccd_idx2 = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=int)
-  ctx.multiccd_n1 = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=wp.vec3)
-  ctx.multiccd_n2 = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=wp.vec3)
-  ctx.multiccd_edge = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=wp.vec3)
-  ctx.multiccd_endvert = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=wp.vec3)
-  ctx.multiccd_face1 = wp.empty(shape=(d.naccdmax, npolygonmax), dtype=wp.vec3)
-  ctx.multiccd_face2 = wp.empty(shape=(d.naccdmax, npolygonmax), dtype=wp.vec3)
+  allocate_multiccd_scratch(ctx, d.naccdmax, npolygonmax, nmeshdegmax)
 
 
 @event_scope
@@ -1439,7 +1398,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
         outputs=contact_outputs + [d.overflow],
       )
 
-  # Launch non-heightfield collision kernels (no hfield args, 78 args total)
+  # Launch non-heightfield collision kernels (no hfield args)
   for geom_pair in collision_table:
     g1 = geom_pair[0].value
     g2 = geom_pair[1].value
@@ -1455,7 +1414,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
         m.block_dim.convex_ccd,
         int(m.opt.warn_overflow),
       )
-      ccd_grid = _ccd_grid_size(ccd_k, d.naconmax, d.ncollision.device)
+      ccd_grid = ccd_grid_size(ccd_k, d.naconmax, d.ncollision.device)
       wp.launch(
         ccd_k,
         dim=ccd_grid,

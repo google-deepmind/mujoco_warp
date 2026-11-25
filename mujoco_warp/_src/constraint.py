@@ -21,6 +21,7 @@ from mujoco_warp._src import math
 from mujoco_warp._src import sort
 from mujoco_warp._src import support
 from mujoco_warp._src import types
+from mujoco_warp._src.collision_core import speculative_enabled
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import DisableBit
@@ -2628,7 +2629,7 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
 
 
 @cache_kernel
-def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, flg_adhesion: bool):
+def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, flg_adhesion: bool, flg_speculative: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
 
@@ -2671,7 +2672,8 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
       return
 
     # Reused contact slots may contain addresses from a different contact dimension.
-    if not (type_in[conid] & ContactType.CONSTRAINT):
+    ctype = type_in[conid]
+    if not (ctype & ContactType.CONSTRAINT):
       _clear_contact_efc_address(conid, 0, contact_efc_address_out)
       return
 
@@ -2679,10 +2681,11 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
 
     includemargin = includemargin_in[conid]
     pos = dist_in[conid] - includemargin
+    active = pos < 0.0
+    if wp.static(flg_speculative):
+      active = active or bool(ctype & ContactType.SPECULATIVE)
     if wp.static(flg_adhesion):
-      active = (pos < 0.0) or (adhesion_in[conid] != 0.0)
-    else:
-      active = pos < 0.0
+      active = active or (adhesion_in[conid] != 0.0)
 
     if not active:
       _clear_contact_efc_address(conid, 0, contact_efc_address_out)
@@ -2879,7 +2882,7 @@ def _flex_interp_rownnz(
 
 
 @cache_kernel
-def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: bool, flg_adhesion: bool):
+def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: bool, flg_adhesion: bool, flg_speculative: bool):
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
   IS_SPARSE = is_sparse
   HAS_FLEX = True
@@ -2949,7 +2952,8 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
       return
 
     # Reused contact slots may contain addresses from a different contact dimension.
-    if not (type_in[conid] & ContactType.CONSTRAINT):
+    ctype = type_in[conid]
+    if not (ctype & ContactType.CONSTRAINT):
       _clear_contact_efc_address(conid, 0, contact_efc_address_out)
       return
 
@@ -2959,6 +2963,8 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
     includemargin = includemargin_in[conid]
     pos = dist_in[conid] - includemargin
     active = pos < 0.0
+    if wp.static(flg_speculative):
+      active = active or bool(ctype & ContactType.SPECULATIVE)
     if wp.static(flg_adhesion):
       active = active or (adhesion_in[conid] != 0.0)
 
@@ -5942,9 +5948,10 @@ def make_constraint(m: types.Model, d: types.Data):
       )
 
       has_flex = m.nflex > 0
+      flg_speculative = speculative_enabled(m)
       if has_flex:
         wp.launch(
-          _efc_contact_init_flex(m.opt.cone, m.is_sparse, newton, m.flg_adhesion),
+          _efc_contact_init_flex(m.opt.cone, m.is_sparse, newton, m.flg_adhesion, flg_speculative),
           dim=d.naconmax,
           inputs=[
             m.body_parentid,
@@ -6004,7 +6011,7 @@ def make_constraint(m: types.Model, d: types.Data):
         )
       else:
         wp.launch(
-          _efc_contact_init(m.opt.cone, m.is_sparse, newton, m.flg_adhesion),
+          _efc_contact_init(m.opt.cone, m.is_sparse, newton, m.flg_adhesion, flg_speculative),
           dim=d.naconmax,
           inputs=[
             m.body_weldid,

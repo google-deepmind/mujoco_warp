@@ -3284,6 +3284,82 @@ class IOTest(parameterized.TestCase):
     _assert_eq(result.moment_colind, mjd.moment_colind, "moment_colind")
     _assert_eq(result.actuator_moment, mjd.actuator_moment, "actuator_moment")
 
+  @parameterized.parameters(1, 2)
+  def test_speculative_enable_and_contact_roundtrip(self, nworld):
+    """Tests EnableBit.SPECULATIVE mapping and put_data/get_data_into contact round-trip."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option timestep="0.01" gravity="0 0 0">
+          <flag speculative="enable"/>
+        </option>
+        <worldbody>
+          <geom name="wall" type="box" size="1 1 0.02"/>
+          <body pos="-0.3 0 0.25">
+            <freejoint/>
+            <geom size="0.04"/>
+          </body>
+          <body pos="0.3 0 0.15">
+            <freejoint/>
+            <geom size="0.04" gap="0.20"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    self.assertTrue(bool(m.opt.enableflags & int(types.EnableBit.SPECULATIVE)))
+
+    # World 0: ball 0 approaches wall (speculative, dist > margin), ball 1 is in gap (exclude 1)
+    # World 1: ball 0 moves away (only ball 1 in-gap contact)
+    qvel = np.zeros((nworld, mjm.nv), dtype=np.float32)
+    qvel[0, 2] = -50.0
+    if nworld == 2:
+      qvel[1, 2] = 50.0
+    d.qvel.assign(qvel)
+    d.qacc.fill_(wp.inf)
+    d.nacon.zero_()
+    d.contact.dist.fill_(wp.inf)
+    d.contact.type.fill_(-1)
+    mjwarp.forward(m, d)
+
+    # Verify get_data_into sets exclude == 0 for speculative and exclude == 1 for in-gap contact
+    mjd_out = mujoco.MjData(mjm)
+    mjwarp.get_data_into(mjd_out, mjm, d)
+    self.assertEqual(mjd_out.ncon, 2)
+    excludes = {
+      tuple(sorted((int(mjd_out.contact[i].geom[0]), int(mjd_out.contact[i].geom[1])))): int(mjd_out.contact[i].exclude)
+      for i in range(mjd_out.ncon)
+    }
+    self.assertEqual(excludes[(0, 1)], 0)
+    self.assertEqual(excludes[(0, 2)], 1)
+
+    # Verify put_data preserves ContactType.SPECULATIVE from MjData and omits it for in-gap contacts
+    mjd.qvel[:] = qvel[0]
+    mujoco.mj_forward(mjm, mjd)
+    d_round = mjwarp.put_data(mjm, mjd, nworld=nworld)
+    nacon_r = int(d_round.nacon.numpy()[0])
+    self.assertEqual(nacon_r, 2 * nworld)
+    geoms_r = d_round.contact.geom.numpy()[:nacon_r]
+    types_r = d_round.contact.type.numpy()[:nacon_r]
+    worlds_r = d_round.contact.worldid.numpy()[:nacon_r]
+    for w in range(nworld):
+      w_types = {
+        tuple(sorted((int(geoms_r[i, 0]), int(geoms_r[i, 1])))): int(types_r[i])
+        for i in range(nacon_r)
+        if int(worlds_r[i]) == w
+      }
+      self.assertTrue(bool(w_types[(0, 1)] & int(types.ContactType.SPECULATIVE)))
+      self.assertFalse(bool(w_types[(0, 2)] & int(types.ContactType.SPECULATIVE)))
+
+    if nworld == 2:
+      # World 0 has 2 contacts (speculative + in-gap), world 1 has 1 contact (in-gap only)
+      nacon = int(d.nacon.numpy()[0])
+      worldids = d.contact.worldid.numpy()[:nacon]
+      self.assertEqual(int(np.sum(worldids == 0)), 2)
+      self.assertEqual(int(np.sum(worldids == 1)), 1)
+      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+
 
 if __name__ == "__main__":
   wp.init()

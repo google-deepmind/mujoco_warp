@@ -749,13 +749,16 @@ def _qfrc_adhesion(nv: int, deterministic: bool = False):
     contact_frame_in: wp.array[wp.mat33],
     contact_geom_in: wp.array[wp.vec2i],
     contact_worldid_in: wp.array[int],
+    contact_type_in: wp.array[int],
     contact_adhesion_in: wp.array[float],
     nacon_in: wp.array[int],
     # Data out:
     qfrc_adhesion_out: wp.array2d[float],
   ):
     cid = wp.tid()
-    if cid >= nacon_in[0]:
+    if cid >= wp.min(nacon_in[0], contact_type_in.shape[0]):
+      return
+    if not (contact_type_in[cid] & ContactType.CONSTRAINT):
       return
 
     adhesion = contact_adhesion_in[cid]
@@ -5613,6 +5616,7 @@ def passive(m: Model, d: Data):
         d.contact.frame,
         d.contact.geom,
         d.contact.worldid,
+        d.contact.type,
         d.contact.adhesion,
         d.nacon,
       ],

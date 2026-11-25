@@ -21,6 +21,7 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.collision_core import speculative_enabled
 from mujoco_warp._src.island import is_repeated_fixed_support_efc
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
@@ -30,6 +31,7 @@ from mujoco_warp._src.types import ROD_HINGE_SIZE
 from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import ConstraintType
+from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import DisableBit
@@ -3720,7 +3722,12 @@ def _transmission(deterministic: bool = False):
 
 
 @cache_kernel
-def _transmission_body_moment(nmaxpyramid: int, deterministic: bool = False):
+def _transmission_body_moment(
+  nmaxpyramid: int,
+  flg_adhesion: bool = False,
+  flg_speculative: bool = False,
+  deterministic: bool = False,
+):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
@@ -3749,6 +3756,8 @@ def _transmission_body_moment(nmaxpyramid: int, deterministic: bool = False):
     contact_geom_in: wp.array[wp.vec2i],
     contact_efc_address_in: wp.array2d[int],
     contact_worldid_in: wp.array[int],
+    contact_type_in: wp.array[int],
+    contact_adhesion_in: wp.array[float],
     efc_J_rownnz_in: wp.array2d[int],
     efc_J_rowadr_in: wp.array2d[int],
     efc_J_colind_in: wp.array3d[int],
@@ -3766,6 +3775,10 @@ def _transmission_body_moment(nmaxpyramid: int, deterministic: bool = False):
     bodyid = actuator_trnid[actid][0]
 
     if conid >= nacon_in[0]:
+      return
+
+    ctype = contact_type_in[conid]
+    if not (ctype & ContactType.CONSTRAINT):
       return
 
     worldid = contact_worldid_in[conid]
@@ -3787,7 +3800,15 @@ def _transmission_body_moment(nmaxpyramid: int, deterministic: bool = False):
     if b1 != bodyid and b2 != bodyid:
       return
 
-    contact_exclude = int(contact_dist_in[conid] >= contact_includemargin_in[conid])
+    exclude = contact_dist_in[conid] >= contact_includemargin_in[conid]
+    if wp.static(flg_adhesion):
+      exclude = exclude and (contact_adhesion_in[conid] == 0.0)
+    if wp.static(flg_speculative):
+      exclude = exclude and not (ctype & ContactType.SPECULATIVE)
+    contact_exclude = int(exclude)
+
+    if contact_exclude == 0 and contact_efc_address_in[conid, 0] < 0:
+      return
 
     if dofid == 0:
       wp.atomic_add(actuator_trntype_body_ncon_out[worldid], trnbodyid, 1)
@@ -3937,8 +3958,14 @@ def transmission(m: Model, d: Data):
     ncon = wp.zeros((d.nworld, m.nacttrnbody), dtype=int)
 
     det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
+    flg_speculative = speculative_enabled(m)
     wp.launch(
-      _transmission_body_moment(m.nmaxpyramid if det_atomics else 0, det_atomics),
+      _transmission_body_moment(
+        m.nmaxpyramid if det_atomics else 0,
+        m.flg_adhesion,
+        flg_speculative,
+        det_atomics,
+      ),
       dim=(m.nacttrnbody, d.naconmax, m.nv),
       inputs=[
         m.opt.cone,
@@ -3960,6 +3987,8 @@ def transmission(m: Model, d: Data):
         d.contact.geom,
         d.contact.efc_address,
         d.contact.worldid,
+        d.contact.type,
+        d.contact.adhesion,
         d.efc.J_rownnz,
         d.efc.J_rowadr,
         d.efc.J_colind,

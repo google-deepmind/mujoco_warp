@@ -655,7 +655,7 @@ class CollisionTest(parameterized.TestCase):
       self.skipTest("CUDA occupancy queries are not used on CPU")
 
     kernel = collision_convex.ccd_kernel_builder(GeomType.BOX.value, GeomType.BOX.value, 35, 16, True, 0, block_dim, 0)
-    collision_convex._ccd_grid_size(kernel, 1, device)
+    collision_convex.ccd_grid_size(kernel, 1, device)
     occupancy_module = kernel.module.load(device)
     launch_module = kernel.module.load(device, block_dim=block_dim)
     self.assertIs(occupancy_module, launch_module)
