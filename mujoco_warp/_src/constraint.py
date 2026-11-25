@@ -3163,8 +3163,9 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
         # This is redundant with the _efc_row call later but needed for the jac calculation
         efc_id_out[worldid, efcid] = conid
         if wp.static(IS_SPARSE):
-          # the sparse Jacobian kernel accumulates into this
-          efc_Jqvel_out[worldid, efcid] = 0.0
+          # the sparse Jacobian kernel accumulates into this (the dense one writes dense rows')
+          if srow < 0:
+            efc_Jqvel_out[worldid, efcid] = 0.0
 
     # rows of dense row groups have no sparse entries; in island order, rows without storage stay
     # empty (their force acts on no DOF)
@@ -3185,12 +3186,14 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
           efc_jtdaj_adr_out[worldid, jgid] = base_efcid
           efc_jtdaj_nrow_out[worldid, jgid] = wp.min(ndim, njmax_in - base_efcid)
 
+    # _island_world writes dense rows' (no sparse entries)
     if wp.static(IS_SPARSE):
-      for dim in range(ndim):
-        efcid = base_efcid + dim
-        if efcid < njmax_in:
-          efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
-          efc_J_rownnz_out[worldid, efcid] = wp.where(empty, 0, rownnz)
+      if srow < 0:
+        for dim in range(ndim):
+          efcid = base_efcid + dim
+          if efcid < njmax_in:
+            efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
+            efc_J_rownnz_out[worldid, efcid] = wp.where(empty, 0, rownnz)
 
   return kernel
 

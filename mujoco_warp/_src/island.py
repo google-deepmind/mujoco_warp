@@ -1703,6 +1703,8 @@ def _island_world(ntree: int):
     # Data out:
     nisland_out: wp.array[int],
     nidof_out: wp.array[int],
+    efc_J_rownnz_out: wp.array2d[int],
+    efc_J_rowadr_out: wp.array2d[int],
     efc_force_out: wp.array2d[float],
     efc_state_out: wp.array2d[int],
     efc_island_out: wp.array2d[int],
@@ -1959,15 +1961,23 @@ def _island_world(ntree: int):
       block = group_dense_out[worldid, wp.where(gi < 0, -2 - gi, gi)]
       island_dense_out[worldid, i] = block
       island_cursor_out[worldid, i * ROW_RECORD + ROW_DENSE] = block[0]
+    _block_sync()
 
     # zero dense rows but contacts' (written whole), here rather than a row a thread: coalesced
     width = dense_J_out.shape[2]
     for i in range(nisland):
-      if group_dense_out[worldid, island_group_out[worldid, i]][0] > 0:
-        r0 = island_rowadr_out[worldid, i * ROW_CLASSES]
-        n = (wp.min(island_rowadr_out[worldid, i * ROW_CLASSES + ROW_CONTACT], njmax_in) - r0) * width
+      if island_dense_out[worldid, i][0] > 0:
+        r0 = iefc[i]
+        base = i * ROW_CLASSES
+        rc = r0 + counts[base + ROW_EQUALITY] + counts[base + ROW_FRICTION] + counts[base + ROW_LIMIT]
+        n = (wp.min(rc, njmax_in) - r0) * width
         for k in range(lane, n, lanes):
           dense_J_out[worldid, r0 + k // width, k % width] = 0.0
+        # dense rows have no sparse entries (the row kernels leave them to this)
+        re = wp.min(rc + counts[base + ROW_CONTACT], njmax_in)
+        for r in range(r0 + lane, re, lanes):
+          efc_J_rownnz_out[worldid, r] = 0
+          efc_J_rowadr_out[worldid, r] = 0
 
     # a DOF's island, island-ordered index (islands in order, DOFs ascending), group and column
     nidof = nidof_out[worldid]
@@ -2045,6 +2055,8 @@ def island_layout(
     outputs=[
       d.nisland,
       d.nidof,
+      d.efc.J_rownnz,
+      d.efc.J_rowadr,
       d.efc.force,
       d.efc.state,
       d.efc.island,
