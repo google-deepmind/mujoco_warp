@@ -1468,12 +1468,11 @@
         { label: 'Total Memory', key: 'total_memory', prevBg: 'transparent', prevBorder: '#475569', bg: 'transparent', border: '#e06c4d', stack: null, dash: [5, 5] }
       ].map(({ label, key, prevBg, prevBorder, bg, border, stack, dash }, idx, arr) => {
         const isTop = idx === arr.length - 1;
-        const pts = data.map((d, i) => ({ x: timestamps[i], y: d[key], commit: commits[i], updated: isUpdatedWorkstation(currentBenchmarkName, timestamps[i]) }));
         return {
-          label, key, data: pts,
+          label, key, data: data.map((d, i) => ({ x: timestamps[i], y: d[key], commit: commits[i], updated: isUpdatedWorkstation(currentBenchmarkName, timestamps[i]) })),
           backgroundColor: bg, borderColor: border, borderWidth: stack ? 1 : 2,
           pointRadius: isTop ? 1.5 : 0,
-          pointBackgroundColor: isTop ? pts.map(p => (p.updated ? border : prevBorder)) : undefined,
+          pointBackgroundColor: isTop ? (ctx => (ctx.raw?.updated ? border : prevBorder)) : undefined,
           pointHoverRadius: 0,
           segment: makeWorkstationSegment(prevBorder, border, prevBg, bg),
           ...(isTop && {
@@ -1514,7 +1513,6 @@
 
       if (charts.jit) {
         charts.jit.data.datasets[0].data = jitData;
-        charts.jit.data.datasets[0].pointBackgroundColor = jitData.map(p => (p.updated ? '#e06c4d' : '#64748b'));
         charts.jit.options.onClick = (event, elements) => {
           if (elements.length > 0) {
             const commit = jitData[elements[0].index].commit;
@@ -1574,7 +1572,7 @@
             backgroundColor: '#e06c4d24', 
             borderWidth: 2, 
             pointRadius: 1.5, 
-            pointBackgroundColor: jitData.map(p => (p.updated ? '#e06c4d' : '#64748b')),
+            pointBackgroundColor: ctx => (ctx.raw?.updated ? '#e06c4d' : '#64748b'),
             pointHoverRadius: 0,
             segment: makeWorkstationSegment('#64748b', '#e06c4d', '#64748b24', '#e06c4d24'),
             customHover: {
