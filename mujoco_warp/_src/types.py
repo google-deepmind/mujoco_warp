@@ -1671,8 +1671,6 @@ class Model:
     Minv_block_adr: offset of the dof's tree block in the packed inverse inertia (nv,)
     Minv_block_dofmax: number of dofs of the largest tree
     flg_adhesion: flag indicating if model has passive adhesion
-    flg_tendon_stiffness: whether any tendon has non-zero stiffness
-    flg_tendon_damping: whether any tendon has non-zero damping (direct or via actuator)
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     flg_surfacevel: whether model has non-zero surfacevel
     has_sdf_geom: whether the model contains SDF geoms
@@ -2284,8 +2282,6 @@ class Model:
   Minv_block_adr: array("nv", int)
   Minv_block_dofmax: int
   flg_adhesion: bool
-  flg_tendon_stiffness: array(1, int)
-  flg_tendon_damping: array(1, int)
   has_fluid: bool
   flg_surfacevel: bool
   has_sdf_geom: bool

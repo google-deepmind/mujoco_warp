@@ -2450,8 +2450,6 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     actuator_dampingpoly: wp.array2d[wp.vec2],
     actuator_armature: wp.array2d[float],
     actuator_gear: wp.array2d[wp.spatial_vector],
-    flg_tendon_stiffness: wp.array[int],
-    flg_tendon_damping: wp.array[int],
     # Data in:
     qvel_in: wp.array2d[float],
     plastic_in: wp.array2d[float],
@@ -2484,7 +2482,7 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     frc = ten_frc_in[worldid, tenid]
 
     # ten_frc += spring and damper
-    if not dsbl_spring and flg_tendon_stiffness[0] != 0:
+    if not dsbl_spring:
       stiffness = tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid]
       spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
       if stiffness != 0.0 or spoly[0] != 0.0 or spoly[1] != 0.0:
@@ -2500,7 +2498,7 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
         x = wp.where(length > upper, length - upper, wp.where(length < lower, length - lower, 0.0))
         frc += -x * util_misc._poly_force(stiffness, spoly, x, 0)
 
-    if not dsbl_damper and flg_tendon_damping[0] != 0:
+    if not dsbl_damper:
       damping, dpoly = util_misc.tendon_damping_total(
         tendon_actuatorid,
         tendon_damping,
@@ -2774,8 +2772,6 @@ def rne_postconstraint(m: Model, d: Data):
         m.actuator_dampingpoly,
         m.actuator_armature,
         m.actuator_gear,
-        m.flg_tendon_stiffness,
-        m.flg_tendon_damping,
         d.qvel,
         d.plastic,
         d.qacc,

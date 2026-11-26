@@ -870,21 +870,16 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   ):
     raise ValueError("discrete integrator: flex with general attachments requires solver='CG'")
   m.has_tendon_stiffness = bool(mjm.ntendon > 0 and (np.any(m.tendon_stiffness != 0) or np.any(m.tendon_stiffnesspoly != 0)))
-  m.flg_tendon_stiffness = np.array([int(m.has_tendon_stiffness)], dtype=np.int32)
   tendon_actuator = mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_TENDON
   m.has_tendon_damping = bool(
     mjm.ntendon > 0
     and (
       np.any(m.tendon_damping != 0)
       or np.any(m.tendon_dampingpoly != 0)
-      or np.any(
-        tendon_actuator
-        & ((mjm.actuator_damping != 0) | np.any(mjm.actuator_dampingpoly != 0, axis=1))
-        & (mjm.actuator_gear[:, 0] != 0)
-      )
+      or np.any(mjm.actuator_damping[tendon_actuator] != 0)
+      or np.any(mjm.actuator_dampingpoly[tendon_actuator] != 0)
     )
   )
-  m.flg_tendon_damping = np.array([int(m.has_tendon_damping)], dtype=np.int32)
   m.has_efm_actuator = bool(
     mjm.nactuator > 0
     and np.any(

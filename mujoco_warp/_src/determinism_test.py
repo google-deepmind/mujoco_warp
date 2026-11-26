@@ -262,6 +262,7 @@ _TREE_CASES = (
       "derivative._qderiv_actuator_passive_actuation_sparse",
       "derivative._qderiv_box_fluid",
       "derivative._qderiv_ellipsoid_fluid",
+      "derivative._qderiv_tendon_damping",
       "derivative.deriv_rne_body2jnt_sparse",
       "derivative.deriv_rne_cfrcbody_backward",
     ),

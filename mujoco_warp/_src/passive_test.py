@@ -1283,13 +1283,13 @@ class PassiveTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(qfrc_spring[0], qfrc_spring[1]))
 
-  @parameterized.parameters(1, 2)
-  def test_tendon_passive_zero_early_exit(self, nworld):
-    """Tests that flg_tendon_stiffness/damping == 0 skips tendon passive and qderiv kernels."""
+  @parameterized.product(nworld=(1, 2), integrator=("Euler", "implicit", "implicitfast"))
+  def test_tendon_passive_runtime_mutation(self, nworld, integrator):
+    """Tests runtime mutation of tendon stiffness/damping from zero without set_const."""
     mjm, mjd, m, d = test_data.fixture(
-      xml="""
+      xml=f"""
       <mujoco>
-        <option gravity="0 0 -10" integrator="implicitfast">
+        <option gravity="0 0 -10" integrator="{integrator}">
           <flag contact="disable"/>
         </option>
         <worldbody>
@@ -1324,55 +1324,124 @@ class PassiveTest(parameterized.TestCase):
       nworld=nworld,
     )
 
-    self.assertEqual(m.flg_tendon_stiffness.numpy()[0], 0)
-    self.assertEqual(m.flg_tendon_damping.numpy()[0], 0)
-
     qpos_np = np.array([[0.3, -0.4], [-0.5, 0.7]][:nworld], dtype=np.float32)
     qvel_np = np.array([[0.8, -0.5], [-0.6, 0.9]][:nworld], dtype=np.float32)
     d.qpos.assign(qpos_np)
     d.qvel.assign(qvel_np)
 
-    # Set non-zero stiffness/damping while flags stay 0 to prove flags short-circuit
-    # _spring_damper_tendon_passive, _qderiv_tendon_damping, and _cfrc_ext_spatial_tendon
-    m.tendon_stiffness.fill_(10.0)
-    m.tendon_damping.fill_(2.0)
-    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive, d.qacc, d.cfrc_ext):
-      arr.fill_(wp.inf)
-    mjw.forward(m, d)
-    mjw.rne_postconstraint(m, d)
-
-    np.testing.assert_allclose(d.qfrc_spring.numpy(), 0.0, atol=1e-6)
-    np.testing.assert_allclose(d.qfrc_damper.numpy(), 0.0, atol=1e-6)
-    qacc_short = d.qacc.numpy().copy()
-    cfrc_ext_short = d.cfrc_ext.numpy().copy()
-    m.tendon_stiffness.zero_()
-    m.tendon_damping.zero_()
-
-    # Verify graph-captured forward + rne_postconstraint match CPU (and short-circuited run)
+    # Capture forward + rne_postconstraint once; mutate stiffness/damping/gear without set_const
     with wp.ScopedCapture() as capture:
       mjw.forward(m, d)
       mjw.rne_postconstraint(m, d)
 
-    for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive, d.qacc, d.cfrc_ext):
-      arr.fill_(wp.inf)
-    wp.capture_launch(capture.graph)
+    def run_and_check(label):
+      for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive, d.qacc, d.cfrc_ext):
+        arr.fill_(wp.inf)
+      wp.capture_launch(capture.graph)
+      qfrc_spring = d.qfrc_spring.numpy()
+      qfrc_damper = d.qfrc_damper.numpy()
+      qfrc_passive = d.qfrc_passive.numpy()
+      qacc = d.qacc.numpy()
+      cfrc_ext = d.cfrc_ext.numpy()
+      for w in range(nworld):
+        mjd.qpos[:] = qpos_np[w]
+        mjd.qvel[:] = qvel_np[w]
+        mujoco.mj_forward(mjm, mjd)
+        mujoco.mj_rnePostConstraint(mjm, mjd)
+        _assert_eq(qfrc_spring[w], mjd.qfrc_spring, f"qfrc_spring_{label}_w{w}")
+        _assert_eq(qfrc_damper[w], mjd.qfrc_damper, f"qfrc_damper_{label}_w{w}")
+        _assert_eq(qfrc_passive[w], mjd.qfrc_passive, f"qfrc_passive_{label}_w{w}")
+        _assert_eq(qacc[w], mjd.qacc, f"qacc_{label}_w{w}")
+        _assert_eq(cfrc_ext[w], mjd.cfrc_ext, f"cfrc_ext_{label}_w{w}")
+      return qfrc_spring, qfrc_damper, qacc
 
-    qfrc_passive = d.qfrc_passive.numpy()
-    qacc = d.qacc.numpy()
-    cfrc_ext = d.cfrc_ext.numpy()
-    _assert_eq(qacc_short, qacc, "qacc_short")
-    _assert_eq(cfrc_ext_short, cfrc_ext, "cfrc_ext_short")
-    for w in range(nworld):
-      mjd.qpos[:] = qpos_np[w]
-      mjd.qvel[:] = qvel_np[w]
-      mujoco.mj_forward(mjm, mjd)
-      mujoco.mj_rnePostConstraint(mjm, mjd)
-      _assert_eq(qfrc_passive[w], mjd.qfrc_passive, f"qfrc_passive_w{w}")
-      _assert_eq(qacc[w], mjd.qacc, f"qacc_w{w}")
-      _assert_eq(cfrc_ext[w], mjd.cfrc_ext, f"cfrc_ext_w{w}")
+    # Zero stiffness and damping
+    qfrc_spring_zero, qfrc_damper_zero, qacc_zero = run_and_check("zero")
+    np.testing.assert_allclose(qfrc_spring_zero, 0.0, atol=1e-6)
+    np.testing.assert_allclose(qfrc_damper_zero, 0.0, atol=1e-6)
+
+    # Mutate to non-zero without calling set_const
+    m.tendon_stiffness.fill_(10.0)
+    m.tendon_damping.fill_(2.0)
+    m.actuator_damping.assign(np.array([[0.3, 0.5]], dtype=np.float32))
+    gear_active = m.actuator_gear.numpy().copy()
+    gear_active[0, 1, 0] = 1.5
+    m.actuator_gear.assign(gear_active)
+    mjm.tendon_stiffness[:] = 10.0
+    mjm.tendon_damping[:] = 2.0
+    mjm.actuator_damping[:] = [0.3, 0.5]
+    mjm.actuator_gear[1, 0] = 1.5
+
+    qfrc_spring_nz, qfrc_damper_nz, qacc_nz = run_and_check("nonzero")
+    self.assertGreater(np.max(np.abs(qfrc_spring_nz)), 1e-2)
+    self.assertGreater(np.max(np.abs(qfrc_damper_nz)), 1e-2)
+    self.assertFalse(np.allclose(qacc_nz, qacc_zero))
+
+    # Mutate back to zero without calling set_const
+    m.tendon_stiffness.zero_()
+    m.tendon_damping.zero_()
+    m.actuator_damping.assign(np.array([[0.0, 0.5]], dtype=np.float32))
+    gear_zero = gear_active.copy()
+    gear_zero[0, 1, 0] = 0.0
+    m.actuator_gear.assign(gear_zero)
+    mjm.tendon_stiffness[:] = 0.0
+    mjm.tendon_damping[:] = 0.0
+    mjm.actuator_damping[:] = [0.0, 0.5]
+    mjm.actuator_gear[1, 0] = 0.0
+
+    qfrc_spring_reset, qfrc_damper_reset, qacc_reset = run_and_check("reset")
+    np.testing.assert_allclose(qfrc_spring_reset, 0.0, atol=1e-6)
+    np.testing.assert_allclose(qfrc_damper_reset, 0.0, atol=1e-6)
+    _assert_eq(qacc_reset, qacc_zero, "qacc_reset")
 
     if nworld == 2:
-      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+      self.assertFalse(np.allclose(qacc_nz[0], qacc_nz[1]))
+
+  def test_tendon_discrete_gear_runtime_mutation(self):
+    """Tests that DISCRETE integrator preserves tendon actuator damping when gear changes from 0."""
+    xml_template = """
+    <mujoco>
+      <option gravity="0 0 -10">
+        <flag contact="disable"/>
+      </option>
+      <worldbody>
+        <site name="s0" pos="0 0 .5"/>
+        <body>
+          <joint name="j0" axis="0 1 0"/>
+          <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+          <site name="s1" pos=".2 0 .05"/>
+          <body pos=".3 0 0">
+            <joint name="j1" axis="0 1 0"/>
+            <geom size=".05" pos=".2 0 0"/>
+            <site name="s2" pos=".1 .05 0"/>
+          </body>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial name="t0">
+          <site site="s0"/>
+          <site site="s2"/>
+        </spatial>
+      </tendon>
+      <actuator>
+        <motor tendon="t0" gear="{gear}" damping="5"/>
+      </actuator>
+    </mujoco>
+    """
+    _, _, m, d = test_data.fixture(xml=xml_template.format(gear=0), overrides={"opt.integrator": "DISCRETE"})
+    _, _, m_ref, d_ref = test_data.fixture(xml=xml_template.format(gear=2), overrides={"opt.integrator": "DISCRETE"})
+
+    # Mutate gear from 0 to 2 at runtime and recompute constants
+    gear = m.actuator_gear.numpy().copy()
+    gear[0, 0, 0] = 2.0
+    m.actuator_gear.assign(gear)
+    mjw.set_const(m, d)
+
+    for _ in range(20):
+      mjw.step(m, d)
+      mjw.step(m_ref, d_ref)
+
+    _assert_eq(d.qvel.numpy(), d_ref.qvel.numpy(), "discrete_qvel")
 
 
 if __name__ == "__main__":
