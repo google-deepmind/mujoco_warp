@@ -451,6 +451,7 @@ def _compute_flex_awake(
   flex_nodenum: wp.array[int],
   flex_vertadr: wp.array[int],
   flex_vertnum: wp.array[int],
+  flex_plasticadr: wp.array[int],
   flex_nodebodyid: wp.array[int],
   flex_vertbodyid: wp.array[int],
   flex_rod_has_twist: wp.array[bool],
@@ -465,6 +466,9 @@ def _compute_flex_awake(
 ):
   """Computes whole-flex awake mask matching mj_sleepState(mjOBJ_FLEX)."""
   worldid, f = wp.tid()
+  if flex_plasticadr[f] < 0:
+    flex_awake_out[worldid, f] = False
+    return
   if ntree_awake_in[worldid] >= ntree:
     flex_awake_out[worldid, f] = True
     return
@@ -977,12 +981,14 @@ def _next_plastic_flex_stretch(enable_sleep: bool = False):
           m2 = wp.max(0.0, -c1 / (3.0 * c3))
           if m2 > MJ_MINVAL:
             m_val = wp.sqrt(m2)
-            # Guard float32 product underflow (diverges from MuJoCo C float64)
-            denom = 2.0 * c3 * m_val * m2
+            # Cancel c3 and factor R out of sqrt for scale-invariant float32 stability
+            # (diverges from MuJoCo C float64)
+            denom = 2.0 * m_val * m2
             if denom > MJ_MINVAL:
-              R = (c3 - c0) / denom
+              R = (1.0 - c0 / c3) / denom
               if R >= 1.0:
-                w_cbrt = wp.pow(R + wp.sqrt(wp.max(0.0, R * R - 1.0)), 1.0 / 3.0)
+                inv_R = 1.0 / R
+                w_cbrt = wp.pow(R * (1.0 + wp.sqrt(wp.max(0.0, 1.0 - inv_R * inv_R))), 1.0 / 3.0)
                 u = m_val * (w_cbrt + 1.0 / w_cbrt)
               else:
                 u = 2.0 * m_val * wp.cos(wp.acos(wp.max(-1.0, R)) / 3.0)
@@ -1439,6 +1445,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None,
         m.flex_nodenum,
         m.flex_vertadr,
         m.flex_vertnum,
+        m.flex_plasticadr,
         m.flex_nodebodyid,
         m.flex_vertbodyid,
         m.flex_rod_has_twist,

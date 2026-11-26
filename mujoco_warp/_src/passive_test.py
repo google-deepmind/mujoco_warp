@@ -1639,6 +1639,34 @@ class PassiveTest(parameterized.TestCase):
 
     _assert_eq(_gram_det(q), _gram_det(g), f"volume_preservation_e{elastic3d}")
 
+    # Centimeter-scale tet (c3 ~ 1e-12): volume preservation must remain scale-invariant in float32.
+    spec_cm = mujoco.MjSpec.from_string(f"""
+    <mujoco>
+      <option gravity="0 0 0" timestep="0" integrator="{integrator}"/>
+      <worldbody>
+        <flexcomp name="tet_cm" type="direct" dim="3" mass="0.01"
+                  point="0 0 0  0.01 0 0  0 0.01 0  0 0 0.01" element="0 1 2 3">
+          <contact contype="0" conaffinity="0" selfcollide="none"/>
+          <elasticity young="1000" poisson="0.25" yield="0.003"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """)
+    spec_cm.flexes[0].elastic3d = elastic3d
+    mjm_cm = spec_cm.compile()
+    mjd_cm = mujoco.MjData(mjm_cm)
+    adr3_cm = mjm_cm.body_dofadr[mjm_cm.flex_vertbodyid[3]]
+    mjd_cm.qpos[adr3_cm : adr3_cm + 3] = [0.001, 0.0005, 0.0]
+    mujoco.mj_forward(mjm_cm, mjd_cm)
+    m_cm = mjw.put_model(mjm_cm)
+    d_cm = mjw.put_data(mjm_cm, mjd_cm)
+    mujoco.mj_step(mjm_cm, mjd_cm)
+    mjw.step(m_cm, d_cm)
+    sp_cm = d_cm.plastic.numpy()[0]
+    np.testing.assert_allclose(sp_cm, mjd_cm.plastic, atol=1e-7, rtol=1e-3)
+    g_cm = np.array([mjm_cm.flexedge_length0[mjm_cm.flex_elemedge[e]] ** 2 for e in range(6)])
+    np.testing.assert_allclose(_gram_det(g_cm + sp_cm), _gram_det(g_cm), rtol=1e-4)
+
   @parameterized.product(nworld=(1, 2), integrator=("Euler", "RK4", "discrete"))
   def test_flex_interp_plastic(self, nworld, integrator):
     """Verify plastic 2D and 3D non-cubic interpolated flexes match MuJoCo across integrators."""

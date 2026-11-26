@@ -2015,6 +2015,12 @@ class SleepTest(parameterized.TestCase):
             <contact contype="0" conaffinity="0" selfcollide="none"/>
             <elasticity young="5e5" damping="0.05"/>
           </flexcomp>
+          <flexcomp name="elastic_tet" type="direct" dim="3" mass="1"
+                    point="9 0 0  10 0 0  9 1 0  9 0 1" element="0 1 2 3">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.25" damping="0.05"/>
+            <pin id="0 1 2"/>
+          </flexcomp>
           <body name="mocap_root" mocap="true" pos="0 4 0">
             <flexcomp name="mocap_rod" type="grid" count="4 1 1" spacing="0.1 0.1 0.1"
                       radius="0.008" dim="1" mass="0.08">
@@ -2033,7 +2039,9 @@ class SleepTest(parameterized.TestCase):
     tet_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "tet")
     box_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "box")
     rod_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "rod")
+    elastic_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "elastic_tet")
     mocap_rod_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "mocap_rod")
+    self.assertEqual(mjm.flex_plasticadr[elastic_id], -1)
     self.assertGreaterEqual(mjm.flex_plasticadr[mocap_rod_id], 0)
 
     # Deform every flex past yield and rotate the 1D rod vertices so rod twist updates when awake.
