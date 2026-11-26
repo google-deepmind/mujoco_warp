@@ -1338,11 +1338,11 @@ class PassiveTest(parameterized.TestCase):
       for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive, d.qacc, d.cfrc_ext):
         arr.fill_(wp.inf)
       wp.capture_launch(capture.graph)
-      qfrc_spring = d.qfrc_spring.numpy()
-      qfrc_damper = d.qfrc_damper.numpy()
-      qfrc_passive = d.qfrc_passive.numpy()
-      qacc = d.qacc.numpy()
-      cfrc_ext = d.cfrc_ext.numpy()
+      qfrc_spring = d.qfrc_spring.numpy().copy()
+      qfrc_damper = d.qfrc_damper.numpy().copy()
+      qfrc_passive = d.qfrc_passive.numpy().copy()
+      qacc = d.qacc.numpy().copy()
+      cfrc_ext = d.cfrc_ext.numpy().copy()
       for w in range(nworld):
         mjd.qpos[:] = qpos_np[w]
         mjd.qvel[:] = qvel_np[w]
