@@ -1420,8 +1420,13 @@ class SolverTest(parameterized.TestCase):
 
     np.testing.assert_allclose(d.qacc.numpy()[:, 0], targets, rtol=1e-6)
 
-  def test_linesearch_newton_first_trial(self):
-    """Newton linesearch finds the minimizer whether or not grad_scale predicts it."""
+  @parameterized.parameters(
+    # without bracket rounds only the trial at the minimizer converges
+    (0, (4.0, 0.0, 0.0), (False, True, True)),
+    (50, (4.0, 4.0, 4.0), (False, False, False)),
+  )
+  def test_linesearch_newton_first_trial(self, ls_iterations, alpha, overflow):
+    """Newton linesearch takes its first trial at grad_scale and recovers from a wrong one."""
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -1433,7 +1438,7 @@ class SolverTest(parameterized.TestCase):
         </worldbody>
       </mujoco>
       """,
-      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE, "opt.iterations": 0},
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE, "opt.iterations": 0, "opt.ls_iterations": ls_iterations},
       nworld=3,
       njmax=1,
     )
@@ -1457,14 +1462,16 @@ class SolverTest(parameterized.TestCase):
     ctx.search_dot.fill_(1.0)
     ctx.done.fill_(False)
     ctx.search_unchanged.fill_(False)
+    d.overflow.zero_()
+    ctx.alpha.fill_(wp.inf)
 
     # first trial at, short of and past the minimizer
     _set_newton_ray(m, d, ctx, [4.0, 1.0, 16.0])
 
     solver._linesearch(m, d, ctx)
 
-    np.testing.assert_allclose(ctx.alpha.numpy(), 4.0, rtol=1e-6)
-    np.testing.assert_allclose(ctx.improvement.numpy(), 8.0, rtol=1e-6)
+    np.testing.assert_allclose(ctx.alpha.numpy(), alpha, rtol=1e-6)
+    np.testing.assert_array_equal((d.overflow.numpy() & types.OverflowType.LS_ITERATIONS) != 0, overflow)
 
   @parameterized.product(
     case=(
