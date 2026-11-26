@@ -1,7 +1,7 @@
 ASSETS = [
   {
     "source": "https://github.com/google-deepmind/mujoco.git",
-    "ref": "a2db3285bc700a6fab8ebd76c1708fce8cca87c5",
+    "ref": "8b76151a21e003925626ffbe3b7d325a35246b50",
   }
 ]
 
@@ -30,6 +30,7 @@ BENCHMARKS = [
     "nconmax": 4096,
     "nccdmax": 4096,
     "njmax": 64,
+    # TODO(team): Remove once float32 eff_solve PCG converges within drape.xml's iterations=400.
     "override": "opt.iterations=1000",
     "assets": [(ASSETS[0], "model/flex")],
   },
@@ -91,5 +92,16 @@ BENCHMARKS = [
     "njmax": 3072,
     "assets": [(ASSETS[0], "model/flex")],
   },
-  # TODO(team): Add flex_bag (bag.xml) once IPC and rigid flexes are supported.
+  {
+    "name": "flex_roller",
+    "mjcf": "roller.xml",
+    "nworld": 512,
+    "nstep": 500,
+    "nconmax": 512,
+    "nccdmax": 512,
+    "njmax": 512,
+    "assets": [(ASSETS[0], "model/plastic")],
+  },
+  # TODO(team): Add flex_bag (model/flex/bag.xml) once IPC and rigid flexes are supported.
+  # TODO(team): Add flex_clay (model/plastic/clay.xml) once float32 eff_solve PCG converges.
 ]
