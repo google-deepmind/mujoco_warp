@@ -357,6 +357,11 @@ def _eval_pt_direct_shifted_3alphas(
 
 
 @wp.func
+def _vec4(pt: wp.vec3, w: float) -> wp.vec4:
+  return wp.vec4(pt[0], pt[1], pt[2], w)
+
+
+@wp.func
 def _eval_cost(quad: wp.vec3, alpha: float) -> float:
   return alpha * alpha * quad[2] + alpha * quad[1] + quad[0]
 
@@ -397,6 +402,16 @@ def _eval_frictionloss_alpha_zero(jaref: float, jv: float, f: float, rf: float, 
     return wp.vec3(f * (-0.5 * rf - jaref), -f * jv, 0.0)
   else:
     return wp.vec3(f * (-0.5 * rf + jaref), f * jv, 0.0)
+
+
+@wp.func
+def _eval_frictionloss_cost_alpha_zero(jaref: float, f: float, rf: float, d: float) -> float:
+  if (-rf < jaref) and (jaref < rf):
+    return 0.5 * d * jaref * jaref
+  elif jaref <= -rf:
+    return f * (-0.5 * rf - jaref)
+  else:
+    return f * (-0.5 * rf + jaref)
 
 
 @wp.func
@@ -699,10 +714,10 @@ def _compute_efc_eval_pt_pyramidal(
   efc_frictionloss: wp.array[float],
   ctx_Jaref: float,
   ctx_jv: float,
-) -> wp.vec3:
+) -> wp.vec4:
   """Compute shifted cost, gradient, and hessian for pyramidal cones.
 
-  Returns (cost(alpha) - cost(0), grad(alpha), hessian(alpha)) summed across the row.
+  Returns (cost(alpha) - cost(0), grad(alpha), hessian(alpha), cost(0)) summed across the row.
   """
   # Limit/other constraint
   if efcid >= ne + nf:
@@ -713,17 +728,20 @@ def _compute_efc_eval_pt_pyramidal(
     # constraint was inactive at alpha=0 (i.e. cost(0) = 0) so we get quad(alpha) - 0.
     offset = quad0 - cost0
     if x < 0.0:
-      return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha, offset)
-    return wp.vec3(-cost0, 0.0, 0.0)
+      return _vec4(_eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha, offset), cost0)
+    return wp.vec4(-cost0, 0.0, 0.0, cost0)
 
   # Friction constraint - needs quad for frictionloss computation
   if efcid >= ne:
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    return _eval_frictionloss_shifted(ctx_Jaref, ctx_jv, f, rf, efc_D, alpha)
+    return _vec4(
+      _eval_frictionloss_shifted(ctx_Jaref, ctx_jv, f, rf, efc_D, alpha),
+      _eval_frictionloss_cost_alpha_zero(ctx_Jaref, f, rf, efc_D),
+    )
 
   # Equality constraint
-  return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha, 0.0)
+  return _vec4(_eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha, 0.0), _eval_pt_direct_cost_alpha_zero(ctx_Jaref, efc_D))
 
 
 @wp.func
@@ -751,19 +769,19 @@ def _compute_efc_eval_pt_elliptic(
   efc_address0: int,
   quad1: wp.vec3,
   quad2: wp.vec3,
-) -> wp.vec3:
+) -> wp.vec4:
   """Compute shifted cost, gradient, and hessian for elliptic cones.
 
-  Returns (cost(alpha) - cost(0), grad(alpha), hessian(alpha)) summed across the row.
+  Returns (cost(alpha) - cost(0), grad(alpha), hessian(alpha), cost(0)) summed across the row.
   """
   # Contact/limit/other constraints
   if efcid >= ne + nf:
     if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
       if efcid != efc_address0:  # Not primary row
-        return wp.vec3(0.0)
+        return wp.vec4(0.0)
       mu = contact_friction[0] * impratio_invsqrt
       cost0, T0, r0, state0 = _eval_elliptic_reference(mu, ctx_quad, quad1, quad2)
-      return _eval_elliptic_shifted(mu, ctx_quad, quad1, quad2, alpha, cost0, T0, r0, state0)
+      return _vec4(_eval_elliptic_shifted(mu, ctx_quad, quad1, quad2, alpha, cost0, T0, r0, state0), cost0)
 
     # Limit/other constraint — direct eval (no quad read)
     x = ctx_Jaref + alpha * ctx_jv
@@ -773,19 +791,22 @@ def _compute_efc_eval_pt_elliptic(
     # See _compute_efc_eval_pt_pyramidal for the offset rationale.
     offset = quad0 - cost0
     if x < 0.0:
-      return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha, offset)
-    return wp.vec3(-cost0, 0.0, 0.0)
+      return _vec4(_eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha, offset), cost0)
+    return wp.vec4(-cost0, 0.0, 0.0, cost0)
 
   # Friction constraint - load D and frictionloss only here
   if efcid >= ne:
     efc_D = efc_D_in[efcid]
     f = efc_frictionloss[efcid]
     rf = math.safe_div(f, efc_D)
-    return _eval_frictionloss_shifted(ctx_Jaref, ctx_jv, f, rf, efc_D, alpha)
+    return _vec4(
+      _eval_frictionloss_shifted(ctx_Jaref, ctx_jv, f, rf, efc_D, alpha),
+      _eval_frictionloss_cost_alpha_zero(ctx_Jaref, f, rf, efc_D),
+    )
 
   # Equality constraint — direct eval (no quad read)
   efc_D = efc_D_in[efcid]
-  return _eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha, 0.0)
+  return _vec4(_eval_pt_direct_shifted(ctx_Jaref, ctx_jv, efc_D, alpha, 0.0), _eval_pt_direct_cost_alpha_zero(ctx_Jaref, efc_D))
 
 
 @wp.func
@@ -1072,6 +1093,7 @@ def _linesearch_iterative_kernel(
   incremental: bool,
   warn_overflow: int,
   is_discrete: bool,
+  newton: bool,
 ):
   """Factory for iterative linesearch kernel.
 
@@ -1083,6 +1105,7 @@ def _linesearch_iterative_kernel(
     incremental: Use incremental linesearch updates.
     warn_overflow: Overflow warning bitmask.
     is_discrete: Discrete integrator (per-contact regularized cone scale).
+    newton: Newton search direction (slope, curvature and first trial step at alpha = 0 are known).
   """
   LS_ITERATIONS = ls_iterations
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
@@ -1090,6 +1113,7 @@ def _linesearch_iterative_kernel(
   INCREMENTAL = incremental
   IS_SPARSE = is_sparse
   IS_DISCRETE = is_discrete
+  NEWTON = newton
 
   # Select specialized helper functions based on cone type
   if IS_ELLIPTIC:
@@ -1129,6 +1153,8 @@ def _linesearch_iterative_kernel(
     nacon_in: wp.array[int],
     # In:
     ctx_inertia_scale_in: wp.array[float],
+    ctx_grad_scale_in: wp.array[float],
+    ctx_newton_decrement_in: wp.array[float],
     ctx_search_unchanged_in: wp.array[bool],
     ctx_Jaref_in: wp.array2d[float],
     ctx_search_in: wp.array2d[float],
@@ -1282,8 +1308,17 @@ def _linesearch_iterative_kernel(
         0.5 * jv * jvD,
       )
 
+    # Newton: H @ search = -grad for the Hessian of the current constraint states, so at
+    # alpha = 0 the slope is -newton_decrement / grad_scale, the curvature is
+    # newton_decrement / grad_scale^2 and the first trial is grad_scale. Only the row cost
+    # for the noise bound is still summed, in the pass that evaluates the trial.
+    lo_alpha_in = float(0.0)
+    if wp.static(NEWTON):
+      lo_alpha_in = ctx_grad_scale_in[worldid]
+
     # p0 via parallel reduction over non-equality constraints
     local_p0 = wp.vec3(0.0)
+    local_lo_in = wp.vec4(0.0)
     for efcid in range(ne + tid, nefc, wp.block_dim()):
       if wp.static(IS_ELLIPTIC):
         efc_type = efc_type_in[worldid, efcid]
@@ -1308,97 +1343,7 @@ def _linesearch_iterative_kernel(
             if efcid == efc_addr0:
               mu_scale = _elliptic_mu_scale(efc_D_in[worldid, efc_addr0], efc_D_in[worldid, efc_addr1])
 
-        local_p0 += _compute_efc_eval_pt_alpha_zero(
-          efcid,
-          ne,
-          nf,
-          mu_scale,
-          efc_type,
-          efc_D_in[worldid],
-          efc_frictionloss_in[worldid],
-          ctx_Jaref_in[worldid, efcid],
-          ctx_jv_in[worldid, efcid],
-          ctx_quad,
-          contact_friction,
-          efc_addr0,
-          quad1,
-          quad2,
-        )
-      else:
-        # direct evaluation for pyramidal cones (no intermediate quad)
-        local_p0 += _compute_efc_eval_pt_alpha_zero(
-          efcid,
-          ne,
-          nf,
-          efc_D_in[worldid, efcid],
-          efc_frictionloss_in[worldid],
-          ctx_Jaref_in[worldid, efcid],
-          ctx_jv_in[worldid, efcid],
-        )
-
-    # Pack independent sums to share reduction synchronization.
-    initial = types.vec5(local_gauss[0], local_gauss[1], local_p0[0], local_p0[1], local_p0[2])
-    initial_sum = wp.tile_reduce(wp.add, wp.tile(initial, preserve_type=True))[0]
-    ctx_quad_gauss = wp.vec3(0.0, initial_sum[0], initial_sum[1])
-    rows = wp.vec3(initial_sum[2], initial_sum[3], initial_sum[4])
-
-    # add quad_gauss contribution to p0
-    p0 = wp.vec3(ctx_quad_gauss[0], ctx_quad_gauss[1], 2.0 * ctx_quad_gauss[2]) + rows
-    p0_delta = wp.vec3(0.0, p0[1], p0[2])
-
-    # The bracketing search reads derivative sums whose rounding noise is ~eps
-    # times their gross magnitude, so roots below eps * |q1| / p0[2] (and never
-    # below 8 ulps of the unit ray anchor) are noise, not descent: an accepted
-    # step under this floor means the stale ray is exhausted and the fast path
-    # must rebuild the world. Per quadratic row |q1| = sqrt(2 * cost * hessian),
-    # so Cauchy-Schwarz bounds the row total by sums already reduced for p0; the
-    # smooth term is added exactly. Friction linear rows fall outside the bound,
-    # which only lowers the floor toward the fixed 8-ulp base.
-    q1_abs = wp.sqrt(2.0 * wp.max(rows[0], 0.0) * wp.max(rows[2], 0.0)) + wp.abs(ctx_quad_gauss[1])
-
-    # set acceptance tolerance to avoid exceeding gtol in f32
-    gtol_accept = wp.max(gtol, _ALPHA_NOISE_EPS * q1_abs)
-
-    noise_floor = float(0.0)
-    if wp.static(INCREMENTAL):
-      noise_floor = _ALPHA_NOISE_EPS * wp.max(1.0, math.safe_div(q1_abs, p0[2]))
-
-    alpha = float(0.0)
-    improvement = float(0.0)
-
-    # a slope at alpha = 0 below rounding noise means the start is already the line minimum
-    ls_converged = wp.abs(p0[1]) < _ALPHA_NOISE_EPS * q1_abs
-
-    # lo_in at lo_alpha_in = -p0[1] / p0[2]
-    lo_alpha_in = -math.safe_div(p0[1], p0[2])
-    lo_in = wp.vec3(0.0)
-
-    if not ls_converged:
-      local_lo_in = wp.vec3(0.0)
-      for efcid in range(ne + tid, nefc, wp.block_dim()):
-        if wp.static(IS_ELLIPTIC):
-          efc_type = efc_type_in[worldid, efcid]
-          efc_id = 0
-          contact_friction = types.vec5(0.0)
-          efc_addr0 = int(0)
-          mu_scale = impratio_invsqrt
-          ctx_quad = wp.vec3(0.0)
-          quad1 = wp.vec3(0.0)
-          quad2 = wp.vec3(0.0)
-
-          if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
-            efc_id = efc_id_in[worldid, efcid]
-            contact_friction = contact_friction_in[efc_id]
-            efc_addr0 = contact_efc_address_in[efc_id, 0]
-            efc_addr1 = contact_efc_address_in[efc_id, 1]
-            efc_addr2 = contact_efc_address_in[efc_id, 2]
-            ctx_quad = ctx_quad_in[worldid, efcid]
-            quad1 = ctx_quad_in[worldid, efc_addr1]
-            quad2 = ctx_quad_in[worldid, efc_addr2]
-            if wp.static(IS_DISCRETE):
-              if efcid == efc_addr0:
-                mu_scale = _elliptic_mu_scale(efc_D_in[worldid, efc_addr0], efc_D_in[worldid, efc_addr1])
-
+        if wp.static(NEWTON):
           local_lo_in += _compute_efc_eval_pt(
             efcid,
             lo_alpha_in,
@@ -1417,7 +1362,25 @@ def _linesearch_iterative_kernel(
             quad2,
           )
         else:
-          # direct evaluation for pyramidal cones (no intermediate quad)
+          local_p0 += _compute_efc_eval_pt_alpha_zero(
+            efcid,
+            ne,
+            nf,
+            mu_scale,
+            efc_type,
+            efc_D_in[worldid],
+            efc_frictionloss_in[worldid],
+            ctx_Jaref_in[worldid, efcid],
+            ctx_jv_in[worldid, efcid],
+            ctx_quad,
+            contact_friction,
+            efc_addr0,
+            quad1,
+            quad2,
+          )
+      else:
+        # direct evaluation for pyramidal cones (no intermediate quad)
+        if wp.static(NEWTON):
           local_lo_in += _compute_efc_eval_pt(
             efcid,
             lo_alpha_in,
@@ -1428,11 +1391,133 @@ def _linesearch_iterative_kernel(
             ctx_Jaref_in[worldid, efcid],
             ctx_jv_in[worldid, efcid],
           )
+        else:
+          local_p0 += _compute_efc_eval_pt_alpha_zero(
+            efcid,
+            ne,
+            nf,
+            efc_D_in[worldid, efcid],
+            efc_frictionloss_in[worldid],
+            ctx_Jaref_in[worldid, efcid],
+            ctx_jv_in[worldid, efcid],
+          )
 
-      lo_in_tile = wp.tile(local_lo_in, preserve_type=True)
-      lo_in_sum = wp.tile_reduce(wp.add, lo_in_tile)
-      lo_in = _eval_pt(ctx_quad_gauss, lo_alpha_in) + lo_in_sum[0]
+    # Pack independent sums to share reduction synchronization.
+    lo_in_rows = wp.vec3(0.0)
+    if wp.static(NEWTON):
+      initial6 = types.vec6(local_gauss[0], local_gauss[1], local_lo_in[0], local_lo_in[1], local_lo_in[2], local_lo_in[3])
+      initial6_sum = wp.tile_reduce(wp.add, wp.tile(initial6, preserve_type=True))[0]
+      ctx_quad_gauss = wp.vec3(0.0, initial6_sum[0], initial6_sum[1])
+      lo_in_rows = wp.vec3(initial6_sum[2], initial6_sum[3], initial6_sum[4])
 
+      newton_decrement = ctx_newton_decrement_in[worldid]
+      p0 = wp.vec3(
+        0.0, -math.safe_div(newton_decrement, lo_alpha_in), math.safe_div(newton_decrement, lo_alpha_in * lo_alpha_in)
+      )
+      rows_cost = initial6_sum[5]
+      rows_hessian = p0[2] - 2.0 * ctx_quad_gauss[2]
+    else:
+      initial = types.vec5(local_gauss[0], local_gauss[1], local_p0[0], local_p0[1], local_p0[2])
+      initial_sum = wp.tile_reduce(wp.add, wp.tile(initial, preserve_type=True))[0]
+      ctx_quad_gauss = wp.vec3(0.0, initial_sum[0], initial_sum[1])
+      rows = wp.vec3(initial_sum[2], initial_sum[3], initial_sum[4])
+
+      # add quad_gauss contribution to p0
+      p0 = wp.vec3(ctx_quad_gauss[0], ctx_quad_gauss[1], 2.0 * ctx_quad_gauss[2]) + rows
+      rows_cost = rows[0]
+      rows_hessian = rows[2]
+    p0_delta = wp.vec3(0.0, p0[1], p0[2])
+
+    # The bracketing search reads derivative sums whose rounding noise is ~eps
+    # times their gross magnitude, so roots below eps * |q1| / p0[2] (and never
+    # below 8 ulps of the unit ray anchor) are noise, not descent: an accepted
+    # step under this floor means the stale ray is exhausted and the fast path
+    # must rebuild the world. Per quadratic row |q1| = sqrt(2 * cost * hessian),
+    # so Cauchy-Schwarz bounds the row total by sums already reduced for p0; the
+    # smooth term is added exactly. Friction linear rows fall outside the bound,
+    # which only lowers the floor toward the fixed 8-ulp base.
+    q1_abs = wp.sqrt(2.0 * wp.max(rows_cost, 0.0) * wp.max(rows_hessian, 0.0)) + wp.abs(ctx_quad_gauss[1])
+
+    # set acceptance tolerance to avoid exceeding gtol in f32
+    gtol_accept = wp.max(gtol, _ALPHA_NOISE_EPS * q1_abs)
+
+    noise_floor = float(0.0)
+    if wp.static(INCREMENTAL):
+      noise_floor = _ALPHA_NOISE_EPS * wp.max(1.0, math.safe_div(q1_abs, p0[2]))
+
+    alpha = float(0.0)
+    improvement = float(0.0)
+
+    # a slope at alpha = 0 below rounding noise means the start is already the line minimum
+    ls_converged = wp.abs(p0[1]) < _ALPHA_NOISE_EPS * q1_abs
+
+    if wp.static(NEWTON):
+      lo_in = _eval_pt(ctx_quad_gauss, lo_alpha_in) + lo_in_rows
+    else:
+      # lo_in at lo_alpha_in = -p0[1] / p0[2]
+      lo_alpha_in = -math.safe_div(p0[1], p0[2])
+      lo_in = wp.vec3(0.0)
+
+      if not ls_converged:
+        for efcid in range(ne + tid, nefc, wp.block_dim()):
+          if wp.static(IS_ELLIPTIC):
+            efc_type = efc_type_in[worldid, efcid]
+            efc_id = 0
+            contact_friction = types.vec5(0.0)
+            efc_addr0 = int(0)
+            mu_scale = impratio_invsqrt
+            ctx_quad = wp.vec3(0.0)
+            quad1 = wp.vec3(0.0)
+            quad2 = wp.vec3(0.0)
+
+            if efc_type == types.ConstraintType.CONTACT_ELLIPTIC:
+              efc_id = efc_id_in[worldid, efcid]
+              contact_friction = contact_friction_in[efc_id]
+              efc_addr0 = contact_efc_address_in[efc_id, 0]
+              efc_addr1 = contact_efc_address_in[efc_id, 1]
+              efc_addr2 = contact_efc_address_in[efc_id, 2]
+              ctx_quad = ctx_quad_in[worldid, efcid]
+              quad1 = ctx_quad_in[worldid, efc_addr1]
+              quad2 = ctx_quad_in[worldid, efc_addr2]
+              if wp.static(IS_DISCRETE):
+                if efcid == efc_addr0:
+                  mu_scale = _elliptic_mu_scale(efc_D_in[worldid, efc_addr0], efc_D_in[worldid, efc_addr1])
+
+            local_lo_in += _compute_efc_eval_pt(
+              efcid,
+              lo_alpha_in,
+              ne,
+              nf,
+              mu_scale,
+              efc_type,
+              efc_D_in[worldid],
+              efc_frictionloss_in[worldid],
+              ctx_Jaref_in[worldid, efcid],
+              ctx_jv_in[worldid, efcid],
+              ctx_quad,
+              contact_friction,
+              efc_addr0,
+              quad1,
+              quad2,
+            )
+          else:
+            # direct evaluation for pyramidal cones (no intermediate quad)
+            local_lo_in += _compute_efc_eval_pt(
+              efcid,
+              lo_alpha_in,
+              ne,
+              nf,
+              efc_D_in[worldid, efcid],
+              efc_frictionloss_in[worldid],
+              ctx_Jaref_in[worldid, efcid],
+              ctx_jv_in[worldid, efcid],
+            )
+
+        lo_in_tile = wp.tile(wp.vec3(local_lo_in[0], local_lo_in[1], local_lo_in[2]), preserve_type=True)
+        lo_in_sum = wp.tile_reduce(wp.add, lo_in_tile)
+        lo_in = _eval_pt(ctx_quad_gauss, lo_alpha_in) + lo_in_sum[0]
+
+    if not ls_converged:
       # accept Newton step if derivative is small and cost improved
       if wp.abs(lo_in[1]) < gtol_accept and lo_in[0] < 0.0:
         ls_converged = True
@@ -1644,6 +1729,9 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
     ctx: SolverContext.
     fuse_jv: Whether jv is computed in-kernel (True) or pre-computed (False).
   """
+  is_discrete = m.opt.integrator == types.IntegratorType.DISCRETE
+  # zeroing the sleeping dofs of the discrete search breaks H @ search = -grad
+  newton = m.opt.solver == types.SolverType.NEWTON and not (is_discrete and (m.opt.enableflags & types.EnableBit.SLEEP))
   wp.launch_tiled(
     _linesearch_iterative_kernel(
       m.opt.ls_iterations,
@@ -1652,7 +1740,8 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
       m.is_sparse,
       _use_incremental(m),
       int(m.opt.warn_overflow),
-      m.opt.integrator == types.IntegratorType.DISCRETE,
+      is_discrete,
+      newton,
     ),
     dim=d.nworld,
     inputs=[
@@ -1678,6 +1767,8 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
       d.njmax,
       d.nacon,
       ctx.inertia_scale,
+      ctx.grad_scale,
+      ctx.newton_decrement,
       ctx.search_unchanged,
       ctx.Jaref,
       ctx.search,
