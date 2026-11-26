@@ -20,6 +20,9 @@ from absl.testing import parameterized
 
 from mujoco_warp._src import collision_primitive_core
 from mujoco_warp._src.collision_primitive_core import sphere_triangle
+from mujoco_warp._src.types import mat23
+from mujoco_warp._src.types import mat83
+from mujoco_warp._src.types import vec8
 
 
 @wp.kernel
@@ -558,143 +561,6 @@ class CapsuleTriangleTest(parameterized.TestCase):
 
 
 @wp.kernel
-def cylinder_triangle_kernel(
-  # In:
-  cylinder_pos: wp.vec3,
-  cylinder_axis: wp.vec3,
-  cylinder_radius: float,
-  cylinder_half_height: float,
-  t1: wp.vec3,
-  t2: wp.vec3,
-  t3: wp.vec3,
-  tri_radius: float,
-  # Out:
-  dist_out: wp.array[wp.vec2],
-  pos_out: wp.array[collision_primitive_core.mat23f],
-  normal_out: wp.array[collision_primitive_core.mat23f],
-):
-  dist, pos, normal = collision_primitive_core.cylinder_triangle(
-    cylinder_pos, cylinder_axis, cylinder_radius, cylinder_half_height, t1, t2, t3, tri_radius
-  )
-  dist_out[0] = dist
-  pos_out[0] = pos
-  normal_out[0] = normal
-
-
-class CylinderTriangleTest(parameterized.TestCase):
-  """Tests for cylinder_triangle collision."""
-
-  def _run_cylinder_triangle(
-    self,
-    cylinder_pos: np.ndarray,
-    cylinder_axis: np.ndarray,
-    cylinder_radius: float,
-    cylinder_half_height: float,
-    t1: np.ndarray,
-    t2: np.ndarray,
-    t3: np.ndarray,
-    tri_radius: float,
-  ):
-    """Helper to run the cylinder_triangle kernel and return results."""
-    dist = wp.zeros(1, dtype=wp.vec2)
-    pos = wp.zeros(1, dtype=collision_primitive_core.mat23f)
-    normal = wp.zeros(1, dtype=collision_primitive_core.mat23f)
-
-    wp.launch(
-      cylinder_triangle_kernel,
-      dim=1,
-      inputs=[
-        wp.vec3(cylinder_pos),
-        wp.vec3(cylinder_axis),
-        cylinder_radius,
-        cylinder_half_height,
-        wp.vec3(t1),
-        wp.vec3(t2),
-        wp.vec3(t3),
-        tri_radius,
-      ],
-      outputs=[dist, pos, normal],
-    )
-
-    return dist.numpy()[0], pos.numpy()[0], normal.numpy()[0]
-
-  def test_cylinder_above_triangle(self):
-    """Cylinder positioned above the triangle with vertex inside cylinder."""
-    t1 = np.array([0.0, 0.0, 0.0])
-    t2 = np.array([1.0, 0.0, 0.0])
-    t3 = np.array([0.5, 1.0, 0.0])
-    cylinder_pos = np.array([0.0, 0.0, 0.3])
-    cylinder_axis = np.array([0.0, 0.0, 1.0])
-    cylinder_radius = 0.2
-    cylinder_half_height = 0.2
-    tri_radius = 0.0
-
-    dist, pos, normal = self._run_cylinder_triangle(
-      cylinder_pos, cylinder_axis, cylinder_radius, cylinder_half_height, t1, t2, t3, tri_radius
-    )
-
-    self.assertLess(dist[0], collision_primitive_core.MJ_MAXVAL)
-
-  def test_cylinder_penetrating_triangle(self):
-    """Cylinder with cap overlapping the triangle plane."""
-    t1 = np.array([0.0, 0.0, 0.0])
-    t2 = np.array([1.0, 0.0, 0.0])
-    t3 = np.array([0.5, 1.0, 0.0])
-    # Position cylinder so its top cap penetrates the triangle plane at z=0
-    # Cylinder center at z=-0.05 with half_height=0.1 means top cap at z=0.05
-    # and vertex t1 at (0,0,0) is within cylinder_radius=0.3 of axis
-    cylinder_pos = np.array([0.0, 0.0, -0.05])
-    cylinder_axis = np.array([0.0, 0.0, 1.0])
-    cylinder_radius = 0.5  # increased radius to ensure triangle is inside
-    cylinder_half_height = 0.1
-    tri_radius = 0.0
-
-    dist, _, _ = self._run_cylinder_triangle(
-      cylinder_pos, cylinder_axis, cylinder_radius, cylinder_half_height, t1, t2, t3, tri_radius
-    )
-
-    # Triangle overlaps with cylinder cap, should get contact
-    self.assertLess(dist[0], collision_primitive_core.MJ_MAXVAL)
-
-  def test_horizontal_cylinder(self):
-    """Cylinder lying horizontally with triangle vertex near its side."""
-    # Triangle with a vertex at z=0.2 close to cylinder axis
-    t1 = np.array([0.5, 0.0, 0.2])
-    t2 = np.array([1.0, 0.0, 0.2])
-    t3 = np.array([0.75, 0.5, 0.2])
-    # Horizontal cylinder at z=0.2, along x-axis
-    cylinder_pos = np.array([0.5, 0.0, 0.2])
-    cylinder_axis = np.array([1.0, 0.0, 0.0])
-    cylinder_radius = 0.15
-    cylinder_half_height = 0.5
-    tri_radius = 0.05
-
-    dist, pos, normal = self._run_cylinder_triangle(
-      cylinder_pos, cylinder_axis, cylinder_radius, cylinder_half_height, t1, t2, t3, tri_radius
-    )
-
-    # Vertex is on the cylinder axis, should get contact with tri_radius
-    self.assertLess(dist[0], collision_primitive_core.MJ_MAXVAL)
-
-  def test_with_triangle_radius(self):
-    """Triangle with non-zero radius (flex element)."""
-    t1 = np.array([0.0, 0.0, 0.0])
-    t2 = np.array([1.0, 0.0, 0.0])
-    t3 = np.array([0.5, 1.0, 0.0])
-    cylinder_pos = np.array([0.0, 0.0, 0.3])
-    cylinder_axis = np.array([0.0, 0.0, 1.0])
-    cylinder_radius = 0.2
-    cylinder_half_height = 0.2
-    tri_radius = 0.05
-
-    dist, pos, normal = self._run_cylinder_triangle(
-      cylinder_pos, cylinder_axis, cylinder_radius, cylinder_half_height, t1, t2, t3, tri_radius
-    )
-
-    self.assertLess(dist[0], collision_primitive_core.MJ_MAXVAL)
-
-
-@wp.kernel
 def box_box_kernel(
   # In:
   box1_pos: wp.vec3,
@@ -706,8 +572,8 @@ def box_box_kernel(
   margin: float,
   # Out:
   ncon_out: wp.array[int],
-  dist_out: wp.array[collision_primitive_core.vec8f],
-  pos_out: wp.array[collision_primitive_core.mat83f],
+  dist_out: wp.array[vec8],
+  pos_out: wp.array[mat83],
   normal_out: wp.array[wp.vec3],
 ):
   ncon, dist, pos, normal = collision_primitive_core.box_box(
@@ -743,8 +609,8 @@ class BoxBoxTest(parameterized.TestCase):
   ):
     """Helper to run the box_box kernel and return the populated contacts."""
     ncon = wp.zeros(1, dtype=int)
-    dist = wp.zeros(1, dtype=collision_primitive_core.vec8f)
-    pos = wp.zeros(1, dtype=collision_primitive_core.mat83f)
+    dist = wp.zeros(1, dtype=vec8)
+    pos = wp.zeros(1, dtype=mat83)
     normal = wp.zeros(1, dtype=wp.vec3)
 
     wp.launch(
@@ -856,6 +722,248 @@ class BoxBoxTest(parameterized.TestCase):
     np.testing.assert_allclose(np.sort(dist_sym), np.sort(dist), atol=1e-6)
     np.testing.assert_allclose(normal_sym, normal, atol=1e-6)
     self._assert_same_points(pos_sym, pos)
+
+
+@wp.kernel
+def capsule_capsule_kernel(
+  # In:
+  cap1_pos: wp.vec3,
+  cap1_axis: wp.vec3,
+  cap1_radius: float,
+  cap1_half_length: float,
+  cap2_pos: wp.vec3,
+  cap2_axis: wp.vec3,
+  cap2_radius: float,
+  cap2_half_length: float,
+  # Out:
+  dist_out: wp.array[wp.vec2],
+  pos_out: wp.array[mat23],
+  normal_out: wp.array[mat23],
+):
+  dist, pos, normal = collision_primitive_core.capsule_capsule(
+    cap1_pos, cap1_axis, cap1_radius, cap1_half_length, cap2_pos, cap2_axis, cap2_radius, cap2_half_length
+  )
+  dist_out[0] = dist
+  pos_out[0] = pos
+  normal_out[0] = normal
+
+
+class CapsuleCapsuleTest(parameterized.TestCase):
+  """Tests for capsule_capsule collision."""
+
+  @parameterized.product(long_first=[True, False], half_lengths=[(0.3, 0.2), (0.5, 0.25)])
+  def test_parallel_overhang(self, long_first, half_lengths):
+    """Parallel capsules where one overhangs the other: two contacts over the overlap.
+
+    Both contacts at distance 0.07. With half-lengths (0.5, 0.25), ma * mc - mb^2 is exactly
+    0 in float32; with (0.3, 0.2) it is not, so a determinant-based parallel test can miss the
+    parallel case.
+    """
+    axis = wp.vec3(0.0, 0.0, 1.0)
+    long_cap = (wp.vec3(0.0, 0.0, 0.0), axis, 0.05, half_lengths[0])
+    short_cap = (wp.vec3(0.2, 0.0, 0.0), axis, 0.08, half_lengths[1])
+    cap1, cap2 = (long_cap, short_cap) if long_first else (short_cap, long_cap)
+
+    dist = wp.zeros(1, dtype=wp.vec2)
+    pos = wp.zeros(1, dtype=mat23)
+    normal = wp.zeros(1, dtype=mat23)
+    wp.launch(capsule_capsule_kernel, dim=1, inputs=[*cap1, *cap2], outputs=[dist, pos, normal])
+
+    # surface distance: 0.2 - (0.05 + 0.08) = 0.07; contacts at both ends of the shorter capsule
+    h = half_lengths[1]
+    nx = 1.0 if long_first else -1.0
+    np.testing.assert_allclose(dist.numpy()[0], [0.07, 0.07], atol=1e-5)
+    np.testing.assert_allclose(pos.numpy()[0], [[0.085, 0.0, -h], [0.085, 0.0, h]], atol=1e-5)
+    np.testing.assert_allclose(normal.numpy()[0], [[nx, 0.0, 0.0], [nx, 0.0, 0.0]], atol=1e-5)
+
+
+@wp.kernel
+def capsule_tetrahedron_kernel(
+  # In:
+  a: wp.vec3,
+  b: wp.vec3,
+  radius: float,
+  v0: wp.vec3,
+  v1: wp.vec3,
+  v2: wp.vec3,
+  v3: wp.vec3,
+  tet_radius: float,
+  # Out:
+  valid_out: wp.array[bool],
+  dist_out: wp.array[float],
+  pos_out: wp.array[wp.vec3],
+  normal_out: wp.array[wp.vec3],
+):
+  valid, dist, pos, normal = collision_primitive_core.capsule_tetrahedron(a, b, radius, v0, v1, v2, v3, tet_radius)
+  valid_out[0] = valid
+  dist_out[0] = dist
+  pos_out[0] = pos
+  normal_out[0] = normal
+
+
+class CapsuleTetrahedronTest(parameterized.TestCase):
+  """Tests for capsule_tetrahedron collision with the unit tetrahedron."""
+
+  _SQRT1_2 = np.sqrt(0.5)
+  _SQRT1_3 = np.sqrt(1.0 / 3.0)
+
+  @parameterized.named_parameters(
+    # sphere center inside, closest to face z = 0 (depth 0.05)
+    ("sphere_inside", [0.2, 0.2, 0.05], [0.2, 0.2, 0.05], 0.1, -0.15, [0.2, 0.2, 0.075], [0.0, 0.0, 1.0]),
+    # sphere center outside, closest to vertex (0, 0, 0)
+    (
+      "sphere_vertex",
+      [-0.1, -0.1, -0.1],
+      [-0.1, -0.1, -0.1],
+      0.2,
+      np.sqrt(0.03) - 0.2,
+      np.array([-0.1, -0.1, -0.1]) + _SQRT1_3 * (0.2 + 0.5 * (np.sqrt(0.03) - 0.2)),
+      [_SQRT1_3, _SQRT1_3, _SQRT1_3],
+    ),
+    # segment outside, closest to edge x
+    (
+      "capsule_edge_outside",
+      [0.5, -0.1, 0.05],
+      [0.5, 0.05, -0.1],
+      0.05,
+      0.05 * _SQRT1_2 - 0.05,
+      [
+        0.5,
+        -0.025 + _SQRT1_2 * (0.05 + 0.5 * (0.05 * _SQRT1_2 - 0.05)),
+        -0.025 + _SQRT1_2 * (0.05 + 0.5 * (0.05 * _SQRT1_2 - 0.05)),
+      ],
+      [0.0, _SQRT1_2, _SQRT1_2],
+    ),
+    # segment crossing the tetrahedron near edge x, minimum translation along an edge cross product
+    (
+      "capsule_edge_inside",
+      [0.5, -0.1, 0.12],
+      [0.5, 0.12, -0.1],
+      0.05,
+      -0.02 * _SQRT1_2 - 0.05,
+      [
+        0.5,
+        0.01 + _SQRT1_2 * (0.05 + 0.5 * (-0.02 * _SQRT1_2 - 0.05)),
+        0.01 + _SQRT1_2 * (0.05 + 0.5 * (-0.02 * _SQRT1_2 - 0.05)),
+      ],
+      [0.0, _SQRT1_2, _SQRT1_2],
+    ),
+    # segment inside, closest to face z = 0: contact at the deepest endpoint
+    ("capsule_face", [0.1, 0.1, 0.02], [0.3, 0.1, 0.04], 0.01, -0.05, [0.3, 0.1, 0.025], [0.0, 0.0, 1.0]),
+    # same segments with reversed endpoints: translation along the opposite edge axis, deepest
+    # endpoint first
+    (
+      "capsule_edge_inside_reversed",
+      [0.5, 0.12, -0.1],
+      [0.5, -0.1, 0.12],
+      0.05,
+      -0.02 * _SQRT1_2 - 0.05,
+      [
+        0.5,
+        0.01 + _SQRT1_2 * (0.05 + 0.5 * (-0.02 * _SQRT1_2 - 0.05)),
+        0.01 + _SQRT1_2 * (0.05 + 0.5 * (-0.02 * _SQRT1_2 - 0.05)),
+      ],
+      [0.0, _SQRT1_2, _SQRT1_2],
+    ),
+    ("capsule_face_reversed", [0.3, 0.1, 0.04], [0.1, 0.1, 0.02], 0.01, -0.05, [0.3, 0.1, 0.025], [0.0, 0.0, 1.0]),
+    # segment inside and parallel to face z = 0: contact at the middle of the segment
+    ("capsule_face_parallel", [0.1, 0.1, 0.02], [0.3, 0.1, 0.02], 0.01, -0.03, [0.2, 0.1, 0.015], [0.0, 0.0, 1.0]),
+    # sphere inside with tetrahedron radius 0.01: midpoint of the sphere point (z = 0.15) and the
+    # inflated face (z = -0.01)
+    ("sphere_inside_radius", [0.2, 0.2, 0.05], [0.2, 0.2, 0.05], 0.1, -0.16, [0.2, 0.2, 0.07], [0.0, 0.0, 1.0], 0.01),
+  )
+  def test_capsule_tetrahedron(self, a, b, radius, expected_dist, expected_pos, expected_normal, tet_radius=0.0):
+    valid = wp.zeros(1, dtype=bool)
+    dist = wp.full(1, wp.inf, dtype=float)
+    pos = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+    normal = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+    tet = [wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 1.0)]
+    wp.launch(
+      capsule_tetrahedron_kernel,
+      dim=1,
+      inputs=[wp.vec3(a), wp.vec3(b), radius, *tet, tet_radius],
+      outputs=[valid, dist, pos, normal],
+    )
+    self.assertTrue(valid.numpy()[0])
+    np.testing.assert_allclose(dist.numpy()[0], expected_dist, atol=1e-6)
+    np.testing.assert_allclose(pos.numpy()[0], expected_pos, atol=1e-6)
+    np.testing.assert_allclose(normal.numpy()[0], expected_normal, atol=1e-6)
+
+  @parameterized.named_parameters(("origin", [0.0, 0.0, 0.0]), ("far", [100.0, -50.0, 30.0]))
+  def test_sphere_center_on_face(self, offset):
+    # sphere centers on the face x + y + z = 1, which are on either side of it within rounding:
+    # the normal is the face normal and the depth is the radius, also far from the origin
+    offset = np.array(offset)
+    tet = [wp.vec3(offset + v) for v in ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0])]
+    for w in ([0.2, 0.3, 0.5], [0.6, 0.2, 0.2], [0.25, 0.5, 0.25], [1 / 3, 1 / 3, 1 / 3], [0.45, 0.1, 0.45]):
+      center = wp.vec3(offset + np.array(w))
+      valid = wp.zeros(1, dtype=bool)
+      dist = wp.full(1, wp.inf, dtype=float)
+      pos = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+      normal = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+      wp.launch(
+        capsule_tetrahedron_kernel,
+        dim=1,
+        inputs=[center, center, 0.1, *tet, 0.0],
+        outputs=[valid, dist, pos, normal],
+      )
+      self.assertTrue(valid.numpy()[0])
+      np.testing.assert_allclose(dist.numpy()[0], -0.1, atol=1e-4)
+      np.testing.assert_allclose(normal.numpy()[0], -np.full(3, self._SQRT1_3), atol=1e-4)
+
+  def test_degenerate_tetrahedron(self):
+    valid = wp.ones(1, dtype=bool)
+    dist = wp.full(1, wp.inf, dtype=float)
+    pos = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+    normal = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+    # flat tetrahedron in the plane x + 2 y + 3 z = 0, not axis aligned
+    tet = [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.3, 0.0, -0.1), wp.vec3(0.0, 0.3, -0.2), wp.vec3(0.3, 0.3, -0.3)]
+    wp.launch(
+      capsule_tetrahedron_kernel,
+      dim=1,
+      inputs=[wp.vec3(0.2, 0.2, 0.0), wp.vec3(0.2, 0.2, 0.0), 0.1, *tet, 0.0],
+      outputs=[valid, dist, pos, normal],
+    )
+    self.assertFalse(valid.numpy()[0])
+    np.testing.assert_allclose(dist.numpy()[0], collision_primitive_core.MJ_MAXVAL, atol=1e-6)
+    np.testing.assert_allclose(pos.numpy()[0], [0.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(normal.numpy()[0], [0.0, 0.0, 0.0], atol=1e-6)
+
+  @parameterized.named_parameters(
+    # sphere center just outside vertex (0, 0, 0)
+    ("sphere_vertex", [-5e-6, -5e-6, -5e-6], [-5e-6, -5e-6, -5e-6], 0.01, 5e-6 * np.sqrt(3.0), [_SQRT1_3] * 3),
+    # segment crossing just outside edge x, perpendicular to it
+    (
+      "capsule_edge",
+      [0.5, -0.100005, 0.099995],
+      [0.5, 0.099995, -0.100005],
+      0.05,
+      5e-6 * np.sqrt(2.0),
+      [0.0, _SQRT1_2, _SQRT1_2],
+    ),
+    # segment just below face z = 0, overhanging the tetrahedron on both sides
+    ("capsule_face_overhang", [-5.0, 0.5, -1e-7], [5.0, 0.5, -1e-7], 0.01, 1e-7, [0.0, 0.0, 1.0]),
+  )
+  def test_near_touching(self, a, b, radius, separation, expected_normal):
+    # sphere center or capsule axis within 1e-5 of the tetrahedron: the normal is exact
+    valid = wp.zeros(1, dtype=bool)
+    dist = wp.full(1, wp.inf, dtype=float)
+    pos = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+    normal = wp.full(1, wp.vec3(wp.inf), dtype=wp.vec3)
+    tet = [wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), wp.vec3(0.0, 0.0, 1.0)]
+    wp.launch(
+      capsule_tetrahedron_kernel,
+      dim=1,
+      inputs=[wp.vec3(a), wp.vec3(b), radius, *tet, 0.0],
+      outputs=[valid, dist, pos, normal],
+    )
+    self.assertTrue(valid.numpy()[0])
+    np.testing.assert_allclose(dist.numpy()[0], separation - radius, atol=1e-6)
+    np.testing.assert_allclose(normal.numpy()[0], expected_normal, atol=1e-5)
+
+    # the closest point on the tetrahedron is on the plane through the origin normal to the contact
+    # normal, and the contact is at half the depth from it
+    np.testing.assert_allclose(np.dot(pos.numpy()[0], expected_normal), 0.5 * (radius - separation), atol=1e-6)
 
 
 if __name__ == "__main__":

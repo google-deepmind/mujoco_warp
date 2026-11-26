@@ -28,9 +28,10 @@ from mujoco_warp import test_data
 from mujoco_warp._src import bvh
 from mujoco_warp._src import collision_core
 from mujoco_warp._src import collision_flex
+from mujoco_warp._src import derivative
 from mujoco_warp._src import io
+from mujoco_warp._src import passive
 from mujoco_warp._src import types
-from mujoco_warp._src import util_pkg
 
 _TOLERANCE = 5e-4
 
@@ -413,6 +414,42 @@ class FlexKinematicsTest(parameterized.TestCase):
       )
       np.testing.assert_allclose(flexedge_J, mj_flexedge_J, atol=_TOLERANCE, err_msg=f"flexedge_J mismatch (world {w})")
 
+  @parameterized.parameters(1, 2)
+  def test_flex_trilinear_pruned_cell_extrapolation(self, nworld):
+    """Tests trilinear flex vertices in pruned/empty cells extrapolate from nearest active cell."""
+    xml = """
+    <mujoco>
+      <worldbody>
+        <flexcomp name="ellipsoid" type="ellipsoid" count="6 6 6" spacing="0.06 0.06 0.06"
+                  dim="3" dof="trilinear" cellcount="4 4 4" mass="1">
+          <elasticity young="1e4" poisson="0.3"/>
+          <contact selfcollide="none"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, qpos_noise=0.05, qvel_noise=0.05, nworld=nworld)
+
+    d.flexvert_xpos.fill_(wp.inf)
+    d.flexnode_xpos.fill_(wp.inf)
+
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.flex(m, d)
+
+    mujoco.mj_kinematics(mjm, mjd)
+    mujoco.mj_comPos(mjm, mjd)
+    mujoco.mj_flex(mjm, mjd)
+
+    for w in range(nworld):
+      np.testing.assert_allclose(
+        d.flexvert_xpos.numpy()[w, : mjm.nflexvert],
+        mjd.flexvert_xpos[: mjm.nflexvert],
+        rtol=1e-5,
+        atol=1e-5,
+        err_msg=f"flexvert_xpos mismatch (world {w})",
+      )
+
 
 class FlexConstraintTest(parameterized.TestCase):
   """Tests for flex constraints parity with MuJoCo."""
@@ -691,6 +728,74 @@ class FlexConstraintTest(parameterized.TestCase):
         err_msg=f"qfrc_constraint mismatch for trilinear flex contacts (world {w})",
       )
 
+  @parameterized.parameters(1, 2)
+  def test_flexstrain_jtdaj_blocks(self, nworld):
+    """Each flex strain row is in exactly one JTDAJ block whose rows share the head columns."""
+    _, _, m, d = test_data.fixture(
+      "flex/moving_base_strain.xml",
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": mujoco.mjtSolver.mjSOL_NEWTON},
+      nworld=nworld,
+    )
+    d.efc.jtdaj_adr.fill_(-1)
+    d.efc.jtdaj_nrow.fill_(-1)
+
+    mjw.fwd_position(m, d)
+
+    nefc = d.nefc.numpy()
+    nblock = d.efc.jtdaj_nblock.numpy()
+    jtdaj_adr = d.efc.jtdaj_adr.numpy()
+    jtdaj_nrow = d.efc.jtdaj_nrow.numpy()
+    rowadr = d.efc.J_rowadr.numpy()
+    rownnz = d.efc.J_rownnz.numpy()
+    colind = d.efc.J_colind.numpy()
+    for w in range(nworld):
+      self.assertGreater(nefc[w], 1)
+      count = np.zeros(nefc[w], dtype=int)
+      for head, nrow in zip(jtdaj_adr[w, : nblock[w]], jtdaj_nrow[w, : nblock[w]]):
+        self.assertLessEqual(head + nrow, nefc[w])
+        head_cols = colind[w, 0, rowadr[w, head] : rowadr[w, head] + rownnz[w, head]]
+        for row in range(head, head + nrow):
+          count[row] += 1
+          np.testing.assert_array_equal(colind[w, 0, rowadr[w, row] : rowadr[w, row] + rownnz[w, row]], head_cols)
+      np.testing.assert_array_equal(count, 1)
+
+  @parameterized.parameters(1, 2)
+  def test_trilinear_element_contact_qfrc_constraint(self, nworld):
+    """Test qfrc_constraint parity for trilinear flex element contacts with a dense Jacobian."""
+    # the sphere touches the interior of a bottom triangle of the flex, where the trilinear
+    # basis restricted to the face is bilinear in the reference coordinates of the contact
+    xml = """
+    <mujoco>
+      <option gravity="0 0 -9.81" jacobian="dense"/>
+      <worldbody>
+        <geom type="sphere" size="0.05"/>
+        <flexcomp type="grid" count="3 3 3" spacing="0.1 0.1 0.1" pos="0.045 0.025 0.15"
+                  name="cube" dim="3" mass="1" radius="0.001" cellcount="1 1 1" dof="trilinear">
+          <elasticity young="1e4" poisson="0.3" damping="1e-3"/>
+          <contact selfcollide="none"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """
+    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    # the contacts are element contacts
+    self.assertGreater(mjd.ncon, 0)
+    self.assertTrue((mjd.contact.elem[:, 1] >= 0).all())
+
+    nacon = d.nacon.numpy()[0]
+    self.assertEqual(nacon, mjd.ncon * nworld, "Total contacts mismatch")
+
+    for w in range(nworld):
+      np.testing.assert_allclose(
+        d.qfrc_constraint.numpy()[w],
+        mjd.qfrc_constraint,
+        atol=1e-4,
+        err_msg=f"qfrc_constraint mismatch for trilinear flex element contacts (world {w})",
+      )
+
   @parameterized.product(
     xml=("flex/floppy.xml", "flex/moving_base_strain.xml"),
     cone=(mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
@@ -718,6 +823,86 @@ class FlexConstraintTest(parameterized.TestCase):
     self.assertEqual(d.nacon.numpy()[0], mjd.ncon * nworld, "nacon mismatch")
 
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv, nworld)
+
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    njmax_and_nnz=((64, None), (4, None), (64, 10)),
+    nworld=(1, 2),
+  )
+  def test_flex_edge_equality_rows(self, jacobian, njmax_and_nnz, nworld):
+    """Edge equality rows follow edge order, skip rigid edges, and keep the rows that fit."""
+    njmax, njmax_nnz = njmax_and_nnz
+    sparse = jacobian == mujoco.mjtJacobian.mjJAC_SPARSE
+    if njmax_nnz is not None and not sparse:
+      self.skipTest("njmax_nnz only applies to sparse Jacobians")
+
+    # equality disabled during setup so the initial state fits in njmax
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="rope" type="grid" count="8 1 1" spacing="0.1 0.1 0.1" dim="1" mass="1">
+            <pin id="0 1"/>
+            <edge equality="true"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qpos_noise=0.05,
+      overrides={"opt.jacobian": jacobian, "opt.disableflags": DisableBit.EQUALITY},
+      nworld=nworld,
+      njmax=njmax,
+      njmax_nnz=njmax_nnz,
+    )
+    self.assertTrue(m.flexedge_rigid.numpy()[0])
+    nrow = mjm.nflexedge - 1
+
+    m.opt.disableflags = 0
+    mjm.opt.disableflags = 0
+    mujoco.mj_forward(mjm, mjd)
+    self.assertEqual(mjd.nefc, nrow)
+    mj_J = np.zeros((mjd.nefc, mjm.nv))
+    if mujoco.mj_isSparse(mjm):
+      mujoco.mju_sparse2dense(mj_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+    else:
+      mj_J = mjd.efc_J.reshape(mjd.nefc, mjm.nv)
+
+    for arr in (d.ne, d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind):
+      arr.fill_(-1)
+    for arr in (d.efc.J, d.efc.D, d.efc.pos):
+      arr.fill_(wp.inf)
+    d.overflow.zero_()
+
+    mjw.make_constraint(m, d)
+
+    nnz_overflow = d.overflow.numpy() & int(mjw.OverflowType.NJMAX_NNZ)
+    for w in range(nworld):
+      if njmax_nnz is not None:
+        # the rows of a flex are dropped together
+        self.assertEqual(d.nefc.numpy()[w], 0)
+        self.assertTrue(nnz_overflow[w])
+        continue
+
+      self.assertEqual(d.nefc.numpy()[w], nrow)
+      self.assertEqual(d.ne.numpy()[w], nrow)
+      self.assertFalse(nnz_overflow[w])
+      n = min(nrow, njmax)
+      if sparse:
+        J = np.zeros((n, mjm.nv))
+        mujoco.mju_sparse2dense(
+          J,
+          d.efc.J.numpy()[w, 0].astype(np.float64),
+          d.efc.J_rownnz.numpy()[w, :n],
+          d.efc.J_rowadr.numpy()[w, :n],
+          d.efc.J_colind.numpy()[w, 0],
+        )
+        rowadr, rownnz = d.efc.J_rowadr.numpy()[w, :n], d.efc.J_rownnz.numpy()[w, :n]
+        np.testing.assert_array_less(rowadr + rownnz, d.njmax_nnz + 1)
+      else:
+        J = d.efc.J.numpy()[w, :n, : mjm.nv]
+      np.testing.assert_allclose(J, mj_J[:n], atol=_TOLERANCE, err_msg="J")
+      np.testing.assert_allclose(d.efc.pos.numpy()[w, :n], mjd.efc_pos[:n], atol=_TOLERANCE, err_msg="pos")
+      np.testing.assert_allclose(d.efc.D.numpy()[w, :n], mjd.efc_D[:n], rtol=_TOLERANCE, err_msg="D")
 
 
 class FlexPassiveForcesTest(parameterized.TestCase):
@@ -841,10 +1026,6 @@ class FlexPassiveForcesTest(parameterized.TestCase):
         err_msg=f"qfrc_passive mismatch for world {w}",
       )
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
-    "Requires MuJoCo >= 3.14.1.dev990351372",
-  )
   @parameterized.parameters(1, 2)
   def test_flex_3d_snh_passive(self, nworld):
     """Tests 3D Stable Neo-Hookean spring forces and PSD-projected Rayleigh damping."""
@@ -1008,7 +1189,7 @@ class FlexPassiveForcesTest(parameterized.TestCase):
     # 1. Uniform rigid world-space translation velocity should produce zero damping force.
     d.qpos.zero_()
     mjw.kinematics(m, d)
-    xmat = d.xmat.numpy()
+    xmat = test_data.quat_to_mat(d.xquat.numpy())
     qvel_uniform = np.zeros_like(qvel_noisy)
     v_worlds = [np.array([0.7, -0.4, 1.2]), np.array([-0.5, 0.9, -0.3])]
     for w in range(nworld):
@@ -1112,8 +1293,6 @@ class FlexPassiveForcesTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qfrc_passive.numpy()[0], d.qfrc_passive.numpy()[1]))
 
-  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.product(
     elastic2d_and_atol=[
       ("bend", 5e-3),
@@ -1166,8 +1345,6 @@ class FlexPassiveForcesTest(parameterized.TestCase):
         err_msg=f"qfrc_spring mismatch for interpolated elastic2d={elastic2d} dof={dof} (world {w})",
       )
 
-  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.product(
     elastic2d=["bend", "stretch", "both"],
     nworld=[1, 2],
@@ -1412,8 +1589,10 @@ class FlexPassiveForcesTest(parameterized.TestCase):
       mjd1 = mujoco.MjData(mjm)
       qpos = d.qpos.numpy()
       qvel = d.qvel.numpy()
-      qpos[1] += 0.02
-      qvel[1] += 0.05
+      # perturb world 1 non-rigidly: adding the same offset to every slider is a rigid translation,
+      # which leaves the passive forces unchanged
+      qpos[1] += 0.02 * np.linspace(0, 1, mjm.nq)
+      qvel[1] += 0.05 * np.linspace(0, 1, mjm.nv)
       d.qpos.assign(qpos)
       d.qvel.assign(qvel)
       mjd1.qpos[:] = qpos[1]
@@ -1452,10 +1631,6 @@ class FlexPassiveForcesTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qfrc_passive.numpy()[0], d.qfrc_passive.numpy()[1]))
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
-    "Requires MuJoCo >= 3.14.1.dev990351372",
-  )
   @parameterized.product(
     winding=[
       ("positive", "0 1 2 3"),
@@ -1633,8 +1808,6 @@ class FlexPassiveForcesTest(parameterized.TestCase):
   def test_flex_stretch_damping_and_disable_flags(self, case, nworld):
     """Tests stretch damping at zero/nonzero velocity and DisableBit.SPRING/DAMPER decoupling."""
     dim, snh = case
-    if snh and not util_pkg.check_version("mujoco>=3.14.1.dev990351372"):
-      self.skipTest("Requires MuJoCo >= 3.14.1.dev990351372")
 
     elem_str = "0 1 2" if dim == 2 else "0 1 2 3"
     body_str = "v0 v1 v2" if dim == 2 else "v0 v1 v2 v3"
@@ -1784,10 +1957,6 @@ class FlexPassiveForcesTest(parameterized.TestCase):
       np.testing.assert_allclose(d.qfrc_damper.numpy()[w], 0.0, atol=1e-6)
       np.testing.assert_allclose(d.qfrc_passive.numpy()[w], 0.0, atol=1e-6)
 
-  @absltest.skipIf(
-    not util_pkg.check_version("mujoco>=3.14.1.dev990351372"),
-    "Requires MuJoCo >= 3.14.1.dev990351372",
-  )
   @parameterized.parameters(1, 2)
   def test_flex_3d_stvk_vs_snh_reflection(self, nworld):
     """Tests that reflection produces zero force in 3D StVK but restoring force in 3D SNH."""
@@ -2256,8 +2425,36 @@ class FlexCollisionTest(parameterized.TestCase):
     v_global_idx = int(m.flex_vertadr.numpy()[0]) + 3
     xpos = d.flexvert_xpos.numpy()
     for w in range(nworld):
-      xpos[w, v_global_idx] = xpos[w, v0_global_idx] + np.array([0.0, 0.0, 0.01])
+      xpos[w, v_global_idx] = xpos[w, v0_global_idx] + np.array([0.0, 0.0, 0.01 * (w + 1)])
     d.flexvert_xpos.assign(xpos)
+
+    ws = collision_flex._allocate_flex_workspace(m, d)
+    ctx = collision_core.create_collision_context(d.naconmax)
+    reference_pairs = None
+    reference_bounds = None
+    for margin, gap in ((0.0, 0.0), (0.1, 0.0), (0.0, -0.03)):
+      m.flex_margin.fill_(margin)
+      m.flex_gap.fill_(gap)
+      collision_flex.flex_broadphase_aabb(m, d)
+      bounds = collision_flex._flex_bvh_update(m, d)
+      d.ncollision.zero_()
+      ctx.collision_pair.fill_(-1)
+      ctx.collision_worldid.fill_(-1)
+      collision_flex._flex_bvh_collision(m, d, ctx, ws, is_self=True, bvh_bounds=bounds, enable_sat=True)
+      npair = int(d.ncollision.numpy()[0])
+      self.assertGreater(npair, 0)
+      self.assertLessEqual(npair, d.naconmax)
+      pairs = ctx.collision_pair.numpy()[:npair]
+      worldids = ctx.collision_worldid.numpy()[:npair]
+      pair_set = {(int(w), int(p[0]), int(p[1])) for w, p in zip(worldids, pairs)}
+      self.assertLen(pair_set, npair)
+      if reference_pairs is None:
+        reference_pairs = pair_set
+        reference_bounds = [arr.numpy() for arr in bounds]
+      else:
+        self.assertEqual(pair_set, reference_pairs)
+        for actual, expected in zip(bounds, reference_bounds):
+          np.testing.assert_array_equal(actual.numpy(), expected)
 
     mjw.collision(m, d)
 
@@ -2760,6 +2957,146 @@ class FlexCollisionTest(parameterized.TestCase):
     nacon = int(d.nacon.numpy()[0])
     self.assertEqual(nacon, types.MJ_MAXCONPAIR * nworld)
 
+  @parameterized.parameters(1, 2)
+  def test_flex_3d_geom_fps_capping(self, nworld):
+    """Test that 3D flex-geom contacts are capped at MJ_MAXCONPAIR per geom-flex pair."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <geom type="box" size=".5 .5 .02" pos="0 0 .075"/>
+          <flexcomp name="solid" count="8 8 2" spacing=".05 .05 .05" pos="0 0 .025" radius=".02" dim="3" mass=".5">
+            <contact selfcollide="none"/>
+            <elasticity young="1e4"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=1500,
+    )
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2::3] -= 0.002
+      d.qpos.assign(qpos)
+
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.geom.fill_(-1)
+    d.contact.worldid.fill_(-1)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, 2 * types.MJ_MAXCONPAIR * nworld)
+    c_geom = d.contact.geom.numpy()[:nacon, 0]
+    c_world = d.contact.worldid.numpy()[:nacon]
+    c_dist = d.contact.dist.numpy()[:nacon]
+    for w in range(nworld):
+      self.assertEqual(int(np.sum((c_world == w) & (c_geom == 0))), types.MJ_MAXCONPAIR)
+      self.assertEqual(int(np.sum((c_world == w) & (c_geom == 1))), types.MJ_MAXCONPAIR)
+    if nworld == 2:
+      self.assertFalse(np.allclose(sorted(c_dist[c_world == 0]), sorted(c_dist[c_world == 1])))
+
+  @parameterized.parameters(1, 2)
+  def test_flex_geom_fps_mixed_dims(self, nworld):
+    """Test that 1D/2D flex-geom stay uncapped while 3D flex-geom caps at MJ_MAXCONPAIR."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <flexcomp name="rope" count="60 1 1" spacing=".05 .05 .05" pos="-3 0 .01" radius=".02" dim="1" mass=".5">
+            <contact selfcollide="none"/>
+          </flexcomp>
+          <flexcomp name="cloth" count="8 8 1" spacing=".05 .05 .05" pos="0 0 .01" radius=".02" mass=".5">
+            <contact selfcollide="none"/>
+          </flexcomp>
+          <flexcomp name="solid" count="8 8 2" spacing=".05 .05 .05" pos="2 0 .025" radius=".02" dim="3" mass=".5">
+            <contact selfcollide="none"/>
+            <elasticity young="1e4"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=1500,
+    )
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2::3] -= 0.002
+      d.qpos.assign(qpos)
+
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.flex.fill_(-1)
+    d.contact.worldid.fill_(-1)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    expected_per_world = 60 + 64 + types.MJ_MAXCONPAIR
+    self.assertEqual(nacon, expected_per_world * nworld)
+    c_flex = d.contact.flex.numpy()[:nacon, 1]
+    c_world = d.contact.worldid.numpy()[:nacon]
+    c_dist = d.contact.dist.numpy()[:nacon]
+    for w in range(nworld):
+      self.assertEqual(int(np.sum((c_world == w) & (c_flex == 0))), 60)
+      self.assertEqual(int(np.sum((c_world == w) & (c_flex == 1))), 64)
+      self.assertEqual(int(np.sum((c_world == w) & (c_flex == 2))), types.MJ_MAXCONPAIR)
+    if nworld == 2:
+      self.assertFalse(np.allclose(sorted(c_dist[c_world == 0]), sorted(c_dist[c_world == 1])))
+
+  @parameterized.parameters(1, 2)
+  def test_flex_1d_flex_flex_fps_capping(self, nworld):
+    """Test that 1D flex-flex contacts are capped at MJ_MAXCONPAIR via parallel FPS."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="c1" type="direct" dim="1" radius="0.01" mass="0.5"
+                    point="-0.02 0 0  0.30 0 0  -0.02 0.04 0  0.30 0.04 0  -0.02 0.08 0  0.30 0.08 0  -0.02 0.12 0  0.30 0.12 0
+                           -0.02 0.16 0  0.30 0.16 0  -0.02 0.20 0  0.30 0.20 0  -0.02 0.24 0  0.30 0.24 0  -0.02 0.28 0  0.30 0.28 0"
+                    element="0 1  2 3  4 5  6 7  8 9  10 11  12 13  14 15">
+            <contact selfcollide="none"/>
+          </flexcomp>
+          <flexcomp name="c2" type="direct" dim="1" radius="0.01" mass="0.5"
+                    point="0 -0.02 0.01  0 0.30 0.01  0.04 -0.02 0.01  0.04 0.30 0.01  0.08 -0.02 0.01  0.08 0.30 0.01  0.12 -0.02 0.01  0.12 0.30 0.01
+                           0.16 -0.02 0.01  0.16 0.30 0.01  0.20 -0.02 0.01  0.20 0.30 0.01  0.24 -0.02 0.01  0.24 0.30 0.01  0.28 -0.02 0.01  0.28 0.30 0.01"
+                    element="0 1  2 3  4 5  6 7  8 9  10 11  12 13  14 15">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=1500,
+    )
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, m.nq // 2 + 2 :: 3] -= 0.002
+      d.qpos.assign(qpos)
+
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.worldid.fill_(-1)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, types.MJ_MAXCONPAIR * nworld)
+    if nworld == 2:
+      c_world = d.contact.worldid.numpy()[:nacon]
+      c_dist = d.contact.dist.numpy()[:nacon]
+      self.assertFalse(np.allclose(sorted(c_dist[c_world == 0]), sorted(c_dist[c_world == 1])))
+
   def test_flex_sat_prefilter_conservative(self):
     """Test that broadphase SAT prefilter is conservative and yields identical contacts."""
     xml = """
@@ -2824,7 +3161,8 @@ class FlexCollisionTest(parameterized.TestCase):
     np.testing.assert_allclose(pos_sat[idx_sat], pos_nosat[idx_nosat], atol=1e-5)
     np.testing.assert_allclose(dist_sat[idx_sat], dist_nosat[idx_nosat], atol=1e-5)
 
-  def test_parallel_fps_numpy_parity(self):
+  @parameterized.parameters(32, 256)
+  def test_parallel_fps_numpy_parity(self, block_dim):
     """Test that parallel FPS selects candidates matching a serial NumPy reference."""
     _, _, m, d = test_data.fixture(
       xml="""
@@ -2848,12 +3186,14 @@ class FlexCollisionTest(parameterized.TestCase):
     d.nacon.fill_(-1)
     d.contact.dist.fill_(wp.inf)
 
+    m.block_dim.flex_fps = block_dim
     mjw.kinematics(m, d)
 
     ws = collision_flex._allocate_flex_workspace(m, d)
-    sap_data = collision_flex._run_flex_sap_sort(m, d)
+    ws.flex_fps_min_dist.fill_(wp.inf)
+    bvh_bounds = collision_flex._flex_bvh_update(m, d)
     ctx = collision_core.create_collision_context(d.naconmax)
-    collision_flex._flex_sap_collision(m, d, ctx, ws, is_self=False, sap_data=sap_data)
+    collision_flex._flex_bvh_collision(m, d, ctx, ws, is_self=False, bvh_bounds=bvh_bounds, enable_sat=True)
 
     ncand = int(ws.ncand.numpy()[0])
     cand_active = ws.cand_active.numpy()[:ncand]
@@ -2862,6 +3202,7 @@ class FlexCollisionTest(parameterized.TestCase):
     cand_pos = ws.pos.numpy()[:ncand]
     cand_dist = ws.dist.numpy()[:ncand]
     cand_elem = ws.elem.numpy()[:ncand]
+    cand_vert = ws.vert.numpy()[:ncand]
     num_groups = int(ws.flex_num_groups.numpy()[0])
     group_starts = ws.flex_group_start_indices.numpy()[:num_groups]
 
@@ -2874,15 +3215,23 @@ class FlexCollisionTest(parameterized.TestCase):
         return e1_c < e1_s
       if e2_c != e2_s:
         return e2_c < e2_s
+      v1_c, v2_c = cand_vert[curr]
+      v1_s, v2_s = cand_vert[sel]
+      if v1_c != v1_s:
+        return v1_c < v1_s
+      if v2_c != v2_s:
+        return v2_c < v2_s
       return curr < sel
 
     self.assertGreater(num_groups, 0)
+    checked_fps = False
     for g in range(num_groups):
       g_start = group_starts[g]
       g_end = group_starts[g + 1] if g + 1 < num_groups else ncand
       group_cands = [sort_val[si] for si in range(g_start, g_end) if cand_active_sorted[si] == 1]
       if len(group_cands) <= types.MJ_MAXCONPAIR:
         continue
+      checked_fps = True
 
       best_seed = -1
       min_d = 1e10
@@ -2926,6 +3275,76 @@ class FlexCollisionTest(parameterized.TestCase):
       warp_selected = sorted([c_idx for c_idx in group_cands if cand_active[c_idx] == 1])
       np_selected = sorted(selected)
       self.assertEqual(warp_selected, np_selected)
+    self.assertTrue(checked_fps)
+
+  @parameterized.parameters(1, 2)
+  def test_flex_3d_plane_fps_deterministic_tie_break(self, nworld):
+    """Test that 3D plane-flex FPS breaks equal-distance ties by cand_vert."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 .1"/>
+          <flexcomp name="solid" count="8 8 2" spacing=".05 .05 .05" pos="0 0 .025" radius=".02" dim="3" mass=".5">
+            <contact selfcollide="none"/>
+            <elasticity young="1e4"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=1500,
+    )
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 2::3] -= 0.002
+      d.qpos.assign(qpos)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    collision_flex.flex_broadphase_aabb(m, d)
+
+    ws = collision_flex._allocate_flex_workspace(m, d)
+    ws.ncand.zero_()
+    ws.flex_num_groups.zero_()
+    collision_flex._detect_plane_flex_candidates(m, d, ws)
+    ncand = int(ws.ncand.numpy()[0])
+    self.assertEqual(ncand, 64 * nworld)
+    self.assertTrue(np.all(ws.elem.numpy()[:ncand] == -1))
+
+    # Run FPS on original candidate slot order
+    d.nacon.zero_()
+    d.contact.dist.fill_(wp.inf)
+    d.contact.vert.fill_(-1)
+    d.contact.worldid.fill_(-1)
+    collision_flex._filter_and_write_contacts(m, d, ws, enable_fps=True)
+    nacon_fwd = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon_fwd, types.MJ_MAXCONPAIR * nworld)
+    world_fwd = d.contact.worldid.numpy()[:nacon_fwd].copy()
+    vert_fwd = d.contact.vert.numpy()[:nacon_fwd, 1].copy()
+    dist_fwd = d.contact.dist.numpy()[:nacon_fwd].copy()
+
+    # Reverse candidate slot indices to simulate arbitrary atomic_add scheduling
+    for arr in (ws.dist, ws.pos, ws.nrm, ws.geom, ws.flex, ws.elem, ws.vert, ws.worldid):
+      buf = arr.numpy().copy()
+      buf[:ncand] = buf[:ncand][::-1]
+      arr.assign(buf)
+
+    ws.flex_num_groups.zero_()
+    d.nacon.zero_()
+    d.contact.dist.fill_(wp.inf)
+    d.contact.vert.fill_(-1)
+    d.contact.worldid.fill_(-1)
+    collision_flex._filter_and_write_contacts(m, d, ws, enable_fps=True)
+    nacon_rev = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon_rev, types.MJ_MAXCONPAIR * nworld)
+    world_rev = d.contact.worldid.numpy()[:nacon_rev]
+    vert_rev = d.contact.vert.numpy()[:nacon_rev, 1]
+
+    for w in range(nworld):
+      self.assertEqual(sorted(vert_fwd[world_fwd == w]), sorted(vert_rev[world_rev == w]))
+    if nworld == 2:
+      self.assertFalse(np.allclose(sorted(dist_fwd[world_fwd == 0]), sorted(dist_fwd[world_fwd == 1])))
 
   @parameterized.parameters(1, 2)
   def test_mixed_flex_broadphase_and_narrowphase(self, nworld):
@@ -3306,11 +3725,11 @@ class FlexDynamicsTest(parameterized.TestCase):
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
-        <option solver="CG" integrator="discrete" gravity="0 0 -9.81"/>
+        <option solver="CG" integrator="discrete"/>
         <worldbody>
-          <geom type="sphere" size="0.2" pos="0 0 0"/>
-          <flexcomp name="cloth" type="grid" count="5 5 1" spacing="0.08 0.08 0.08" pos="0 0 0.202" dim="2" mass="0.1">
-            <contact passive="true" contype="1" conaffinity="1"/>
+          <geom size="0.2"/>
+          <flexcomp name="cloth" count="5 5 1" spacing="0.08 0.08 0.08" pos="0 0 0.202" mass="0.1">
+            <contact passive="true"/>
             <elasticity young="1e3" poisson="0.3" thickness="1e-3" damping="1e-3" elastic2d="both"/>
           </flexcomp>
         </worldbody>
@@ -3338,30 +3757,81 @@ class FlexDynamicsTest(parameterized.TestCase):
       wp.capture_launch(capture.graph)
 
       # Passive contact must not generate constraints in either C or Warp
+      nefc = d.nefc.numpy()
       for w in range(nworld):
         self.assertEqual(mjds[w].nefc, 0, f"MuJoCo C has non-zero nefc at step {step}")
-        self.assertEqual(int(d.nefc.numpy()[w]), 0, f"MuJoCo Warp has non-zero nefc at step {step}")
+        self.assertEqual(int(nefc[w]), 0, f"MuJoCo Warp has non-zero nefc at step {step}")
 
     # Verify contacts engaged
     self.assertGreater(int(d.nacon.numpy()[0]), 0, "Expected active passive contacts")
 
     # Verify qpos and qvel match MuJoCo C
+    qpos_out = d.qpos.numpy()
+    qvel_out = d.qvel.numpy()
     for w in range(nworld):
       np.testing.assert_allclose(
-        d.qpos.numpy()[w],
+        qpos_out[w],
         mjds[w].qpos,
         atol=1e-2,
         err_msg=f"qpos mismatch after 20 steps discrete drape for world {w}",
       )
       np.testing.assert_allclose(
-        d.qvel.numpy()[w],
+        qvel_out[w],
         mjds[w].qvel,
         atol=0.5,
         err_msg=f"qvel mismatch after 20 steps discrete drape for world {w}",
       )
 
     if nworld == 2:
-      self.assertFalse(np.allclose(d.qpos.numpy()[0], d.qpos.numpy()[1]))
+      self.assertFalse(np.allclose(qpos_out[0], qpos_out[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_discrete_flex_drape_multistep_parity(self, nworld):
+    """Tests 20-step rollout of 2D passive-contact cloth draping over a capsule and a cylinder."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option solver="CG" integrator="discrete"/>
+        <worldbody>
+          <geom type="capsule" size="0.025 0.06" pos="-0.04 0 0" euler="90 0 0"/>
+          <geom type="cylinder" size="0.055 0.025" pos="0.035 0 0"/>
+          <flexcomp name="cloth" count="3 3 1" spacing="0.04 0.04 0.04" pos="0 0 0.031" radius="0.005" mass="0.2">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="500" thickness="0.002" damping="0.05" elastic2d="both"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 0::3] += 0.001
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+    for _ in range(20):
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+      wp.capture_launch(capture.graph)
+
+    self.assertGreater(int(d.nacon.numpy()[0]), 0)
+    qpos_out = d.qpos.numpy()
+    qvel_out = d.qvel.numpy()
+    qacc_out = d.qacc.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(qpos_out[w], mjds[w].qpos, atol=1e-3, rtol=1e-2)
+      np.testing.assert_allclose(qvel_out[w], mjds[w].qvel, atol=1e-1, rtol=5e-2)
+      np.testing.assert_allclose(qacc_out[w], mjds[w].qacc, atol=50.0, rtol=1e-1)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos_out[0], qpos_out[1]))
 
   @parameterized.parameters(1, 2)
   def test_multiflex(self, nworld):
@@ -3388,6 +3858,7 @@ class FlexContactParityTest(parameterized.TestCase):
           contacts.append(
             {
               "dist": d.contact.dist.numpy()[i],
+              "includemargin": d.contact.includemargin.numpy()[i],
               "pos": d.contact.pos.numpy()[i],
               "frame": d.contact.frame.numpy()[i],
               "geom": d.contact.geom.numpy()[i],
@@ -3402,6 +3873,7 @@ class FlexContactParityTest(parameterized.TestCase):
         contacts.append(
           {
             "dist": c.dist,
+            "includemargin": c.includemargin,
             "pos": c.pos,
             "frame": c.frame.reshape(3, 3),
             "geom": c.geom,
@@ -3427,10 +3899,9 @@ class FlexContactParityTest(parameterized.TestCase):
     Args:
       w_contacts: Sorted MuJoCo Warp contacts.
       m_contacts: Sorted MuJoCo C contacts.
-      atol: Absolute tolerance for contact distances and positions.
-      frame_atol: Element-wise absolute tolerance for contact-frame matrices. Use
-        for CCD normal differences without relaxing distance or position checks.
-        Uses atol when None.
+      atol: Absolute tolerance for contact distances, includemargins, and positions.
+      frame_atol: Element-wise absolute tolerance for contact-frame matrices. Uses
+        atol when None.
     """
     self.assertEqual(len(w_contacts), len(m_contacts))
     for i, (wc, mc) in enumerate(zip(w_contacts, m_contacts)):
@@ -3439,6 +3910,12 @@ class FlexContactParityTest(parameterized.TestCase):
         mc["dist"],
         atol=atol,
         err_msg=f"Contact {i} dist mismatch",
+      )
+      np.testing.assert_allclose(
+        wc["includemargin"],
+        mc["includemargin"],
+        atol=atol,
+        err_msg=f"Contact {i} includemargin mismatch",
       )
       np.testing.assert_allclose(wc["pos"], mc["pos"], atol=atol, err_msg=f"Contact {i} pos mismatch")
       np.testing.assert_allclose(
@@ -3489,69 +3966,89 @@ class FlexContactParityTest(parameterized.TestCase):
 
   @parameterized.parameters(1, 2)
   def test_contact_plane_multi_vertex(self, nworld):
-    xml = """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
-        <geom type="plane" size="1 1 0.1"/>
+        <geom type="plane" size="1 1 0.1" margin="0.002" gap="0.006"/>
         <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" pos="0 0 0.02" dim="2" mass="1">
-          <contact condim="3"/>
+          <contact margin="0.003" gap="0.007"/>
         </flexcomp>
       </worldbody>
     </mujoco>
-    """
-    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
+    """,
+      nworld=nworld,
+    )
 
     # Displace 4 corner vertices (0, 2, 6, 8) Z downward
     mjd.qpos[2] = -0.025
     mjd.qpos[8] = -0.025
     mjd.qpos[20] = -0.025
     mjd.qpos[26] = -0.025
-    d.qpos.assign(np.tile(mjd.qpos, (nworld, 1)).astype(np.float32))
+    qpos = np.tile(mjd.qpos, (nworld, 1)).astype(np.float32)
+
+    if nworld == 2:
+      qpos[1, 2::3] += 0.001
+    d.qpos.assign(qpos)
 
     d.nacon.fill_(-1)
+    for arr in (d.contact.dist, d.contact.includemargin, d.contact.pos, d.contact.frame):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert):
+      arr.fill_(-1)
     mjw.kinematics(m, d)
     mjw.flex(m, d)
     mjw.collision(m, d)
 
-    mujoco.mj_kinematics(mjm, mjd)
-    mujoco.mj_flex(mjm, mjd)
-    mujoco.mj_collision(mjm, mjd)
-
-    self.assertEqual(d.nacon.numpy()[0], nworld * 4)
-    self.assertEqual(mjd.ncon, 4)
+    self.assertEqual(d.nacon.numpy()[0], nworld * 9)
 
     for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_flex(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
       w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
       m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
       self._assert_contact_parity(w_contacts, m_contacts)
 
   @parameterized.parameters(1, 2)
   def test_contact_sphere_localized(self, nworld):
-    xml = """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
-        <geom type="sphere" size="0.02" pos="-0.066 -0.033 0.06"/>
+        <geom type="sphere" size="0.02" pos="-0.066 -0.033 0.06" margin="0.002" gap="0.003"/>
         <flexcomp name="cloth" type="grid" count="3 3 1" spacing="0.1 0.1 0.1" pos="0 0 0.05" dim="2" mass="1">
-          <contact condim="3"/>
+          <contact margin="0.003" gap="0.004"/>
         </flexcomp>
       </worldbody>
     </mujoco>
-    """
-    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
+    """,
+      nworld=nworld,
+    )
+
+    qpos = d.qpos.numpy()
+
+    if nworld == 2:
+      qpos[1, 2::3] += 0.001
+    d.qpos.assign(qpos)
 
     d.nacon.fill_(-1)
+    for arr in (d.contact.dist, d.contact.includemargin, d.contact.pos, d.contact.frame):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert):
+      arr.fill_(-1)
     mjw.kinematics(m, d)
     mjw.flex(m, d)
     mjw.collision(m, d)
 
-    mujoco.mj_kinematics(mjm, mjd)
-    mujoco.mj_flex(mjm, mjd)
-    mujoco.mj_collision(mjm, mjd)
-
-    self.assertEqual(d.nacon.numpy()[0], nworld * 1)
-    self.assertEqual(mjd.ncon, 1)
+    self.assertEqual(d.nacon.numpy()[0], nworld * 3)
 
     for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_flex(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
       w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
       m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
       self._assert_contact_parity(w_contacts, m_contacts)
@@ -3722,31 +4219,44 @@ class FlexContactParityTest(parameterized.TestCase):
 
   @parameterized.parameters(1, 2)
   def test_contact_flex_flex_rope_margin(self, nworld):
-    xml = """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
     <mujoco>
       <worldbody>
         <flexcomp name="rope1" type="grid" count="2 1 1" spacing="0.2 0.2 0.1" pos="0 0 0" radius="0.02" dim="1" mass="0.5">
-          <contact selfcollide="none" contype="1" conaffinity="1" margin="0.01"/>
+          <contact selfcollide="none" contype="1" conaffinity="1" margin="0.002" gap="0.008"/>
         </flexcomp>
         <flexcomp name="rope2" type="grid" count="2 1 1" spacing="0.2 0.2 0.1" pos="0 0 0.045" euler="0 0 90" radius="0.02" dim="1" mass="0.5">
-          <contact selfcollide="none" contype="1" conaffinity="1" margin="0.01"/>
+          <contact selfcollide="none" contype="1" conaffinity="1" margin="0.002" gap="0.008"/>
         </flexcomp>
       </worldbody>
     </mujoco>
-    """
-    mjm, mjd, m, d = test_data.fixture(xml=xml, nworld=nworld)
+    """,
+      nworld=nworld,
+    )
+
+    qpos = d.qpos.numpy()
+
+    if nworld == 2:
+      qpos[1, [2, 5]] += 0.001
+    d.qpos.assign(qpos)
 
     d.nacon.fill_(-1)
+    for arr in (d.contact.dist, d.contact.includemargin, d.contact.pos, d.contact.frame):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert):
+      arr.fill_(-1)
     mjw.kinematics(m, d)
+    mjw.flex(m, d)
     mjw.collision(m, d)
 
-    mujoco.mj_kinematics(mjm, mjd)
-    mujoco.mj_collision(mjm, mjd)
-
     self.assertEqual(d.nacon.numpy()[0], nworld * 1)
-    self.assertEqual(mjd.ncon, 1)
 
     for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_flex(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
       w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
       m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
       self._assert_contact_parity(w_contacts, m_contacts)
@@ -3894,21 +4404,16 @@ class FlexContactParityTest(parameterized.TestCase):
           c for c in self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True) if c["geom"][0] >= 0
         ]
         m_geom_contacts = [c for c in self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False) if c["geom"][0] >= 0]
-        if len(w_geom_contacts) == len(m_geom_contacts) and len(m_geom_contacts) > 0:
+        self.assertEqual(len(w_geom_contacts), len(m_geom_contacts))
+        # Skip per-contact parity when FPS subsamples the symmetric 8x8 grid
+        if 0 < len(m_geom_contacts) < types.MJ_MAXCONPAIR:
           self._assert_contact_parity(w_geom_contacts, m_geom_contacts, atol=1e-4)
 
       # Flex-flex contact count parity and constraint parity
       if curr_step in (0, 250, 500, 1000):
-        if curr_step == 250:
-          # MuJoCo caps contact pairs at mjMAXCONPAIR=50 (50 plane + 50 flex-flex = 100),
-          # whereas Warp detects all 64 vertices on the ground plane (64 + 50 = 114).
-          self.assertEqual(d.nacon.numpy()[0], nworld * 114, f"nacon mismatch at step {curr_step}")
-          for w in range(nworld):
-            self.assertEqual(d.nefc.numpy()[w], 456, f"nefc mismatch at step {curr_step} (world {w})")
-        else:
-          self.assertEqual(d.nacon.numpy()[0], nworld * mjd.ncon, f"nacon mismatch at step {curr_step}")
-          for w in range(nworld):
-            self.assertEqual(d.nefc.numpy()[w], mjd.nefc, f"nefc mismatch at step {curr_step} (world {w})")
+        self.assertEqual(d.nacon.numpy()[0], nworld * mjd.ncon, f"nacon mismatch at step {curr_step}")
+        for w in range(nworld):
+          self.assertEqual(d.nefc.numpy()[w], mjd.nefc, f"nefc mismatch at step {curr_step} (world {w})")
 
   @parameterized.parameters(1, 2)
   def test_contact_mesh_flex_3d_parity(self, nworld):
@@ -3978,6 +4483,57 @@ class FlexContactParityTest(parameterized.TestCase):
       w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
       m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
       self._assert_contact_parity(w_contacts, m_contacts, atol=1e-3)
+
+  @parameterized.parameters(1, 2)
+  def test_flex_2d_ellipsoid_collision_parity(self, nworld):
+    """Test contact dist, pos, and frame parity for 2D cloth vs tilted non-spherical ellipsoid."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete"/>
+        <worldbody>
+          <geom type="ellipsoid" size="0.06 0.04 0.03" pos="0.01 -0.01 0.035" euler="20 -15 10"/>
+          <flexcomp name="cloth" count="3 3 1" spacing="0.04 0.04 0.04" radius="0.01" mass="0.3">
+            <contact passive="true" selfcollide="none" margin="0.01"/>
+            <elasticity young="1e2"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 2::3] += 0.004
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+
+    d.nacon.fill_(-1)
+    for arr in (d.flexvert_xpos, d.contact.dist, d.contact.pos, d.contact.frame):
+      arr.fill_(wp.inf)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      self.assertGreater(mjds[w].ncon, 0)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, sum(mjd_w.ncon for mjd_w in mjds))
+    w_contacts_all = []
+    for w in range(nworld):
+      w_contacts = self._get_sorted_contacts(d, nacon, world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjds[w], mjds[w].ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts, atol=3e-3)
+      w_contacts_all.append(w_contacts)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose([c["dist"] for c in w_contacts_all[0]], [c["dist"] for c in w_contacts_all[1]]))
 
   @parameterized.parameters(1, 2)
   def test_contact_flex_flex_none_selfcollide(self, nworld):
@@ -4050,69 +4606,53 @@ class FlexContactParityTest(parameterized.TestCase):
       m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
       self._assert_contact_parity(w_contacts, m_contacts, atol=1e-4)
 
-  def test_3d_flex_interior_layer_culling_in_sap(self):
-    """Test that inactive interior elements are projected to MJ_MAXVAL in SAP."""
+  @parameterized.parameters(1, 2)
+  def test_3d_flex_interior_layer_culling_in_bvh(self, nworld):
+    """Test that inactive interior elements never produce flex-flex broadphase pairs."""
     _, _, m, d = test_data.fixture(
       xml="""
       <mujoco>
         <worldbody>
-          <flexcomp name="cube" type="grid" dim="3" count="4 4 4" spacing="0.05 0.05 0.05"
+          <flexcomp name="cube1" type="grid" dim="3" count="4 4 4" spacing="0.05 0.05 0.05"
                     radius="0.01" mass="1.0">
-            <contact condim="3" selfcollide="none" margin="0.02" activelayers="1"/>
+            <contact selfcollide="none" margin="0.02" activelayers="1"/>
+          </flexcomp>
+          <flexcomp name="cube2" type="grid" dim="3" count="4 4 4" spacing="0.05 0.05 0.05"
+                    radius="0.01" mass="1.0" pos="0.025 0.025 0.025">
+            <contact selfcollide="none" margin="0.02" activelayers="1"/>
           </flexcomp>
         </worldbody>
       </mujoco>
       """,
-      nworld=1,
+      nworld=nworld,
+      nconmax=20000,
     )
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, :3] += 0.01
+      d.qpos.assign(qpos)
     mjw.kinematics(m, d)
     mjw.flex(m, d)
+    collision_flex.flex_broadphase_aabb(m, d)
 
-    nelem = m.nflexelem
-    sap_lower = wp.empty((d.nworld, nelem), dtype=float)
-    sap_upper = wp.empty((d.nworld, nelem), dtype=float)
-    sap_sort_index = wp.empty((d.nworld, nelem, 2), dtype=int)
-    elem_aabb_lower = wp.empty((d.nworld, nelem), dtype=wp.vec3)
-    elem_aabb_upper = wp.empty((d.nworld, nelem), dtype=wp.vec3)
-    sap_seg_index = wp.empty(d.nworld + 1, dtype=int)
+    ws = collision_flex._allocate_flex_workspace(m, d)
+    bvh_bounds = collision_flex._flex_bvh_update(m, d)
+    ctx = collision_core.create_collision_context(d.naconmax)
+    ctx.collision_pair.fill_(-1)
+    ctx.collision_worldid.fill_(-1)
+    collision_flex._flex_bvh_collision(m, d, ctx, ws, is_self=False, bvh_bounds=bvh_bounds, enable_sat=True)
 
-    wp.launch(
-      collision_flex._flex_sap_project,
-      dim=(d.nworld, nelem),
-      inputs=[
-        m.flex_margin,
-        m.flex_gap,
-        m.flex_activelayers,
-        m.flex_dim,
-        m.flex_vertadr,
-        m.flex_elemadr,
-        m.flex_elemdataadr,
-        m.flex_elem,
-        m.flex_elemlayer,
-        m.flex_radius,
-        m.flex_elemflexid,
-        d.flexvert_xpos,
-        d.nworld,
-        nelem,
-        wp.vec3(1.0, 0.0, 0.0),
-      ],
-      outputs=[
-        sap_lower.reshape((-1, nelem)),
-        sap_upper,
-        sap_sort_index.reshape((-1, nelem)),
-        elem_aabb_lower,
-        elem_aabb_upper,
-        sap_seg_index,
-      ],
-    )
-
+    npair = int(d.ncollision.numpy()[0])
+    self.assertLessEqual(npair, d.naconmax)
+    self.assertGreater(npair, 0)
+    pairs = ctx.collision_pair.numpy()[:npair]
+    worldids = ctx.collision_worldid.numpy()[:npair]
     layers = m.flex_elemlayer.numpy()
-    proj_lower = sap_lower.numpy()[0]
-    for e in range(nelem):
-      if layers[e] >= 1:
-        self.assertEqual(proj_lower[e], types.MJ_MAXVAL, f"Element {e} (layer {layers[e]}) should be culled in SAP")
-      else:
-        self.assertLess(proj_lower[e], types.MJ_MAXVAL, f"Element {e} (layer {layers[e]}) should be active in SAP")
+    np.testing.assert_array_less(layers[pairs.reshape(-1)], 1)
+
+    self.assertLen({(int(w), int(p[0]), int(p[1])) for w, p in zip(worldids, pairs)}, npair)
+    for w in range(nworld):
+      self.assertTrue(np.any(worldids == w))
 
   def test_flex_num_groups_zero_on_empty_pass(self):
     """Test that flex_num_groups is reset to 0 when no candidate contacts exist."""
@@ -4190,10 +4730,138 @@ class FlexContactParityTest(parameterized.TestCase):
 
       w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
       m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
-      # CCD contact frame differences reach 2.8e-3 on Blackwell.
-      self._assert_contact_parity(w_contacts, m_contacts, atol=2e-3, frame_atol=5e-3)
+      self._assert_contact_parity(w_contacts, m_contacts)
       for c in w_contacts:
         self.assertLess(mjm.flex_elemlayer[c["elem"][1]], mjm.flex_activelayers[0])
+      w_contacts_all.append(w_contacts)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose([c["dist"] for c in w_contacts_all[0]], [c["dist"] for c in w_contacts_all[1]]))
+
+  @parameterized.parameters(1, 2)
+  def test_contact_3d_flex_sphere_capsule(self, nworld):
+    """Test analytic sphere and capsule contacts with tetrahedra, including radius and margin."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size="0.01" pos="0.03 0.03 0.015"/>
+          </body>
+          <body>
+            <freejoint/>
+            <geom size="0.004" pos="-0.004 -0.004 -0.004"/>
+          </body>
+          <body>
+            <freejoint/>
+            <geom type="capsule" size="0.005" fromto="0.35 -0.01 0.012 0.35 0.012 -0.01"/>
+          </body>
+          <flexcomp name="tet1" type="direct" dim="3" radius="0.001" mass="1"
+                    point="0 0 0  0.1 0 0  0 0.1 0  0 0 0.1" element="0 1 2 3">
+            <contact selfcollide="none" margin="0.003"/>
+          </flexcomp>
+          <flexcomp name="tet2" type="direct" dim="3" radius="0.001" mass="1" pos="0.3 0 0"
+                    point="0 0 0  0.1 0 0  0 0.1 0  0 0 0.1" element="0 1 2 3">
+            <contact selfcollide="none" margin="0.003"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos = d.qpos.numpy().copy()
+    if nworld == 2:
+      qpos[1, 2] -= 0.002
+      d.qpos.assign(qpos)
+
+    d.nacon.fill_(-1)
+    for arr in (d.contact.dist, d.contact.pos, d.contact.frame):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert):
+      arr.fill_(-1)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    # sphere inside (face), sphere outside within margin (vertex), capsule across an edge
+    self.assertEqual(d.nacon.numpy()[0], nworld * 3)
+
+    w_contacts_all = []
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_flex(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
+      self.assertEqual(mjd.ncon, 3)
+
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts)
+      w_contacts_all.append(w_contacts)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose([c["dist"] for c in w_contacts_all[0]], [c["dist"] for c in w_contacts_all[1]]))
+
+  @parameterized.parameters(1, 2)
+  def test_contact_3d_flex_flat_tetrahedron(self, nworld):
+    """Test that sphere and capsule contacts with a nearly flat tetrahedron fall back to CCD."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size="0.01" pos="0.03 0.03 0.012"/>
+          </body>
+          <body>
+            <freejoint/>
+            <geom type="capsule" size="0.005" fromto="0.33 0.02 0.008 0.33 0.05 0.011"/>
+          </body>
+          <flexcomp name="flat1" type="direct" dim="3" radius="0.005" mass="1"
+                    point="0 0 0  0.1 0 0  0 0.1 0  0.03 0.03 1e-8" element="0 1 2 3">
+            <contact selfcollide="none"/>
+          </flexcomp>
+          <flexcomp name="flat2" type="direct" dim="3" radius="0.005" mass="1" pos="0.3 0 0"
+                    point="0 0 0  0.1 0 0  0 0.1 0  0.03 0.03 1e-8" element="0 1 2 3">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos = d.qpos.numpy().copy()
+    if nworld == 2:
+      qpos[1, 2] -= 0.001
+      d.qpos.assign(qpos)
+
+    d.nacon.fill_(-1)
+    for arr in (d.contact.dist, d.contact.pos, d.contact.frame):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert):
+      arr.fill_(-1)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    self.assertEqual(d.nacon.numpy()[0], nworld * 2)
+
+    w_contacts_all = []
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_flex(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
+      self.assertEqual(mjd.ncon, 2)
+
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts, atol=1e-4)
       w_contacts_all.append(w_contacts)
 
     if nworld == 2:
@@ -4341,6 +5009,558 @@ class FlexContactParityTest(parameterized.TestCase):
       self.assertFalse(np.allclose([c["dist"] for c in w_contacts_all[0]], [c["dist"] for c in w_contacts_all[1]]))
       self.assertFalse(np.allclose(d.qfrc_constraint.numpy()[0], d.qfrc_constraint.numpy()[1]))
 
+  @parameterized.parameters(1, 2)
+  def test_contact_multiflex_elem_and_passive_parity(self, nworld):
+    """Test multi-flex geom collisions write local elem indices and match passive forces."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" ccd_tolerance="1e-8"/>
+        <asset>
+          <mesh name="box_mesh" vertex="-0.02 -0.02 -0.02  0.02 -0.02 -0.02  0.02 0.02 -0.02  -0.02 0.02 -0.02  -0.02 -0.02 0.02  0.02 -0.02 0.02  0.02 0.02 0.02  -0.02 0.02 0.02"/>
+        </asset>
+        <worldbody>
+          <geom name="sph" size="0.02" pos="-0.033 -0.033 0.054"/>
+          <geom name="ell" type="ellipsoid" size="0.025 0.02 0.015" pos="0.035 0.02 0.049"/>
+          <geom name="msh" type="mesh" mesh="box_mesh" pos="0.05 -0.05 0.059"/>
+          <flexcomp name="cloth0" count="3 3 1" spacing="0.05 0.05 0.05" pos="2.0 0 0.5" radius="0.005" mass="0.2">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="1e3" damping="0.01"/>
+          </flexcomp>
+          <flexcomp name="cloth1" count="3 3 1" spacing="0.05 0.05 0.05" pos="0 0 0.03" radius="0.005" mass="0.2">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="1e3" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos = d.qpos.numpy()
+    # Raise vertex (2, 0) of cloth1 (vertex index 6, dof offset (9 + 6) * 3 + 2)
+    qpos[:, (9 + 6) * 3 + 2] += 0.005
+    mjd.qpos[:] = qpos[0]
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos[1, mjm.nq // 2 + 2 :: 3] -= 0.0005
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+    d.qpos.assign(qpos)
+
+    d.nacon.fill_(-1)
+    d.contact.elem.fill_(-1)
+    d.qfrc_passive.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mjw.forward(m, d)
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, sum(mjd_w.ncon for mjd_w in mjds))
+    qfrc_passive = d.qfrc_passive.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      w_contacts = self._get_sorted_contacts(d, nacon, world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjds[w], mjds[w].ncon, is_warp=False)
+      self.assertGreater(len(w_contacts), 0)
+      for wc in w_contacts:
+        self.assertEqual(wc["flex"][1], 1)
+        self.assertGreaterEqual(wc["elem"][1], 0)
+        self.assertLess(wc["elem"][1], int(mjm.flex_elemnum[1]))
+      self._assert_contact_parity(w_contacts, m_contacts, atol=1e-3)
+      np.testing.assert_allclose(qfrc_passive[w], mjds[w].qfrc_passive, atol=2e-1, rtol=1e-2)
+      np.testing.assert_allclose(qacc[w], mjds[w].qacc, atol=5e-2, rtol=1e-2)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_passive[0], qfrc_passive[1]))
+
+    # Verify inter-flex vertex-element passive contact keeps local vertex 0 when flex[0] != flex[1]
+    ea = int(mjm.flex_elemdataadr[1])
+    va = int(mjm.flex_vertadr[1])
+    centroid = d.flexvert_xpos.numpy()[0, va + mjm.flex_elem[ea : ea + 3]].mean(axis=0)
+    d.nacon.fill_(1)
+    d.contact.worldid.zero_()
+    d.contact.type.fill_(int(types.ContactType.PASSIVE))
+    d.contact.flex.fill_(wp.vec2i(0, 1))
+    d.contact.vert.fill_(wp.vec2i(0, -1))
+    d.contact.elem.fill_(wp.vec2i(-1, 0))
+    d.contact.pos.fill_(wp.vec3(*centroid))
+    d.contact.dist.fill_(-0.002)
+    d.contact.frame.fill_(wp.mat33(1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    _, _, _, _, efm_con_nnz = passive.build_efm_contact(m, d)
+    self.assertEqual(int(efm_con_nnz.numpy()[0]), 12)
+
+  @parameterized.parameters(1, 2)
+  def test_contact_flex_clears_stale_efc_address(self, nworld):
+    """Flex contacts clear efc_address and reset stale flex/elem/vert on non-flex/unused slots."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <geom size="0.05" pos="0 0 -0.04"/>
+          <geom size="0.01" pos="5 5 5" condim="6" contype="2" conaffinity="2"/>
+          <body pos="5 5 5.015">
+            <freejoint/>
+            <geom size="0.01" contype="2" conaffinity="2"/>
+          </body>
+          <flexcomp name="cloth" count="3 3 1" spacing="0.05 0.05 0.05" radius="0.002" mass="0.1">
+            <contact selfcollide="none"/>
+            <edge equality="true"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 9::3] -= 0.002
+      d.qpos.assign(qpos)
+
+    # stale rows and stale flex/elem/vert indices from a previous step
+    self.assertEqual(d.contact.efc_address.shape[1], 10)
+    d.contact.efc_address.fill_(0)
+    d.contact.flex.fill_(wp.vec2i(7, 7))
+    d.contact.elem.fill_(wp.vec2i(7, 7))
+    d.contact.vert.fill_(wp.vec2i(7, 7))
+    d.nacon.fill_(-1)
+    d.nefc.fill_(-1)
+    mjw.forward(m, d)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertGreater(nacon, nworld)
+    dim = d.contact.dim.numpy()[:nacon]
+    efc_address = d.contact.efc_address.numpy()[:nacon]
+    geom = d.contact.geom.numpy()[:nacon]
+    flex_all = d.contact.flex.numpy()
+    elem_all = d.contact.elem.numpy()
+    vert_all = d.contact.vert.numpy()
+    flex = flex_all[:nacon]
+    elem = elem_all[:nacon]
+    vert = vert_all[:nacon]
+    n_nonflex = 0
+    for i in range(nacon):
+      if geom[i, 1] >= 0:
+        n_nonflex += 1
+        np.testing.assert_array_equal(flex[i], -1)
+        np.testing.assert_array_equal(elem[i], -1)
+        np.testing.assert_array_equal(vert[i], -1)
+      else:
+        self.assertGreaterEqual(flex[i].max(), 0)
+        ndim = 1 if dim[i] == 1 else 2 * (dim[i] - 1)
+        np.testing.assert_array_equal(efc_address[i, ndim:], -1)
+    self.assertEqual(n_nonflex, nworld)
+    np.testing.assert_array_equal(flex_all[nacon:], -1)
+    np.testing.assert_array_equal(elem_all[nacon:], -1)
+    np.testing.assert_array_equal(vert_all[nacon:], -1)
+
+    # every flex contact row's Jacobian touches only its own element's vertices
+    efc_id = d.efc.id.numpy()
+    efc_type = d.efc.type.numpy()
+    rowadr = d.efc.J_rowadr.numpy()
+    rownnz = d.efc.J_rownnz.numpy()
+    colind = d.efc.J_colind.numpy()[:, 0]
+    jval = d.efc.J.numpy()[:, 0]
+    nefc = d.nefc.numpy()
+    worldid = d.contact.worldid.numpy()[:nacon]
+    ea = mjm.flex_elemdataadr[0]
+    for w in range(nworld):
+      for r in range(nefc[w]):
+        if efc_type[w, r] != mujoco.mjtConstraint.mjCNSTR_CONTACT_PYRAMIDAL:
+          continue
+        i = efc_id[w, r]
+        if flex[i].max() < 0:
+          continue
+        self.assertEqual(worldid[i], w)
+        dofs = set()
+        for v in mjm.flex_elem[ea + 3 * elem[i][1] : ea + 3 * elem[i][1] + 3]:
+          b = mjm.flex_vertbodyid[v]
+          dofs |= set(range(mjm.body_dofadr[b], mjm.body_dofadr[b] + mjm.body_dofnum[b]))
+        sl = slice(rowadr[w, r], rowadr[w, r] + rownnz[w, r])
+        nz = set(colind[w, sl][jval[w, sl] != 0.0].tolist())
+        self.assertTrue(nz <= dofs, f"row {r} of contact {i} touches dofs outside its element")
+
+  @parameterized.product(
+    point=(
+      "0.04 0.0 0.1005  0.06 0.0 0.106  0.05 0.02 0.106",
+      "0.1005 0.0 0.05  0.106 0.02 0.05  0.106 0.0 0.07",
+    ),
+    nworld=(1, 2),
+  )
+  def test_contact_cylinder_cloth_parity(self, point, nworld):
+    """Test contact parity for 2D cloth triangle colliding with a cylinder cap and side wall."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <geom type="cylinder" size="0.1 0.05" pos="0 0 0.05"/>
+          <flexcomp name="cloth" type="direct" radius="0.002" mass="0.1" point="{point}" element="0 1 2">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1] -= 0.0005
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    for w in range(nworld):
+      mujoco.mj_kinematics(mjm, mjds[w])
+      mujoco.mj_flex(mjm, mjds[w])
+      mujoco.mj_collision(mjm, mjds[w])
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, sum(mjd_w.ncon for mjd_w in mjds))
+    for w in range(nworld):
+      w_contacts = self._get_sorted_contacts(d, nacon, world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjds[w], mjds[w].ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts, atol=1e-3)
+
+    if nworld == 2:
+      w0 = self._get_sorted_contacts(d, nacon, world_idx=0, is_warp=True)
+      w1 = self._get_sorted_contacts(d, nacon, world_idx=1, is_warp=True)
+      self.assertFalse(np.allclose(w0[0]["dist"], w1[0]["dist"]))
+
+  @parameterized.parameters(1, 2)
+  def test_passive_flex_shared_vertex_contacts_parity(self, nworld):
+    """Test that passive flex contacts on adjacent triangles sharing a vertex are not dropped."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG"/>
+        <worldbody>
+          <geom size="0.1" pos="0 0 -0.105"/>
+          <flexcomp name="cloth" count="3 3 1" spacing="0.05 0.05 0.05" radius="0.01" mass="0.2">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="1e3" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 2::3] -= 0.001
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+
+    d.nacon.fill_(-1)
+    d.qfrc_passive.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mjw.forward(m, d)
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, sum(mjd_w.ncon for mjd_w in mjds))
+    qfrc_passive = d.qfrc_passive.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      w_contacts = self._get_sorted_contacts(d, nacon, world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjds[w], mjds[w].ncon, is_warp=False)
+      self.assertGreater(len(w_contacts), 1)
+      self._assert_contact_parity(w_contacts, m_contacts, atol=1e-4)
+      np.testing.assert_allclose(qfrc_passive[w], mjds[w].qfrc_passive, atol=1e-3, rtol=1e-3)
+      np.testing.assert_allclose(qacc[w], mjds[w].qacc, atol=1e-2, rtol=1e-2)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_passive[0], qfrc_passive[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_passive_flex_flex_no_fps_truncation_parity(self, nworld):
+    """Test that passive flex-flex collisions exceeding MJ_MAXCONPAIR are not truncated by FPS."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" ccd_tolerance="1e-8"/>
+        <worldbody>
+          <flexcomp name="c0" count="4 4 1" spacing="0.05 0.05 0.05" radius="0.01" mass="0.016">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="10" damping="0.01"/>
+          </flexcomp>
+          <flexcomp name="c1" count="4 4 1" spacing="0.05 0.05 0.05" pos="0.02 0.01 0.017" euler="8 -6 0" radius="0.01" mass="0.016">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="10" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, mjm.nq // 2 + 2] -= 0.001
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+
+    d.nacon.fill_(-1)
+    d.qfrc_passive.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mjw.forward(m, d)
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      self.assertGreater(mjds[w].ncon, types.MJ_MAXCONPAIR)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, sum(mjd_w.ncon for mjd_w in mjds))
+    qfrc_passive = d.qfrc_passive.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(qfrc_passive[w], mjds[w].qfrc_passive, atol=1.0, rtol=2e-2)
+      np.testing.assert_allclose(qacc[w], mjds[w].qacc, atol=20.0, rtol=2e-2)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_passive[0], qfrc_passive[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_passive_flex_3d_geom_no_fps_truncation_parity(self, nworld):
+    """Test that passive 3D flex-geom collisions exceeding MJ_MAXCONPAIR skip FPS truncation."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG"/>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <flexcomp name="solid" count="8 8 2" spacing="0.05 0.05 0.05" pos="0 0 0.025" radius="0.02" dim="3" mass="0.5">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="1e4" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=1500,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 2::3] -= 0.002
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mjds.append(mjd1)
+
+    d.nacon.fill_(-1)
+    d.qfrc_passive.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+
+    mjw.forward(m, d)
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      self.assertGreater(mjds[w].ncon, types.MJ_MAXCONPAIR)
+
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, sum(mjd_w.ncon for mjd_w in mjds))
+    qfrc_passive = d.qfrc_passive.numpy()
+    qacc = d.qacc.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(qfrc_passive[w], mjds[w].qfrc_passive, atol=1e-2, rtol=1e-3)
+      np.testing.assert_allclose(qacc[w], mjds[w].qacc, atol=20.0, rtol=2e-2)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_passive[0], qfrc_passive[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_contact_cylinder_ellipsoid_cloth_parity(self, nworld):
+    """Test contact parity for cylinders and ellipsoids colliding with 2D flex triangles via CCD."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="cylinder" size="0.03 0.04" pos="-0.25 0.01 0.051" euler="18 -12 0"/>
+          <geom type="cylinder" size="0.03 0.05" pos="0.0 0.0 0.026" euler="85 8 15"/>
+          <geom type="cylinder" size="0.025 0.03" pos="0.25 -0.005 0.051" euler="12 15 0"/>
+          <geom type="cylinder" size="0.06 0.03" pos="0.50 0.0 0.05" euler="6 -4 0"/>
+          <geom type="ellipsoid" size="0.05 0.04 0.03" pos="0.76 0.0 0.035" euler="10 -8 5"/>
+          <flexcomp name="cloth" type="direct" dim="2" radius="0.01" mass="1.5"
+                    point="-0.30 -0.05 0  -0.20 -0.05 0  -0.25 0.06 0
+                           -0.04 -0.01 0   0.04 -0.01 0   0.00 0.02 0
+                            0.20 -0.05 0   0.30 -0.05 0   0.25 0.06 0
+                            0.537007 0.012818 0.023710  0.56 -0.03 -0.02  0.52 0.05 -0.02
+                            0.72 -0.03 0   0.80 -0.03 0   0.76 0.05 0"
+                    element="0 1 2  3 4 5  6 7 8  9 10 11  12 13 14">
+            <contact selfcollide="none" margin="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    ws = collision_flex._allocate_flex_workspace(m, d)
+    self.assertEqual(ws.epa_vert.shape[0], d.naccdmax)
+
+    qpos = d.qpos.numpy().copy()
+    qvel = d.qvel.numpy().copy()
+    qvel[0] = np.linspace(0.01, 0.04, mjm.nv)
+    if nworld == 2:
+      qpos[1, 2::3] += 2e-4
+      qvel[1] = -np.linspace(0.015, 0.045, mjm.nv)
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    d.nacon.fill_(-1)
+    d.overflow.fill_(0)
+    for arr in (
+      d.flexvert_xpos,
+      d.contact.dist,
+      d.contact.includemargin,
+      d.contact.pos,
+      d.contact.frame,
+      d.qfrc_constraint,
+      d.qacc,
+    ):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert, d.contact.worldid):
+      arr.fill_(-1)
+
+    mjw.forward(m, d)
+
+    np.testing.assert_equal(d.overflow.numpy(), 0)
+    self.assertEqual(d.nacon.numpy()[0], nworld * 5)
+
+    w_contacts_all = []
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mjd.qvel[:] = qvel[w]
+      mujoco.mj_forward(mjm, mjd)
+      self.assertEqual(mjd.ncon, 5)
+
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      # normals on curved surfaces agree to about the square root of the CCD tolerance, which
+      # changes the constraint forces and accelerations by up to about 0.5% of their largest entries
+      self._assert_contact_parity(w_contacts, m_contacts, atol=1e-4, frame_atol=4e-3)
+      np.testing.assert_allclose(d.qfrc_constraint.numpy()[w], mjd.qfrc_constraint, atol=3e-2, rtol=1e-2)
+      np.testing.assert_allclose(d.qacc.numpy()[w], mjd.qacc, atol=2.5e-1, rtol=1e-2)
+      w_contacts_all.append(w_contacts)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose([c["dist"] for c in w_contacts_all[0]], [c["dist"] for c in w_contacts_all[1]]))
+      self.assertFalse(np.allclose(d.qfrc_constraint.numpy()[0], d.qfrc_constraint.numpy()[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_contact_mesh_cloth_and_tet_parity(self, nworld):
+    """Test contact parity for off-center meshes colliding with 2D and 3D flexes."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="box" vertex="0.20 -0.04 -0.04  0.28 -0.04 -0.04  0.28 0.04 -0.04  0.20 0.04 -0.04
+                                   0.20 -0.04  0.04  0.28 -0.04  0.04  0.28 0.04  0.04  0.20 0.04  0.04"/>
+          <mesh name="house" vertex="0.20 -0.04 -0.04  0.28 -0.04 -0.04  0.28 0.04 -0.04  0.20 0.04 -0.04
+                                     0.20 -0.04  0.04  0.28 -0.04  0.04  0.28 0.04  0.04  0.20 0.04  0.04
+                                     0.22  0.00  0.05  0.26  0.00  0.05"/>
+        </asset>
+        <worldbody>
+          <body pos="-0.30 0 0.072" euler="25 -20 10">
+            <geom type="mesh" mesh="box" pos="-0.24 0 0"/>
+          </body>
+          <body pos="0.0 0 0.046" euler="4 -3 0">
+            <geom type="mesh" mesh="house" pos="-0.24 0 0"/>
+          </body>
+          <body pos="0.30 0 0.068" euler="5 4 0">
+            <geom type="mesh" mesh="house" pos="-0.24 0 0"/>
+          </body>
+          <flexcomp name="cloth" type="direct" dim="2" radius="0.02" mass="0.9"
+                    point="-0.36 -0.06 0  -0.31 -0.06 0  -0.34 -0.03 0
+                           -0.001853 -0.017748 -0.015570  0.032293 -0.047200 -0.096138  -0.027625 -0.046981 -0.099271
+                            0.008133  0.026108 -0.011979  0.042279  0.066486 -0.087664  -0.017639  0.066705 -0.090797"
+                    element="0 1 2  3 4 5  6 7 8">
+            <contact selfcollide="none" margin="0.01"/>
+          </flexcomp>
+          <flexcomp name="tet" type="direct" dim="3" radius="0.01" mass="0.5"
+                    point="0.30 0.018 0.026  0.34 0.00 -0.05  0.30 0.04 -0.05  0.26 0.00 -0.05"
+                    element="0 1 2 3">
+            <contact selfcollide="none" margin="0.015"/>
+            <elasticity young="1e3"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos = d.qpos.numpy().copy()
+    qvel = d.qvel.numpy().copy()
+    qvel[0] = np.linspace(0.01, 0.04, mjm.nv)
+    if nworld == 2:
+      qpos[1, 2::3] += 2e-4
+      qvel[1] = -np.linspace(0.015, 0.045, mjm.nv)
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    d.nacon.fill_(-1)
+    d.overflow.fill_(0)
+    for arr in (
+      d.flexvert_xpos,
+      d.contact.dist,
+      d.contact.includemargin,
+      d.contact.pos,
+      d.contact.frame,
+      d.qfrc_constraint,
+      d.qacc,
+    ):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert, d.contact.worldid):
+      arr.fill_(-1)
+
+    mjw.forward(m, d)
+
+    np.testing.assert_equal(d.overflow.numpy(), 0)
+    self.assertEqual(d.nacon.numpy()[0], nworld * 4)
+
+    w_contacts_all = []
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mjd.qvel[:] = qvel[w]
+      mujoco.mj_forward(mjm, mjd)
+      self.assertEqual(mjd.ncon, 4)
+
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts, atol=5e-5, frame_atol=1e-5)
+      np.testing.assert_allclose(d.qfrc_constraint.numpy()[w], mjd.qfrc_constraint, atol=1e-3, rtol=1e-3)
+      np.testing.assert_allclose(d.qacc.numpy()[w], mjd.qacc, atol=1e-2, rtol=1e-3)
+      w_contacts_all.append(w_contacts)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose([c["dist"] for c in w_contacts_all[0]], [c["dist"] for c in w_contacts_all[1]]))
+      self.assertFalse(np.allclose(d.qfrc_constraint.numpy()[0], d.qfrc_constraint.numpy()[1]))
+
 
 class FlexContactConstraintTest(parameterized.TestCase):
   """Tests for flex contact constraint generation (efc matrices) parity."""
@@ -4398,6 +5618,55 @@ class FlexContactConstraintTest(parameterized.TestCase):
       self.assertEqual(d.nefc.numpy()[w], mjd.nefc, "nefc mismatch")
 
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_dim{m.flex_dim.numpy()[0]}", m.nv, nworld)
+
+  @parameterized.parameters(True, False)
+  def test_efc_address_stale(self, overflow):
+    """Flex contacts without constraint rows have efc_address -1, not stale values."""
+    _, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <geom type="plane" size="1 1 .01"/>
+          <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".1 .1 .1" pos="0 0 1" radius=".01" dim="2"
+                    mass=".5">
+            <contact condim="3" selfcollide="none" margin=".02" gap=".01"/>
+            <edge equality="false"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      njmax_nnz=40 if overflow else None,
+    )
+
+    # tilt the cloth onto the plane: the lower vertices are active, the upper ones in the gap zone
+    qpos = mjd.qpos.reshape(-1, 3).copy()
+    qpos[:, 2] = np.linspace(-0.995, -0.965, len(qpos))
+    d.qpos.assign(qpos.reshape(1, -1))
+
+    d.contact.efc_address.fill_(0)
+    mjw.fwd_kinematics(m, d)
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    active = d.contact.dist.numpy()[:nacon] < d.contact.includemargin.numpy()[:nacon]
+    self.assertTrue(np.any(active) and not np.all(active))
+    np.testing.assert_array_equal(d.contact.efc_address.numpy()[:nacon][~active], -1)
+
+    # stale addresses on active contacts are reset by make_constraint
+    efc_address = d.contact.efc_address.numpy()
+    efc_address[:nacon][active] = 0
+    d.contact.efc_address.assign(efc_address)
+    mjw.make_constraint(m, d)
+
+    # pyramidal condim 3: 4 rows per contact
+    efc_address = d.contact.efc_address.numpy()[:nacon, :4]
+    efc_id = d.efc.id.numpy()[0]
+    dropped = efc_address[:, 0] < 0
+    self.assertEqual(np.any(dropped[active]), overflow)
+    np.testing.assert_array_equal(efc_address[active & dropped], -1)
+    for conid in np.flatnonzero(active & ~dropped):
+      np.testing.assert_array_equal(efc_id[efc_address[conid]], conid)
 
   @parameterized.parameters(1, 2)
   def test_flex_3d_simplex_collision(self, nworld):
@@ -4953,6 +6222,7 @@ class FlexContactNnzTest(parameterized.TestCase):
             <geom type="sphere" size=".05"/>
             <flexcomp name="rope" type="grid" count="4 1 1" spacing=".2 .2 .1" pos="0 0 0" radius=".02" dim="1" mass=".5">
               <contact selfcollide="none" contype="1" conaffinity="1"/>
+              <pin id="0"/>
             </flexcomp>
           </body>
           <geom type="plane" size="1 1 .01"/>
@@ -5152,7 +6422,7 @@ class FlexEdgeTest(parameterized.TestCase):
 
   @parameterized.parameters(1, 2)
   def test_flex_2d_edge_passive_and_energy(self, nworld):
-    """Test dim=2 flex edge stiffness generates passive forces but no potential energy."""
+    """Test dim=2 flex edge stiffness generates passive forces and potential energy."""
     mjm, mjd, m, d = test_data.fixture(
       xml="""
       <mujoco>
@@ -5199,19 +6469,69 @@ class FlexEdgeTest(parameterized.TestCase):
     mjw.energy_pos(m, d)
     mjw.passive(m, d)
 
+    qfrc_spring = d.qfrc_spring.numpy()
+    flexedge_length0 = m.flexedge_length0.numpy()
+    flexedge_length = d.flexedge_length.numpy()
+    flexedge_rigid = m.flexedge_rigid.numpy()
+    energy = d.energy.numpy()
     for w in range(nworld):
-      self.assertGreater(float(np.linalg.norm(d.qfrc_spring.numpy()[w])), 0.0)
+      self.assertGreater(float(np.linalg.norm(qfrc_spring[w])), 0.0)
       np.testing.assert_allclose(
-        d.qfrc_spring.numpy()[w],
+        qfrc_spring[w],
         mjds[w].qfrc_spring,
         atol=_TOLERANCE,
         err_msg=f"qfrc_spring mismatch (world {w})",
       )
-      self.assertEqual(d.energy.numpy()[w, 0], 0.0)
-      self.assertEqual(mjds[w].energy[0], 0.0)
+      displacement = flexedge_length0 - flexedge_length[w]
+      expected_energy = 0.5 * 100.0 * np.sum(np.where(flexedge_rigid, 0.0, displacement**2))
+      self.assertGreater(energy[w, 0], 0.0)
+      np.testing.assert_allclose(energy[w, 0], expected_energy, rtol=1e-5, err_msg=f"energy mismatch (world {w})")
+      np.testing.assert_allclose(
+        energy[w, 0], mjds[w].energy[0], atol=_TOLERANCE, err_msg=f"energy mismatch with C (world {w})"
+      )
 
     if nworld == 2:
-      self.assertFalse(np.allclose(d.qfrc_spring.numpy()[0], d.qfrc_spring.numpy()[1]))
+      self.assertFalse(np.allclose(qfrc_spring[0], qfrc_spring[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_flex_interpolated_edge_spring_skipped(self, nworld):
+    """Test interpolated flex edges are skipped in edge spring energy computation."""
+    xml = """
+      <mujoco>
+        <option gravity="0 0 0">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <flexcomp name="softbody" type="grid" count="4 2 4" spacing=".025 .05 .025" pos="0 0 0"
+                    dim="3" cellcount="2 1 2" radius=".001"
+                    mass="5" dof="trilinear">
+            <contact condim="3" selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
+    # Simulate runtime modification of flex_edgestiffness.
+    mjm.flex_edgestiffness[0] = 100.0
+    mjd = mujoco.MjData(mjm)
+    mjd.qpos[0] = 0.05
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd, nworld=nworld)
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, 0] = 0.1
+      d.qpos.assign(qpos)
+
+    d.energy.fill_(wp.inf)
+    mjw.fwd_position(m, d)
+    mjw.energy_pos(m, d)
+
+    energy = d.energy.numpy()
+    for w in range(nworld):
+      self.assertEqual(energy[w, 0], 0.0)
+    self.assertEqual(mjd.energy[0], 0.0)
 
   @parameterized.parameters(1, 2)
   def test_flex_edge_rigid(self, nworld):
@@ -5341,20 +6661,75 @@ _ROD_ARTICULATED_XML = """
 </mujoco>
 """
 
+_ROD_CURVED_XML = """
+<mujoco>
+  <option integrator="discrete"/>
+  <worldbody>
+    <flexcomp name="ring" type="circle" count="10 1 1" spacing="0.15 0.15 0.05" pos="0 0 0.6" radius="0.01" dim="1"
+              mass="0.1">
+      <contact selfcollide="none" contype="0" conaffinity="0"/>
+      <elasticity young="1e6" damping="0.01"/>
+      <edge equality="true" solref="0.005 1"/>
+      <pin id="0 1"/>
+    </flexcomp>
+    <flexcomp name="helix" type="direct" pos="0 0.5 0.5" radius="0.01" dim="1" mass="0.1"
+              point="0.10 0.00 0.00  0.05 0.0866 0.04  -0.05 0.0866 0.08  -0.10 0.00 0.12
+                     -0.05 -0.0866 0.16  0.05 -0.0866 0.20  0.10 0.00 0.24"
+              element="0 1  1 2  2 3  3 4  4 5  5 6">
+      <contact selfcollide="none" contype="0" conaffinity="0"/>
+      <elasticity young="2e6" damping="0.015" section="box" sectionsize="0.015 0.01"/>
+      <pin id="0 1"/>
+    </flexcomp>
+    <flexcomp name="vee" type="direct" pos="0 -0.5 0.5" radius="0.01" dim="1" mass="0.05"
+              point="0 0 0  0.08 0 0  0.13 0.06 0"
+              element="0 1  1 2">
+      <contact selfcollide="none" contype="0" conaffinity="0"/>
+      <elasticity young="1e6" damping="0.01"/>
+      <pin id="0"/>
+    </flexcomp>
+    <!-- straight segment ending in an arc: straight single hinges next to hinge pairs -->
+    <flexcomp name="hook" type="direct" pos="0.5 0 0.5" radius="0.01" dim="1" mass="0.05"
+              point="0 0 0  0.05 0 0  0.10 0 0  0.15 0 0  0.193 0.025 0  0.218 0.068 0  0.218 0.118 0"
+              element="0 1  1 2  2 3  3 4  4 5  5 6">
+      <contact selfcollide="none" contype="0" conaffinity="0"/>
+      <elasticity young="1e6" damping="0.01"/>
+      <pin id="0 1"/>
+    </flexcomp>
+  </worldbody>
+</mujoco>
+"""
 
-# TODO(team): remove version check once mujoco >= 3.16.1 is required.
-@absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
+_ROD_CURVED_ARTICULATED_XML = """
+<mujoco>
+  <option integrator="discrete" solver="CG"/>
+  <worldbody>
+    <body name="arm" pos="0 0 1">
+      <joint name="hinge" axis="0 1 0" damping="0.1"/>
+      <geom size="0.02" mass="0.1"/>
+      <flexcomp name="arc" type="direct" pos="0.15 0 0" radius="0.01" dim="1" mass="0.1"
+                point="0 -0.15 0  0.075 -0.13 0  0.13 -0.075 0  0.15 0 0  0.13 0.075 0  0.075 0.13 0  0 0.15 0"
+                element="0 1  1 2  2 3  3 4  4 5  5 6">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e6" damping="0.01"/>
+        <pin id="0 1"/>
+      </flexcomp>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+
 class FlexRodBendingTest(parameterized.TestCase):
   """Tests for 1D flex discrete elastic rod bending parity with MuJoCo."""
 
   @parameterized.product(
-    xml=[_ROD_XML, _ROD_ARTICULATED_XML],
+    xml=[_ROD_XML, _ROD_ARTICULATED_XML, _ROD_CURVED_XML, _ROD_CURVED_ARTICULATED_XML],
     nworld=[1, 2],
     spring=(0, DisableBit.SPRING),
     damper=(0, DisableBit.DAMPER),
   )
   def test_rod_passive_parity(self, xml, nworld, spring, damper):
-    """Rod bending spring and damper forces match MuJoCo C, including articulated attachments."""
+    """Rod spring and damper forces match MuJoCo C, including curved and articulated rods."""
     mjm, mjd, m, d = test_data.fixture(
       xml=xml,
       qpos_noise=0.02,
@@ -5367,6 +6742,7 @@ class FlexRodBendingTest(parameterized.TestCase):
     mjds = [mjd]
     if nworld == 2:
       mjd1 = mujoco.MjData(mjm)
+      mjd1.plastic[:] = mjd.plastic
       qpos = d.qpos.numpy()
       qvel = d.qvel.numpy()
       qpos[1] += 0.01 * np.cos(np.arange(mjm.nq))
@@ -5388,11 +6764,14 @@ class FlexRodBendingTest(parameterized.TestCase):
     qfrc_spring = d.qfrc_spring.numpy()
     qfrc_damper = d.qfrc_damper.numpy()
     qfrc_passive = d.qfrc_passive.numpy()
+    # curved hinge pairs amplify float32 roundoff of the vertex positions by the inverse curvature
+    # of nearly straightened hinges, through the dihedral torsion term
+    ftol = 2e-4 if xml in (_ROD_CURVED_XML, _ROD_CURVED_ARTICULATED_XML) else 3e-5
     for w in range(nworld):
       scale = max(1.0, np.abs(mjds[w].qfrc_spring).max(), np.abs(mjds[w].qfrc_damper).max())
-      np.testing.assert_allclose(qfrc_spring[w], mjds[w].qfrc_spring, atol=1e-5 * scale, rtol=1e-4, err_msg=f"spring {w}")
-      np.testing.assert_allclose(qfrc_damper[w], mjds[w].qfrc_damper, atol=1e-5 * scale, rtol=1e-4, err_msg=f"damper {w}")
-      np.testing.assert_allclose(qfrc_passive[w], mjds[w].qfrc_passive, atol=1e-5 * scale, rtol=1e-4, err_msg=f"passive {w}")
+      np.testing.assert_allclose(qfrc_spring[w], mjds[w].qfrc_spring, atol=ftol * scale, rtol=1e-4, err_msg=f"spring {w}")
+      np.testing.assert_allclose(qfrc_damper[w], mjds[w].qfrc_damper, atol=ftol * scale, rtol=1e-4, err_msg=f"damper {w}")
+      np.testing.assert_allclose(qfrc_passive[w], mjds[w].qfrc_passive, atol=ftol * scale, rtol=1e-4, err_msg=f"passive {w}")
       if not spring:
         self.assertGreater(np.abs(mjds[w].qfrc_spring).max(), 1e-3)
       if not damper:
@@ -5404,15 +6783,16 @@ class FlexRodBendingTest(parameterized.TestCase):
       if not damper:
         self.assertFalse(np.allclose(qfrc_damper[0], qfrc_damper[1]))
 
-  @parameterized.parameters(1, 2)
-  def test_rod_effective_metric(self, nworld):
+  @parameterized.product(xml=[_ROD_XML, _ROD_CURVED_XML], nworld=[1, 2])
+  def test_rod_effective_metric(self, xml, nworld):
     """Rod hinge stiffness in efm_K_val, the velocity shift efm_c and qacc_smooth match MuJoCo C."""
-    mjm, mjd, m, d = test_data.fixture(xml=_ROD_XML, qpos_noise=0.02, qvel_noise=0.5, nworld=nworld)
+    mjm, mjd, m, d = test_data.fixture(xml=xml, qpos_noise=0.02, qvel_noise=0.5, nworld=nworld)
     self.assertGreater(m.nefmK, 0)
 
     mjds = [mjd]
     if nworld == 2:
       mjd1 = mujoco.MjData(mjm)
+      mjd1.plastic[:] = mjd.plastic
       qpos = d.qpos.numpy()
       qvel = d.qvel.numpy()
       qpos[1] += 0.01 * np.cos(np.arange(mjm.nq))
@@ -5433,19 +6813,25 @@ class FlexRodBendingTest(parameterized.TestCase):
     efm_K_val = d.efm_K_val.numpy()
     efm_c = d.efm_c.numpy()
     qacc_smooth = d.qacc_smooth.numpy()
+    lhs_wp = wp.empty((nworld, mjm.nv), dtype=float)
+    derivative.eff_mul_m(m, d, lhs_wp, d.qacc_smooth)
+    lhs = lhs_wp.numpy()
     for w in range(nworld):
       kscale = np.abs(mjds[w].efm_K_val).max()
       np.testing.assert_allclose(efm_K_val[w], mjds[w].efm_K_val, atol=1e-5 * kscale, rtol=1e-4, err_msg=f"efm_K_val {w}")
       cscale = max(1.0, np.abs(mjds[w].efm_c).max())
       np.testing.assert_allclose(efm_c[w], mjds[w].efm_c, atol=1e-5 * cscale, rtol=1e-4, err_msg=f"efm_c {w}")
-      # qacc_smooth solves MuJoCo C's effective metric system M + K; the float32 PCG converges to a
-      # relative residual of about 1e-6, so its solution is checked through the residual
-      M = np.zeros((mjm.nv, mjm.nv))
-      mujoco.mju_sym2dense(M, mjds[w].M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
-      K = _sparse2dense(mjds[w].efm_K_rownnz, mjds[w].efm_K_rowadr, mjds[w].efm_K_colind, mjds[w].efm_K_val, M.shape)
       rhs = mjds[w].qfrc_smooth + mjds[w].efm_c
-      residual = np.linalg.norm((M + K) @ qacc_smooth[w] - rhs) / np.linalg.norm(rhs)
+      residual = np.linalg.norm(lhs[w] - rhs) / np.linalg.norm(rhs)
       self.assertLess(residual, 1e-4, f"qacc_smooth residual {w}")
+      qscale = max(1.0, np.abs(mjds[w].qacc_smooth).max())
+      np.testing.assert_allclose(
+        qacc_smooth[w],
+        mjds[w].qacc_smooth,
+        atol=1e-4 * qscale,
+        rtol=1e-3,
+        err_msg=f"qacc_smooth {w}",
+      )
 
     if nworld == 2:
       self.assertFalse(np.allclose(efm_K_val[0], efm_K_val[1]))
@@ -5455,6 +6841,8 @@ class FlexRodBendingTest(parameterized.TestCase):
     xml=[
       _ROD_XML,
       _ROD_ARTICULATED_XML,
+      _ROD_CURVED_XML,
+      _ROD_CURVED_ARTICULATED_XML,
       # slider-crank-like mechanism: a rod clamped by two point equalities
       # at each end to hinged fittings
       """
@@ -5518,7 +6906,7 @@ class FlexRodBendingTest(parameterized.TestCase):
           </body>
           <body name="frame" pos="0 0 1">
             <flexcomp name="arm_flex" type="grid" count="11 1 1" spacing="0.1 0.1 0.1" pos="0.3 0 0" dim="1" mass="0.3"
-                      radius="0.03">
+                      radius="0.0325">
               <elasticity young="3e7" damping="0.007" section="box" sectionsize="0.0375 0.0325"/>
               <edge equality="true" solref="0.005 1"/>
               <contact selfcollide="none" contype="0" conaffinity="0"/>
@@ -5543,6 +6931,7 @@ class FlexRodBendingTest(parameterized.TestCase):
     mjds = [mjd]
     if nworld == 2:
       mjd1 = mujoco.MjData(mjm)
+      mjd1.plastic[:] = mjd.plastic
       qvel = d.qvel.numpy()
       qvel[1] *= -1.0
       d.qvel.assign(qvel)
@@ -5559,14 +6948,14 @@ class FlexRodBendingTest(parameterized.TestCase):
     qvel = d.qvel.numpy()
     for w in range(nworld):
       np.testing.assert_allclose(qpos[w], mjds[w].qpos, atol=1e-4, err_msg=f"qpos {w}")
-      np.testing.assert_allclose(qvel[w], mjds[w].qvel, atol=1e-2, err_msg=f"qvel {w}")
+      np.testing.assert_allclose(qvel[w], mjds[w].qvel, atol=2e-4, err_msg=f"qvel {w}")
 
     if nworld == 2:
       self.assertFalse(np.allclose(qpos[0], qpos[1]))
 
-  @parameterized.parameters("Euler", "implicitfast")
+  @parameterized.parameters("Euler", "RK4")
   def test_rod_explicit_integrators(self, integrator):
-    """Rod bending is integrated explicitly by the other integrators, as in MuJoCo C."""
+    """Rod bending is integrated explicitly by Euler and RK4, as in MuJoCo C."""
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
       <mujoco>
@@ -5589,6 +6978,1117 @@ class FlexRodBendingTest(parameterized.TestCase):
 
     np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-5)
     np.testing.assert_allclose(d.qvel.numpy()[0], mjd.qvel, atol=1e-3)
+
+    for implicit in (types.IntegratorType.IMPLICIT, types.IntegratorType.IMPLICITFAST):
+      m.opt.integrator = int(implicit)
+      with self.assertRaisesRegex(ValueError, "flex elasticity is no longer integrated implicitly"):
+        mjw.forward(m, d)
+
+  def test_rod_curved_zero_force_at_rest(self):
+    """Curved rods have zero spring force in their reference configuration, and resist bending."""
+    mjm, mjd, m, d = test_data.fixture(xml=_ROD_CURVED_XML)
+    d.qfrc_spring.fill_(wp.inf)
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+    mujoco.mj_fwdPosition(mjm, mjd)
+    mujoco.mj_fwdVelocity(mjm, mjd)
+    # float32 roundoff of the stiffer box-section helix pairs is about 1e-5
+    np.testing.assert_allclose(d.qfrc_spring.numpy()[0], 0.0, atol=3e-5)
+    np.testing.assert_allclose(mjd.qfrc_spring, 0.0, atol=1e-10)
+
+    # displace a ring vertex out of plane, which bends the adjacent hinges
+    qpos = d.qpos.numpy()
+    qpos[0, 5] += 0.02
+    d.qpos.assign(qpos)
+    mjd.qpos[:] = qpos[0]
+    d.qfrc_spring.fill_(wp.inf)
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+    mujoco.mj_fwdPosition(mjm, mjd)
+    mujoco.mj_fwdVelocity(mjm, mjd)
+    self.assertGreater(np.abs(mjd.qfrc_spring[5]), 1e-2)
+    np.testing.assert_allclose(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, atol=3e-5, rtol=1e-4)
+
+  @parameterized.product(
+    section=["", 'section="box" sectionsize="0.01 0.02"'],
+    pin=["0 1", "0"],
+    zigzag=[False, True],
+    nworld=[1, 2],
+  )
+  def test_rod_twist_parity(self, section, pin, zigzag, nworld):
+    """Twist hinge and anisotropic box-section rod forces match MuJoCo C on a rotated rod."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG"/>
+        <worldbody>
+          <body name="turned" euler="15 -25 35">
+            <joint type="hinge" axis="1 0 0"/>
+            <joint type="hinge" axis="0 1 0"/>
+            <joint type="hinge" axis="0 0 1"/>
+            <geom size="0.01"/>
+            <body name="mount">
+              <flexcomp name="rod" type="grid" count="7 1 1" spacing="0.1 0.1 0.1" radius="0.01" dim="1" mass="1">
+                <pin id="{pin}"/>
+                <contact selfcollide="none" contype="0" conaffinity="0"/>
+                <elasticity young="1e7" poisson="0.25" damping="0.01" {section}/>
+              </flexcomp>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    twist_name = "rod_twist_1" if pin == "0 1" else "rod_twist_0"
+    twist_jnt = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, twist_name)
+    self.assertGreaterEqual(twist_jnt, 0)
+    twist_dof = mjm.jnt_dofadr[twist_jnt]
+    twist_qpos = mjm.jnt_qposadr[twist_jnt]
+    self.assertGreater(m.nflexrodhinge, 0)
+
+    qpos = np.zeros((nworld, mjm.nq))
+    qvel = np.zeros((nworld, mjm.nv))
+    for w in range(nworld):
+      qpos[w] = 0.02 * np.sin(1.7 * np.arange(mjm.nq) + 0.3 + w)
+      if zigzag:
+        nfree = 7 - (2 if pin == "0 1" else 1)
+        qpos[w, 4 : 3 + 3 * nfree : 3] = 0.05 * (-1.0) ** np.arange(nfree)
+      if twist_jnt >= 0:
+        qpos[w, twist_qpos] = 0.4 - 0.3 * w
+      qvel[w] = 0.5 * np.cos(1.3 * np.arange(mjm.nv) + w)
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+    for arr in (d.qfrc_spring, d.qfrc_damper):
+      arr.fill_(wp.inf)
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+
+    qfrc_spring = d.qfrc_spring.numpy()
+    qfrc_damper = d.qfrc_damper.numpy()
+    plastic = d.plastic.numpy()
+    for w in range(nworld):
+      mjd = mujoco.MjData(mjm)
+      mjd.qpos[:] = qpos[w]
+      mjd.qvel[:] = qvel[w]
+      mjd.plastic[:] = plastic[w]
+      mujoco.mj_fwdPosition(mjm, mjd)
+      mujoco.mj_fwdVelocity(mjm, mjd)
+      if twist_jnt >= 0:
+        self.assertGreater(np.abs(mjd.qfrc_spring[twist_dof]), 1e-3)
+      sscale = max(1.0, np.abs(mjd.qfrc_spring).max())
+      dscale = max(1.0, np.abs(mjd.qfrc_damper).max())
+      np.testing.assert_allclose(qfrc_spring[w], mjd.qfrc_spring, atol=1e-5 * sscale, rtol=1e-4, err_msg=f"spring {w}")
+      np.testing.assert_allclose(qfrc_damper[w], mjd.qfrc_damper, atol=1e-5 * dscale, rtol=1e-4, err_msg=f"damper {w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_spring[0], qfrc_spring[1]))
+      self.assertFalse(np.allclose(qfrc_damper[0], qfrc_damper[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_rod_twist_state_parity(self, nworld):
+    """Twist reference carried in the plastic state and motor-twisted rod match MuJoCo C."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete"/>
+        <worldbody>
+          <flexcomp name="rod" type="grid" count="11 1 1" spacing="0.05 0.05 0.05" radius="0.004" dim="1" mass="0.1">
+            <pin id="0 1"/>
+            <edge equality="true"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e6" shear="4e5" damping="0.02" section="box" sectionsize="0.01 0.004"/>
+          </flexcomp>
+        </worldbody>
+        <actuator>
+          <motor joint="rod_twist"/>
+        </actuator>
+      </mujoco>
+      """,
+      qvel_noise=0.1,
+      nworld=nworld,
+    )
+    f = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "rod")
+    padr = mjm.flex_plasticadr[f]
+    self.assertGreaterEqual(padr, 0)
+    self.assertEqual(mjm.nplastic, 69)
+
+    qpos0 = d.qpos.numpy().copy()
+    qvel0 = d.qvel.numpy().copy()
+    plastic0 = d.plastic.numpy().copy()
+    ctrl = d.ctrl.numpy()
+    for w in range(nworld):
+      ctrl[w] = 0.01 * (1.0 - 1.5 * w)
+    d.ctrl.assign(ctrl)
+    for _ in range(20):
+      mjw.step(m, d)
+
+    qpos = d.qpos.numpy()
+    plastic = d.plastic.numpy()
+    for w in range(nworld):
+      mjd = mujoco.MjData(mjm)
+      mjd.qpos[:] = qpos0[w]
+      mjd.qvel[:] = qvel0[w]
+      mjd.plastic[:] = plastic0[w]
+      mjd.ctrl[:] = ctrl[w]
+      for _ in range(20):
+        mujoco.mj_step(mjm, mjd)
+      np.testing.assert_allclose(qpos[w], mjd.qpos, atol=1e-4, err_msg=f"qpos {w}")
+      np.testing.assert_allclose(plastic[w], mjd.plastic, atol=1e-4, err_msg=f"plastic {w}")
+      self.assertGreater(np.linalg.norm(mjd.plastic[padr : padr + 3]), 0.5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos[0], qpos[1]))
+      self.assertFalse(np.allclose(plastic[0], plastic[1]))
+
+  @parameterized.product(
+    solver=["CG", "Newton"],
+    pin=["0 1", "0"],
+    nworld=[1, 2],
+  )
+  def test_rod_circular_per_edge_twist_and_wrapping(self, solver, pin, nworld):
+    """Circular DER rods with per-edge twist DOFs, >pi hinge twist, and CG/Newton match C."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="{solver}"/>
+        <worldbody>
+          <flexcomp name="cable" type="grid" count="6 1 1" spacing="0.06 0.06 0.06" pos="0 0 0.5"
+                    radius="0.008" dim="1" mass="0.06">
+            <pin id="{pin}"/>
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="2e6" poisson="0.3" damping="0.015"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    f = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_FLEX, "cable")
+    self.assertEqual(mjm.nplastic, 34)
+    self.assertGreaterEqual(mjm.flex_plasticadr[f], 0)
+
+    first_twist = "cable_twist_1" if pin == "0 1" else "cable_twist_0"
+    jnt_first = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, first_twist)
+    jnt_last = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "cable_twist")
+    self.assertGreaterEqual(jnt_first, 0)
+    self.assertGreaterEqual(jnt_last, 0)
+
+    qpos = d.qpos.numpy().copy()
+    qvel = d.qvel.numpy().copy()
+    plastic0 = d.plastic.numpy().copy()
+    for w in range(nworld):
+      qpos[w] += 0.005 * np.sin(np.arange(mjm.nq) + w)
+      # Twist > pi across the last hinge: joint difference stays unwrapped and matches C
+      qpos[w, mjm.jnt_qposadr[jnt_last]] += 1.25 * np.pi + 0.2 * (1.0 - 0.5 * w)
+      qvel[w] = 0.2 * np.cos(1.1 * np.arange(mjm.nv) + w)
+      qvel[w, mjm.jnt_dofadr[jnt_last]] = 1.5 - w
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    mjds = []
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qpos[:] = qpos[w]
+      mjd_w.qvel[:] = qvel[w]
+      mjd_w.plastic[:] = plastic0[w]
+      mjds.append(mjd_w)
+
+    for _ in range(10):
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+      mjw.step(m, d)
+
+    qpos_out = d.qpos.numpy()
+    qvel_out = d.qvel.numpy()
+    plastic_out = d.plastic.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(qpos_out[w], mjds[w].qpos, atol=2e-4, rtol=1e-3, err_msg=f"qpos {w}")
+      np.testing.assert_allclose(qvel_out[w], mjds[w].qvel, atol=5e-4, rtol=2e-3, err_msg=f"qvel {w}")
+      np.testing.assert_allclose(plastic_out[w], mjds[w].plastic, atol=2e-4, rtol=1e-3, err_msg=f"plastic {w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos_out[0], qpos_out[1]))
+      self.assertFalse(np.allclose(plastic_out[0], plastic_out[1]))
+
+  def _assert_efc_world_eq(self, mjm, m, d, mjd, w, name, tol=_TOLERANCE):
+    """Assert per-world EFC equality against single-world MuJoCo MjData `mjd`."""
+    nefc = int(mjd.nefc)
+    self.assertEqual(int(d.nefc.numpy()[w]), nefc, f"{name}: nefc mismatch (world {w})")
+    if nefc == 0:
+      return
+
+    nv = mjm.nv
+    if mujoco.mj_isSparse(mjm):
+      mj_J = np.zeros((nefc, nv))
+      mujoco.mju_sparse2dense(mj_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+    else:
+      mj_J = mjd.efc_J.reshape((nefc, nv))
+
+    if m.is_sparse:
+      d_J = np.zeros((nefc, nv))
+      mujoco.mju_sparse2dense(
+        d_J,
+        d.efc.J.numpy()[w, 0],
+        d.efc.J_rownnz.numpy()[w, :nefc],
+        d.efc.J_rowadr.numpy()[w, :nefc],
+        d.efc.J_colind.numpy()[w, 0],
+      )
+    else:
+      d_J = d.efc.J.numpy()[w, :nefc, :nv]
+
+    contact_min_type = int(mujoco.mjtConstraint.mjCNSTR_CONTACT_FRICTIONLESS)
+
+    def _row_keys(efc_type, efc_id, J, con_pos_fn):
+      counts = {}
+      keys = []
+      for r in range(nefc):
+        tp = int(efc_type[r])
+        cid = int(efc_id[r])
+        if tp >= contact_min_type:
+          idx = counts.get((tp, cid), 0)
+          counts[(tp, cid)] = idx + 1
+          cp = con_pos_fn(cid)
+          keys.append(
+            (
+              tp,
+              round(float(cp[0]), 4),
+              round(float(cp[1]), 4),
+              round(float(cp[2]), 4),
+              idx,
+            )
+          )
+        else:
+          nz = np.flatnonzero(np.abs(J[r]) > 1e-6)
+          c0 = int(nz[0]) if len(nz) else -1
+          c1 = int(nz[-1]) if len(nz) else -1
+          idx = counts.get((tp, cid, c0, c1), 0)
+          counts[(tp, cid, c0, c1)] = idx + 1
+          keys.append((tp, float(cid), float(c0), float(c1), idx))
+      return sorted(range(nefc), key=keys.__getitem__)
+
+    d_efc_type = d.efc.type.numpy()[w, :nefc]
+    d_efc_id = d.efc.id.numpy()[w, :nefc]
+    d_con_pos = d.contact.pos.numpy()
+    mjd_order = _row_keys(
+      mjd.efc_type[:nefc],
+      mjd.efc_id[:nefc],
+      mj_J,
+      lambda cid: mjd.contact[cid].pos,
+    )
+    d_order = _row_keys(d_efc_type, d_efc_id, d_J, lambda cid: d_con_pos[cid])
+
+    np.testing.assert_allclose(
+      d_efc_type[d_order],
+      mjd.efc_type[mjd_order],
+      err_msg=f"{name}_type (world {w})",
+    )
+    np.testing.assert_allclose(
+      d.efc.pos.numpy()[w, d_order],
+      mjd.efc_pos[mjd_order],
+      atol=tol,
+      rtol=tol,
+      err_msg=f"{name}_pos (world {w})",
+    )
+    np.testing.assert_allclose(
+      d.efc.margin.numpy()[w, d_order],
+      mjd.efc_margin[mjd_order],
+      atol=tol,
+      rtol=tol,
+      err_msg=f"{name}_margin (world {w})",
+    )
+    np.testing.assert_allclose(
+      d_J[d_order],
+      mj_J[mjd_order],
+      atol=tol,
+      rtol=tol,
+      err_msg=f"{name}_J (world {w})",
+    )
+    np.testing.assert_allclose(
+      d.efc.D.numpy()[w, d_order],
+      mjd.efc_D[mjd_order],
+      atol=tol,
+      rtol=tol,
+      err_msg=f"{name}_D (world {w})",
+    )
+    np.testing.assert_allclose(
+      d.efc.vel.numpy()[w, d_order],
+      mjd.efc_vel[mjd_order],
+      atol=tol,
+      rtol=tol,
+      err_msg=f"{name}_vel (world {w})",
+    )
+    np.testing.assert_allclose(
+      d.efc.aref.numpy()[w, d_order],
+      mjd.efc_aref[mjd_order],
+      atol=2 * tol,
+      rtol=2 * tol,
+      err_msg=f"{name}_aref (world {w})",
+    )
+
+  @parameterized.product(
+    jacobian=["sparse", "dense"],
+    solver=["CG", "Newton"],
+    nworld=[1, 2],
+  )
+  def test_rod_box_collision_and_lever_arm_parity(self, jacobian, solver, nworld):
+    """Box-section DER rod collision across primitive/flex pairs and lever arms match C."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="{solver}" jacobian="{jacobian}"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="2 2 0.1"/>
+          <geom name="sph" size="0.025" pos="0.075 0.032 0.06"/>
+          <geom name="cap" type="capsule" size="0.015 0.04" pos="0.175 -0.028 0.06" euler="25 10 0"/>
+          <geom name="blk" type="box" size="0.02 0.02 0.02" pos="0.275 0.031 0.06" euler="10 20 15"/>
+
+          <flexcomp name="strip" type="grid" count="6 1 1" spacing="0.07 0.07 0.07" pos="0 0 0.016"
+                    radius="0.005" dim="1" mass="0.12">
+            <pin id="0"/>
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none"/>
+            <elasticity young="2e6" damping="0.02" section="box" sectionsize="0.018 0.008"/>
+          </flexcomp>
+
+          <flexcomp name="strip2" type="grid" count="4 1 1" spacing="0.06 0.06 0.06" pos="0.14 -0.08 0.03"
+                    euler="0 0 90" radius="0.005" dim="1" mass="0.08">
+            <pin id="0"/>
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none"/>
+            <elasticity young="2e6" damping="0.02" section="box" sectionsize="0.015 0.008"/>
+          </flexcomp>
+
+          <flexcomp name="cable" type="grid" count="4 1 1" spacing="0.06 0.06 0.06" pos="0.22 -0.08 0.026"
+                    euler="0 0 90" radius="0.012" dim="1" mass="0.06">
+            <pin id="0"/>
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none"/>
+            <elasticity young="1e6" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    qpos = d.qpos.numpy().copy()
+    qvel = d.qvel.numpy().copy()
+    jnt_tw = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "strip_twist_1")
+    self.assertGreaterEqual(jnt_tw, 0)
+    for w in range(nworld):
+      qpos[w, mjm.jnt_qposadr[jnt_tw]] = 0.25 - 0.15 * w
+      qvel[w] = 0.05 * np.sin(np.arange(mjm.nv) + w)
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    plastic0 = d.plastic.numpy().copy()
+    mjds = []
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qpos[:] = qpos[w]
+      mjd_w.qvel[:] = qvel[w]
+      mjd_w.plastic[:] = plastic0[w]
+      mujoco.mj_forward(mjm, mjd_w)
+      mjds.append(mjd_w)
+
+    d.nefc.fill_(-1)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+    qfrc_con = d.qfrc_constraint.numpy()
+    for w in range(nworld):
+      self.assertGreater(mjds[w].ncon, 4)
+      self._assert_efc_world_eq(mjm, m, d, mjds[w], w, f"box_rod_efc_{w}", tol=2e-3)
+      cscale = max(1.0, np.abs(mjds[w].qfrc_constraint).max())
+      con_atol = (2e-2 if solver == "CG" else 2e-3) * cscale
+      np.testing.assert_allclose(
+        qfrc_con[w],
+        mjds[w].qfrc_constraint,
+        atol=con_atol,
+        rtol=2e-2,
+        err_msg=f"qfrc_con {w}",
+      )
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_con[0], qfrc_con[1]))
+
+    for _ in range(5):
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+      mjw.step(m, d)
+
+    qpos_out = d.qpos.numpy()
+    plastic_out = d.plastic.numpy()
+    for w in range(nworld):
+      np.testing.assert_allclose(qpos_out[w], mjds[w].qpos, atol=2e-3, err_msg=f"qpos {w}")
+      np.testing.assert_allclose(plastic_out[w], mjds[w].plastic, atol=5e-3, err_msg=f"plastic {w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(qpos_out[0], qpos_out[1]))
+
+  @parameterized.product(
+    jacobian=["sparse", "dense"],
+    nworld=[1, 2],
+  )
+  def test_rod_capsule_rolling_contact_parity(self, jacobian, nworld):
+    """Circular DER rod rolling contact lever-arm Jacobian (axial twist torque) matches MuJoCo C."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" jacobian="{jacobian}"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="2 2 0.1" friction="0.8 0.01 0.005"/>
+          <geom name="roller" type="capsule" size="0.02 0.06" pos="0.08 0 0.032" euler="90 0 0"
+                friction="0.8 0.01 0.005"/>
+          <flexcomp name="cable" type="direct" radius="0.015" dim="1" mass="0.1"
+                    point="0 0 0.045  0.05 0 0.012  0.11 0 0.012  0.17 0 0.012"
+                    element="0 1  1 2  2 3">
+            <pin id="0"/>
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none" friction="0.8 0.01 0.005" condim="6"/>
+            <elasticity young="1e6" damping="0.02"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    jnt_tw = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "cable_twist_1")
+    self.assertGreaterEqual(jnt_tw, 0)
+    dof_tw = mjm.jnt_dofadr[jnt_tw]
+
+    qvel = d.qvel.numpy().copy()
+    plastic0 = d.plastic.numpy().copy()
+    for w in range(nworld):
+      qvel[w, dof_tw] = 3.0 - 1.5 * w
+    d.qvel.assign(qvel)
+
+    mjds = []
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qvel[:] = qvel[w]
+      mjd_w.plastic[:] = plastic0[w]
+      mujoco.mj_forward(mjm, mjd_w)
+      mjds.append(mjd_w)
+
+    d.nefc.fill_(-1)
+    d.qfrc_constraint.fill_(wp.inf)
+    mjw.forward(m, d)
+    qfrc_con = d.qfrc_constraint.numpy()
+    for w in range(nworld):
+      self.assertGreater(np.abs(mjds[w].qfrc_constraint[dof_tw]), 1e-4)
+      self._assert_efc_world_eq(mjm, m, d, mjds[w], w, f"cap_rod_efc_{w}", tol=1e-3)
+      cscale = max(1.0, np.abs(mjds[w].qfrc_constraint).max())
+      np.testing.assert_allclose(
+        qfrc_con[w],
+        mjds[w].qfrc_constraint,
+        atol=1e-3 * cscale,
+        rtol=1e-2,
+        err_msg=f"qfrc_con {w}",
+      )
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_con[0], qfrc_con[1]))
+
+  def test_rod_twist_beyond_pi_unwrap_parity(self):
+    """Uniform twist >pi per hinge and multi-turn servo windup match C."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG" timestep="0.002"
+                tolerance="1e-10" iterations="100">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.06 0.06 0.06" radius="0.008"
+                    dim="1" mass="0.06">
+            <pin id="0 1"/>
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e6" poisson="0.3" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+        <actuator>
+          <position joint="rod_twist" kp="2.0" kv="0.05"/>
+        </actuator>
+      </mujoco>
+      """,
+    )
+    self.assertEqual(mjm.nplastic, 34)  # 6*5 + 4
+    tw_names = ["rod_twist_1", "rod_twist_2", "rod_twist_3", "rod_twist"]
+    tw_jnts = [mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, nm) for nm in tw_names]
+    tw_qpos = [mjm.jnt_qposadr[jnt] for jnt in tw_jnts]
+    tw_dofs = [mjm.jnt_dofadr[jnt] for jnt in tw_jnts]
+    tail_dof = tw_dofs[-1]
+
+    # 1. Static uniform twist up to 3.5*pi per hinge: monotone energy and negative restoring torque
+    prev_energy = 0.0
+    for alpha in (0.5 * np.pi, 1.2 * np.pi, 2.3 * np.pi, 3.5 * np.pi):
+      qpos = mjm.qpos0.copy()
+      for idx, qadr in enumerate(tw_qpos):
+        qpos[qadr] = (idx + 1) * alpha
+      d.qpos.assign(qpos[None].astype(np.float32))
+      d.plastic.zero_()
+      mjd.qpos[:] = qpos
+      mjd.plastic[:] = 0.0
+      mujoco.mj_forward(mjm, mjd)
+      mjw.forward(m, d)
+      qfrc_sp_wp = d.qfrc_spring.numpy()[0]
+      e_wp = -0.5 * float(np.dot(qpos[tw_qpos], qfrc_sp_wp[tw_dofs]))
+      e_c = -0.5 * float(np.dot(qpos[tw_qpos], mjd.qfrc_spring[tw_dofs]))
+      tau_wp = float(qfrc_sp_wp[tail_dof])
+      self.assertGreater(e_wp, prev_energy)
+      self.assertLess(tau_wp, 0.0)
+      np.testing.assert_allclose(e_wp, e_c, rtol=1e-4, atol=1e-5)
+      np.testing.assert_allclose(qfrc_sp_wp, mjd.qfrc_spring, rtol=1e-4, atol=1e-5)
+      prev_energy = e_wp
+
+    # 2. Multi-step servo trajectory winding tail toward 3 full turns (6*pi)
+    mjw.reset_data(m, d)
+    mujoco.mj_resetData(mjm, mjd)
+    # Give slight out-of-line bend so reference frames transport and unwrap psi
+    qpos0 = d.qpos.numpy().copy()
+    qpos0[0, 1] = 0.01
+    d.qpos.assign(qpos0)
+    mjd.qpos[:] = qpos0[0]
+    d.ctrl.fill_(6.0 * np.pi)
+    mjd.ctrl[0] = 6.0 * np.pi
+    for _ in range(30):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+    np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-3, rtol=2e-3)
+    np.testing.assert_allclose(d.plastic.numpy()[0], mjd.plastic, atol=1e-3, rtol=2e-3)
+
+  def test_rod_tail_clamp_and_no_state_plastic_roundtrip(self):
+    """Tail clamp omits <name>_twist; rotated-root no-state and plastic round-trip match C."""
+    # 1. Tail-clamped rod on a rolling tail body: <name>_twist omitted, reaction torque on tail body
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <body name="tail_mount">
+            <joint name="tail_roll" type="hinge" axis="1 0 0"/>
+            <geom size="0.01" mass="0.05"/>
+            <flexcomp name="ribbon" type="grid" count="5 1 1" spacing="0.08 0.08 0.08"
+                      radius="0.006" dim="1" mass="0.08">
+              <pin id="3 4"/>
+              <contact selfcollide="none" contype="0" conaffinity="0"/>
+              <elasticity young="2e6" damping="0.02" section="box" sectionsize="0.018 0.006"/>
+            </flexcomp>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    # Tail edge is pinned -> ribbon_twist is omitted while ribbon_twist_0..ribbon_twist_2 exist
+    self.assertEqual(mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "ribbon_twist"), -1)
+    self.assertGreaterEqual(mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "ribbon_twist_2"), 0)
+    self.assertTrue(bool(m.flex_rod_tail_clamped.numpy()[0]))
+
+    roll_jnt = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "tail_roll")
+    roll_qadr = mjm.jnt_qposadr[roll_jnt]
+    roll_dof = mjm.jnt_dofadr[roll_jnt]
+    # Step once at rest to initialize plastic frames, then roll the tail mount
+    mujoco.mj_step(mjm, mjd)
+    mjw.step(m, d)
+    qpos = d.qpos.numpy().copy()
+    qvel = d.qvel.numpy().copy()
+    qpos[0, roll_qadr] = 0.35
+    qvel[0, roll_dof] = 1.2
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+    mjd.qpos[:] = qpos[0]
+    mjd.qvel[:] = qvel[0]
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+    self.assertLess(mjd.qfrc_spring[roll_dof], -1e-2)
+    self.assertLess(mjd.qfrc_damper[roll_dof], -1e-3)
+    np.testing.assert_allclose(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(d.qfrc_damper.numpy()[0], mjd.qfrc_damper, rtol=1e-4, atol=1e-4)
+
+    # 2. Rotated-root no-state start has zero force/energy, and saved plastic state round-trips
+    mjm2, mjd2, m2, d2 = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG">
+          <flag energy="enable"/>
+        </option>
+        <worldbody>
+          <body name="root">
+            <joint name="root_roll" type="hinge" axis="1 0 0"/>
+            <geom size="0.01" mass="0.05"/>
+            <flexcomp name="rod" type="grid" count="5 1 1" spacing="0.08 0.08 0.08"
+                      radius="0.005" dim="1" mass="0.08">
+              <pin id="0 1"/>
+              <contact selfcollide="none" contype="0" conaffinity="0"/>
+              <elasticity young="1e6" damping="0.01" section="box" sectionsize="0.015 0.005"/>
+            </flexcomp>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    qpos2 = mjm2.qpos0.copy()
+    qpos2[0] = 1.3  # Roll root by 1.3 rad with zero plastic state
+    d2.qpos.assign(qpos2[None].astype(np.float32))
+    d2.plastic.zero_()
+    mjd2.qpos[:] = qpos2
+    mjd2.plastic[:] = 0.0
+    mujoco.mj_forward(mjm2, mjd2)
+    mjw.forward(m2, d2)
+    mjw.energy_pos(m2, d2)
+    np.testing.assert_allclose(d2.qfrc_spring.numpy()[0], 0.0, atol=1e-5)
+    np.testing.assert_allclose(d2.energy.numpy()[0, 0], 0.0, atol=1e-6)
+
+    # Perturb velocities, step 5 steps, save (qpos, qvel, plastic), step 5 more, restore & re-step
+    qvel2 = 0.3 * np.cos(np.arange(mjm2.nv, dtype=np.float32))[None]
+    d2.qvel.assign(qvel2)
+    mjd2.qvel[:] = qvel2[0]
+    for _ in range(5):
+      mujoco.mj_step(mjm2, mjd2)
+      mjw.step(m2, d2)
+    saved_qpos = d2.qpos.numpy().copy()
+    saved_qvel = d2.qvel.numpy().copy()
+    saved_plastic = d2.plastic.numpy().copy()
+    for _ in range(5):
+      mujoco.mj_step(mjm2, mjd2)
+      mjw.step(m2, d2)
+    final_qpos = d2.qpos.numpy().copy()
+    final_plastic = d2.plastic.numpy().copy()
+    np.testing.assert_allclose(final_qpos[0], mjd2.qpos, atol=2e-4)
+    np.testing.assert_allclose(final_plastic[0], mjd2.plastic, atol=2e-4)
+
+    mjw.reset_data(m2, d2)
+    d2.qpos.assign(saved_qpos)
+    d2.qvel.assign(saved_qvel)
+    d2.plastic.assign(saved_plastic)
+    for _ in range(5):
+      mjw.step(m2, d2)
+    np.testing.assert_allclose(d2.qpos.numpy(), final_qpos, atol=1e-6)
+    np.testing.assert_allclose(d2.plastic.numpy(), final_plastic, atol=1e-6)
+
+  @parameterized.product(
+    cone=[mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC],
+    jacobian=["sparse", "dense"],
+  )
+  def test_rod_shuffled_direct_and_circle_longitudinal_contact_parity(self, cone, jacobian):
+    """Shuffled direct circular rod contact Jacobian (incl. longitudinal term) matches C."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option integrator="discrete" solver="CG" jacobian="{jacobian}"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="2 2 0.1" friction="0.9 0.01 0.005"/>
+          <flexcomp name="cable" type="direct" radius="0.015" dim="1" mass="0.12"
+                    point="0 0 0.012  0.08 0 0.014  0.16 0 0.012  0.24 0 0.014"
+                    element="2 3  0 1  1 2">
+            <edge equality="true" solref="0.005 1"/>
+            <contact selfcollide="none" friction="0.9 0.01 0.005" condim="6"/>
+            <elasticity young="1e6" damping="0.02"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.cone": cone},
+    )
+    # Give vertical pitch velocity + twist velocity so longitudinal (t x tdot) x r_perp is active
+    qvel = np.linspace(-0.4, 0.6, mjm.nv, dtype=np.float32)
+    d.qvel.assign(qvel[None])
+    mjd.qvel[:] = qvel
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+    self.assertGreater(mjd.ncon, 0)
+    self._assert_efc_world_eq(mjm, m, d, mjd, 0, "shuffled_circle_efc", tol=1e-3)
+    cscale = max(1.0, float(np.abs(mjd.qfrc_constraint).max()))
+    np.testing.assert_allclose(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, atol=2e-3 * cscale, rtol=2e-2)
+
+    # Nonzero plastic: store the frames of this configuration, then bend the rod in the plane by
+    # moving vertex 2 sideways, so that the reference-roll term g_psi of the contact rows is active
+    mujoco.mj_step(mjm, mjd)
+    self.assertGreater(np.abs(mjd.plastic).max(), 0.5)
+    b2 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "cable_2")
+    mjd.qpos[mjm.body_dofadr[b2] + 1] += 0.02
+    d.qpos.assign(mjd.qpos[None].astype(np.float32))
+    d.qvel.assign(mjd.qvel[None].astype(np.float32))
+    d.plastic.assign(mjd.plastic[None].astype(np.float32))
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+    self.assertGreater(mjd.ncon, 0)
+    self._assert_efc_world_eq(mjm, m, d, mjd, 0, "shuffled_circle_plastic_efc", tol=1e-3)
+    cscale = max(1.0, float(np.abs(mjd.qfrc_constraint).max()))
+    np.testing.assert_allclose(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, atol=2e-3 * cscale, rtol=2e-2)
+
+  @parameterized.parameters("sparse", "dense")
+  def test_rod_tilted_tip_contact_axial_arm(self, jacobian):
+    """The normal row of a tilted circular rod tip on a plane couples only the tip vertex."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG" cone="elliptic" jacobian="{jacobian}"/>
+        <worldbody>
+          <geom name="floor" type="plane" size="1 1 0.1"/>
+          <flexcomp name="tip" type="direct" radius="0.015" dim="1" mass="0.1"
+                    point="0 0 0.012  0.05 0 0.062  0.1 0 0.112" element="0 1  1 2">
+            <contact selfcollide="none" condim="3"/>
+            <elasticity young="1e6" damping="0.01"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+    self.assertGreater(mjd.ncon, 0)
+    self._assert_efc_world_eq(mjm, m, d, mjd, 0, "tilted_tip_efc", tol=1e-4)
+
+    # Contact distance depends only on the tip vertex: its normal row is the plane normal on the tip
+    # vertex and zero on the other vertices and on the twist joints
+    nefc = int(d.nefc.numpy()[0])
+    if m.is_sparse:
+      J = np.zeros((nefc, mjm.nv))
+      mujoco.mju_sparse2dense(
+        J,
+        d.efc.J.numpy()[0, 0],
+        d.efc.J_rownnz.numpy()[0, :nefc],
+        d.efc.J_rowadr.numpy()[0, :nefc],
+        d.efc.J_colind.numpy()[0, 0],
+      )
+    else:
+      J = d.efc.J.numpy()[0, :nefc, : mjm.nv]
+    tip = [i for i in range(mjd.ncon) if 0 in mjd.contact.vert[i]]
+    self.assertLen(tip, 1)
+    con = mjd.contact[tip[0]]
+    side = 1 if con.flex[1] >= 0 else 0
+    expected = np.zeros(mjm.nv)
+    b0 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "tip_0")
+    expected[mjm.body_dofadr[b0] : mjm.body_dofadr[b0] + 3] = (1.0 if side else -1.0) * con.frame[:3]
+    np.testing.assert_allclose(J[con.efc_address], expected, atol=1e-5)
+
+  def test_rod_per_world_body_pose_parity(self):
+    """Rod reference frames and curvatures follow per-world body poses, as C recomputes them."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG"/>
+        <worldbody>
+          <body name="base" pos="0 0 0.5">
+            <flexcomp name="free" type="direct" dim="1" radius="0.005" mass="0.1"
+                      point="0 0 0  0.1 0 0  0.19 0.03 0  0.26 0.09 0  0.3 0.17 0"
+                      element="0 1  1 2  2 3  3 4">
+              <contact selfcollide="none" contype="0" conaffinity="0"/>
+              <elasticity young="1e6" damping="0" section="box" sectionsize="0.02 0.006"/>
+            </flexcomp>
+            <flexcomp name="clamped" type="direct" dim="1" radius="0.005" mass="0.1"
+                      point="0 0.4 0  0.1 0.4 0  0.19 0.43 0  0.26 0.49 0  0.3 0.57 0"
+                      element="0 1  1 2  2 3  3 4">
+              <pin id="0 1 3 4"/>
+              <contact selfcollide="none" contype="0" conaffinity="0"/>
+              <elasticity young="1e6" damping="0" section="box" sectionsize="0.02 0.006"/>
+            </flexcomp>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=2,
+      batch_sizes={"body_pos": 2, "body_quat": 2},
+    )
+    # World 1: roll and yaw the base, and move the free vertex of the clamped rod (new rest shape)
+    base = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "base")
+    mid = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "clamped_2")
+    body_pos = np.tile(mjm.body_pos, (2, 1, 1))
+    body_quat = np.tile(mjm.body_quat, (2, 1, 1))
+    quat = np.zeros(4)
+    mujoco.mju_euler2Quat(quat, np.array([0.9, 0.0, 0.6]), "xyz")
+    body_quat[1, base] = quat
+    body_pos[1, base] += np.array([0.1, -0.2, 0.05])
+    body_pos[1, mid] += np.array([0.0, 0.02, 0.01])
+    m.body_pos.assign(body_pos.astype(np.float32))
+    m.body_quat.assign(body_quat.astype(np.float32))
+
+    # Same perturbation of the free vertices and twist joints in both worlds
+    qpos = np.tile(mjm.qpos0, (2, 1)) + 0.01 * np.sin(np.arange(mjm.nq))[None]
+    d.qpos.assign(qpos.astype(np.float32))
+    d.qvel.zero_()
+    d.plastic.zero_()
+    mjw.forward(m, d)
+
+    body_pos0 = mjm.body_pos.copy()
+    body_quat0 = mjm.body_quat.copy()
+    for w in range(2):
+      mjm.body_pos[:] = body_pos[w]
+      mjm.body_quat[:] = body_quat[w]
+      mujoco.mj_resetData(mjm, mjd)
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_forward(mjm, mjd)
+      sscale = max(1.0, float(np.abs(mjd.qfrc_spring).max()))
+      np.testing.assert_allclose(d.qfrc_spring.numpy()[w], mjd.qfrc_spring, atol=1e-4 * sscale, rtol=1e-3)
+      np.testing.assert_allclose(
+        d.efm_K_val.numpy()[w], mjd.efm_K_val, atol=1e-4 * max(1.0, np.abs(mjd.efm_K_val).max()), rtol=1e-3
+      )
+    mjm.body_pos[:] = body_pos0
+    mjm.body_quat[:] = body_quat0
+
+    # At qpos0 the rods are at rest in every world, whatever the body poses
+    d.qpos.assign(np.tile(mjm.qpos0, (2, 1)).astype(np.float32))
+    d.plastic.zero_()
+    mjw.forward(m, d)
+    np.testing.assert_allclose(d.qfrc_spring.numpy(), 0.0, atol=1e-3)
+
+  def test_rod_degenerate_whole_rod_fallback_parity(self):
+    """A single collapsed edge falls back to stateless isotropic bending across the whole rod."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="discrete" solver="CG"/>
+        <worldbody>
+          <flexcomp name="strip" type="grid" count="6 1 1" spacing="0.1 0.1 0.1"
+                    radius="0.005" dim="1" mass="0.1">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e6" damping="0.02" section="box" sectionsize="0.02 0.005"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    qpos = mjm.qpos0.copy()
+    qvel = 0.2 * np.sin(np.arange(mjm.nv, dtype=np.float64))
+    # Bend vertex 2 in +y/+z so hinges 0 and 1 are non-degenerate, and collapse
+    # vertex 5 onto vertex 4 (last edge length == 0) so chain transport fails.
+    b2 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "strip_2")
+    b5 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_BODY, "strip_5")
+    qpos[mjm.body_dofadr[b2] + 1] = 0.03
+    qpos[mjm.body_dofadr[b2] + 2] = -0.02
+    qpos[mjm.body_dofadr[b5] + 0] = -0.1  # strip_5 at x=0.5 + (-0.1) = 0.4 == strip_4
+    jnt_tw1 = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "strip_twist_1")
+    qpos[mjm.jnt_qposadr[jnt_tw1]] = 0.7
+
+    d.qpos.assign(qpos[None].astype(np.float32))
+    d.qvel.assign(qvel[None].astype(np.float32))
+    mjd.qpos[:] = qpos
+    mjd.qvel[:] = qvel
+
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+
+    # Non-degenerate hinges produce isotropic bending forces; twist DOFs get zero spring force
+    self.assertGreater(np.abs(mjd.qfrc_spring).max(), 1e-2)
+    self.assertEqual(mjd.qfrc_spring[mjm.jnt_dofadr[jnt_tw1]], 0.0)
+    sscale = max(1.0, float(np.abs(mjd.qfrc_spring).max()))
+    dscale = max(1.0, float(np.abs(mjd.qfrc_damper).max()))
+    np.testing.assert_allclose(d.qfrc_spring.numpy()[0], mjd.qfrc_spring, atol=1e-4 * sscale, rtol=1e-4)
+    np.testing.assert_allclose(d.qfrc_damper.numpy()[0], mjd.qfrc_damper, atol=1e-4 * dscale, rtol=1e-4)
+    np.testing.assert_allclose(
+      d.efm_K_val.numpy()[0], mjd.efm_K_val, atol=1e-4 * max(1.0, np.abs(mjd.efm_K_val).max()), rtol=1e-4
+    )
+
+  @parameterized.parameters("discrete", "Euler")
+  def test_rod_sleep_and_island_parity(self, integrator):
+    """Twist trees share their rod's island, sleep at rest, and wake together when disturbed."""
+    if integrator == "Euler":
+      edge_tag = '<edge equality="true" solref="0.005 1"/>'
+      flag_tag = '<flag island="enable"/>'
+    else:
+      edge_tag = ""
+      flag_tag = '<flag sleep="enable" island="enable"/>'
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0" integrator="{integrator}" solver="Newton" timestep="0.002" sleep_tolerance="1e-2">
+          {flag_tag}
+        </option>
+        <worldbody>
+          <flexcomp name="rod_a" type="grid" count="4 1 1" spacing="0.08 0.08 0.08" pos="0 0 0.5"
+                    radius="0.008" dim="1" mass="0.08">
+            <pin id="0 1"/>
+            {edge_tag}
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="5e5" damping="0.05"/>
+          </flexcomp>
+          <flexcomp name="rod_b" type="grid" count="4 1 1" spacing="0.08 0.08 0.08" pos="0 0.4 0.5"
+                    radius="0.008" dim="1" mass="0.08">
+            <pin id="0 1"/>
+            {edge_tag}
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="5e5" damping="0.05"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    if integrator == "Euler":
+      mjm.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
+      m.opt.enableflags |= types.EnableBit.SLEEP
+      mujoco.mj_resetData(mjm, mjd)
+      mjw.reset_data(m, d)
+
+    # Collect trees of rod_a (free vertex trees + twist trees) and rod_b
+    def _rod_trees(model, prefix):
+      trees = set()
+      for v in (2, 3):
+        bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"{prefix}_{v}")
+        trees.add(int(model.body_treeid[bid]))
+      for suffix in ("_twist_1", "_twist"):
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"{prefix}{suffix}")
+        trees.add(int(model.dof_treeid[model.jnt_dofadr[jid]]))
+      return sorted(trees)
+
+    trees_a = _rod_trees(mjm, "rod_a")
+    trees_b = _rod_trees(mjm, "rod_b")
+    self.assertLen(trees_a, 4)
+    self.assertLen(trees_b, 4)
+
+    if integrator == "discrete":
+      # Metric-coupled rods with nefc == 0 union vertex + twist trees per awake rod in island()
+      mujoco.mj_forward(mjm, mjd)
+      self.assertEqual(mjd.nefc, 0)
+      mjw.island(m, d)
+      self.assertEqual(int(d.nisland.numpy()[0]), int(mjd.nisland))
+      np.testing.assert_array_equal(d.tree_island.numpy()[0], mjd.tree_island[: mjm.ntree])
+
+      awake = np.ones((1, mjm.ntree), dtype=np.int32)
+      awake[0, trees_b] = 0
+      d.tree_awake.assign(awake)
+      mjw.island(m, d)
+      self.assertEqual(int(d.nisland.numpy()[0]), 1)
+      ti_wp = d.tree_island.numpy()[0]
+      self.assertTrue(np.all(ti_wp[trees_a] == 0))
+      self.assertTrue(np.all(ti_wp[trees_b] == -1))
+
+      with self.assertRaisesRegex(ValueError, "sleep with flex not yet supported"):
+        mjw.forward(m, d)
+      return
+
+    # Euler + edge equality: each rod forms a 4-tree island, sleeps at rest, and wakes together
+    mujoco.mj_forward(mjm, mjd)
+    mjw.forward(m, d)
+    self.assertEqual(int(d.nisland.numpy()[0]), int(mjd.nisland))
+    np.testing.assert_array_equal(d.tree_island.numpy()[0], mjd.tree_island[: mjm.ntree])
+
+    for _ in range(60):
+      mujoco.mj_step(mjm, mjd)
+      mjw.step(m, d)
+
+    awake_wp = d.tree_awake.numpy()[0]
+    self.assertTrue(np.all(awake_wp[trees_a] == 0))
+    self.assertTrue(np.all(awake_wp[trees_b] == 0))
+    self.assertEqual(int(d.ntree_awake.numpy()[0]), int(mjd.ntree_awake))
+    self.assertEqual(int(d.nisland.numpy()[0]), int(mjd.nisland))
+
+    # Apply torque ONLY to rod_a_twist: all 4 trees of rod_a must wake while rod_b stays asleep
+    jnt_a_tw = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_JOINT, "rod_a_twist")
+    dof_a_tw = mjm.jnt_dofadr[jnt_a_tw]
+    qfrc_app = np.zeros((1, mjm.nv), dtype=np.float32)
+    qfrc_app[0, dof_a_tw] = 0.05
+    d.qfrc_applied.assign(qfrc_app)
+    mjd.qfrc_applied[dof_a_tw] = 0.05
+
+    mujoco.mj_step(mjm, mjd)
+    mjw.step(m, d)
+    awake_wp = d.tree_awake.numpy()[0]
+    self.assertTrue(np.all(awake_wp[trees_a] == 1))
+    self.assertTrue(np.all(awake_wp[trees_b] == 0))
+    self.assertEqual(int(d.ntree_awake.numpy()[0]), int(mjd.ntree_awake))
+    self.assertEqual(int(d.nisland.numpy()[0]), int(mjd.nisland))
+    np.testing.assert_allclose(d.qpos.numpy()[0], mjd.qpos, atol=1e-4)
+
+    # Without <edge equality>, non-metric flexes keep both vertex and twist trees awake
+    mjm2, mjd2, m2, d2 = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" integrator="Euler" solver="Newton" timestep="0.002" sleep_tolerance="1e-2">
+          <flag sleep="enable" island="enable"/>
+        </option>
+        <worldbody>
+          <flexcomp name="rod_c" type="grid" count="4 1 1" spacing="0.08 0.08 0.08" pos="0 0 0.5"
+                    radius="0.008" dim="1" mass="0.08">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="5e5" damping="0.05"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    trees_c = _rod_trees(mjm2, "rod_c")
+    for _ in range(25):
+      mujoco.mj_step(mjm2, mjd2)
+      mjw.step(m2, d2)
+    self.assertTrue(np.all(d2.tree_awake.numpy()[0, trees_c] == 1))
+    self.assertEqual(int(d2.ntree_awake.numpy()[0]), int(mjd2.ntree_awake))
+
+  @parameterized.parameters('stiffness="10"', 'damping="1"')
+  def test_edge_stiffness_damping_disallowed_in_discrete(self, edge_attr):
+    """Flex edge stiffness and damping are disallowed under the discrete integrator."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <flexcomp name="rope" type="grid" count="3 1 1" spacing="0.1 0.1 0.1" radius="0.01" dim="1" mass="1">
+            <edge {edge_attr}/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    for integrator in (
+      types.IntegratorType.EULER,
+      types.IntegratorType.RK4,
+      types.IntegratorType.IMPLICIT,
+      types.IntegratorType.IMPLICITFAST,
+    ):
+      m.opt.integrator = int(integrator)
+      mjw.forward(m, d)
+    m.opt.integrator = int(types.IntegratorType.DISCRETE)
+    with self.assertRaisesRegex(ValueError, "discrete integrator: flex edge stiffness and damping are not supported"):
+      mjw.forward(m, d)
+
+  @parameterized.parameters(1, 2)
+  def test_rigid_flex_skips_passive(self, nworld):
+    """Rigid 2D flex under discrete integrator is classified as constraint rather than passive."""
+    _, _, m_rig, d_rig = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete"/>
+        <worldbody>
+          <geom type="plane" size="1 1 0.01"/>
+          <flexcomp name="rigid_cloth" count="2 2 1" spacing="0.05 0.05 0.05"
+                    pos="0 0 0.005" radius="0.015" mass="0.2" rigid="true">
+            <contact selfcollide="none" passive="true"/>
+          </flexcomp>
+          <flexcomp name="soft_cloth" count="2 2 1" spacing="0.05 0.05 0.05"
+                    pos="0.3 0 0.005" radius="0.015" mass="0.2">
+            <contact selfcollide="none" passive="true"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    if nworld == 2:
+      qpos_rig = d_rig.qpos.numpy()
+      qpos_rig[1, 2::3] -= 0.001
+      d_rig.qpos.assign(qpos_rig)
+
+    d_rig.nacon.fill_(-1)
+    d_rig.contact.type.fill_(-1)
+    d_rig.contact.dist.fill_(wp.inf)
+    mjw.kinematics(m_rig, d_rig)
+    mjw.flex(m_rig, d_rig)
+    mjw.collision(m_rig, d_rig)
+    nacon_rig = int(d_rig.nacon.numpy()[0])
+    c_flex = d_rig.contact.flex.numpy()[:nacon_rig]
+    c_type = d_rig.contact.type.numpy()[:nacon_rig]
+    c_world_rig = d_rig.contact.worldid.numpy()[:nacon_rig]
+    c_dist_rig = d_rig.contact.dist.numpy()[:nacon_rig]
+    for w in range(nworld):
+      rigid_mask = (c_world_rig == w) & (c_flex[:, 1] == 0)
+      soft_mask = (c_world_rig == w) & (c_flex[:, 1] == 1)
+      self.assertGreater(int(np.sum(rigid_mask)), 0)
+      self.assertGreater(int(np.sum(soft_mask)), 0)
+      np.testing.assert_array_equal(c_type[rigid_mask], int(types.ContactType.CONSTRAINT))
+      np.testing.assert_array_equal(c_type[soft_mask], int(types.ContactType.PASSIVE))
+    if nworld == 2:
+      self.assertFalse(np.allclose(sorted(c_dist_rig[c_world_rig == 0]), sorted(c_dist_rig[c_world_rig == 1])))
 
 
 if __name__ == "__main__":

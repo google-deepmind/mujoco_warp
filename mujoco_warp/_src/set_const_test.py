@@ -15,7 +15,9 @@
 
 """Tests for set_const functions."""
 
+import contextlib
 import copy
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -25,7 +27,6 @@ from absl.testing import parameterized
 
 import mujoco_warp as mjwarp
 from mujoco_warp import test_data
-from mujoco_warp._src import util_pkg
 from mujoco_warp._src.set_const import set_length_range
 
 
@@ -33,6 +34,30 @@ def _assert_eq(a, b, name):
   tol = 5e-4
   err_msg = f"mismatch: {name}"
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
+
+
+_GROUPS = (
+  ("fixed", mjwarp.SetConstGroup.FIXED),
+  ("kin0", mjwarp.SetConstGroup.KIN0),
+  ("inert0", mjwarp.SetConstGroup.INERT0),
+)
+
+
+def _is_batched_model_field(name: str) -> bool:
+  ann = mjwarp.Model.__annotations__.get(name)
+  return isinstance(ann, wp.array) and ann.shape[0] in ("*", "nworld")
+
+
+def _setconst_output_fields(*groups: str, pure_only: bool = False) -> frozenset[str]:
+  if not groups:
+    groups = ("fixed", "kin0", "inert0")
+  indices = [mujoco.MjModel._setconst_groups.index(g) for g in groups]
+  return frozenset(
+    name
+    for name, access in mujoco.MjModel._setconst_fields.items()
+    if any(access[i] == mujoco.mjSC_OUT if pure_only else (access[i] & mujoco.mjSC_OUT) for i in indices)
+    and _is_batched_model_field(name)
+  )
 
 
 class SetConstTest(parameterized.TestCase):
@@ -165,8 +190,6 @@ class SetConstTest(parameterized.TestCase):
 
     _assert_eq(m.eq_data.numpy()[0, :, : mjm.eq_data.shape[1]], mjm.eq_data, "eq_data")
 
-  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.parameters(1, 2)
   def test_set_const_eq_data_weld(self, nworld):
     """Test set_const recomputes eq_data for marked weld constraints."""
@@ -363,7 +386,7 @@ class SetConstTest(parameterized.TestCase):
     m.body_invweight0 = wp.array(np.tile(mjm.body_invweight0, (2, 1, 1)), dtype=wp.vec2)
     m.dof_invweight0 = wp.array(np.tile(mjm.dof_invweight0, (2, 1)), dtype=float)
 
-    mjwarp.set_const_0(m, d)
+    mjwarp.set_const(m, d, groups=mjwarp.SetConstGroup.KIN0 | mjwarp.SetConstGroup.INERT0)
 
     dense = np.zeros((2, m.nv, m.nv))
     for worldid in range(2):
@@ -428,6 +451,94 @@ class SetConstTest(parameterized.TestCase):
     _assert_eq(m.body_invweight0.numpy()[0, 1], [0.0, 0.0], "body_invweight0")
     self.assertGreater(m.body_invweight0.numpy()[0, 2, 0], 0.0)
     _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
+
+    # nv == 0: body_invweight0, tendon_invweight0, and actuator_acc0 are zeroed
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <site name="s1" pos="0 0 0"/>
+        <body name="static_body" pos="1 0 0">
+          <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+          <site name="s2" pos="0.1 0 0"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial>
+          <site site="s1"/>
+          <site site="s2"/>
+        </spatial>
+      </tendon>
+      <actuator>
+        <adhesion body="static_body" ctrlrange="0 1"/>
+      </actuator>
+    </mujoco>
+    """
+    )
+    for f in ("body_invweight0", "tendon_invweight0", "actuator_acc0"):
+      getattr(m, f).fill_(wp.inf)
+    mujoco.mj_setConst(mjm, mjd)
+    mjwarp.set_const(m, d)
+    for f in ("body_invweight0", "tendon_invweight0", "actuator_acc0"):
+      _assert_eq(getattr(m, f).numpy()[0], getattr(mjm, f), f"{f}_nv0")
+
+  @parameterized.parameters(1, 2)
+  def test_set_const_body_invweight0_components(self, nworld):
+    """Test a zero translational or rotational body inverse weight stays zero, as in mj_setConst."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body name="hinge">
+          <joint type="hinge"/>
+          <inertial pos="0 0 0" mass="2" diaginertia="1 2 3"/>
+        </body>
+        <body name="ball">
+          <joint type="ball"/>
+          <inertial pos="0 0 0" mass="2" diaginertia="1 2 3"/>
+        </body>
+        <body name="slide">
+          <joint type="slide" axis="1 0 0"/>
+          <joint type="slide" axis="0 1 0"/>
+          <joint type="slide" axis="0 0 1"/>
+          <inertial pos="0 0 0" mass="2" diaginertia="1 2 3"/>
+        </body>
+        <body name="free">
+          <freejoint/>
+          <inertial pos="0 0 0" mass="2" diaginertia="1 2 3"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=nworld,
+      batch_sizes={
+        "body_mass": nworld,
+        "body_subtreemass": nworld,
+        "body_inertia": nworld,
+        "body_invweight0": nworld,
+      },
+    )
+    # centered hinge and ball: no translational weight; three slides: no rotational weight
+    expected = np.array([[0, 0], [0, 1 / 9], [0, 11 / 18], [1 / 2, 0], [1 / 2, 11 / 18]])
+    np.testing.assert_allclose(mjm.body_invweight0, expected, rtol=1e-6, atol=0)
+
+    scales = np.arange(1, nworld + 1, dtype=float)
+    body_mass = scales[:, None] * mjm.body_mass[None, :]
+    body_inertia = scales[:, None, None] * mjm.body_inertia[None, :, :]
+    m.body_mass.assign(body_mass)
+    m.body_inertia.assign(body_inertia)
+    m.body_invweight0.fill_(wp.inf)
+    mjwarp.set_const(m, d)
+
+    body_invweight0 = m.body_invweight0.numpy()
+    for w in range(nworld):
+      mjm.body_mass[:] = body_mass[w]
+      mjm.body_inertia[:] = body_inertia[w]
+      mujoco.mj_setConst(mjm, mjd)
+      _assert_eq(body_invweight0[w], mjm.body_invweight0, f"body_invweight0_world_{w}")
+      np.testing.assert_array_equal(body_invweight0[w] == 0.0, expected == 0.0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(body_invweight0[0], body_invweight0[1]))
 
   def test_set_const_preserves_qpos(self):
     """Test that qpos is restored after set_const."""
@@ -559,106 +670,21 @@ class SetConstTest(parameterized.TestCase):
     )
 
     mjwarp.set_const(m, d)
-    dof_invweight0_1 = m.dof_invweight0.numpy().copy()
-    body_invweight0_1 = m.body_invweight0.numpy().copy()
-    body_subtreemass_1 = m.body_subtreemass.numpy().copy()
-    actuator_acc0_1 = m.actuator_acc0.numpy().copy()
+    output_fields = sorted(_setconst_output_fields())
+    saved = {f: getattr(m, f).numpy().copy() for f in output_fields}
 
     mjwarp.set_const(m, d)
-    _assert_eq(m.dof_invweight0.numpy(), dof_invweight0_1, "dof_invweight0")
-    _assert_eq(m.body_invweight0.numpy(), body_invweight0_1, "body_invweight0")
-    _assert_eq(m.body_subtreemass.numpy(), body_subtreemass_1, "body_subtreemass")
-    _assert_eq(m.actuator_acc0.numpy(), actuator_acc0_1, "actuator_acc0")
+    for f in output_fields:
+      _assert_eq(getattr(m, f).numpy(), saved[f], f)
 
-  @parameterized.named_parameters(
-    dict(
-      testcase_name="set_const",
-      func_name="set_const",
-      fields=[
-        "xpos",
-        "xquat",
-        "xmat",
-        "xipos",
-        "ximat",
-        "xanchor",
-        "xaxis",
-        "geom_xpos",
-        "geom_xmat",
-        "site_xpos",
-        "site_xmat",
-        "cam_xpos",
-        "cam_xmat",
-        "light_xpos",
-        "light_xdir",
-        "flexvert_xpos",
-        "flexedge_J",
-        "flexedge_length",
-        "flexedge_velocity",
-        "subtree_com",
-        "cinert",
-        "cdof",
-        "ten_length",
-        "ten_J",
-        "wrap_obj",
-        "wrap_xpos",
-        "ten_wrapadr",
-        "ten_wrapnum",
-        "crb",
-        "M",
-        "qLD",
-        "qLDiagInv",
-        "actuator_length",
-        "actuator_moment",
-        "moment_rownnz",
-        "moment_rowadr",
-        "moment_colind",
-      ],
-    ),
-    dict(
-      testcase_name="set_const_0",
-      func_name="set_const_0",
-      fields=[
-        "xpos",
-        "xquat",
-        "xmat",
-        "xipos",
-        "ximat",
-        "xanchor",
-        "xaxis",
-        "geom_xpos",
-        "geom_xmat",
-        "site_xpos",
-        "site_xmat",
-        "cam_xpos",
-        "cam_xmat",
-        "light_xpos",
-        "light_xdir",
-        "flexvert_xpos",
-        "flexedge_J",
-        "flexedge_length",
-        "flexedge_velocity",
-        "subtree_com",
-        "cinert",
-        "cdof",
-        "ten_length",
-        "ten_J",
-        "wrap_obj",
-        "wrap_xpos",
-        "ten_wrapadr",
-        "ten_wrapnum",
-        "crb",
-        "M",
-        "qLD",
-        "qLDiagInv",
-        "actuator_length",
-        "actuator_moment",
-        "moment_rownnz",
-        "moment_rowadr",
-        "moment_colind",
-      ],
-    ),
+  @parameterized.parameters(
+    (mjwarp.SetConstGroup.ALL,),
+    (mjwarp.SetConstGroup.FIXED,),
+    (mjwarp.SetConstGroup.KIN0,),
+    (mjwarp.SetConstGroup.INERT0,),
+    (mjwarp.SetConstGroup.KIN0 | mjwarp.SetConstGroup.INERT0,),
   )
-  def test_set_const_restore(self, func_name, fields):
+  def test_set_const_restore(self, groups):
     """Test set_const functions restore Data fields to correspond to d.qpos."""
     _, _, m, d = test_data.fixture(
       xml="""
@@ -672,7 +698,7 @@ class SetConstTest(parameterized.TestCase):
         </body>
       </worldbody>
       <tendon>
-        <spatial>
+        <spatial armature="0.1">
           <site site="site1"/>
           <site site="site2"/>
         </spatial>
@@ -688,14 +714,15 @@ class SetConstTest(parameterized.TestCase):
     wp.copy(d.qpos, wp.array(qpos_custom))
     mjwarp.forward(m, d)
 
+    fields = [name for name, val in vars(d).items() if isinstance(val, wp.array) and not name.startswith("_")]
     saved_states = {f: getattr(d, f).numpy().copy() for f in fields}
 
     # Execute the target function
-    getattr(mjwarp, func_name)(m, d)
+    mjwarp.set_const(m, d, groups=groups)
 
     # Verify matching with initial state
     for f in fields:
-      _assert_eq(getattr(d, f).numpy(), saved_states[f], f"{f} after {func_name}")
+      _assert_eq(getattr(d, f).numpy(), saved_states[f], f"{f} after {groups}")
 
   def test_set_const_full_pipeline(self):
     """Test complete set_const matches MuJoCo for complex model."""
@@ -749,24 +776,45 @@ class SetConstTest(parameterized.TestCase):
     mujoco.mj_setConst(mjm, mjd)
     mjwarp.set_const(m, d)
 
-    _assert_eq(m.body_subtreemass.numpy()[0], mjm.body_subtreemass, "body_subtreemass")
-    _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
-    _assert_eq(m.tendon_invweight0.numpy()[0], mjm.tendon_invweight0, "tendon_invweight0")
-    _assert_eq(m.tendon_length0.numpy()[0], mjm.tendon_length0, "tendon_length0")
-    _assert_eq(m.actuator_acc0.numpy()[0], mjm.actuator_acc0, "actuator_acc0")
+    for f in sorted(_setconst_output_fields()):
+      mjm_val = getattr(mjm, f)
+      _assert_eq(getattr(m, f).numpy()[0].reshape(mjm_val.shape), mjm_val, f)
     _assert_eq(m.tendon_lengthspring.numpy()[0], mjm.tendon_lengthspring, "tendon_lengthspring")
 
-    for i in range(mjm.nbody):
-      _assert_eq(m.body_invweight0.numpy()[0, i], mjm.body_invweight0[i], f"body_invweight0[{i}]")
-
-  def test_set_const_graph_capture(self):
-    """Test that set_const is compatible with graph capture."""
+  @parameterized.parameters(
+    (mjwarp.SetConstGroup.ALL,),
+    (mjwarp.SetConstGroup.FIXED,),
+    (mjwarp.SetConstGroup.KIN0,),
+    (mjwarp.SetConstGroup.INERT0,),
+    (mjwarp.SetConstGroup.KIN0 | mjwarp.SetConstGroup.INERT0,),
+  )
+  def test_set_const_graph_capture(self, groups):
+    """Test that a captured set_const replays the eager result for inputs changed after capture."""
     _, _, m, d = test_data.fixture("humanoid/humanoid.xml", keyframe=0)
+    group_names = [name for name, flag in _GROUPS if groups & flag]
+    outputs = _setconst_output_fields(*group_names)
 
     with wp.ScopedCapture() as capture:
-      mjwarp.set_const(m, d)
+      mjwarp.set_const(m, d, groups=groups)
+
+    # change the inputs after capture, so a replay of capture-time values gives stale outputs
+    before = {f: getattr(m, f).numpy().copy() for f in outputs}
+    m.body_mass.assign(m.body_mass.numpy() * 1.5)
+    qpos0 = m.qpos0.numpy()
+    qpos0[:, 7:] += 0.1  # hinge joints only, the free joint quaternion stays normalized
+    m.qpos0.assign(qpos0)
+
+    mjwarp.set_const(m, d, groups=groups)
+    expected = {f: getattr(m, f).numpy().copy() for f in outputs}
+    self.assertFalse(all(np.allclose(before[f], expected[f]) for f in outputs))
+
+    for f in _setconst_output_fields(*group_names, pure_only=True):
+      getattr(m, f).fill_(wp.inf)
 
     wp.capture_launch(capture.graph)
+
+    for f in sorted(outputs):
+      _assert_eq(getattr(m, f).numpy(), expected[f], f)
 
   def test_set_const_actuator_acc0_per_world(self):
     """Test actuator_acc0 has 2D shape [nworld, nu] and values match MuJoCo."""
@@ -794,8 +842,6 @@ class SetConstTest(parameterized.TestCase):
     self.assertEqual(acc0_np.shape, (1, mjm.nu))
     _assert_eq(acc0_np[0], mjm.actuator_acc0, "actuator_acc0")
 
-  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   @parameterized.parameters(1, 2)
   def test_set_const_compiled_constants(self, nworld):
     """Test set_const preserves compiled spec conventions, as mj_setConst."""
@@ -861,6 +907,86 @@ class SetConstTest(parameterized.TestCase):
       _assert_eq(m.tendon_lengthspring.numpy()[w, 0], mjm.tendon_lengthspring[0], f"lengthspring_world_{w}")
     _assert_eq(mjm.actuator_biasprm[0, 2], 1, "mj_setConst biasprm[2]")
     _assert_eq(mjm.tendon_lengthspring[0], [-1, -1], "mj_setConst lengthspring")
+
+  @parameterized.product(nworld=(1, 2), sparse_blocks=(False, True))
+  def test_set_const_invweight0_blocks(self, nworld, sparse_blocks):
+    """Test inverse weights for compact, scalar, tile, and sparse inertia blocks vs mj_setConst."""
+    # the 7-dof tree exceeds the patched dense block size and joins the sparse LDL region
+    blocks = mock.patch.multiple("mujoco_warp._src.types", M_BLOCK_DENSE_MAX=6)
+    with blocks if sparse_blocks else contextlib.nullcontext():
+      mjm, _, m, d = test_data.fixture(
+        xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="single"/>
+            <geom pos=".2 0 0" size=".1" mass="1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint name="pair1" axis="1 0 0"/>
+            <joint name="pair2" axis="0 1 0"/>
+            <geom pos=".1 .1 .1" type="box" size=".1 .2 .1" mass=".7"/>
+          </body>
+          <body pos="2 0 0">
+            <freejoint/>
+            <geom type="box" size=".1 .2 .3" mass="2"/>
+            <body pos=".2 0 0">
+              <joint name="hinge" axis="0 1 0"/>
+              <geom pos=".1 0 0" size=".05" mass=".5"/>
+              <body pos=".2 .1 0">
+                <geom size=".05" mass=".3"/>
+              </body>
+            </body>
+          </body>
+          <body pos="3 0 0">
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="tendon">
+            <joint joint="hinge" coef="1"/>
+            <joint joint="single" coef="-.5"/>
+          </fixed>
+        </tendon>
+        <actuator>
+          <motor joint="hinge" gear="2"/>
+          <position joint="pair1" kp="10"/>
+          <motor tendon="tendon"/>
+        </actuator>
+      </mujoco>
+      """,
+        nworld=nworld,
+        batch_sizes={
+          "body_mass": nworld,
+          "dof_invweight0": nworld,
+          "body_invweight0": nworld,
+          "tendon_invweight0": nworld,
+          "actuator_acc0": nworld,
+        },
+      )
+    self.assertEqual(d.qLD.shape[1] > m.qLD_block_total, sparse_blocks)
+
+    body_mass = m.body_mass.numpy()
+    body_mass[nworld - 1] *= 1.0 + np.arange(mjm.nbody) / mjm.nbody
+    m.body_mass.assign(body_mass)
+    for arr in (m.dof_invweight0, m.body_invweight0, m.tendon_invweight0, m.actuator_acc0):
+      arr.fill_(wp.inf)
+    mjwarp.set_const(m, d)
+
+    dof_invweight0 = m.dof_invweight0.numpy()
+    body_invweight0 = m.body_invweight0.numpy()
+    tendon_invweight0 = m.tendon_invweight0.numpy()
+    actuator_acc0 = m.actuator_acc0.numpy()
+    for w in range(nworld):
+      mjm.body_mass[:] = body_mass[w]
+      mujoco.mj_setConst(mjm, mujoco.MjData(mjm))
+      _assert_eq(dof_invweight0[w], mjm.dof_invweight0, f"dof_invweight0_world_{w}")
+      _assert_eq(body_invweight0[w], mjm.body_invweight0, f"body_invweight0_world_{w}")
+      _assert_eq(tendon_invweight0[w], mjm.tendon_invweight0, f"tendon_invweight0_world_{w}")
+      _assert_eq(actuator_acc0[w], mjm.actuator_acc0, f"actuator_acc0_world_{w}")
+    if nworld == 2:
+      for actual in (dof_invweight0, body_invweight0, tendon_invweight0, actuator_acc0):
+        self.assertFalse(np.allclose(actual[0], actual[1]))
 
   def test_set_length_range_joint_limited(self):
     """Test set_length_range for joint-limited actuator matches joint range."""
@@ -928,6 +1054,35 @@ class SetConstTest(parameterized.TestCase):
     np.testing.assert_allclose(lr_np[0, 0, 0], expected_lo, atol=1e-5)
     np.testing.assert_allclose(lr_np[0, 0, 1], expected_hi, atol=1e-5)
 
+  @parameterized.parameters(
+    '<dcmotor joint="j1" gear="2" motorconst="1" resistance="1" input="none"/>',
+    '<pid joint="j1" gear="2" input="pos vel ff" kp="10"/>',
+  )
+  def test_set_length_range_nu_mismatch(self, actuator):
+    """Test set_length_range when nu != nactuator."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j1" limited="true" range="-90 90"/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          {actuator}
+        </actuator>
+      </mujoco>
+      """
+    )
+    self.assertNotEqual(m.nu, m.nactuator)
+
+    m.actuator_lengthrange.fill_(wp.inf)
+    set_length_range(m, d)
+
+    lr_np = m.actuator_lengthrange.numpy()
+    np.testing.assert_allclose(lr_np[0, 0], mjm.jnt_range[0] * 2.0, rtol=1e-5, atol=1e-5)
+
   @parameterized.parameters(1, 2)
   def test_set_const_geom_bound(self, nworld):
     """Test geom bounds follow geom_size and hfield_size as in mj_setConst."""
@@ -980,8 +1135,6 @@ class SetConstTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(rbound[0], rbound[1]))
 
-  # TODO(team): remove version check once mujoco >= 3.16.1 is required.
-  @absltest.skipIf(not util_pkg.check_version("mujoco>=3.16.1"), "Requires MuJoCo >= 3.16.1")
   def test_set_const_ignores_contacts(self):
     """Test actuator_acc0 of an adhesion actuator does not depend on the contacts in d."""
     mjm, mjd, m, d = test_data.fixture(
@@ -1004,13 +1157,355 @@ class SetConstTest(parameterized.TestCase):
     self.assertGreater(nacon, 0)  # the box rests on the plane
 
     mujoco.mj_setConst(mjm, mjd)
-    mjwarp.set_const_0(m, d)
+    mjwarp.set_const(m, d, groups=mjwarp.SetConstGroup.KIN0 | mjwarp.SetConstGroup.INERT0)
 
     _assert_eq(m.actuator_acc0.numpy()[0], mjm.actuator_acc0, "actuator_acc0")
     self.assertEqual(d.nacon.numpy()[0], nacon)  # the contacts are restored
 
+  @parameterized.parameters(1, 2)
+  def test_set_const_groups(self, nworld):
+    """Test set_const with FIXED, KIN0, and INERT0 groups recomputes only their group outputs."""
+    # Batch all batched setconst fields except cam_quat and light_pos to also test mixed batching
+    batch_sizes = {
+      name: nworld
+      for name in mujoco.MjModel._setconst_fields
+      if _is_batched_model_field(name) and name not in ("cam_quat", "light_pos")
+    }
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <hfield name="terrain" nrow="2" ncol="2" size="1 1 .5 .1"/>
+      </asset>
+      <worldbody>
+        <geom type="hfield" hfield="terrain"/>
+        <camera pos="0.1 0.1 1.0" euler="5 10 15"/>
+        <light pos="0.0 0.0 2.0" dir="0.1 -0.2 -1"/>
+        <body name="body1" pos="1 2 3">
+          <joint name="j1" axis="0 1 0"/>
+          <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0"/>
+          <geom name="wrap_cyl" type="cylinder" pos="0.25 0.02 0" size="0.08 0.1"/>
+          <site name="s1" pos="0.1 0 0"/>
+          <site name="sidesite" pos="0.25 0.15 0"/>
+          <camera pos="0.1 0.2 0.3" euler="10 20 30" mode="trackcom" target="body2"/>
+          <light pos="0.4 0.5 0.6" dir="1 2 -3" mode="targetbodycom" target="body2"/>
+          <body name="body2" pos="0.5 0 0">
+            <joint name="j2"/>
+            <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="2.0"/>
+            <site name="s2" pos="0.4 0.2 0"/>
+          </body>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial armature="0.1">
+          <site site="s1"/>
+          <site site="s2"/>
+        </spatial>
+        <spatial name="t_wrap">
+          <site site="s1"/>
+          <geom geom="wrap_cyl" sidesite="sidesite"/>
+          <site site="s2"/>
+        </spatial>
+      </tendon>
+      <equality>
+        <connect body1="body1" body2="body2" anchor="0.2 0 0"/>
+      </equality>
+      <actuator>
+        <motor joint="j1"/>
+        <motor joint="j2"/>
+        <motor tendon="t_wrap"/>
+      </actuator>
+    </mujoco>
+    """,
+      nworld=nworld,
+      batch_sizes=batch_sizes,
+    )
 
-# TODO(team): test set_const_0 sparse
+    mjms = []
+    for w in range(nworld):
+      mjm_w = copy.copy(mjm)
+      mjm_w.body_mass[1:] *= 1.5 + w
+      mjm_w.geom_size[1:] *= 1.2 - 0.4 * w
+      mjm_w.hfield_size[:] *= 1.5
+      mjm_w.qpos0[:] = [0.25 - 0.65 * w, -0.35 + 0.55 * w]
+      mjm_w.body_quat[1] = [1.0, 0.0, 0.0, 0.0] if w == 0 else [0.96, 0.28, 0.0, 0.0]
+      mjm_w.body_pos[2, 0] = 0.5 + 0.2 * w
+      mjm_w.cam_pos[:] += 0.05 - 0.13 * w
+      mjm_w.light_dir[:] += [0.2 + 0.1 * w, -0.1 * w, 0.0]
+      mjm_w.eq_data[0, :3] = [0.25 - 0.1 * w, 0.05, 0.0]
+      mjm_w.eq_data[0, 3:6] = 0.0
+      mjm_w.dof_armature[:] = [0.1 + 0.2 * w, 0.2 + 0.3 * w]
+      mjm_w.tendon_armature[0] = 0.1 + 0.2 * w
+      mjms.append(mjm_w)
+
+    m.hfield_size.assign(mjms[0].hfield_size)
+    for f in (
+      "body_mass",
+      "geom_size",
+      "qpos0",
+      "body_quat",
+      "body_pos",
+      "cam_pos",
+      "light_dir",
+      "eq_data",
+      "dof_armature",
+      "tendon_armature",
+    ):
+      getattr(m, f).assign(np.stack([getattr(mjm_w, f) for mjm_w in mjms]))
+
+    for mjm_w in mjms:
+      mujoco.mj_setConst(mjm_w, mujoco.MjData(mjm_w))
+
+    all_pure_outputs = _setconst_output_fields(pure_only=True)
+
+    # Verify each group's outputs match mj_setConstGroups while other outputs stay inf
+    for group_name, group_flag in _GROUPS:
+      idx = mujoco.MjModel._setconst_groups.index(group_name)
+      self.assertEqual(group_flag, 1 << idx)
+      group_outputs = _setconst_output_fields(group_name)
+      group_pure_outputs = _setconst_output_fields(group_name, pure_only=True)
+      poisoned_other_outputs = {
+        f for f in (all_pure_outputs - group_pure_outputs) if not (mujoco.MjModel._setconst_fields[f][idx] & mujoco.mjSC_IN)
+      }
+
+      for f in group_pure_outputs | poisoned_other_outputs:
+        arr = getattr(m, f)
+        arr.assign(np.full(arr.numpy().shape, np.inf, dtype=np.float32))
+
+      mjwarp.set_const(m, d, groups=group_flag)
+
+      for f in sorted(group_outputs):
+        m_val = getattr(m, f).numpy()
+        for w in range(nworld):
+          mjm_val = getattr(mjms[w], f)
+          _assert_eq(m_val[w].reshape(mjm_val.shape), mjm_val, f"{group_name}:{f}_w{w}")
+        if nworld == 2:
+          self.assertFalse(np.allclose(m_val[0], m_val[1]), f"{group_name}:{f} should differ across worlds")
+
+      for f in sorted(poisoned_other_outputs):
+        self.assertTrue(np.isinf(getattr(m, f).numpy()).all(), f"{group_name} modified unrelated output {f}")
+
+  def test_set_const_group_inputs(self):
+    """Test observed set_const group inputs are a subset of MjModel._setconst_fields."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <asset>
+        <hfield name="terrain" nrow="2" ncol="2" size="1 1 .5 .1"/>
+      </asset>
+      <worldbody>
+        <geom type="hfield" hfield="terrain"/>
+        <camera pos="0.1 0.1 1.0" euler="5 10 15"/>
+        <light pos="0.0 0.0 2.0" dir="0.1 -0.2 -1"/>
+        <body name="body1" pos="1 2 3">
+          <joint name="j1" axis="0 1 0"/>
+          <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0"/>
+          <geom name="wrap_cyl" type="cylinder" pos="0.25 0.02 0" size="0.08 0.1"/>
+          <site name="s1" pos="0.1 0 0"/>
+          <site name="sidesite" pos="0.25 0.15 0"/>
+          <camera pos="0.1 0.2 0.3" euler="10 20 30" mode="trackcom" target="body2"/>
+          <light pos="0.4 0.5 0.6" dir="1 2 -3" mode="targetbodycom" target="body2"/>
+          <body name="body2" pos="0.5 0 0">
+            <joint name="j2"/>
+            <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="2.0"/>
+            <site name="s2" pos="0.4 0.2 0"/>
+          </body>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial armature="0.1">
+          <site site="s1"/>
+          <site site="s2"/>
+        </spatial>
+        <spatial name="t_wrap">
+          <site site="s1"/>
+          <geom geom="wrap_cyl" sidesite="sidesite"/>
+          <site site="s2"/>
+        </spatial>
+      </tendon>
+      <equality>
+        <connect body1="body1" body2="body2" anchor="0.2 0 0"/>
+      </equality>
+      <actuator>
+        <motor joint="j1"/>
+        <motor joint="j2"/>
+        <motor tendon="t_wrap"/>
+      </actuator>
+    </mujoco>
+    """
+    )
+
+    mjwarp.set_const(m, d)
+    all_outputs = _setconst_output_fields()
+    all_pure_outputs = _setconst_output_fields(pure_only=True)
+    baseline = {
+      f: arr.numpy().copy()
+      for f, arr in vars(m).items()
+      if f in mujoco.MjModel._setconst_fields
+      and isinstance(arr, wp.array)
+      and arr.size > 0
+      and np.issubdtype(arr.numpy().dtype, np.floating)
+    }
+
+    def _observed_groups(field_name: str) -> set[str]:
+      orig = baseline[field_name]
+      if "quat" in field_name:
+        perturbed = orig + np.array([0.0, 0.2, -0.15, 0.1], dtype=np.float32)
+        perturbed /= np.linalg.norm(perturbed, axis=-1, keepdims=True)
+      else:
+        perturbed = orig * np.float32(1.3) + np.float32(0.17)
+
+      observed: set[str] = set()
+      for group_name, group_flag in _GROUPS:
+        for out in all_outputs | {field_name}:
+          getattr(m, out).assign(baseline[out])
+        getattr(m, field_name).assign(perturbed)
+        group_outputs = _setconst_output_fields(group_name)
+        pre = {out: getattr(m, out).numpy().copy() for out in group_outputs}
+        mjwarp.set_const(m, d, groups=group_flag)
+        if any(not np.allclose(getattr(m, out).numpy(), pre[out], atol=1e-6, rtol=1e-6) for out in group_outputs):
+          observed.add(group_name)
+
+      for out in all_outputs | {field_name}:
+        getattr(m, out).assign(baseline[out])
+      return observed
+
+    observed_by_field: dict[str, set[str]] = {}
+    for f in sorted(baseline.keys() - all_pure_outputs):
+      observed = _observed_groups(f)
+      observed_by_field[f] = observed
+      access = mujoco.MjModel._setconst_fields.get(f)
+      declared = {
+        group_name
+        for group_name, _ in _GROUPS
+        if access is not None and (access[mujoco.MjModel._setconst_groups.index(group_name)] & mujoco.mjSC_IN)
+      }
+      self.assertLessEqual(observed, declared, f"Field {f} affected undeclared groups: {observed - declared}")
+
+    # With cylinder tendon wrapping, geom_size affects FIXED, KIN0, and INERT0
+    self.assertEqual(observed_by_field["geom_size"], {"fixed", "kin0", "inert0"})
+
+    # Without sphere/cylinder tendon wrapping, geom_size only affects FIXED
+    m.wrap_geom_adr = wp.zeros((0,), dtype=int)
+    mjwarp.set_const(m, d)
+    for out in all_outputs:
+      baseline[out] = getattr(m, out).numpy().copy()
+    self.assertEqual(_observed_groups("geom_size"), {"fixed"})
+
+  # TODO(team): remove in future version
+  def test_set_const_deprecated_aliases(self):
+    """Test deprecated set_const_fixed and set_const_0 emit DeprecationWarning."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body name="body1">
+          <joint name="j1" type="hinge" axis="0 0 1"/>
+          <geom name="g1" size="0.1" mass="2.0"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    mjm.body_mass[1] = 4.0
+    m.body_mass.assign(np.array([[0.0, 4.0]], dtype=np.float32))
+    mujoco.mj_setConst(mjm, mjd)
+
+    m.body_subtreemass.fill_(wp.inf)
+    with self.assertWarns(DeprecationWarning):
+      mjwarp.set_const_fixed(m, d)
+    _assert_eq(m.body_subtreemass.numpy()[0], mjm.body_subtreemass, "body_subtreemass")
+
+    m.dof_invweight0.fill_(wp.inf)
+    with self.assertWarns(DeprecationWarning):
+      mjwarp.set_const_0(m, d)
+    _assert_eq(m.dof_invweight0.numpy()[0], mjm.dof_invweight0, "dof_invweight0")
+
+  @parameterized.parameters(1, 2)
+  def test_set_const_sparse(self, nworld):
+    """Test set_const with sparse jacobian and sparse LDL inertia factorization."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option jacobian="sparse"/>
+      <worldbody>
+        <body name="root" pos="0 0 1">
+          <freejoint/>
+          <geom size="0.1" mass="2.0"/>
+          <site name="s0" pos="0.1 0 0"/>
+          <replicate count="60" offset="0.02 0 0">
+            <body pos="0.1 0 0">
+              <joint axis="0 1 0"/>
+              <geom size="0.1" mass="0.5"/>
+            </body>
+          </replicate>
+          <body name="tip" pos="0 0.2 0">
+            <joint name="tip_joint" axis="0 0 1"/>
+            <geom size="0.1" mass="0.5"/>
+            <site name="s1" pos="0 0.1 0"/>
+          </body>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial>
+          <site site="s0"/>
+          <site site="s1"/>
+        </spatial>
+      </tendon>
+      <actuator>
+        <motor joint="tip_joint"/>
+      </actuator>
+    </mujoco>
+    """,
+      nworld=nworld,
+      batch_sizes={
+        "body_mass": nworld,
+        "body_pos": nworld,
+        "body_subtreemass": nworld,
+        "dof_invweight0": nworld,
+        "body_invweight0": nworld,
+        "tendon_length0": nworld,
+        "tendon_invweight0": nworld,
+        "actuator_acc0": nworld,
+      },
+    )
+
+    self.assertTrue(m.is_sparse)
+    self.assertGreater(d.qLD.shape[1], m.qLD_block_total)
+
+    mjms = []
+    for w in range(nworld):
+      mjm_w = copy.copy(mjm)
+      mjm_w.body_mass[1:] *= 1.5 + w
+      mjm_w.body_pos[-1, 0] = 0.2 + 0.3 * w
+      mjms.append(mjm_w)
+
+    for f in ("body_mass", "body_pos"):
+      getattr(m, f).assign(np.stack([getattr(mjm_w, f) for mjm_w in mjms]))
+
+    for mjm_w in mjms:
+      mujoco.mj_setConst(mjm_w, mujoco.MjData(mjm_w))
+
+    output_fields = (
+      "body_subtreemass",
+      "dof_invweight0",
+      "body_invweight0",
+      "tendon_length0",
+      "tendon_invweight0",
+      "actuator_acc0",
+    )
+    for f in output_fields:
+      getattr(m, f).fill_(wp.inf)
+
+    mjwarp.set_const(m, d)
+
+    for f in output_fields:
+      m_val = getattr(m, f).numpy()
+      for w in range(nworld):
+        mjm_val = getattr(mjms[w], f)
+        _assert_eq(m_val[w].reshape(mjm_val.shape), mjm_val, f"{f}_w{w}")
+      if nworld == 2:
+        self.assertFalse(np.allclose(m_val[0], m_val[1]), f"{f} should differ across worlds")
 
 
 if __name__ == "__main__":

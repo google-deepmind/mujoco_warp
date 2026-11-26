@@ -21,12 +21,15 @@ from mujoco_warp._src import history
 from mujoco_warp._src import math
 from mujoco_warp._src import ray
 from mujoco_warp._src import smooth
+from mujoco_warp._src import sort
 from mujoco_warp._src import support
 from mujoco_warp._src.collision_sdf import get_sdf_params
 from mujoco_warp._src.collision_sdf import sdf
+from mujoco_warp._src.island import is_repeated_fixed_support_efc
 from mujoco_warp._src.types import MJ_MAXCONPAIR
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import ConDataField
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import ContactType
@@ -129,13 +132,13 @@ def _magnetometer(
   # Model:
   opt_magnetic: wp.array[wp.vec3],
   # Data in:
-  site_xmat_in: wp.array2d[wp.mat33],
+  site_xquat_in: wp.array2d[wp.quat],
   # In:
   worldid: int,
   objid: int,
 ) -> wp.vec3:
   magnetic = opt_magnetic[worldid % opt_magnetic.shape[0]]
-  return wp.transpose(site_xmat_in[worldid, objid]) @ magnetic
+  return wp.transpose(math.quat_to_mat(site_xquat_in[worldid, objid])) @ magnetic
 
 
 @wp.func
@@ -203,7 +206,7 @@ def _sensor_rangefinder_init(
   rangefinder_sensor_adr: wp.array[int],
   # Data in:
   site_xpos_in: wp.array2d[wp.vec3],
-  site_xmat_in: wp.array2d[wp.mat33],
+  site_xquat_in: wp.array2d[wp.quat],
   cam_xpos_in: wp.array2d[wp.vec3],
   cam_xmat_in: wp.array2d[wp.mat33],
   # Out:
@@ -218,7 +221,7 @@ def _sensor_rangefinder_init(
   if objtype == ObjType.SITE:
     # site-attached rangefinder: single ray from site origin along +z
     pnt_out[worldid, rfid] = site_xpos_in[worldid, objid]
-    vec_out[worldid, rfid] = site_xmat_in[worldid, objid][:, 2]
+    vec_out[worldid, rfid] = math.quat_to_mat(site_xquat_in[worldid, objid])[:, 2]
   else:
     # camera-attached rangefinder: row-major pixel index within sensor
     res = cam_resolution[objid]
@@ -426,8 +429,13 @@ def _limit_pos(
 
   sensorid = sensor_limitpos_adr[limitposid]
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
-    efc_type = efc_type_in[worldid, efcid]
-    if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
+    limit_type = (
+      ConstraintType.LIMIT_JOINT if sensor_type[sensorid] == SensorType.JOINTLIMITPOS else ConstraintType.LIMIT_TENDON
+    )
+    if efc_type_in[worldid, efcid] == limit_type:
+      # report the first row, the lower limit when both sides are active
+      if is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid):
+        return
       val = efc_pos_in[worldid, efcid] - efc_margin_in[worldid, efcid]
       _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, sensordata_out[worldid])
 
@@ -462,10 +470,10 @@ def _get_pos(
 @wp.func
 def _get_mat(
   # Data in:
-  xmat_in: wp.array2d[wp.mat33],
-  ximat_in: wp.array2d[wp.mat33],
-  geom_xmat_in: wp.array2d[wp.mat33],
-  site_xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
+  xiquat_in: wp.array2d[wp.quat],
+  geom_xquat_in: wp.array2d[wp.quat],
+  site_xquat_in: wp.array2d[wp.quat],
   cam_xmat_in: wp.array2d[wp.mat33],
   # In:
   worldid: int,
@@ -473,13 +481,13 @@ def _get_mat(
   objid: int,
 ) -> wp.mat33:
   if objtype == ObjType.BODY:
-    return ximat_in[worldid, objid]
+    return math.quat_to_mat(xiquat_in[worldid, objid])
   elif objtype == ObjType.XBODY:
-    return xmat_in[worldid, objid]
+    return math.quat_to_mat(xquat_in[worldid, objid])
   elif objtype == ObjType.GEOM:
-    return geom_xmat_in[worldid, objid]
+    return math.quat_to_mat(geom_xquat_in[worldid, objid])
   elif objtype == ObjType.SITE:
-    return site_xmat_in[worldid, objid]
+    return math.quat_to_mat(site_xquat_in[worldid, objid])
   elif objtype == ObjType.CAMERA:
     return cam_xmat_in[worldid, objid]
   else:
@@ -511,31 +519,26 @@ def _get_body_id(
 @wp.func
 def _get_quat(
   # Model:
-  body_iquat: wp.array2d[wp.quat],
-  geom_bodyid: wp.array[int],
-  geom_quat: wp.array2d[wp.quat],
-  site_bodyid: wp.array[int],
-  site_quat: wp.array2d[wp.quat],
   cam_bodyid: wp.array[int],
   cam_quat: wp.array2d[wp.quat],
   # Data in:
   xquat_in: wp.array2d[wp.quat],
+  xiquat_in: wp.array2d[wp.quat],
+  geom_xquat_in: wp.array2d[wp.quat],
+  site_xquat_in: wp.array2d[wp.quat],
   # In:
   worldid: int,
   objtype: int,
   objid: int,
 ) -> wp.quat:
   if objtype == ObjType.BODY:
-    body_iquat_id = worldid % body_iquat.shape[0]
-    return math.mul_quat(xquat_in[worldid, objid], body_iquat[body_iquat_id, objid])
+    return xiquat_in[worldid, objid]
   elif objtype == ObjType.XBODY:
     return xquat_in[worldid, objid]
   elif objtype == ObjType.GEOM:
-    geom_quat_id = worldid % geom_quat.shape[0]
-    return math.mul_quat(xquat_in[worldid, geom_bodyid[objid]], geom_quat[geom_quat_id, objid])
+    return geom_xquat_in[worldid, objid]
   elif objtype == ObjType.SITE:
-    site_quat_id = worldid % site_quat.shape[0]
-    return math.mul_quat(xquat_in[worldid, site_bodyid[objid]], site_quat[site_quat_id, objid])
+    return site_xquat_in[worldid, objid]
   elif objtype == ObjType.CAMERA:
     cam_quat_id = worldid % cam_quat.shape[0]
     return math.mul_quat(xquat_in[worldid, cam_bodyid[objid]], cam_quat[cam_quat_id, objid])
@@ -547,13 +550,13 @@ def _get_quat(
 def _frame_pos(
   # Data in:
   xpos_in: wp.array2d[wp.vec3],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   site_xpos_in: wp.array2d[wp.vec3],
-  site_xmat_in: wp.array2d[wp.mat33],
+  site_xquat_in: wp.array2d[wp.quat],
   cam_xpos_in: wp.array2d[wp.vec3],
   cam_xmat_in: wp.array2d[wp.mat33],
   # In:
@@ -568,17 +571,17 @@ def _frame_pos(
     return xpos
 
   xpos_ref = _get_pos(xpos_in, xipos_in, geom_xpos_in, site_xpos_in, cam_xpos_in, worldid, reftype, refid)
-  xmat_ref = _get_mat(xmat_in, ximat_in, geom_xmat_in, site_xmat_in, cam_xmat_in, worldid, reftype, refid)
+  xmat_ref = _get_mat(xquat_in, xiquat_in, geom_xquat_in, site_xquat_in, cam_xmat_in, worldid, reftype, refid)
   return wp.transpose(xmat_ref) @ (xpos - xpos_ref)
 
 
 @wp.func
 def _frame_axis(
   # Data in:
-  xmat_in: wp.array2d[wp.mat33],
-  ximat_in: wp.array2d[wp.mat33],
-  geom_xmat_in: wp.array2d[wp.mat33],
-  site_xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
+  xiquat_in: wp.array2d[wp.quat],
+  geom_xquat_in: wp.array2d[wp.quat],
+  site_xquat_in: wp.array2d[wp.quat],
   cam_xmat_in: wp.array2d[wp.mat33],
   # In:
   worldid: int,
@@ -588,28 +591,26 @@ def _frame_axis(
   reftype: int,
   frame_axis: int,
 ) -> wp.vec3:
-  xmat = _get_mat(xmat_in, ximat_in, geom_xmat_in, site_xmat_in, cam_xmat_in, worldid, objtype, objid)
+  xmat = _get_mat(xquat_in, xiquat_in, geom_xquat_in, site_xquat_in, cam_xmat_in, worldid, objtype, objid)
   axis = wp.vec3(xmat[0, frame_axis], xmat[1, frame_axis], xmat[2, frame_axis])
 
   if refid == -1:
     return axis
 
-  xmat_ref = _get_mat(xmat_in, ximat_in, geom_xmat_in, site_xmat_in, cam_xmat_in, worldid, reftype, refid)
+  xmat_ref = _get_mat(xquat_in, xiquat_in, geom_xquat_in, site_xquat_in, cam_xmat_in, worldid, reftype, refid)
   return wp.transpose(xmat_ref) @ axis
 
 
 @wp.func
 def _frame_quat(
   # Model:
-  body_iquat: wp.array2d[wp.quat],
-  geom_bodyid: wp.array[int],
-  geom_quat: wp.array2d[wp.quat],
-  site_bodyid: wp.array[int],
-  site_quat: wp.array2d[wp.quat],
   cam_bodyid: wp.array[int],
   cam_quat: wp.array2d[wp.quat],
   # Data in:
   xquat_in: wp.array2d[wp.quat],
+  xiquat_in: wp.array2d[wp.quat],
+  geom_xquat_in: wp.array2d[wp.quat],
+  site_xquat_in: wp.array2d[wp.quat],
   # In:
   worldid: int,
   objid: int,
@@ -617,36 +618,12 @@ def _frame_quat(
   refid: int,
   reftype: int,
 ) -> wp.quat:
-  quat = _get_quat(
-    body_iquat,
-    geom_bodyid,
-    geom_quat,
-    site_bodyid,
-    site_quat,
-    cam_bodyid,
-    cam_quat,
-    xquat_in,
-    worldid,
-    objtype,
-    objid,
-  )
+  quat = _get_quat(cam_bodyid, cam_quat, xquat_in, xiquat_in, geom_xquat_in, site_xquat_in, worldid, objtype, objid)
 
   if refid == -1:
     return quat
 
-  refquat = _get_quat(
-    body_iquat,
-    geom_bodyid,
-    geom_quat,
-    site_bodyid,
-    site_quat,
-    cam_bodyid,
-    cam_quat,
-    xquat_in,
-    worldid,
-    reftype,
-    refid,
-  )
+  refquat = _get_quat(cam_bodyid, cam_quat, xquat_in, xiquat_in, geom_xquat_in, site_xquat_in, worldid, reftype, refid)
 
   return math.mul_quat(math.quat_inv(refquat), quat)
 
@@ -668,17 +645,12 @@ def _sensor_pos(
   opt_magnetic: wp.array[wp.vec3],
   body_geomnum: wp.array[int],
   body_geomadr: wp.array[int],
-  body_iquat: wp.array2d[wp.quat],
   body_mass: wp.array2d[float],
   body_subtreemass: wp.array2d[float],
   jnt_qposadr: wp.array[int],
   geom_type: wp.array[int],
-  geom_bodyid: wp.array[int],
-  geom_quat: wp.array2d[wp.quat],
   site_type: wp.array[int],
-  site_bodyid: wp.array[int],
   site_size: wp.array[wp.vec3],
-  site_quat: wp.array2d[wp.quat],
   cam_bodyid: wp.array[int],
   cam_quat: wp.array2d[wp.quat],
   cam_fovy: wp.array2d[float],
@@ -701,20 +673,22 @@ def _sensor_pos(
   qpos_in: wp.array2d[float],
   xpos_in: wp.array2d[wp.vec3],
   xquat_in: wp.array2d[wp.quat],
-  xmat_in: wp.array2d[wp.mat33],
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   site_xpos_in: wp.array2d[wp.vec3],
-  site_xmat_in: wp.array2d[wp.mat33],
+  site_xquat_in: wp.array2d[wp.quat],
   cam_xpos_in: wp.array2d[wp.vec3],
   cam_xmat_in: wp.array2d[wp.mat33],
   subtree_com_in: wp.array2d[wp.vec3],
   ten_length_in: wp.array2d[float],
   actuator_length_in: wp.array2d[float],
+  contact_dist_in: wp.array[float],
+  contact_pos_in: wp.array[wp.vec3],
+  contact_frame_in: wp.array[wp.mat33],
   # In:
-  sensor_collision_in: wp.array4d[float],
+  sensor_collision_in: wp.array2d[wp.uint64],
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
@@ -725,7 +699,7 @@ def _sensor_pos(
   out = sensordata_out[worldid]
 
   if sensortype == SensorType.MAGNETOMETER:
-    vec3 = _magnetometer(opt_magnetic, site_xmat_in, worldid, objid)
+    vec3 = _magnetometer(opt_magnetic, site_xquat_in, worldid, objid)
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.CAMPROJECTION:
     refid = sensor_refid[sensorid]
@@ -752,13 +726,13 @@ def _sensor_pos(
     reftype = sensor_reftype[sensorid]
     vec3 = _frame_pos(
       xpos_in,
-      xmat_in,
+      xquat_in,
       xipos_in,
-      ximat_in,
+      xiquat_in,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       site_xpos_in,
-      site_xmat_in,
+      site_xquat_in,
       cam_xpos_in,
       cam_xmat_in,
       worldid,
@@ -779,7 +753,7 @@ def _sensor_pos(
     elif sensortype == SensorType.FRAMEZAXIS:
       axis = 2
     vec3 = _frame_axis(
-      xmat_in, ximat_in, geom_xmat_in, site_xmat_in, cam_xmat_in, worldid, objid, objtype, refid, reftype, axis
+      xquat_in, xiquat_in, geom_xquat_in, site_xquat_in, cam_xmat_in, worldid, objid, objtype, refid, reftype, axis
     )
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.FRAMEQUAT:
@@ -787,14 +761,12 @@ def _sensor_pos(
     refid = sensor_refid[sensorid]
     reftype = sensor_reftype[sensorid]
     quat = _frame_quat(
-      body_iquat,
-      geom_bodyid,
-      geom_quat,
-      site_bodyid,
-      site_quat,
       cam_bodyid,
       cam_quat,
       xquat_in,
+      xiquat_in,
+      geom_xquat_in,
+      site_xquat_in,
       worldid,
       objid,
       objtype,
@@ -813,7 +785,8 @@ def _sensor_pos(
 
     # initialize
     dist = float(sensor_cutoff[sensorid])
-    pnts = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    pos = wp.vec3()
+    normal = wp.vec3()
     flip = bool(False)
 
     # check for flip direction
@@ -840,22 +813,18 @@ def _sensor_pos(
         else:
           pairid = math.upper_tri_index(ngeom, geomid2, geomid1)
         collisionid = nxn_pairid[pairid][1]
-
-        for i in range(8):
-          dist_new = sensor_collision_in[worldid, collisionid, i, 0]
+        packed = sensor_collision_in[worldid, collisionid]
+        if packed != ~wp.uint64(0):
+          conid = int(wp.uint32(packed))
+          dist_new = contact_dist_in[conid]
 
           if dist_new < dist:
             dist = dist_new
 
+            if sensortype == SensorType.GEOMFROMTO:
+              pos = contact_pos_in[conid]
             if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
-              pnts = vec6(
-                sensor_collision_in[worldid, collisionid, i, 1],
-                sensor_collision_in[worldid, collisionid, i, 2],
-                sensor_collision_in[worldid, collisionid, i, 3],
-                sensor_collision_in[worldid, collisionid, i, 4],
-                sensor_collision_in[worldid, collisionid, i, 5],
-                sensor_collision_in[worldid, collisionid, i, 6],
-              )
+              normal = contact_frame_in[conid][0]
 
             if geom_type[geomid1] > geom_type[geomid2]:
               flip = True
@@ -863,22 +832,22 @@ def _sensor_pos(
               flip = geomid1 > geomid2
             else:
               flip = False
+    # the segment from geom 1 to geom 2, which points along the contact normal or against it
+    if dist >= sensor_cutoff[sensorid] or dist == 0.0:
+      segment = wp.vec3()
+    else:
+      segment = wp.where(flip != (dist < 0.0), -normal, normal)
+
     if sensortype == int(SensorType.GEOMDIST.value):
       _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, dist, out)
     elif sensortype == int(SensorType.GEOMNORMAL.value):
-      if dist <= sensor_cutoff[sensorid]:
-        normal = wp.normalize(wp.vec3(pnts[3] - pnts[0], pnts[4] - pnts[1], pnts[5] - pnts[2]))
-        if flip:
-          normal *= -1.0
-      else:
-        normal = wp.vec3(0.0, 0.0, 0.0)
-      _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, normal, out)
+      _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, segment, out)
     elif sensortype == int(SensorType.GEOMFROMTO.value):
-      if dist <= sensor_cutoff[sensorid]:
-        if flip:
-          fromto = vec6(pnts[3], pnts[4], pnts[5], pnts[0], pnts[1], pnts[2])
-        else:
-          fromto = pnts
+      if dist < sensor_cutoff[sensorid]:
+        half = 0.5 * wp.abs(dist) * segment
+        fromto = vec6(
+          pos[0] - half[0], pos[1] - half[1], pos[2] - half[2], pos[0] + half[0], pos[1] + half[1], pos[2] + half[2]
+        )
       else:
         fromto = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
       _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 6, fromto, out)
@@ -908,7 +877,9 @@ def _sensor_pos(
     else:
       return  # should not occur
     refid = sensor_refid[sensorid]
-    val_bool = inside_geom(site_xpos_in[worldid, refid], site_xmat_in[worldid, refid], site_size[refid], site_type[refid], xpos)
+    val_bool = inside_geom(
+      site_xpos_in[worldid, refid], math.quat_to_mat(site_xquat_in[worldid, refid]), site_size[refid], site_type[refid], xpos
+    )
     _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, float(val_bool), out)
   elif sensortype == SensorType.E_POTENTIAL:
     val = energy_in[worldid][0]
@@ -928,15 +899,12 @@ def _sensor_collision(
   nxn_pairid: wp.array[wp.vec2i],
   # Data in:
   contact_dist_in: wp.array[float],
-  contact_pos_in: wp.array[wp.vec3],
-  contact_frame_in: wp.array[wp.mat33],
   contact_geom_in: wp.array[wp.vec2i],
   contact_worldid_in: wp.array[int],
   contact_type_in: wp.array[int],
-  contact_geomcollisionid_in: wp.array[int],
   nacon_in: wp.array[int],
   # Out:
-  sensor_collision_out: wp.array4d[float],
+  sensor_collision_out: wp.array2d[wp.uint64],
 ):
   conid = wp.tid()
 
@@ -952,24 +920,13 @@ def _sensor_collision(
   else:
     pairid = math.upper_tri_index(ngeom, geom[1], geom[0])
 
-  worldid = contact_worldid_in[conid]
   collisionid = nxn_pairid[pairid][1]
-  geomcollisionid = contact_geomcollisionid_in[conid]
 
-  dist = contact_dist_in[conid]
-  pos = contact_pos_in[conid]
-  frame = contact_frame_in[conid]
-  normal = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
-  pnt1 = pos - 0.5 * dist * normal
-  pnt2 = pos + 0.5 * dist * normal
-
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 0] = dist
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 1] = pnt1[0]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 2] = pnt1[1]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 3] = pnt1[2]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 4] = pnt2[0]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 5] = pnt2[1]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 6] = pnt2[2]
+  # Pack ordered float32 distance bits above unique contact index for exact min reduction.
+  worldid = contact_worldid_in[conid]
+  dist_key = sort.float_key(wp.cast(contact_dist_in[conid], wp.uint32))
+  key = (wp.uint64(dist_key) << wp.uint64(32)) | wp.uint64(conid)
+  wp.atomic_min(sensor_collision_out, worldid, collisionid, key)  # kernel_analyzer: ignore[atomic]
 
 
 @event_scope
@@ -1001,7 +958,7 @@ def sensor_pos(m: Model, d: Data):
         m.sensor_rangefinder_adr,
         m.rangefinder_sensor_adr,
         d.site_xpos,
-        d.site_xmat,
+        d.site_xquat,
         d.cam_xpos,
         d.cam_xmat,
       ],
@@ -1050,7 +1007,7 @@ def sensor_pos(m: Model, d: Data):
     energy_vel(m, d)
 
   # collision sensors (distance, normal, fromto)
-  sensor_collision = wp.full((d.nworld, m.nsensorcollision, 8, 7), 1.0e32, dtype=float)
+  sensor_collision = wp.full((d.nworld, m.nsensorcollision), 0xFFFFFFFFFFFFFFFF, dtype=wp.uint64)
   if m.nsensorcollision:
     wp.launch(
       _sensor_collision,
@@ -1059,12 +1016,9 @@ def sensor_pos(m: Model, d: Data):
         m.ngeom,
         m.nxn_pairid,
         d.contact.dist,
-        d.contact.pos,
-        d.contact.frame,
         d.contact.geom,
         d.contact.worldid,
         d.contact.type,
-        d.contact.geomcollisionid,
         d.nacon,
       ],
       outputs=[sensor_collision],
@@ -1078,17 +1032,12 @@ def sensor_pos(m: Model, d: Data):
       m.opt.magnetic,
       m.body_geomnum,
       m.body_geomadr,
-      m.body_iquat,
       m.body_mass,
       m.body_subtreemass,
       m.jnt_qposadr,
       m.geom_type,
-      m.geom_bodyid,
-      m.geom_quat,
       m.site_type,
-      m.site_bodyid,
       m.site_size,
-      m.site_quat,
       m.cam_bodyid,
       m.cam_quat,
       m.cam_fovy,
@@ -1110,18 +1059,20 @@ def sensor_pos(m: Model, d: Data):
       d.qpos,
       d.xpos,
       d.xquat,
-      d.xmat,
       d.xipos,
-      d.ximat,
+      d.xiquat,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.site_xpos,
-      d.site_xmat,
+      d.site_xquat,
       d.cam_xpos,
       d.cam_xmat,
       d.subtree_com,
       d.ten_length,
       d.actuator_length,
+      d.contact.dist,
+      d.contact.pos,
+      d.contact.frame,
       sensor_collision,
     ],
     outputs=[d.sensordata],
@@ -1167,7 +1118,7 @@ def _velocimeter(
   site_bodyid: wp.array[int],
   # Data in:
   site_xpos_in: wp.array2d[wp.vec3],
-  site_xmat_in: wp.array2d[wp.mat33],
+  site_xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cvel_in: wp.array2d[wp.spatial_vector],
   # In:
@@ -1176,7 +1127,7 @@ def _velocimeter(
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
   pos = site_xpos_in[worldid, objid]
-  rot = site_xmat_in[worldid, objid]
+  rot = math.quat_to_mat(site_xquat_in[worldid, objid])
   cvel = cvel_in[worldid, bodyid]
   ang = wp.spatial_top(cvel)
   lin = wp.spatial_bottom(cvel)
@@ -1190,14 +1141,14 @@ def _gyro(
   # Model:
   site_bodyid: wp.array[int],
   # Data in:
-  site_xmat_in: wp.array2d[wp.mat33],
+  site_xquat_in: wp.array2d[wp.quat],
   cvel_in: wp.array2d[wp.spatial_vector],
   # In:
   worldid: int,
   objid: int,
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
-  rot = site_xmat_in[worldid, objid]
+  rot = math.quat_to_mat(site_xquat_in[worldid, objid])
   cvel = cvel_in[worldid, bodyid]
   ang = wp.spatial_top(cvel)
   return wp.transpose(rot) @ ang
@@ -1255,8 +1206,13 @@ def _limit_vel(
 
   sensorid = sensor_limitvel_adr[limitvelid]
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
-    efc_type = efc_type_in[worldid, efcid]
-    if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
+    limit_type = (
+      ConstraintType.LIMIT_JOINT if sensor_type[sensorid] == SensorType.JOINTLIMITVEL else ConstraintType.LIMIT_TENDON
+    )
+    if efc_type_in[worldid, efcid] == limit_type:
+      # report the first row, the lower limit when both sides are active
+      if is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid):
+        return
       _write_scalar(
         sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_vel_in[worldid, efcid], sensordata_out[worldid]
       )
@@ -1313,13 +1269,13 @@ def _frame_linvel(
   cam_bodyid: wp.array[int],
   # Data in:
   xpos_in: wp.array2d[wp.vec3],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   site_xpos_in: wp.array2d[wp.vec3],
-  site_xmat_in: wp.array2d[wp.mat33],
+  site_xquat_in: wp.array2d[wp.quat],
   cam_xpos_in: wp.array2d[wp.vec3],
   cam_xmat_in: wp.array2d[wp.mat33],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -1346,16 +1302,16 @@ def _frame_linvel(
 
   if reftype == ObjType.BODY:
     xposref = xipos_in[worldid, refid]
-    xmatref = ximat_in[worldid, refid]
+    xmatref = math.quat_to_mat(xiquat_in[worldid, refid])
   elif reftype == ObjType.XBODY:
     xposref = xpos_in[worldid, refid]
-    xmatref = xmat_in[worldid, refid]
+    xmatref = math.quat_to_mat(xquat_in[worldid, refid])
   elif reftype == ObjType.GEOM:
     xposref = geom_xpos_in[worldid, refid]
-    xmatref = geom_xmat_in[worldid, refid]
+    xmatref = math.quat_to_mat(geom_xquat_in[worldid, refid])
   elif reftype == ObjType.SITE:
     xposref = site_xpos_in[worldid, refid]
-    xmatref = site_xmat_in[worldid, refid]
+    xmatref = math.quat_to_mat(site_xquat_in[worldid, refid])
   elif reftype == ObjType.CAMERA:
     xposref = cam_xpos_in[worldid, refid]
     xmatref = cam_xmat_in[worldid, refid]
@@ -1419,13 +1375,13 @@ def _frame_angvel(
   cam_bodyid: wp.array[int],
   # Data in:
   xpos_in: wp.array2d[wp.vec3],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   site_xpos_in: wp.array2d[wp.vec3],
-  site_xmat_in: wp.array2d[wp.mat33],
+  site_xquat_in: wp.array2d[wp.quat],
   cam_xpos_in: wp.array2d[wp.vec3],
   cam_xmat_in: wp.array2d[wp.mat33],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -1457,13 +1413,13 @@ def _frame_angvel(
 
   if refid > -1:
     if reftype == ObjType.BODY:
-      xmatref = ximat_in[worldid, refid]
+      xmatref = math.quat_to_mat(xiquat_in[worldid, refid])
     elif reftype == ObjType.XBODY:
-      xmatref = xmat_in[worldid, refid]
+      xmatref = math.quat_to_mat(xquat_in[worldid, refid])
     elif reftype == ObjType.GEOM:
-      xmatref = geom_xmat_in[worldid, refid]
+      xmatref = math.quat_to_mat(geom_xquat_in[worldid, refid])
     elif reftype == ObjType.SITE:
-      xmatref = site_xmat_in[worldid, refid]
+      xmatref = math.quat_to_mat(site_xquat_in[worldid, refid])
     elif reftype == ObjType.CAMERA:
       xmatref = cam_xmat_in[worldid, refid]
     else:  # UNKNOWN
@@ -1522,13 +1478,13 @@ def _sensor_vel(
   # Data in:
   qvel_in: wp.array2d[float],
   xpos_in: wp.array2d[wp.vec3],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   site_xpos_in: wp.array2d[wp.vec3],
-  site_xmat_in: wp.array2d[wp.mat33],
+  site_xquat_in: wp.array2d[wp.quat],
   cam_xpos_in: wp.array2d[wp.vec3],
   cam_xmat_in: wp.array2d[wp.mat33],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -1547,10 +1503,10 @@ def _sensor_vel(
   out = sensordata_out[worldid]
 
   if sensortype == SensorType.VELOCIMETER:
-    vec3 = _velocimeter(body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cvel_in, worldid, objid)
+    vec3 = _velocimeter(body_rootid, site_bodyid, site_xpos_in, site_xquat_in, subtree_com_in, cvel_in, worldid, objid)
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.GYRO:
-    vec3 = _gyro(site_bodyid, site_xmat_in, cvel_in, worldid, objid)
+    vec3 = _gyro(site_bodyid, site_xquat_in, cvel_in, worldid, objid)
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.JOINTVEL:
     val = _joint_vel(jnt_dofadr, qvel_in, worldid, objid)
@@ -1574,13 +1530,13 @@ def _sensor_vel(
       site_bodyid,
       cam_bodyid,
       xpos_in,
-      xmat_in,
+      xquat_in,
       xipos_in,
-      ximat_in,
+      xiquat_in,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       site_xpos_in,
-      site_xmat_in,
+      site_xquat_in,
       cam_xpos_in,
       cam_xmat_in,
       subtree_com_in,
@@ -1602,13 +1558,13 @@ def _sensor_vel(
       site_bodyid,
       cam_bodyid,
       xpos_in,
-      xmat_in,
+      xquat_in,
       xipos_in,
-      ximat_in,
+      xiquat_in,
       geom_xpos_in,
-      geom_xmat_in,
+      geom_xquat_in,
       site_xpos_in,
-      site_xmat_in,
+      site_xquat_in,
       cam_xpos_in,
       cam_xmat_in,
       subtree_com_in,
@@ -1657,13 +1613,13 @@ def sensor_vel(m: Model, d: Data):
       m.sensor_vel_adr,
       d.qvel,
       d.xpos,
-      d.xmat,
+      d.xquat,
       d.xipos,
-      d.ximat,
+      d.xiquat,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.site_xpos,
-      d.site_xmat,
+      d.site_xquat,
       d.cam_xpos,
       d.cam_xmat,
       d.subtree_com,
@@ -1761,7 +1717,7 @@ def sensor_vel(m: Model, d: Data):
         m.taxel_vertadr,
         m.taxel_sensorid,
         d.geom_xpos,
-        d.geom_xmat,
+        d.geom_xquat,
         d.subtree_com,
         d.cvel,
         weld_geom_count,
@@ -1771,6 +1727,8 @@ def sensor_vel(m: Model, d: Data):
         d.sensordata,
       ],
     )
+
+  _eval_sensor_contact(m, d, m.sensor_contact_vel_adr)
 
   # apply sensor delay/interval for velocity sensors
   history.apply_sensor_delay(m, d, m.sensor_stage_vel_adr)
@@ -1786,7 +1744,7 @@ def _accelerometer(
   site_bodyid: wp.array[int],
   # Data in:
   site_xpos_in: wp.array2d[wp.vec3],
-  site_xmat_in: wp.array2d[wp.mat33],
+  site_xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cvel_in: wp.array2d[wp.spatial_vector],
   cacc_in: wp.array2d[wp.spatial_vector],
@@ -1795,7 +1753,7 @@ def _accelerometer(
   objid: int,
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
-  rot = site_xmat_in[worldid, objid]
+  rot = math.quat_to_mat(site_xquat_in[worldid, objid])
   rotT = wp.transpose(rot)
   cvel = cvel_in[worldid, bodyid]
   cvel_top = wp.spatial_top(cvel)
@@ -1816,7 +1774,7 @@ def _force(
   # Model:
   site_bodyid: wp.array[int],
   # Data in:
-  site_xmat_in: wp.array2d[wp.mat33],
+  site_xquat_in: wp.array2d[wp.quat],
   cfrc_int_in: wp.array2d[wp.spatial_vector],
   # In:
   worldid: int,
@@ -1824,7 +1782,7 @@ def _force(
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
   cfrc_int = cfrc_int_in[worldid, bodyid]
-  site_xmat = site_xmat_in[worldid, objid]
+  site_xmat = math.quat_to_mat(site_xquat_in[worldid, objid])
   return wp.transpose(site_xmat) @ wp.spatial_bottom(cfrc_int)
 
 
@@ -1835,7 +1793,7 @@ def _torque(
   site_bodyid: wp.array[int],
   # Data in:
   site_xpos_in: wp.array2d[wp.vec3],
-  site_xmat_in: wp.array2d[wp.mat33],
+  site_xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cfrc_int_in: wp.array2d[wp.spatial_vector],
   # In:
@@ -1844,7 +1802,7 @@ def _torque(
 ) -> wp.vec3:
   bodyid = site_bodyid[objid]
   cfrc_int = cfrc_int_in[worldid, bodyid]
-  site_xmat = site_xmat_in[worldid, objid]
+  site_xmat = math.quat_to_mat(site_xquat_in[worldid, objid])
   dif = site_xpos_in[worldid, objid] - subtree_com_in[worldid, body_rootid[bodyid]]
   return wp.transpose(site_xmat) @ (wp.spatial_top(cfrc_int) - wp.cross(dif, wp.spatial_bottom(cfrc_int)))
 
@@ -1948,8 +1906,13 @@ def _limit_frc(
 
   sensorid = sensor_limitfrc_adr[limitfrcid]
   if efc_id_in[worldid, efcid] == sensor_objid[sensorid]:
-    efc_type = efc_type_in[worldid, efcid]
-    if efc_type == ConstraintType.LIMIT_JOINT or efc_type == ConstraintType.LIMIT_TENDON:
+    limit_type = (
+      ConstraintType.LIMIT_JOINT if sensor_type[sensorid] == SensorType.JOINTLIMITFRC else ConstraintType.LIMIT_TENDON
+    )
+    if efc_type_in[worldid, efcid] == limit_type:
+      # report the first row, the lower limit when both sides are active
+      if is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid):
+        return
       _write_scalar(
         sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_force_in[worldid, efcid], sensordata_out[worldid]
       )
@@ -2053,7 +2016,7 @@ def _sensor_acc(
   xipos_in: wp.array2d[wp.vec3],
   geom_xpos_in: wp.array2d[wp.vec3],
   site_xpos_in: wp.array2d[wp.vec3],
-  site_xmat_in: wp.array2d[wp.mat33],
+  site_xquat_in: wp.array2d[wp.quat],
   cam_xpos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
   cvel_in: wp.array2d[wp.spatial_vector],
@@ -2072,14 +2035,14 @@ def _sensor_acc(
 
   if sensortype == SensorType.ACCELEROMETER:
     vec3 = _accelerometer(
-      body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cvel_in, cacc_in, worldid, objid
+      body_rootid, site_bodyid, site_xpos_in, site_xquat_in, subtree_com_in, cvel_in, cacc_in, worldid, objid
     )
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.FORCE:
-    vec3 = _force(site_bodyid, site_xmat_in, cfrc_int_in, worldid, objid)
+    vec3 = _force(site_bodyid, site_xquat_in, cfrc_int_in, worldid, objid)
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.TORQUE:
-    vec3 = _torque(body_rootid, site_bodyid, site_xpos_in, site_xmat_in, subtree_com_in, cfrc_int_in, worldid, objid)
+    vec3 = _torque(body_rootid, site_bodyid, site_xpos_in, site_xquat_in, subtree_com_in, cfrc_int_in, worldid, objid)
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
   elif sensortype == SensorType.ACTUATORFRC:
     val = _actuator_force(actuator_force_in, worldid, objid)
@@ -2140,7 +2103,7 @@ def _sensor_touch(deterministic: bool = False):
     sensor_touch_adr: wp.array[int],
     # Data in:
     site_xpos_in: wp.array2d[wp.vec3],
-    site_xmat_in: wp.array2d[wp.mat33],
+    site_xquat_in: wp.array2d[wp.quat],
     contact_pos_in: wp.array[wp.vec3],
     contact_frame_in: wp.array[wp.mat33],
     contact_dim_in: wp.array[int],
@@ -2195,7 +2158,7 @@ def _sensor_touch(deterministic: bool = False):
       # add if ray-zone intersection (always true when contact.pos inside zone)
       dist, normal = ray.ray_geom(
         site_xpos_in[worldid, objid],
-        site_xmat_in[worldid, objid],
+        math.quat_to_mat(site_xquat_in[worldid, objid]),
         site_size[objid],
         contact_pos_in[conid],
         conray,
@@ -2331,7 +2294,7 @@ def _sensor_tactile(
   taxel_sensorid: wp.array[int],
   # Data in:
   geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
+  geom_xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cvel_in: wp.array2d[wp.spatial_vector],
   # In:
@@ -2368,7 +2331,7 @@ def _sensor_tactile(
   pos = mesh_vert[vertid + mesh_vertadr[mesh_id]]
 
   # position in global frame
-  sensor_mat = geom_xmat_in[worldid, geom_id]
+  sensor_mat = math.quat_to_mat(geom_xquat_in[worldid, geom_id])
   xpos = sensor_mat @ pos + geom_xpos_in[worldid, geom_id]
 
   has_frame = (mesh_normalnum[mesh_id] == 3 * ncon) and (nchannel >= 3)
@@ -2404,7 +2367,7 @@ def _sensor_tactile(
     body = geom_bodyid[geom]
 
     tmp = xpos - geom_xpos_in[worldid, geom]
-    lpos = wp.transpose(geom_xmat_in[worldid, geom]) @ tmp
+    lpos = wp.transpose(math.quat_to_mat(geom_xquat_in[worldid, geom])) @ tmp
 
     plugin_id = geom_plugin_index[geom]
     # SDF plugins are in the original mesh frame (matches MuJoCo C)
@@ -2494,7 +2457,7 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
     sensor_intprm: wp.array2d[int],
     # Data in:
     site_xpos_in: wp.array2d[wp.vec3],
-    site_xmat_in: wp.array2d[wp.mat33],
+    site_xquat_in: wp.array2d[wp.quat],
     contact_dist_in: wp.array[float],
     contact_pos_in: wp.array[wp.vec3],
     contact_frame_in: wp.array[wp.mat33],
@@ -2516,7 +2479,6 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
     sensor_contact_nmatch_out: wp.array2d[int],
     sensor_contact_matchid_out: wp.array3d[int],
     sensor_contact_criteria_out: wp.array3d[float],
-    sensor_contact_direction_out: wp.array3d[float],
   ):
     contactsensorid, contactid = wp.tid()
     sensorid = sensor_contact_adr_in[contactsensorid]
@@ -2540,7 +2502,7 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
     if objtype == ObjType.SITE:
       if not inside_geom(
         site_xpos_in[worldid, objid],
-        site_xmat_in[worldid, objid],
+        math.quat_to_mat(site_xquat_in[worldid, objid]),
         site_size[objid],
         site_type[objid],
         contact_pos_in[contactid],
@@ -2599,7 +2561,9 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
       wp.atomic_or(overflow_out, worldid, OverflowType.CONTACT_MATCH)
       return
 
-    sensor_contact_matchid_out[worldid, contactsensorid, contactmatchid] = contactid
+    # Keep direction attached to the ID through sorting without a second payload.
+    # Complement encodes a negative direction even for contact zero (~0 == -1).
+    sensor_contact_matchid_out[worldid, contactsensorid, contactmatchid] = ~contactid if dir < 0.0 else contactid
 
     if reduce == 1:  # mindist
       sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = contact_dist_in[contactid]
@@ -2622,9 +2586,6 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
         contact_force[0] * contact_force[0] + contact_force[1] * contact_force[1] + contact_force[2] * contact_force[2]
       )
       sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = -force_magnitude
-
-    # contact direction
-    sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = dir
 
   return _contact_match
 
@@ -2669,15 +2630,20 @@ def _sensor_contact(
   # Model:
   opt_cone: int,
   opt_contact_sensor_maxmatch: int,
+  body_rootid: wp.array[int],
+  geom_bodyid: wp.array[int],
   sensor_intprm: wp.array2d[int],
   sensor_dim: wp.array[int],
   sensor_adr: wp.array[int],
   # Data in:
+  subtree_com_in: wp.array2d[wp.vec3],
+  cvel_in: wp.array2d[wp.spatial_vector],
   contact_dist_in: wp.array[float],
   contact_pos_in: wp.array[wp.vec3],
   contact_frame_in: wp.array[wp.mat33],
   contact_friction_in: wp.array[vec5],
   contact_dim_in: wp.array[int],
+  contact_geom_in: wp.array[wp.vec2i],
   contact_efc_address_in: wp.array2d[int],
   contact_adhesion_in: wp.array[float],
   efc_force_in: wp.array2d[float],
@@ -2687,7 +2653,6 @@ def _sensor_contact(
   sensor_contact_adr_in: wp.array[int],
   sensor_contact_nmatch_in: wp.array2d[int],
   sensor_contact_matchid_in: wp.array3d[int],
-  sensor_contact_direction_in: wp.array3d[float],
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
@@ -2699,40 +2664,28 @@ def _sensor_contact(
   reduce = sensor_intprm[sensorid, 1]
   dim = sensor_dim[sensorid]
 
-  # found, force, torque, dist, pos, normal, tangent
   # TODO(thowell): precompute slot size
-  found = False
-  force = False
-  torque = False
-  dist = False
-  pos = False
-  normal = False
-  tangent = False
+  found = bool(dataspec & (1 << ConDataField.FOUND))
+  force = bool(dataspec & (1 << ConDataField.FORCE))
+  torque = bool(dataspec & (1 << ConDataField.TORQUE))
+  dist = bool(dataspec & (1 << ConDataField.DIST))
+  pos = bool(dataspec & (1 << ConDataField.POS))
+  normal = bool(dataspec & (1 << ConDataField.NORMAL))
+  tangent = bool(dataspec & (1 << ConDataField.TANGENT))
+  linvel = bool(dataspec & (1 << ConDataField.LINVEL))
+  angvel = bool(dataspec & (1 << ConDataField.ANGVEL))
 
-  size = int(0)
-  for i in range(7):
-    if dataspec & (1 << i):
-      if i == 0:
-        found = True
-        size += 1
-      elif i == 1:
-        force = True
-        size += 3
-      elif i == 2:
-        torque = True
-        size += 3
-      elif i == 3:
-        dist = True
-        size += 1
-      elif i == 4:
-        pos = True
-        size += 3
-      elif i == 5:
-        normal = True
-        size += 3
-      elif i == 6:
-        tangent = True
-        size += 3
+  size = (
+    (1 if found else 0)
+    + (3 if force else 0)
+    + (3 if torque else 0)
+    + (1 if dist else 0)
+    + (3 if pos else 0)
+    + (3 if normal else 0)
+    + (3 if tangent else 0)
+    + (3 if linvel else 0)
+    + (3 if angvel else 0)
+  )
 
   num = dim // size  # number of slots
 
@@ -2752,8 +2705,9 @@ def _sensor_contact(
     total_force_magnitude = float(0.0)
 
     for i in range(nmatch):
-      cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
-      dir = sensor_contact_direction_in[worldid, contactsensorid, i]
+      matchid = sensor_contact_matchid_in[worldid, contactsensorid, i]
+      cid = ~matchid if matchid < 0 else matchid
+      dir = -1.0 if matchid < 0 else 1.0
 
       contact_forcetorque = support.contact_force_fn(
         opt_cone,
@@ -2839,11 +2793,10 @@ def _sensor_contact(
   else:
     nslots = wp.min(nmatch, num)
     for i in range(nslots):
-      # sorted contact id
-      cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
-
-      # contact direction
-      dir = sensor_contact_direction_in[worldid, contactsensorid, i]
+      # Decode only valid matches; unused padded slots are bounded by nslots.
+      matchid = sensor_contact_matchid_in[worldid, contactsensorid, i]
+      cid = ~matchid if matchid < 0 else matchid
+      dir = -1.0 if matchid < 0 else 1.0
 
       adr_slot = adr + i * size
 
@@ -2878,13 +2831,14 @@ def _sensor_contact(
       if dist:
         out[adr_slot] = contact_dist_in[cid]
         adr_slot += 1
-      if pos:
+      if pos or linvel:
         contact_pos = contact_pos_in[cid]
+      if pos:
         out[adr_slot + 0] = contact_pos[0]
         out[adr_slot + 1] = contact_pos[1]
         out[adr_slot + 2] = contact_pos[2]
         adr_slot += 3
-      if normal or tangent:
+      if normal or tangent or linvel or angvel:
         frame = contact_frame_in[cid]
       if normal:
         contact_normal = frame[0]
@@ -2897,6 +2851,33 @@ def _sensor_contact(
         out[adr_slot + 0] = dir * contact_tangent[0]
         out[adr_slot + 1] = dir * contact_tangent[1]
         out[adr_slot + 2] = dir * contact_tangent[2]
+        adr_slot += 3
+      if linvel or angvel:
+        # velocity of geom[1] relative to geom[0] at the contact point, in the contact frame
+        con_geom = contact_geom_in[cid]
+        body0 = geom_bodyid[con_geom[0]]
+        body1 = geom_bodyid[con_geom[1]]
+        cvel0 = cvel_in[worldid, body0]
+        cvel1 = cvel_in[worldid, body1]
+      if linvel:
+        root0 = body_rootid[body0]
+        root1 = body_rootid[body1]
+        com0 = subtree_com_in[worldid, root0]
+        if root1 == root0:
+          com1 = com0
+        else:
+          com1 = subtree_com_in[worldid, root1]
+        rel_lin = _transform_spatial(cvel1, contact_pos - com1) - _transform_spatial(cvel0, contact_pos - com0)
+        lin_local = frame @ rel_lin
+        out[adr_slot + 0] = lin_local[0]
+        out[adr_slot + 1] = lin_local[1]
+        out[adr_slot + 2] = dir * lin_local[2]
+        adr_slot += 3
+      if angvel:
+        ang_local = frame @ (wp.spatial_top(cvel1) - wp.spatial_top(cvel0))
+        out[adr_slot + 0] = ang_local[0]
+        out[adr_slot + 1] = ang_local[1]
+        out[adr_slot + 2] = dir * ang_local[2]
 
     # zero remaining slots
     for i in range(nslots, num):
@@ -2913,7 +2894,6 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
   sensor_contact_nmatch = wp.zeros((d.nworld, ncontact), dtype=int)
   sensor_contact_matchid = wp.full((d.nworld, ncontact, maxmatch), -1, dtype=int)
   sensor_contact_criteria = wp.full((d.nworld, ncontact, maxmatch), 1.0e32, dtype=float)
-  sensor_contact_direction = wp.empty((d.nworld, ncontact, maxmatch), dtype=float)
 
   wp.launch(
     _contact_match_builder(int(m.opt.warn_overflow), bool(m.opt.deterministic & DeterminismType.ATOMICS)),
@@ -2931,7 +2911,7 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
       m.sensor_refid,
       m.sensor_intprm,
       d.site_xpos,
-      d.site_xmat,
+      d.site_xquat,
       d.contact.dist,
       d.contact.pos,
       d.contact.frame,
@@ -2947,14 +2927,20 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
       d.nacon,
       sensor_contact_adr,
     ],
-    outputs=[d.overflow, sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria, sensor_contact_direction],
+    outputs=[d.overflow, sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria],
   )
 
   # sorting
   wp.launch_tiled(
     _contact_sort(maxmatch),
     dim=(d.nworld, ncontact),
-    inputs=[m.sensor_intprm, sensor_contact_adr, sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria],
+    inputs=[
+      m.sensor_intprm,
+      sensor_contact_adr,
+      sensor_contact_nmatch,
+      sensor_contact_matchid,
+      sensor_contact_criteria,
+    ],
     outputs=[sensor_contact_matchid],
     block_dim=m.block_dim.contact_sort,
   )
@@ -2965,14 +2951,19 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
     inputs=[
       m.opt.cone,
       maxmatch,
+      m.body_rootid,
+      m.geom_bodyid,
       m.sensor_intprm,
       m.sensor_dim,
       m.sensor_adr,
+      d.subtree_com,
+      d.cvel,
       d.contact.dist,
       d.contact.pos,
       d.contact.frame,
       d.contact.friction,
       d.contact.dim,
+      d.contact.geom,
       d.contact.efc_address,
       d.contact.adhesion,
       d.efc.force,
@@ -2981,7 +2972,6 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
       sensor_contact_adr,
       sensor_contact_nmatch,
       sensor_contact_matchid,
-      sensor_contact_direction,
     ],
     outputs=[d.sensordata],
   )
@@ -3006,7 +2996,7 @@ def sensor_acc(m: Model, d: Data, skip_rne_postconstraint: bool = False):
       m.sensor_adr,
       m.sensor_touch_adr,
       d.site_xpos,
-      d.site_xmat,
+      d.site_xquat,
       d.contact.pos,
       d.contact.frame,
       d.contact.dim,
@@ -3046,7 +3036,7 @@ def sensor_acc(m: Model, d: Data, skip_rne_postconstraint: bool = False):
       d.xipos,
       d.geom_xpos,
       d.site_xpos,
-      d.site_xmat,
+      d.site_xquat,
       d.cam_xpos,
       d.subtree_com,
       d.cvel,
@@ -3168,10 +3158,12 @@ def _energy_pos_passive_joint(deterministic: bool = False):
     qpos_spring: wp.array2d[float],
     jnt_type: wp.array[int],
     jnt_qposadr: wp.array[int],
+    jnt_plasticadr: wp.array[int],
     jnt_stiffness: wp.array2d[float],
     jnt_stiffnesspoly: wp.array2d[wp.vec2],
     # Data in:
     qpos_in: wp.array2d[float],
+    plastic_in: wp.array2d[float],
     # Data out:
     energy_out: wp.array[wp.vec2],
   ):
@@ -3184,14 +3176,40 @@ def _energy_pos_passive_joint(deterministic: bool = False):
       return
 
     padr = jnt_qposadr[jntid]
+    plasticadr = jnt_plasticadr[jntid]
     jnttype = jnt_type[jntid]
     qpos_spring_id = worldid % qpos_spring.shape[0]
 
     if jnttype == JointType.FREE:
+      if plasticadr >= 0:
+        ref_pos = wp.vec3(
+          plastic_in[worldid, plasticadr + 0],
+          plastic_in[worldid, plasticadr + 1],
+          plastic_in[worldid, plasticadr + 2],
+        )
+        quat_spring = wp.quat(
+          plastic_in[worldid, plasticadr + 3],
+          plastic_in[worldid, plasticadr + 4],
+          plastic_in[worldid, plasticadr + 5],
+          plastic_in[worldid, plasticadr + 6],
+        )
+      else:
+        ref_pos = wp.vec3(
+          qpos_spring[qpos_spring_id, padr + 0],
+          qpos_spring[qpos_spring_id, padr + 1],
+          qpos_spring[qpos_spring_id, padr + 2],
+        )
+        quat_spring = wp.quat(
+          qpos_spring[qpos_spring_id, padr + 3],
+          qpos_spring[qpos_spring_id, padr + 4],
+          qpos_spring[qpos_spring_id, padr + 5],
+          qpos_spring[qpos_spring_id, padr + 6],
+        )
+
       dif0 = wp.vec3(
-        qpos_in[worldid, padr + 0] - qpos_spring[qpos_spring_id, padr + 0],
-        qpos_in[worldid, padr + 1] - qpos_spring[qpos_spring_id, padr + 1],
-        qpos_in[worldid, padr + 2] - qpos_spring[qpos_spring_id, padr + 2],
+        qpos_in[worldid, padr + 0] - ref_pos[0],
+        qpos_in[worldid, padr + 1] - ref_pos[1],
+        qpos_in[worldid, padr + 2] - ref_pos[2],
       )
 
       # convert quaternion difference into angular "velocity"
@@ -3202,13 +3220,6 @@ def _energy_pos_passive_joint(deterministic: bool = False):
         qpos_in[worldid, padr + 6],
       )
       quat1 = wp.normalize(quat1)
-
-      quat_spring = wp.quat(
-        qpos_spring[qpos_spring_id, padr + 3],
-        qpos_spring[qpos_spring_id, padr + 4],
-        qpos_spring[qpos_spring_id, padr + 5],
-        qpos_spring[qpos_spring_id, padr + 6],
-      )
 
       dif1 = math.quat_sub(quat1, quat_spring)
 
@@ -3231,12 +3242,20 @@ def _energy_pos_passive_joint(deterministic: bool = False):
       )
       quat = wp.normalize(quat)
 
-      quat_spring = wp.quat(
-        qpos_spring[qpos_spring_id, padr + 0],
-        qpos_spring[qpos_spring_id, padr + 1],
-        qpos_spring[qpos_spring_id, padr + 2],
-        qpos_spring[qpos_spring_id, padr + 3],
-      )
+      if plasticadr >= 0:
+        quat_spring = wp.quat(
+          plastic_in[worldid, plasticadr + 0],
+          plastic_in[worldid, plasticadr + 1],
+          plastic_in[worldid, plasticadr + 2],
+          plastic_in[worldid, plasticadr + 3],
+        )
+      else:
+        quat_spring = wp.quat(
+          qpos_spring[qpos_spring_id, padr + 0],
+          qpos_spring[qpos_spring_id, padr + 1],
+          qpos_spring[qpos_spring_id, padr + 2],
+          qpos_spring[qpos_spring_id, padr + 3],
+        )
 
       dif = math.quat_sub(quat, quat_spring)
       r = wp.length(dif)
@@ -3246,7 +3265,8 @@ def _energy_pos_passive_joint(deterministic: bool = False):
       )
       wp.atomic_add(energy_out, worldid, energy)
     elif jnttype == JointType.SLIDE or jnttype == JointType.HINGE:
-      dif_ = qpos_in[worldid, padr] - qpos_spring[qpos_spring_id, padr]
+      ref_scalar = plastic_in[worldid, plasticadr] if plasticadr >= 0 else qpos_spring[qpos_spring_id, padr]
+      dif_ = qpos_in[worldid, padr] - ref_scalar
       energy = wp.vec2(
         poly_potential(stiffness, spoly, dif_, 0),
         0.0,
@@ -3265,10 +3285,12 @@ def _energy_pos_passive_tendon(deterministic: bool = False):
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
+    tendon_plasticadr: wp.array[int],
     tendon_stiffness: wp.array2d[float],
     tendon_stiffnesspoly: wp.array2d[wp.vec2],
     tendon_lengthspring: wp.array2d[wp.vec2],
     # Data in:
+    plastic_in: wp.array2d[float],
     ten_length_in: wp.array2d[float],
     # Data out:
     energy_out: wp.array[wp.vec2],
@@ -3285,10 +3307,15 @@ def _energy_pos_passive_tendon(deterministic: bool = False):
     length = ten_length_in[worldid, tenid]
 
     # compute spring displacement
-    tendon_lengthspring_id = worldid % tendon_lengthspring.shape[0]
-    lengthspring = tendon_lengthspring[tendon_lengthspring_id, tenid]
-    lower = lengthspring[0]
-    upper = lengthspring[1]
+    padr = tendon_plasticadr[tenid]
+    if padr >= 0:
+      lower = plastic_in[worldid, padr + 0]
+      upper = plastic_in[worldid, padr + 1]
+    else:
+      tendon_lengthspring_id = worldid % tendon_lengthspring.shape[0]
+      lengthspring = tendon_lengthspring[tendon_lengthspring_id, tenid]
+      lower = lengthspring[0]
+      upper = lengthspring[1]
 
     if length > upper:
       x = length - upper
@@ -3312,7 +3339,7 @@ def _energy_pos_passive_flex(deterministic: bool = False):
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
-    flex_dim: wp.array[int],
+    flex_interp: wp.array[int],
     flexedge_length0: wp.array[float],
     flex_edgestiffness: wp.array[float],
     flexedge_rigid: wp.array[bool],
@@ -3328,8 +3355,7 @@ def _energy_pos_passive_flex(deterministic: bool = False):
       return
 
     f = flex_edgeflexid[edgeid]
-
-    if flex_dim[f] > 1:
+    if flex_interp[f] != 0:
       return
 
     stiffness = flex_edgestiffness[f]
@@ -3368,9 +3394,11 @@ def energy_pos(m: Model, d: Data):
         m.qpos_spring,
         m.jnt_type,
         m.jnt_qposadr,
+        m.jnt_plasticadr,
         m.jnt_stiffness,
         m.jnt_stiffnesspoly,
         d.qpos,
+        d.plastic,
       ],
       outputs=[d.energy],
     )
@@ -3381,20 +3409,22 @@ def energy_pos(m: Model, d: Data):
         _energy_pos_passive_tendon(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
         dim=(d.nworld, m.ntendon),
         inputs=[
+          m.tendon_plasticadr,
           m.tendon_stiffness,
           m.tendon_stiffnesspoly,
           m.tendon_lengthspring,
+          d.plastic,
           d.ten_length,
         ],
         outputs=[d.energy],
       )
 
-    # add 1d flex-level springs
+    # add flex-level edge springs
     wp.launch(
       _energy_pos_passive_flex(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
       dim=(d.nworld, m.nflexedge),
       inputs=[
-        m.flex_dim,
+        m.flex_interp,
         m.flexedge_length0,
         m.flex_edgestiffness,
         m.flexedge_rigid,

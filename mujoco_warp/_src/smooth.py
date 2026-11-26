@@ -14,27 +14,32 @@
 # ==============================================================================
 
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import warp as wp
 
 from mujoco_warp._src import math
 from mujoco_warp._src import support
 from mujoco_warp._src import util_misc
+from mujoco_warp._src.island import is_repeated_fixed_support_efc
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import Q_LD_BLOCK_COMPACT
 from mujoco_warp._src.types import Q_LD_BLOCK_SPARSE
+from mujoco_warp._src.types import ROD_HINGE_SIZE
 from mujoco_warp._src.types import CamLightType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import ConstraintType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import DisableBit
+from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import EqType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import ObjType
+from mujoco_warp._src.types import SolverType
+from mujoco_warp._src.types import TendonType
 from mujoco_warp._src.types import TileSet
 from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.types import WrapType
@@ -45,6 +50,23 @@ from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False})
+
+
+# Long per-world sums (e.g. over the tree roots of flex vertex bodies) are loaded into shared memory
+# in chunks and added in the original order; short ones keep one thread per world.
+WORLD_SUM_CHUNK = 512
+WORLD_SUM_BLOCK = 128
+
+
+@wp.func
+def _tree_asleep(
+  # Data in:
+  tree_awake_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  treeid: int,
+) -> bool:
+  return treeid >= 0 and tree_awake_in[worldid, treeid] == 0
 
 
 @wp.kernel
@@ -159,24 +181,13 @@ def _compute_body_inertial_frames(
   xquat_in: wp.array2d[wp.quat],
   # Data out:
   xipos_out: wp.array2d[wp.vec3],
-  ximat_out: wp.array2d[wp.mat33],
+  xiquat_out: wp.array2d[wp.quat],
 ):
   worldid, bodyid = wp.tid()
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
   xipos_out[worldid, bodyid] = xpos + math.rot_vec_quat(body_ipos[worldid % body_ipos.shape[0], bodyid], xquat)
-  ximat_out[worldid, bodyid] = math.quat_to_mat(math.mul_quat(xquat, body_iquat[worldid % body_iquat.shape[0], bodyid]))
-
-
-@wp.kernel
-def _compute_body_matrices(
-  # Data in:
-  xquat_in: wp.array2d[wp.quat],
-  # Data out:
-  xmat_out: wp.array2d[wp.mat33],
-):
-  worldid, bodyid = wp.tid()
-  xmat_out[worldid, bodyid] = math.quat_to_mat(xquat_in[worldid, bodyid])
+  xiquat_out[worldid, bodyid] = math.mul_quat(xquat, body_iquat[worldid % body_iquat.shape[0], bodyid])
 
 
 @wp.kernel
@@ -193,7 +204,7 @@ def _geom_local_to_global(
   xquat_in: wp.array2d[wp.quat],
   # Data out:
   geom_xpos_out: wp.array2d[wp.vec3],
-  geom_xmat_out: wp.array2d[wp.mat33],
+  geom_xquat_out: wp.array2d[wp.quat],
 ):
   worldid, geomid = wp.tid()
   bodyid = geom_bodyid[geomid]
@@ -206,7 +217,7 @@ def _geom_local_to_global(
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
   geom_xpos_out[worldid, geomid] = xpos + math.rot_vec_quat(geom_pos[worldid % geom_pos.shape[0], geomid], xquat)
-  geom_xmat_out[worldid, geomid] = math.quat_to_mat(math.mul_quat(xquat, geom_quat[worldid % geom_quat.shape[0], geomid]))
+  geom_xquat_out[worldid, geomid] = math.mul_quat(xquat, geom_quat[worldid % geom_quat.shape[0], geomid])
 
 
 @wp.kernel
@@ -220,14 +231,14 @@ def _site_local_to_global(
   xquat_in: wp.array2d[wp.quat],
   # Data out:
   site_xpos_out: wp.array2d[wp.vec3],
-  site_xmat_out: wp.array2d[wp.mat33],
+  site_xquat_out: wp.array2d[wp.quat],
 ):
   worldid, siteid = wp.tid()
   bodyid = site_bodyid[siteid]
   xpos = xpos_in[worldid, bodyid]
   xquat = xquat_in[worldid, bodyid]
   site_xpos_out[worldid, siteid] = xpos + math.rot_vec_quat(site_pos[worldid % site_pos.shape[0], siteid], xquat)
-  site_xmat_out[worldid, siteid] = math.quat_to_mat(math.mul_quat(xquat, site_quat[worldid % site_quat.shape[0], siteid]))
+  site_xquat_out[worldid, siteid] = math.mul_quat(xquat, site_quat[worldid % site_quat.shape[0], siteid])
 
 
 @wp.kernel
@@ -240,12 +251,13 @@ def _flex_vertices(
   flex_vertadr: wp.array[int],
   flex_vertnum: wp.array[int],
   flex_vertbodyid: wp.array[int],
+  flex_vertcell: wp.array[int],
   flex_vert: wp.array[wp.vec3],
   flex_vert0: wp.array[wp.vec3],
   flex_centered: wp.array[bool],
   # Data in:
   xpos_in: wp.array2d[wp.vec3],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   flexnode_xpos_in: wp.array2d[wp.vec3],
   # Data out:
   flexvert_xpos_out: wp.array2d[wp.vec3],
@@ -257,7 +269,8 @@ def _flex_vertices(
     if locid >= 0 and locid < flex_vertnum[f]:
       break
 
-  if flex_interp[f] != 0:
+  order = flex_interp[f]
+  if order != 0:
     # Interpolated flex: vertex position = weighted sum of node positions
     coord = flex_vert0[vertid]
     cn = flex_cellnum[f]
@@ -265,18 +278,28 @@ def _flex_vertices(
     cy = cn[1]
     cz = cn[2]
 
-    # Cell lookup: find containing cell
-    ci = wp.min(int(coord[0] * float(cx)), cx - 1)
-    ci = wp.max(ci, 0)
-    cj = wp.min(int(coord[1] * float(cy)), cy - 1)
-    cj = wp.max(cj, 0)
-    ck = wp.min(int(coord[2] * float(cz)), cz - 1)
-    ck = wp.max(ck, 0)
+    ux = coord[0] * float(cx)
+    uy = coord[1] * float(cy)
+    uz = coord[2] * float(cz)
 
-    # Local parametric coordinates within cell
-    local_x = wp.clamp(coord[0] * float(cx) - float(ci), 0.0, 1.0)
-    local_y = wp.clamp(coord[1] * float(cy) - float(cj), 0.0, 1.0)
-    local_z = wp.clamp(coord[2] * float(cz) - float(ck), 0.0, 1.0)
+    # Cell lookup: find containing cell
+    ci = wp.clamp(int(wp.floor(ux)), 0, cx - 1)
+    cj = wp.clamp(int(wp.floor(uy)), 0, cy - 1)
+    ck = wp.clamp(int(wp.floor(uz)), 0, cz - 1)
+
+    # If precomputed active cell differs from natural cell, redirect and extrapolate
+    cell = flex_vertcell[vertid]
+    if cell >= 0 and cell != ci * cy * cz + cj * cz + ck:
+      ck = cell % cz
+      cj = (cell // cz) % cy
+      ci = cell // (cy * cz)
+      local_x = wp.clamp(ux - float(ci), -0.02, 1.02)
+      local_y = wp.clamp(uy - float(cj), -0.02, 1.02)
+      local_z = wp.clamp(uz - float(ck), -0.02, 1.02)
+    else:
+      local_x = wp.clamp(ux - float(ci), 0.0, 1.0)
+      local_y = wp.clamp(uy - float(cj), 0.0, 1.0)
+      local_z = wp.clamp(uz - float(ck), 0.0, 1.0)
     local = wp.vec3(local_x, local_y, local_z)
 
     # Node grid dimensions
@@ -286,15 +309,35 @@ def _flex_vertices(
 
     # Accumulate weighted node positions
     result = wp.vec3(0.0, 0.0, 0.0)
-    for li in range(2):
-      for lj in range(2):
-        for lk in range(2):
+    two = int(2)
+    three = int(3)
+    for li in range(two):
+      for lj in range(two):
+        for lk in range(two):
           w = support.eval_basis_trilinear(local, li * 4 + lj * 2 + lk)
-          gi = ci + li
-          gj = cj + lj
-          gk = ck + lk
-          node_idx = gi * ny_g * nz_g + gj * nz_g + gk
-          result += w * flexnode_xpos_in[worldid, nstart + node_idx]
+          if w != 0.0:
+            gi = ci + li
+            gj = cj + lj
+            gk = ck + lk
+            is_int = order < 0 and gi > 0 and gi < cx and gj > 0 and gj < cy and gk > 0 and gk < cz
+            idx_x = wp.vec3i(0, cx, gi)
+            idx_y = wp.vec3i(0, cy, gj)
+            idx_z = wp.vec3i(0, cz, gk)
+            s = float(gi) / float(cx)
+            t = float(gj) / float(cy)
+            u = float(gk) / float(cz)
+            wx = wp.vec3(1.0 - s, s, -1.0)
+            wy = wp.vec3(1.0 - t, t, -1.0)
+            wz = wp.vec3(1.0 - u, u, -1.0)
+            a_start = int(0) if is_int else int(2)
+            for a in range(a_start, three):
+              for b in range(a_start, three):
+                for c in range(a_start, three):
+                  if is_int and a == 2 and b == 2 and c == 2:
+                    continue
+                  w_tfi = w * wx[a] * wy[b] * wz[c] if is_int else w
+                  node_idx = (idx_x[a] * ny_g + idx_y[b]) * nz_g + idx_z[c]
+                  result += w_tfi * flexnode_xpos_in[worldid, nstart + node_idx]
 
     flexvert_xpos_out[worldid, vertid] = result
   else:
@@ -305,7 +348,7 @@ def _flex_vertices(
     if flex_centered[f]:
       flexvert_xpos_out[worldid, vertid] = xpos
     else:
-      xmat = xmat_in[worldid, bodyid]
+      xmat = math.quat_to_mat(xquat_in[worldid, bodyid])
       local_pos = flex_vert[vertid]
       flexvert_xpos_out[worldid, vertid] = xmat @ local_pos + xpos
 
@@ -321,7 +364,7 @@ def _flex_nodes(
   flex_centered: wp.array[bool],
   # Data in:
   xpos_in: wp.array2d[wp.vec3],
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   # Data out:
   flexnode_xpos_out: wp.array2d[wp.vec3],
 ):
@@ -342,7 +385,7 @@ def _flex_nodes(
     if local_pos[0] == 0.0 and local_pos[1] == 0.0 and local_pos[2] == 0.0:
       flexnode_xpos_out[worldid, nodeid] = xpos
     else:
-      xmat = xmat_in[worldid, bodyid]
+      xmat = math.quat_to_mat(xquat_in[worldid, bodyid])
       flexnode_xpos_out[worldid, nodeid] = xmat @ local_pos + xpos
 
 
@@ -418,13 +461,8 @@ def _flex_edges(
 
 
 @event_scope
-def kinematics(m: Model, d: Data):
-  """Computes forward kinematics for all bodies, sites, geoms, and flexible elements.
-
-  This function updates the global positions and orientations of all bodies, as well as the
-  derived positions and orientations of geoms, sites, and flexible elements, based on the
-  current joint positions and any attached mocap bodies.
-  """
+def kinematics1(m: Model, d: Data):
+  """Computes body poses and joint anchors and axes."""
   wp.launch(
     _kinematics_branch,
     dim=(d.nworld, m.nbranch),
@@ -449,33 +487,37 @@ def kinematics(m: Model, d: Data):
     outputs=[d.xpos, d.xquat, d.xanchor, d.xaxis],
   )
 
-  wp.launch(
-    _compute_body_matrices,
-    dim=(d.nworld, m.nbody),
-    inputs=[d.xquat],
-    outputs=[d.xmat],
-  )
 
+@event_scope
+def kinematics2(m: Model, d: Data):
+  """Computes global body inertial frames, geoms, and sites from body poses."""
   wp.launch(
     _compute_body_inertial_frames,
     dim=(d.nworld, m.nbody),
     inputs=[m.body_ipos, m.body_iquat, d.xpos, d.xquat],
-    outputs=[d.xipos, d.ximat],
+    outputs=[d.xipos, d.xiquat],
   )
 
   wp.launch(
     _geom_local_to_global,
     dim=(d.nworld, m.ngeom),
     inputs=[m.body_rootid, m.body_weldid, m.body_mocapid, m.geom_bodyid, m.geom_pos, m.geom_quat, d.xpos, d.xquat],
-    outputs=[d.geom_xpos, d.geom_xmat],
+    outputs=[d.geom_xpos, d.geom_xquat],
   )
 
   wp.launch(
     _site_local_to_global,
     dim=(d.nworld, m.nsite),
     inputs=[m.site_bodyid, m.site_pos, m.site_quat, d.xpos, d.xquat],
-    outputs=[d.site_xpos, d.site_xmat],
+    outputs=[d.site_xpos, d.site_xquat],
   )
+
+
+@event_scope
+def kinematics(m: Model, d: Data):
+  """Computes forward kinematics for bodies, inertial frames, geoms, and sites."""
+  kinematics1(m, d)
+  kinematics2(m, d)
 
 
 @wp.kernel
@@ -483,6 +525,7 @@ def _flex_face_kinematics(
   # Model:
   flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
+  flex_node0: wp.array[wp.vec3],
   flex_face_map: wp.array[wp.vec2i],
   flex_face: wp.array2d[int],
   # Data in:
@@ -505,9 +548,14 @@ def _flex_face_kinematics(
   cz = cellnum[2]
   t1 = wp.vec3(0.0)
   t2 = wp.vec3(0.0)
+  gidx0 = int(-1)
+  gidx1 = int(-1)
   for local_idx in range(9):
     gidx = flex_face[face_id, local_idx]
     if gidx != -1:
+      if local_idx == 0:
+        gidx0 = gidx
+      gidx1 = gidx
       node_pos = flexnode_xpos_in[worldid, gidx]
 
       face_xpos_out[worldid, face_id, local_idx] = node_pos
@@ -528,9 +576,19 @@ def _flex_face_kinematics(
     else:
       face_xpos_out[worldid, face_id, local_idx] = wp.vec3(0.0)
 
-  normal = wp.cross(t1, t2)
-
   normal_axis, _, _, _, _, _ = support.get_face_metadata(cx, cy, cz, face_elem_idx, order_abs)
+  axis0 = (normal_axis + 1) % 3
+  axis1 = (normal_axis + 2) % 3
+  if gidx0 != -1 and gidx1 != -1:
+    dref = flex_node0[gidx1] - flex_node0[gidx0]
+    d0 = dref[axis0]
+    d1 = dref[axis1]
+    if d0 > MJ_MINVAL:
+      t1 = t1 / d0
+    if d1 > MJ_MINVAL:
+      t2 = t2 / d1
+
+  normal = wp.cross(t1, t2)
 
   F = wp.mat33(0.0)
   if normal_axis == 0:
@@ -573,6 +631,172 @@ def _flex_face_kinematics(
   face_quat_out[worldid, face_id] = support.mat33_to_quat_polar(F)
 
 
+@wp.func
+def _rod_body_pose0(
+  # Model:
+  body_parentid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  # In:
+  worldid: int,
+  bodyid: int,
+) -> Tuple[wp.vec3, wp.quat]:
+  """Nominal pose of a body with all joints at zero (rodBodyPose0)."""
+  pos_id = worldid % body_pos.shape[0]
+  quat_id = worldid % body_quat.shape[0]
+  pos = wp.vec3(0.0)
+  quat = wp.quat(1.0, 0.0, 0.0, 0.0)
+  cur = bodyid
+  while cur > 0:
+    q = body_quat[quat_id, cur]
+    pos = math.rot_vec_quat(pos, q) + body_pos[pos_id, cur]
+    quat = math.mul_quat(q, quat)
+    cur = body_parentid[cur]
+  return pos, quat
+
+
+@wp.func
+def _rod_vert_pos0(
+  # Model:
+  body_parentid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  flex_vertbodyid: wp.array[int],
+  flex_vert: wp.array[wp.vec3],
+  # In:
+  worldid: int,
+  vertid: int,
+) -> wp.vec3:
+  """Nominal world position of a flex vertex with all joints at zero (rodVertPos0)."""
+  pos, quat = _rod_body_pose0(body_parentid, body_pos, body_quat, worldid, flex_vertbodyid[vertid])
+  return pos + math.rot_vec_quat(flex_vert[vertid], quat)
+
+
+@wp.kernel
+def _flex_rod_ref(
+  # Model:
+  body_parentid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  flex_vertadr: wp.array[int],
+  flex_bendingadr: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_vert: wp.array[wp.vec3],
+  flex_bending: wp.array[float],
+  flex_rod_tail_clamped: wp.array[bool],
+  flex_rod_hingeadr: wp.array[int],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_vert: wp.array[wp.vec2i],
+  # Data out:
+  flex_rod_chain_valid_out: wp.array2d[bool],
+  flex_rod_ref_ok_out: wp.array2d[bool],
+  flex_rod_frame0_loc_out: wp.array3d[wp.vec3],
+  flex_rod_frame0_ref_out: wp.array3d[wp.vec3],
+  flex_rod_tail_loc_out: wp.array3d[wp.vec3],
+  flex_rodhinge_om0_out: wp.array2d[wp.vec2],
+):
+  """Reference frames and curvatures of open 1D DER rods at the nominal body poses of this world.
+
+  Mirrors rodChain, rodRootDirector and rodTailDirector, which recompute them from body_pos and
+  body_quat; also invalidates the cached rod chain evaluation (passive.eval_rod_chains).
+  """
+  worldid, f = wp.tid()
+  z3 = wp.vec3(0.0)
+  flex_rod_chain_valid_out[worldid, f] = False
+  flex_rod_ref_ok_out[worldid, f] = False
+  for i in range(2):
+    flex_rod_frame0_loc_out[worldid, f, i] = z3
+    flex_rod_frame0_ref_out[worldid, f, i] = z3
+    flex_rod_tail_loc_out[worldid, f, i] = z3
+
+  nedge = flex_rod_edgenum[f]
+  nhinge = nedge - 1
+  if nhinge <= 0:
+    return
+
+  hadr = flex_rod_hingeadr[f]
+  if hadr >= 0:
+    for h in range(nhinge):
+      flex_rodhinge_om0_out[worldid, hadr + h] = wp.vec2(0.0)
+
+  va = flex_vertadr[f]
+  eadr = flex_rod_edgeadr[f]
+  bendingadr = flex_bendingadr[f]
+
+  # first edge: qpos0 frame in the frame of its first body (rodRootDirector)
+  verts0 = flex_rodedge_vert[eadr]
+  _p0, q0 = _rod_body_pose0(body_parentid, body_pos, body_quat, worldid, flex_vertbodyid[va + verts0[0]])
+  R0 = math.quat_to_mat(q0)
+  xa = _rod_vert_pos0(body_parentid, body_pos, body_quat, flex_vertbodyid, flex_vert, worldid, va + verts0[0])
+  xv = _rod_vert_pos0(body_parentid, body_pos, body_quat, flex_vertbodyid, flex_vert, worldid, va + verts0[1])
+  t0_loc = wp.transpose(R0) @ (xv - xa)
+  n_t0 = wp.length(t0_loc)
+  if n_t0 < MJ_MINVAL:
+    return
+  t0_loc = t0_loc / n_t0
+  frame_u, frame_v = math.orthogonals(t0_loc)
+  psi0 = float(0.0)
+  if flex_bending[bendingadr + 1 + 9] < 0.0:
+    psi0 = 0.5 * wp.pi
+  c0 = wp.cos(psi0)
+  s0 = wp.sin(psi0)
+  u0_loc = c0 * frame_u + s0 * frame_v
+  v0_loc = -s0 * frame_u + c0 * frame_v
+  t_ref = R0 @ t0_loc
+  u_ref = R0 @ u0_loc
+  v_prev = R0 @ v0_loc
+  flex_rod_frame0_loc_out[worldid, f, 0] = t0_loc
+  flex_rod_frame0_loc_out[worldid, f, 1] = u0_loc
+  flex_rod_frame0_ref_out[worldid, f, 0] = t_ref
+  flex_rod_frame0_ref_out[worldid, f, 1] = u_ref
+
+  # reference Bishop frame along the qpos0 chain, for curved references or a clamped tail (rodChain)
+  tail_clamped = flex_rod_tail_clamped[f]
+  need_ref_chain = tail_clamped
+  for h in range(nhinge):
+    if flex_bending[bendingadr + 1 + ROD_HINGE_SIZE * h + 6] > 0.0:
+      need_ref_chain = True
+  if need_ref_chain:
+    for h in range(nhinge):
+      xb = _rod_vert_pos0(
+        body_parentid, body_pos, body_quat, flex_vertbodyid, flex_vert, worldid, va + flex_rodedge_vert[eadr + h + 1][1]
+      )
+      if hadr >= 0 and flex_bending[bendingadr + 1 + ROD_HINGE_SIZE * h + 6] > 0.0:
+        e0 = xv - xa
+        e1 = xb - xv
+        l0 = wp.length(e0)
+        l1 = wp.length(e1)
+        denom = l0 * l1 + wp.dot(e0, e1)
+        if l0 >= MJ_MINVAL and l1 >= MJ_MINVAL and denom >= MJ_MINVAL:
+          kb = (2.0 / denom) * wp.cross(e0, e1)
+          flex_rodhinge_om0_out[worldid, hadr + h] = wp.vec2(wp.dot(kb, u_ref), wp.dot(kb, v_prev))
+      t_next = xb - xv
+      n_next = wp.length(t_next)
+      if n_next < MJ_MINVAL:
+        return
+      t_next = t_next / n_next
+      ok_pt, u_next, v_next = support.rod_parallel_transport(t_ref, t_next, u_ref)
+      if not ok_pt:
+        return
+      t_ref = t_next
+      u_ref = u_next
+      v_prev = v_next
+      xa = xv
+      xv = xb
+
+    # clamped last edge: qpos0 frame in the frame of its body (rodTailDirector)
+    if tail_clamped:
+      _pT, qT = _rod_body_pose0(
+        body_parentid, body_pos, body_quat, worldid, flex_vertbodyid[va + flex_rodedge_vert[eadr + nhinge][1]]
+      )
+      RT = math.quat_to_mat(qT)
+      flex_rod_tail_loc_out[worldid, f, 0] = wp.transpose(RT) @ t_ref
+      flex_rod_tail_loc_out[worldid, f, 1] = wp.transpose(RT) @ u_ref
+
+  flex_rod_ref_ok_out[worldid, f] = True
+
+
 @event_scope
 def flex(m: Model, d: Data):
   if m.nflex > 0:
@@ -589,7 +813,7 @@ def flex(m: Model, d: Data):
       m.flex_node,
       m.flex_centered,
       d.xpos,
-      d.xmat,
+      d.xquat,
     ],
     outputs=[d.flexnode_xpos],
   )
@@ -605,11 +829,12 @@ def flex(m: Model, d: Data):
       m.flex_vertadr,
       m.flex_vertnum,
       m.flex_vertbodyid,
+      m.flex_vertcell,
       m.flex_vert,
       m.flex_vert0,
       m.flex_centered,
       d.xpos,
-      d.xmat,
+      d.xquat,
       d.flexnode_xpos,
     ],
     outputs=[d.flexvert_xpos],
@@ -645,6 +870,7 @@ def flex(m: Model, d: Data):
     inputs=[
       m.flex_interp,
       m.flex_cellnum,
+      m.flex_node0,
       m.flex_face_map,
       m.flex_face,
       d.flexnode_xpos,
@@ -655,60 +881,159 @@ def flex(m: Model, d: Data):
     ],
   )
 
+  if m.nflexrodedge > 0:
+    wp.launch(
+      _flex_rod_ref,
+      dim=(d.nworld, m.nflex),
+      inputs=[
+        m.body_parentid,
+        m.body_pos,
+        m.body_quat,
+        m.flex_vertadr,
+        m.flex_bendingadr,
+        m.flex_vertbodyid,
+        m.flex_vert,
+        m.flex_bending,
+        m.flex_rod_tail_clamped,
+        m.flex_rod_hingeadr,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_vert,
+      ],
+      outputs=[
+        d.flex_rod_chain_valid,
+        d.flex_rod_ref_ok,
+        d.flex_rod_frame0_loc,
+        d.flex_rod_frame0_ref,
+        d.flex_rod_tail_loc,
+        d.flex_rodhinge_om0,
+      ],
+    )
+
 
 @wp.kernel
-def _subtree_com_init(
+def _subtree_com(
   # Model:
   body_mass: wp.array2d[float],
+  body_subtreemass: wp.array2d[float],
+  body_subtreenum: wp.array[int],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
   # Data out:
   subtree_com_out: wp.array2d[wp.vec3],
 ):
+  """Mass-weighted com of the subtree, the contiguous body range [b, b + body_subtreenum[b])."""
   worldid, bodyid = wp.tid()
-  subtree_com_out[worldid, bodyid] = xipos_in[worldid, bodyid] * body_mass[worldid % body_mass.shape[0], bodyid]
+  if bodyid == 0:  # summed from the tree roots in _subtree_com_world
+    return
+  mass_id = worldid % body_mass.shape[0]
 
+  com = wp.vec3(0.0)
+  for j in range(bodyid, bodyid + body_subtreenum[bodyid]):
+    com += xipos_in[worldid, j] * body_mass[mass_id, j]
 
-@cache_kernel
-def _subtree_com_acc(deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    body_parentid: wp.array[int],
-    # Data in:
-    subtree_com_in: wp.array2d[wp.vec3],
-    # In:
-    body_tree_: wp.array[int],
-    # Data out:
-    subtree_com_out: wp.array2d[wp.vec3],
-  ):
-    worldid, nodeid = wp.tid()
-    bodyid = body_tree_[nodeid]
-    pid = body_parentid[bodyid]
-    if bodyid != 0:
-      wp.atomic_add(subtree_com_out, worldid, pid, subtree_com_in[worldid, bodyid])
-
-  return kernel
+  mass = body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
+  # massless subtree: use the body inertial frame, as in mj_comPos
+  if mass < MJ_MINVAL:
+    com = xipos_in[worldid, bodyid]
+  else:
+    com /= mass
+  subtree_com_out[worldid, bodyid] = com
 
 
 @wp.kernel
-def _subtree_div(
+def _subtree_com_world(
   # Model:
+  nbody: int,
+  body_mass: wp.array2d[float],
   body_subtreemass: wp.array2d[float],
+  body_subtreenum: wp.array[int],
   # Data in:
+  xipos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
   # Data out:
   subtree_com_out: wp.array2d[wp.vec3],
 ):
-  worldid, bodyid = wp.tid()
-  com = subtree_com_in[worldid, bodyid]
-  mass = body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
-  if mass != 0.0:
-    subtree_com_out[worldid, bodyid] = com / mass
+  worldid = wp.tid()
+  subtreemass_id = worldid % body_subtreemass.shape[0]
+
+  com = xipos_in[worldid, 0] * body_mass[worldid % body_mass.shape[0], 0]
+  rootid = int(1)
+  while rootid < nbody:
+    com += subtree_com_in[worldid, rootid] * body_subtreemass[subtreemass_id, rootid]
+    rootid += body_subtreenum[rootid]
+
+  mass = body_subtreemass[subtreemass_id, 0]
+  if mass < MJ_MINVAL:
+    com = xipos_in[worldid, 0]
+  else:
+    com /= mass
+  subtree_com_out[worldid, 0] = com
+
+
+@wp.kernel(module="unique", enable_backward=False)
+def _subtree_com_world_tiled(
+  # Model:
+  body_mass: wp.array2d[float],
+  body_subtreemass: wp.array2d[float],
+  # Data in:
+  xipos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  # In:
+  rootid_in: wp.array[int],
+  # Data out:
+  subtree_com_out: wp.array2d[wp.vec3],
+):
+  worldid, lane = wp.tid()
+  subtreemass_id = worldid % body_subtreemass.shape[0]
+
+  mass = body_subtreemass[subtreemass_id, 0]
+  if mass < MJ_MINVAL:
+    if lane == 0:
+      subtree_com_out[worldid, 0] = xipos_in[worldid, 0]
+    return
+
+  com = wp.vec3()
+  if lane == 0:
+    com = xipos_in[worldid, 0] * body_mass[worldid % body_mass.shape[0], 0]
+  nroot = rootid_in.shape[0]
+  for start in range(0, nroot, WORLD_SUM_CHUNK):
+    rootid = wp.tile_load(rootid_in, shape=(WORLD_SUM_CHUNK,), offset=(start,), storage="shared")
+    root_com = wp.tile_load_indexed(subtree_com_in[worldid], rootid, shape=(WORLD_SUM_CHUNK,), storage="shared")
+    root_mass = wp.tile_load_indexed(body_subtreemass[subtreemass_id], rootid, shape=(WORLD_SUM_CHUNK,), storage="shared")
+    if lane == 0:
+      for i in range(wp.min(WORLD_SUM_CHUNK, nroot - start)):
+        com += root_com[i] * root_mass[i]
+
+  if lane == 0:
+    subtree_com_out[worldid, 0] = com / mass
+
+
+@wp.func
+def inert_com(
+  # In:
+  mass: float,
+  inertia: wp.vec3,
+  rotation: wp.mat33,
+  offset: wp.vec3,
+) -> vec10:
+  """Express principal inertia in a rotated, translated COM frame (mju_inertCom)."""
+  row0 = wp.cw_mul(rotation[0], inertia)
+  row1 = wp.cw_mul(rotation[1], inertia)
+  row2 = wp.cw_mul(rotation[2], inertia)
+  x, y, z = offset[0], offset[1], offset[2]
+  return vec10(
+    wp.dot(row0, rotation[0]) + mass * (y * y + z * z),
+    wp.dot(row1, rotation[1]) + mass * (x * x + z * z),
+    wp.dot(row2, rotation[2]) + mass * (x * x + y * y),
+    wp.dot(row0, rotation[1]) - mass * x * y,
+    wp.dot(row0, rotation[2]) - mass * x * z,
+    wp.dot(row1, rotation[2]) - mass * y * z,
+    mass * x,
+    mass * y,
+    mass * z,
+    mass,
+  )
 
 
 @wp.kernel
@@ -719,42 +1044,17 @@ def _cinert(
   body_inertia: wp.array2d[wp.vec3],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   # Data out:
   cinert_out: wp.array2d[vec10],
 ):
   worldid, bodyid = wp.tid()
-  mat = ximat_in[worldid, bodyid]
+  mat = math.quat_to_mat(xiquat_in[worldid, bodyid])
   inert = body_inertia[worldid % body_inertia.shape[0], bodyid]
   mass = body_mass[worldid % body_mass.shape[0], bodyid]
   dif = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
-  # express inertia in com-based frame (mju_inertCom)
-
-  res = vec10()
-  # res_rot = mat * diag(inert) * mat'
-  tmp = mat @ wp.diag(inert) @ wp.transpose(mat)
-  res[0] = tmp[0, 0]
-  res[1] = tmp[1, 1]
-  res[2] = tmp[2, 2]
-  res[3] = tmp[0, 1]
-  res[4] = tmp[0, 2]
-  res[5] = tmp[1, 2]
-  # res_rot -= mass * dif_cross * dif_cross
-  res[0] += mass * (dif[1] * dif[1] + dif[2] * dif[2])
-  res[1] += mass * (dif[0] * dif[0] + dif[2] * dif[2])
-  res[2] += mass * (dif[0] * dif[0] + dif[1] * dif[1])
-  res[3] -= mass * dif[0] * dif[1]
-  res[4] -= mass * dif[0] * dif[2]
-  res[5] -= mass * dif[1] * dif[2]
-  # res_tran = mass * dif
-  res[6] = mass * dif[0]
-  res[7] = mass * dif[1]
-  res[8] = mass * dif[2]
-  # res_mass = mass
-  res[9] = mass
-
-  cinert_out[worldid, bodyid] = res
+  cinert_out[worldid, bodyid] = inert_com(mass, inert, mat, dif)
 
 
 @wp.kernel
@@ -765,7 +1065,7 @@ def _cdof(
   jnt_dofadr: wp.array[int],
   jnt_bodyid: wp.array[int],
   # Data in:
-  xmat_in: wp.array2d[wp.mat33],
+  xquat_in: wp.array2d[wp.quat],
   xanchor_in: wp.array2d[wp.vec3],
   xaxis_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
@@ -777,7 +1077,7 @@ def _cdof(
   dofid = jnt_dofadr[jntid]
   jnt_type_ = jnt_type[jntid]
   xaxis = xaxis_in[worldid, jntid]
-  xmat = wp.transpose(xmat_in[worldid, bodyid])
+  xmat = wp.transpose(math.quat_to_mat(xquat_in[worldid, bodyid]))
 
   # compute com-anchor vector
   offset = subtree_com_in[worldid, body_rootid[bodyid]] - xanchor_in[worldid, jntid]
@@ -806,38 +1106,53 @@ def _cdof(
 def com_pos(m: Model, d: Data):
   """Computes subtree center of mass positions.
 
-  Transforms inertia and motion to global frame centered at subtree CoM. Accumulates the
-  mass-weighted positions up the kinematic tree, divides by total mass, and computes composite
-  inertias and motion degrees of freedom in the subtree CoM frame.
+  Transforms inertia and motion to global frame centered at subtree CoM. Sums the mass-weighted
+  positions over each subtree, divides by total mass, and computes composite inertias and motion
+  degrees of freedom in the subtree CoM frame.
   """
-  wp.launch(_subtree_com_init, dim=(d.nworld, m.nbody), inputs=[m.body_mass, d.xipos], outputs=[d.subtree_com])
-
-  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  subtree_com_in = wp.empty_like(d.subtree_com) if det_atomics else d.subtree_com
-  for i in reversed(range(len(m.body_tree))):
-    body_tree = m.body_tree[i]
-    if det_atomics:
-      wp.copy(subtree_com_in, d.subtree_com)
+  wp.launch(
+    _subtree_com,
+    dim=(d.nworld, m.nbody),
+    inputs=[m.body_mass, m.body_subtreemass, m.body_subtreenum, d.xipos],
+    outputs=[d.subtree_com],
+  )
+  if m.nbody > 1 and m.body_tree[1].shape[0] > WORLD_SUM_BLOCK:
+    wp.launch_tiled(
+      _subtree_com_world_tiled,
+      dim=d.nworld,
+      inputs=[m.body_mass, m.body_subtreemass, d.xipos, d.subtree_com, m.body_tree[1]],
+      outputs=[d.subtree_com],
+      block_dim=WORLD_SUM_BLOCK,
+    )
+  else:
     wp.launch(
-      _subtree_com_acc(det_atomics),
-      dim=(d.nworld, body_tree.size),
-      inputs=[m.body_parentid, subtree_com_in, body_tree],
+      _subtree_com_world,
+      dim=d.nworld,
+      inputs=[m.nbody, m.body_mass, m.body_subtreemass, m.body_subtreenum, d.xipos, d.subtree_com],
       outputs=[d.subtree_com],
     )
-
-  wp.launch(_subtree_div, dim=(d.nworld, m.nbody), inputs=[m.body_subtreemass, d.subtree_com], outputs=[d.subtree_com])
   wp.launch(
     _cinert,
     dim=(d.nworld, m.nbody),
-    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.ximat, d.subtree_com],
+    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.xiquat, d.subtree_com],
     outputs=[d.cinert],
   )
   wp.launch(
     _cdof,
     dim=(d.nworld, m.njnt),
-    inputs=[m.body_rootid, m.jnt_type, m.jnt_dofadr, m.jnt_bodyid, d.xmat, d.xanchor, d.xaxis, d.subtree_com],
+    inputs=[m.body_rootid, m.jnt_type, m.jnt_dofadr, m.jnt_bodyid, d.xquat, d.xanchor, d.xaxis, d.subtree_com],
     outputs=[d.cdof],
   )
+
+
+@wp.func
+def _normalize3(vec: wp.vec3) -> wp.vec3:
+  length = wp.length(vec)
+  if length < MJ_MINVAL:
+    vec = wp.vec3(1.0, 0.0, 0.0)
+  else:
+    vec /= length
+  return vec
 
 
 @wp.kernel
@@ -888,10 +1203,10 @@ def _cam_local_to_global(
     if cam_mode[camid] == CamLightType.TARGETBODYCOM:
       pos = subtree_com_in[worldid, cam_targetbodyid[camid]]
     # zaxis = -desired camera direction, in global frame
-    mat_3 = wp.normalize(cam_xpos_out[worldid, camid] - pos)
+    mat_3 = _normalize3(cam_xpos_out[worldid, camid] - pos)
     # xaxis: orthogonal to zaxis and to (0,0,1)
-    mat_1 = wp.normalize(wp.cross(wp.vec3(0.0, 0.0, 1.0), mat_3))
-    mat_2 = wp.normalize(wp.cross(mat_3, mat_1))
+    mat_1 = _normalize3(wp.cross(wp.vec3(0.0, 0.0, 1.0), mat_3))
+    mat_2 = _normalize3(wp.cross(mat_3, mat_1))
     # fmt: off
     cam_xmat_out[worldid, camid] = wp.mat33(
       mat_1[0], mat_2[0], mat_3[0],
@@ -963,7 +1278,7 @@ def _light_local_to_global(
     light_xpos_out[worldid, lightid] = xpos + math.rot_vec_quat(light_pos[light_pos_id, lightid], xquat)
     light_xdir_out[worldid, lightid] = math.rot_vec_quat(light_dir[light_dir_id, lightid], xquat)
 
-  light_xdir_out[worldid, lightid] = wp.normalize(light_xdir_out[worldid, lightid])
+  light_xdir_out[worldid, lightid] = _normalize3(light_xdir_out[worldid, lightid])
 
 
 @event_scope
@@ -1012,162 +1327,209 @@ def camlight(m: Model, d: Data):
 
 
 @cache_kernel
-def _crb_accumulate(deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-
-  @wp.kernel(module="unique", module_options=module_options)
+def _crb_subtree(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
-    body_parentid: wp.array[int],
+    body_treeid: wp.array[int],
+    body_subtreenum: wp.array[int],
     # Data in:
-    crb_in: wp.array2d[vec10],
-    # In:
-    body_tree_: wp.array[int],
+    cinert_in: wp.array2d[vec10],
+    tree_awake_in: wp.array2d[int],
     # Data out:
     crb_out: wp.array2d[vec10],
   ):
-    worldid, nodeid = wp.tid()
-    bodyid = body_tree_[nodeid]
-    pid = body_parentid[bodyid]
-    if pid == 0:
-      return
-    wp.atomic_add(crb_out, worldid, pid, crb_in[worldid, bodyid])
+    """Sums cinert over the subtree, the contiguous body range [b, b + body_subtreenum[b])."""
+    worldid, bodyid = wp.tid()
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, body_treeid[bodyid]):
+        return
+    crb = cinert_in[worldid, bodyid]
+    if bodyid != 0:  # crb does not accumulate into the world body
+      for j in range(bodyid + 1, bodyid + body_subtreenum[bodyid]):
+        crb += cinert_in[worldid, j]
+    crb_out[worldid, bodyid] = crb
 
   return kernel
 
 
-@wp.kernel
-def _M(
-  # Model:
-  dof_bodyid: wp.array[int],
-  dof_parentid: wp.array[int],
-  dof_armature: wp.array2d[float],
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  # Data in:
-  cdof_in: wp.array2d[wp.spatial_vector],
-  crb_in: wp.array2d[vec10],
-  # Data out:
-  M_out: wp.array2d[float],
-):
-  worldid, dofid = wp.tid()
-  bodyid = dof_bodyid[dofid]
-  madr_ij = M_rowadr[dofid] + M_rownnz[dofid] - 1
+@cache_kernel
+def _M(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    jnt_actuatorid: wp.array[int],
+    dof_bodyid: wp.array[int],
+    dof_jntid: wp.array[int],
+    dof_parentid: wp.array[int],
+    dof_treeid: wp.array[int],
+    dof_armature: wp.array2d[float],
+    actuator_trntype: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_armature: wp.array2d[float],
+    actuator_gear: wp.array2d[wp.spatial_vector],
+    M_rownnz: wp.array[int],
+    M_rowadr: wp.array[int],
+    # Data in:
+    cdof_in: wp.array2d[wp.spatial_vector],
+    crb_in: wp.array2d[vec10],
+    tree_awake_in: wp.array2d[int],
+    # Data out:
+    M_out: wp.array2d[float],
+  ):
+    worldid, dofid = wp.tid()
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+        return
+    bodyid = dof_bodyid[dofid]
+    rowadr = M_rowadr[dofid]
+    madr_ij = rowadr + M_rownnz[dofid] - 1
 
-  # init M(i,i) with armature inertia
-  M_out[worldid, madr_ij] = dof_armature[worldid % dof_armature.shape[0], dofid]
+    # precompute buf = crb_body_i * cdof_i
+    cdof = cdof_in[worldid, dofid]
+    buf = math.inert_vec(crb_in[worldid, bodyid], cdof)
 
-  # precompute buf = crb_body_i * cdof_i
-  buf = math.inert_vec(crb_in[worldid, bodyid], cdof_in[worldid, dofid])
+    # M(i,i): armature inertia plus the dof's own term
+    M_out[worldid, madr_ij] = util_misc.dof_armature_total(
+      jnt_actuatorid,
+      dof_jntid,
+      dof_armature,
+      actuator_trntype,
+      actuator_trnid,
+      actuator_armature,
+      actuator_gear,
+      worldid,
+      dofid,
+    ) + wp.dot(cdof, buf)
 
-  # sparse backward pass over ancestors
-  while dofid >= 0:
-    M_out[worldid, madr_ij] += wp.dot(cdof_in[worldid, dofid], buf)
+    # sparse backward pass over the ancestors stored in this row; rows of simple dofs are
+    # diagonal-only, so stop at the row start instead of walking into the previous row
     madr_ij -= 1
     dofid = dof_parentid[dofid]
+    while dofid >= 0 and madr_ij >= rowadr:
+      M_out[worldid, madr_ij] = wp.dot(cdof_in[worldid, dofid], buf)
+      madr_ij -= 1
+      dofid = dof_parentid[dofid]
+
+  return kernel
 
 
 @event_scope
 def crb(m: Model, d: Data):
   """Computes composite rigid body inertias for each body and the joint-space inertia matrix.
 
-  Accumulates composite rigid body inertias up the kinematic tree and computes the
-  joint-space inertia matrix in either sparse or dense format, depending on model options.
+  Sums each body's com-based inertia over its subtree and computes the joint-space inertia matrix
+  in either sparse or dense format, depending on model options.
   """
-  wp.copy(d.crb, d.cinert)
-
-  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  crb_in = wp.empty_like(d.crb) if det_atomics else d.crb
-  for i in reversed(range(len(m.body_tree))):
-    body_tree = m.body_tree[i]
-    if det_atomics:
-      wp.copy(crb_in, d.crb)
-    wp.launch(
-      _crb_accumulate(det_atomics),
-      dim=(d.nworld, body_tree.size),
-      inputs=[m.body_parentid, crb_in, body_tree],
-      outputs=[d.crb],
-    )
-
-  d.M.zero_()
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   wp.launch(
-    _M,
+    _crb_subtree(enable_sleep),
+    dim=(d.nworld, m.nbody),
+    inputs=[m.body_treeid, m.body_subtreenum, d.cinert, d.tree_awake],
+    outputs=[d.crb],
+  )
+
+  wp.launch(
+    _M(enable_sleep),
     dim=(d.nworld, m.nv),
-    inputs=[m.dof_bodyid, m.dof_parentid, m.dof_armature, m.M_rownnz, m.M_rowadr, d.cdof, d.crb],
+    inputs=[
+      m.jnt_actuatorid,
+      m.dof_bodyid,
+      m.dof_jntid,
+      m.dof_parentid,
+      m.dof_treeid,
+      m.dof_armature,
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.actuator_armature,
+      m.actuator_gear,
+      m.M_rownnz,
+      m.M_rowadr,
+      d.cdof,
+      d.crb,
+      d.tree_awake,
+    ],
     outputs=[d.M],
   )
 
 
 @cache_kernel
-def _tendon_armature(nv: int, deterministic: bool = False):
+def _tendon_armature(nM: int, enable_sleep: bool = False, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = nv
+    module_options["deterministic_max_records"] = nM
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
     dof_parentid: wp.array[int],
+    dof_treeid: wp.array[int],
+    tendon_actuatorid: wp.array[int],
     ten_J_rownnz: wp.array[int],
     ten_J_rowadr: wp.array[int],
     ten_J_colind: wp.array[int],
     tendon_armature: wp.array2d[float],
+    actuator_trntype: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_armature: wp.array2d[float],
+    actuator_gear: wp.array2d[wp.spatial_vector],
     M_rownnz: wp.array[int],
     M_rowadr: wp.array[int],
     # Data in:
     ten_J_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     # Data out:
     M_out: wp.array2d[float],
   ):
-    worldid, tenid, dofid = wp.tid()
+    worldid, tenid = wp.tid()
 
-    armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
-
+    armature = util_misc.tendon_armature_total(
+      tendon_actuatorid, tendon_armature, actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, worldid, tenid
+    )
     if armature == 0.0:
       return
 
     rownnz = ten_J_rownnz[tenid]
-    if dofid >= rownnz:
-      return
     rowadr = ten_J_rowadr[tenid]
-    dofid_sparse = dofid
-    sparseid = rowadr + dofid_sparse
-    dofid = ten_J_colind[sparseid]
-    ten_Ji = ten_J_in[worldid, sparseid]
 
-    if ten_Ji == 0.0:
-      return
+    for dofid_sparse in range(rownnz):
+      sparseid = rowadr + dofid_sparse
+      dofid = ten_J_colind[sparseid]
+      if wp.static(enable_sleep):
+        if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+          continue
 
-    # Walk the row's entries from the diagonal backward over ancestors.
-    madr_ij = M_rowadr[dofid] + M_rownnz[dofid] - 1
+      ten_Ji = ten_J_in[worldid, sparseid]
+      if ten_Ji == 0.0:
+        continue
 
-    # sparse backward pass over ancestors
-    dofidi = dofid
-    ptr = dofid_sparse
-    while dofid >= 0:
-      if dofid == dofidi:
-        ten_Jj = ten_Ji
-      else:
-        # scan pointer backward to find matching colind entry
-        while ptr >= 0:
-          sparseid = rowadr + ptr
-          if ten_J_colind[sparseid] <= dofid:
-            break
-          ptr -= 1
-        if ptr >= 0 and ten_J_colind[sparseid] == dofid:
-          ten_Jj = ten_J_in[worldid, sparseid]
+      # walk the row's entries from the diagonal backward over ancestors
+      armature_Ji = armature * ten_Ji
+      madr_ij = M_rowadr[dofid] + M_rownnz[dofid] - 1
+
+      # sparse backward pass over ancestors
+      dofidi = dofid
+      ptr = dofid_sparse
+      while dofid >= 0 and ptr >= 0:
+        if dofid == dofidi:
+          ten_Jj = ten_Ji
         else:
-          ten_Jj = float(0.0)
+          # scan pointer backward to find matching colind entry
+          while ptr >= 0:
+            sparseid = rowadr + ptr
+            if ten_J_colind[sparseid] <= dofid:
+              break
+            ptr -= 1
+          if ptr >= 0 and ten_J_colind[sparseid] == dofid:
+            ten_Jj = ten_J_in[worldid, sparseid]
+          else:
+            ten_Jj = float(0.0)
 
-      Mij = armature * ten_Jj * ten_Ji
-
-      wp.atomic_add(M_out[worldid], madr_ij, Mij)
-      madr_ij -= 1
-
-      dofid = dof_parentid[dofid]
+        if ten_Jj != 0.0:
+          wp.atomic_add(M_out[worldid], madr_ij, armature_Ji * ten_Jj)
+        madr_ij -= 1
+        dofid = dof_parentid[dofid]
 
   return kernel
 
@@ -1175,128 +1537,192 @@ def _tendon_armature(nv: int, deterministic: bool = False):
 @event_scope
 def tendon_armature(m: Model, d: Data):
   """Add tendon armature to M."""
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
   wp.launch(
-    _tendon_armature(m.nv if det_atomics else 0, det_atomics),
-    dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
+    _tendon_armature(m.nM if det_atomics else 0, enable_sleep, det_atomics),
+    dim=(d.nworld, m.ntendon),
     inputs=[
       m.dof_parentid,
+      m.dof_treeid,
+      m.tendon_actuatorid,
       m.ten_J_rownnz,
       m.ten_J_rowadr,
       m.ten_J_colind,
       m.tendon_armature,
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.actuator_armature,
+      m.actuator_gear,
       m.M_rownnz,
       m.M_rowadr,
       d.ten_J,
+      d.tree_awake,
     ],
     outputs=[d.M],
   )
 
 
-@cache_kernel
-def _qLD_acc(nv: int, deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = nv
+@wp.kernel
+def _copy_M_sparse_awake(
+  # Model:
+  dof_treeid: wp.array[int],
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  # Data in:
+  M_in: wp.array2d[float],
+  tree_awake_in: wp.array2d[int],
+  # Out:
+  L_out: wp.array2d[float],
+):
+  worldid, dofid = wp.tid()
+  if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+    return
+  rowadr = M_rowadr[dofid]
+  for j in range(M_rownnz[dofid]):
+    L_out[worldid, rowadr + j] = M_in[worldid, rowadr + j]
 
-  @wp.kernel(module="unique", module_options=module_options)
+
+def copy_M_awake(m: Model, d: Data, M_out: wp.array2d[float], M_in: Optional[wp.array2d[float]] = None):
+  """Copies awake rows of M into M_out, leaving sleeping rows untouched."""
+  wp.launch(
+    _copy_M_sparse_awake,
+    dim=(d.nworld, m.nv),
+    inputs=[m.dof_treeid, m.M_rownnz, m.M_rowadr, d.M if M_in is None else M_in, d.tree_awake],
+    outputs=[M_out],
+  )
+
+
+@cache_kernel
+def _factor_LD_sparse_fused(enable_sleep: bool = False):
+  """Gather descendant contributions; requires contiguous subtrees and full ancestor-chain rows."""
+
+  @wp.func_native(snippet="WP_TILE_SYNC();")
+  def _syncthreads():
+    pass
+
+  @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     M_rownnz: wp.array[int],
     M_rowadr: wp.array[int],
-    # In:
-    qLD_updates_: wp.array[wp.vec3i],
-    L_in: wp.array2d[float],
+    dof_subtreenum: wp.array[int],
+    qLD_fused_level_adr: wp.array[int],
+    qLD_fused_pair_adr: wp.array[int],
+    qLD_fused_pairs: wp.array[wp.vec2i],
+    # Data in:
+    M_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     # Out:
     L_out: wp.array2d[float],
+    D_out: wp.array2d[float],
   ):
-    worldid, nodeid = wp.tid()
-    update = qLD_updates_[nodeid]
-    i, k, Madr_ki = update[0], update[1], update[2]
-    Madr_i = M_rowadr[i]  # Address of row being updated
-    diag_k = M_rowadr[k] + M_rownnz[k] - 1  # Address of diagonal element of k
-    # tmp = M(k,i) / M(k,k)
-    tmp = L_in[worldid, Madr_ki] / L_in[worldid, diag_k]
-    for j in range(M_rownnz[i]):
-      # M(i,j) -= M(k,j) * tmp
-      wp.atomic_sub(L_out[worldid], Madr_i + j, L_in[worldid, M_rowadr[k] + j] * tmp)
-    if wp.static(not deterministic):
-      # M(k,i) = tmp
-      L_out[worldid, Madr_ki] = tmp
+    worldid, blockid, tid = wp.tid()
+    BLOCK_DIM = wp.block_dim()
+    level_beg = qLD_fused_level_adr[blockid]
+    level_end = qLD_fused_level_adr[blockid + 1] - 1
+    if wp.static(enable_sleep):
+      root = qLD_fused_pairs[qLD_fused_pair_adr[level_beg]][0]
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[root]):
+        return
+    matrix = M_in[worldid]
+    factor = L_out[worldid]
+    diagonal = D_out[worldid]
+
+    # Keep R = D*L until normalization: R[i,j] = M[i,j] - sum_k R[k,i]*Dinv[k]*R[k,j].
+    for adr in range(level_end - 1, level_beg - 1, -1):
+      level = adr - level_beg
+      pair_beg = qLD_fused_pair_adr[adr]
+      npair = qLD_fused_pair_adr[adr + 1] - pair_beg
+      if npair <= 6:
+        # Narrow levels need cooperation across the long descendant gathers.
+        for p in range(npair):
+          pair = qLD_fused_pairs[pair_beg + p]
+          row, entry = pair[0], pair[1]
+          rowadr = M_rowadr[row]
+          end = row + dof_subtreenum[row]
+          partial = float(0.0)
+          for k in range(row + 1 + tid, end, BLOCK_DIM):
+            kadr = M_rowadr[k]
+            partial -= factor[kadr + level] * diagonal[k] * factor[kadr + entry]
+          total = wp.tile_sum(wp.tile(partial))[0]
+          if tid == 0:
+            value = matrix[rowadr + entry] + total
+            factor[rowadr + entry] = value
+            if entry == level:
+              diagonal[row] = 1.0 / value
+      else:
+        for p in range(tid, npair, BLOCK_DIM):
+          pair = qLD_fused_pairs[pair_beg + p]
+          row, entry = pair[0], pair[1]
+          rowadr = M_rowadr[row]
+          value = matrix[rowadr + entry]
+          end = row + dof_subtreenum[row]
+          if row + 1 < end:
+            kadr = M_rowadr[row + 1]
+            ki = factor[kadr + level]
+            inv_diag = diagonal[row + 1]
+            kj = factor[kadr + entry]
+            # Issue the next loads before extending the dependent sum.
+            for k in range(row + 2, end):
+              kadr = M_rowadr[k]
+              next_ki = factor[kadr + level]
+              next_inv_diag = diagonal[k]
+              next_kj = factor[kadr + entry]
+              value -= ki * inv_diag * kj
+              ki, inv_diag, kj = next_ki, next_inv_diag, next_kj
+            value -= ki * inv_diag * kj
+          factor[rowadr + entry] = value
+          if entry == level:
+            diagonal[row] = 1.0 / value
+      _syncthreads()
+
+    # Gathers read D[k] * L[k,j]; normalize only after all levels finish.
+    for p in range(qLD_fused_pair_adr[level_beg] + tid, qLD_fused_pair_adr[level_end], BLOCK_DIM):
+      pair = qLD_fused_pairs[p]
+      row, entry = pair[0], pair[1]
+      if entry < M_rownnz[row] - 1:
+        adr = M_rowadr[row] + entry
+        factor[adr] = factor[adr] * diagonal[row]
 
   return kernel
 
 
-@wp.kernel
-def _qLD_scale(
-  # Model:
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  # In:
-  qLD_updates_: wp.array[wp.vec3i],
-  L_in: wp.array2d[float],
-  # Out:
-  L_out: wp.array2d[float],
-):
-  worldid, nodeid = wp.tid()
-  update = qLD_updates_[nodeid]
-  k, Madr_ki = update[1], update[2]
-  diag_k = M_rowadr[k] + M_rownnz[k] - 1
-  L_out[worldid, Madr_ki] = L_in[worldid, Madr_ki] / L_in[worldid, diag_k]
-
-
-@wp.kernel
-def _qLDiag_div(
-  # Model:
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  # In:
-  L_in: wp.array2d[float],
-  # Out:
-  D_out: wp.array2d[float],
-):
-  worldid, dofid = wp.tid()
-  diag_i = M_rowadr[dofid] + M_rownnz[dofid] - 1  # Address of diagonal element of i
-  D_out[worldid, dofid] = 1.0 / L_in[worldid, diag_i]
-
-
 def _factor_i_sparse(m: Model, d: Data, M: wp.array2d[float], L: wp.array2d[float], D: wp.array2d[float]):
   """Sparse L'*D*L factorization of inertia-like matrix M, assumed spd."""
-  wp.copy(L, M)
-
-  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  L_in = wp.empty_like(L) if det_atomics else L
-  for i in reversed(range(len(m.qLD_updates))):
-    qLD_updates = m.qLD_updates[i]
-    if det_atomics:
-      wp.copy(L_in, L)
-    wp.launch(
-      _qLD_acc(m.nv if det_atomics else 0, det_atomics),
-      dim=(d.nworld, qLD_updates.size),
-      inputs=[m.M_rownnz, m.M_rowadr, qLD_updates, L_in],
-      outputs=[L],
-    )
-    if det_atomics:
-      wp.launch(
-        _qLD_scale,
-        dim=(d.nworld, qLD_updates.size),
-        inputs=[m.M_rownnz, m.M_rowadr, qLD_updates, L_in],
-        outputs=[L],
-      )
-
-  wp.launch(_qLDiag_div, dim=(d.nworld, m.nv), inputs=[m.M_rownnz, m.M_rowadr, L], outputs=[D])
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
+  block_dim = m.block_dim.factor_LD_sparse_fused if L.device.is_cuda else 1
+  wp.launch(
+    _factor_LD_sparse_fused(enable_sleep),
+    dim=(d.nworld, m.qLD_fused_level_adr.size - 1, block_dim),
+    inputs=[
+      m.dof_treeid,
+      m.M_rownnz,
+      m.M_rowadr,
+      m.dof_subtreenum,
+      m.qLD_fused_level_adr,
+      m.qLD_fused_pair_adr,
+      m.qLD_fused_pairs,
+      M,
+      d.tree_awake,
+    ],
+    outputs=[L, D],
+    block_dim=block_dim,
+  )
 
 
 @cache_kernel
-def _small_cholesky_factorize_block(block_size: int):
+def _small_cholesky_factorize_block(block_size: int, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     M_rowadr: wp.array[int],
     qLD_block_adr: wp.array[int],
     # Data in:
     M_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     # In:
     block_dof: wp.array[int],
     # Out:
@@ -1305,6 +1731,9 @@ def _small_cholesky_factorize_block(block_size: int):
   ):
     worldid, blk = wp.tid()
     start = block_dof[blk]
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[start]):
+        return
     size = wp.static(block_size)
     matrix_adr = M_rowadr[start]
 
@@ -1333,7 +1762,7 @@ def _small_cholesky_factorize_block(block_size: int):
 
 
 @cache_kernel
-def _tile_cholesky_factorize_block(tile: TileSet):
+def _tile_cholesky_factorize_block(tile: TileSet, enable_sleep: bool = False):
   # One diagonal block of `block_size` dofs per (world, block) tile group. tile_load_indexed gathers
   # the block's dense slots from CSR via a precomputed per-slot index tile (block_elemid, laid out
   # [block, slot]); structurally absent pairs carry an out-of-bounds index that reads as 0.
@@ -1345,9 +1774,11 @@ def _tile_cholesky_factorize_block(tile: TileSet):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
     # Data in:
     M_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     # In:
     block_elemid: wp.array[int],
     block_dof: wp.array[int],
@@ -1356,6 +1787,9 @@ def _tile_cholesky_factorize_block(tile: TileSet):
   ):
     worldid, blk = wp.tid()
     start = block_dof[blk]
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[start]):
+        return
 
     idx = wp.tile_load(block_elemid, shape=(block_area,), offset=(blk * block_area,), storage="shared")
     block = wp.tile_load_indexed(M_in[worldid], idx, shape=(block_area,), storage="shared")
@@ -1374,20 +1808,21 @@ def _factor_blocks(
   L: wp.array2d[float],
   D: wp.array2d[float],
 ):
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   for tile in m.M_tiles:
     if tile.elemid.size == 0:
       wp.launch(
-        _small_cholesky_factorize_block(tile.size),
+        _small_cholesky_factorize_block(tile.size, enable_sleep),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.M_rowadr, m.qLD_block_adr, M, tile.adr],
+        inputs=[m.dof_treeid, m.M_rowadr, m.qLD_block_adr, M, d.tree_awake, tile.adr],
         outputs=[D, L],
         block_dim=m.block_dim.small_cholesky,
       )
     else:
       wp.launch_tiled(
-        _tile_cholesky_factorize_block(tile),
+        _tile_cholesky_factorize_block(tile, enable_sleep),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr],
+        inputs=[m.dof_treeid, m.qLD_block_adr, M, d.tree_awake, tile.elemid, tile.adr],
         outputs=[L],
         block_dim=m.block_dim.cholesky_factorize,
       )
@@ -1490,12 +1925,12 @@ def _cfrc(
   cfrc_ext_in: wp.array2d[wp.spatial_vector],
   # In:
   flg_cfrc_ext: bool,
-  # Data out:
-  cfrc_int_out: wp.array2d[wp.spatial_vector],
+  # Out:
+  cfrc_body_out: wp.array2d[wp.spatial_vector],
 ):
   worldid, bodyid = wp.tid()
   if bodyid == 0:
-    cfrc_int_out[worldid, 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    cfrc_body_out[worldid, 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     return
   cacc = cacc_in[worldid, bodyid]
   cinert = cinert_in[worldid, bodyid]
@@ -1505,51 +1940,81 @@ def _cfrc(
   if flg_cfrc_ext:
     frc -= cfrc_ext_in[worldid, bodyid]
 
+  cfrc_body_out[worldid, bodyid] = frc
+
+
+@wp.kernel
+def _cfrc_subtree(
+  # Model:
+  body_subtreenum: wp.array[int],
+  # In:
+  cfrc_body_in: wp.array2d[wp.spatial_vector],
+  # Data out:
+  cfrc_int_out: wp.array2d[wp.spatial_vector],
+):
+  """Sums cfrc_body over the subtree, the contiguous body range [b, b + body_subtreenum[b])."""
+  worldid, bodyid = wp.tid()
+  if bodyid == 0:  # summed from the tree roots in _cfrc_world
+    return
+
+  frc = cfrc_body_in[worldid, bodyid]
+  for j in range(bodyid + 1, bodyid + body_subtreenum[bodyid]):
+    frc += cfrc_body_in[worldid, j]
   cfrc_int_out[worldid, bodyid] = frc
 
 
-def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False):
-  wp.launch(_cfrc, dim=[d.nworld, m.nbody], inputs=[d.cinert, d.cvel, d.cacc, d.cfrc_ext, flg_cfrc_ext], outputs=[d.cfrc_int])
+@wp.kernel
+def _cfrc_world(
+  # Model:
+  nbody: int,
+  body_subtreenum: wp.array[int],
+  # Data in:
+  cfrc_int_in: wp.array2d[wp.spatial_vector],
+  # Data out:
+  cfrc_int_out: wp.array2d[wp.spatial_vector],
+):
+  worldid = wp.tid()
+  frc = wp.spatial_vector()
+  rootid = int(1)
+  while rootid < nbody:
+    frc += cfrc_int_in[worldid, rootid]
+    rootid += body_subtreenum[rootid]
+  cfrc_int_out[worldid, 0] = frc
 
 
-@cache_kernel
-def _cfrc_backward(deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    body_parentid: wp.array[int],
-    # Data in:
-    cfrc_int_in: wp.array2d[wp.spatial_vector],
-    # In:
-    body_tree_: wp.array[int],
-    # Data out:
-    cfrc_int_out: wp.array2d[wp.spatial_vector],
-  ):
-    worldid, nodeid = wp.tid()
-    bodyid = body_tree_[nodeid]
-    pid = body_parentid[bodyid]
-    if bodyid != 0:
-      wp.atomic_add(cfrc_int_out[worldid], pid, cfrc_int_in[worldid, bodyid])
-
-  return kernel
+@wp.kernel(module="unique", enable_backward=False)
+def _cfrc_world_tiled(
+  # Data in:
+  cfrc_int_in: wp.array2d[wp.spatial_vector],
+  # In:
+  rootid_in: wp.array[int],
+  # Data out:
+  cfrc_int_out: wp.array2d[wp.spatial_vector],
+):
+  worldid, lane = wp.tid()
+  frc = wp.spatial_vector()
+  nroot = rootid_in.shape[0]
+  for start in range(0, nroot, WORLD_SUM_CHUNK):
+    rootid = wp.tile_load(rootid_in, shape=(WORLD_SUM_CHUNK,), offset=(start,), storage="shared")
+    root_frc = wp.tile_load_indexed(cfrc_int_in[worldid], rootid, shape=(WORLD_SUM_CHUNK,), storage="shared")
+    if lane == 0:
+      for i in range(wp.min(WORLD_SUM_CHUNK, nroot - start)):
+        frc += root_frc[i]
+  if lane == 0:
+    cfrc_int_out[worldid, 0] = frc
 
 
-def _rne_cfrc_backward(m: Model, d: Data):
-  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  cfrc_int_in = wp.empty_like(d.cfrc_int) if det_atomics else d.cfrc_int
-  for body_tree in reversed(m.body_tree):
-    if det_atomics:
-      wp.copy(cfrc_int_in, d.cfrc_int)
-    wp.launch(
-      _cfrc_backward(det_atomics),
-      dim=[d.nworld, body_tree.size],
-      inputs=[m.body_parentid, cfrc_int_in, body_tree],
-      outputs=[d.cfrc_int],
+def _rne_cfrc(m: Model, d: Data, flg_cfrc_ext: bool = False, cfrc_body: Optional[wp.array2d[wp.spatial_vector]] = None):
+  """Computes cfrc_int: each body's force plus the forces of its subtree."""
+  cfrc_body = cfrc_body if cfrc_body is not None else wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
+  wp.launch(_cfrc, dim=[d.nworld, m.nbody], inputs=[d.cinert, d.cvel, d.cacc, d.cfrc_ext, flg_cfrc_ext], outputs=[cfrc_body])
+  wp.launch(_cfrc_subtree, dim=(d.nworld, m.nbody), inputs=[m.body_subtreenum, cfrc_body], outputs=[d.cfrc_int])
+  if m.nbody > 1 and m.body_tree[1].shape[0] > WORLD_SUM_BLOCK:
+    wp.launch_tiled(
+      _cfrc_world_tiled, dim=d.nworld, inputs=[d.cfrc_int, m.body_tree[1]], outputs=[d.cfrc_int], block_dim=WORLD_SUM_BLOCK
     )
+  else:
+    wp.launch(_cfrc_world, dim=d.nworld, inputs=[m.nbody, m.body_subtreenum, d.cfrc_int], outputs=[d.cfrc_int])
 
 
 @wp.kernel
@@ -1568,7 +2033,7 @@ def _qfrc_bias(
 
 
 @event_scope
-def rne(m: Model, d: Data, flg_acc: bool = False):
+def rne(m: Model, d: Data, flg_acc: bool = False, cfrc_int_in: Optional[wp.array] = None):
   """Computes inverse dynamics using the recursive Newton-Euler algorithm.
 
   Computes the bias forces (`qfrc_bias`) and internal forces (`cfrc_int`) for the current state,
@@ -1578,11 +2043,11 @@ def rne(m: Model, d: Data, flg_acc: bool = False):
     m: The model containing kinematic and dynamic information.
     d: The data object containing the current state and output arrays.
     flg_acc: If True, includes joint accelerations in the computation.
+    cfrc_int_in: Optional pre-allocated scratch buffer for body forces.
   """
   _rne_cacc_world(m, d)
   _rne_cacc_forward(m, d, flg_acc=flg_acc)
-  _rne_cfrc(m, d)
-  _rne_cfrc_backward(m, d)
+  _rne_cfrc(m, d, cfrc_body=cfrc_int_in)
   wp.launch(_qfrc_bias, dim=[d.nworld, m.nv], inputs=[m.dof_bodyid, d.cdof, d.cfrc_int], outputs=[d.qfrc_bias])
 
 
@@ -1648,8 +2113,6 @@ def _cfrc_ext_equality(deterministic: bool = False):
     # Model:
     body_rootid: wp.array[int],
     site_bodyid: wp.array[int],
-    site_pos: wp.array2d[wp.vec3],
-    site_quat: wp.array2d[wp.quat],
     eq_obj1id: wp.array[int],
     eq_obj2id: wp.array[int],
     eq_objtype: wp.array[int],
@@ -1657,7 +2120,8 @@ def _cfrc_ext_equality(deterministic: bool = False):
     # Data in:
     xpos_in: wp.array2d[wp.vec3],
     xquat_in: wp.array2d[wp.quat],
-    xmat_in: wp.array2d[wp.mat33],
+    site_xpos_in: wp.array2d[wp.vec3],
+    site_xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     efc_id_in: wp.array2d[int],
     efc_force_in: wp.array2d[float],
@@ -1715,9 +2179,8 @@ def _cfrc_ext_equality(deterministic: bool = False):
         q0 = math.mul_quat(xquat_in[worldid, bodyid1], relpose)
         q1 = xquat_in[worldid, bodyid2]
       else:
-        site_quat_id = worldid % site_quat.shape[0]
-        q0 = math.mul_quat(xquat_in[worldid, bodyid1], site_quat[site_quat_id, obj1])
-        q1 = math.mul_quat(xquat_in[worldid, bodyid2], site_quat[site_quat_id, obj2])
+        q0 = site_xquat_in[worldid, obj1]
+        q1 = site_xquat_in[worldid, obj2]
 
       quat = math.mul_quat(math.quat_mul_axis(q1, force_torque), math.quat_inv(q0))
       cfrc_torque = (0.5 * eq_data_[10]) * wp.vec3(quat[1], quat[2], quat[3])
@@ -1729,11 +2192,11 @@ def _cfrc_ext_equality(deterministic: bool = False):
           offset = wp.vec3(eq_data_[0], eq_data_[1], eq_data_[2])
         else:
           offset = wp.vec3(eq_data_[3], eq_data_[4], eq_data_[5])
-      else:
-        offset = site_pos[worldid % site_pos.shape[0], obj1]
 
-      # transform point on body1: local -> global
-      pos = xmat_in[worldid, bodyid1] @ offset + xpos_in[worldid, bodyid1]
+        # transform point on body1: local -> global
+        pos = math.quat_to_mat(xquat_in[worldid, bodyid1]) @ offset + xpos_in[worldid, bodyid1]
+      else:
+        pos = site_xpos_in[worldid, obj1]
 
       # subtree CoM-based torque_force vector
       newpos = subtree_com_in[worldid, body_rootid[bodyid1]]
@@ -1751,11 +2214,11 @@ def _cfrc_ext_equality(deterministic: bool = False):
           offset = wp.vec3(eq_data_[3], eq_data_[4], eq_data_[5])
         else:
           offset = wp.vec3(eq_data_[0], eq_data_[1], eq_data_[2])
-      else:
-        offset = site_pos[worldid % site_pos.shape[0], obj2]
 
-      # transform point on body2: local -> global
-      pos = xmat_in[worldid, bodyid2] @ offset + xpos_in[worldid, bodyid2]
+        # transform point on body2: local -> global
+        pos = math.quat_to_mat(xquat_in[worldid, bodyid2]) @ offset + xpos_in[worldid, bodyid2]
+      else:
+        pos = site_xpos_in[worldid, obj2]
 
       # subtree CoM-based torque_force vector
       newpos = subtree_com_in[worldid, body_rootid[bodyid2]]
@@ -1861,6 +2324,7 @@ def _cfrc_ext_tendon_constraint(deterministic: bool = False):
     eq_obj2id: wp.array[int],
     eq_data: wp.array2d[vec12],
     tendon_range: wp.array2d[wp.vec2],
+    tendon_margin: wp.array2d[float],
     tendon_length0: wp.array2d[float],
     # Data in:
     nefc_in: wp.array[int],
@@ -1903,10 +2367,11 @@ def _cfrc_ext_tendon_constraint(deterministic: bool = False):
     if efc_type == ConstraintType.LIMIT_TENDON:
       tenid = efc_id_in[worldid, efcid]
       tenrange = tendon_range[worldid % tendon_range.shape[0], tenid]
+      tenmargin = tendon_margin[worldid % tendon_margin.shape[0], tenid]
       length = ten_length_in[worldid, tenid]
-      dist_min = length - tenrange[0]
-      dist_max = tenrange[1] - length
-      scl = wp.where(dist_min < dist_max, 1.0, -1.0)
+      # the lower limit row, if active, precedes the upper limit row
+      lower = length - tenrange[0] < tenmargin and not is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid)
+      scl = wp.where(lower, 1.0, -1.0)
       wp.atomic_add(ten_frc_out[worldid], tenid, scl * efc_force)
 
   return kernel
@@ -1936,7 +2401,6 @@ def _cfrc_ext_tendon_actuator(deterministic: bool = False):
     force = actuator_force_in[worldid, actid]
     if force == 0.0:
       return
-
     tenid = actuator_trnid[actid][0]
     gear = actuator_gear[worldid % actuator_gear.shape[0], actid][0]
     wp.atomic_add(ten_frc_out[worldid], tenid, force * gear)
@@ -1954,11 +2418,20 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
+    body_parentid: wp.array[int],
     body_rootid: wp.array[int],
+    body_dofnum: wp.array[int],
+    body_dofadr: wp.array[int],
+    jnt_type: wp.array[int],
+    jnt_dofadr: wp.array[int],
+    dof_jntid: wp.array[int],
     geom_bodyid: wp.array[int],
     site_bodyid: wp.array[int],
+    tendon_type: wp.array[int],
     tendon_adr: wp.array[int],
     tendon_num: wp.array[int],
+    tendon_actuatorid: wp.array[int],
+    tendon_plasticadr: wp.array[int],
     ten_J_rownnz: wp.array[int],
     ten_J_rowadr: wp.array[int],
     ten_J_colind: wp.array[int],
@@ -1971,9 +2444,19 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     wrap_type: wp.array[int],
     wrap_objid: wp.array[int],
     wrap_prm: wp.array[float],
+    actuator_trntype: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_damping: wp.array2d[float],
+    actuator_dampingpoly: wp.array2d[wp.vec2],
+    actuator_armature: wp.array2d[float],
+    actuator_gear: wp.array2d[wp.spatial_vector],
     # Data in:
+    qvel_in: wp.array2d[float],
+    plastic_in: wp.array2d[float],
     qacc_in: wp.array2d[float],
+    site_xpos_in: wp.array2d[wp.vec3],
     subtree_com_in: wp.array2d[wp.vec3],
+    cdof_in: wp.array2d[wp.spatial_vector],
     ten_wrapadr_in: wp.array2d[int],
     ten_wrapnum_in: wp.array2d[int],
     ten_J_in: wp.array2d[float],
@@ -1981,8 +2464,9 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     wrap_obj_in: wp.array2d[wp.vec2i],
     wrap_xpos_in: wp.array2d[wp.spatial_vector],
     ten_velocity_in: wp.array2d[float],
+    cvel_in: wp.array2d[wp.spatial_vector],
+    cdof_dot_in: wp.array2d[wp.spatial_vector],
     # In:
-    ten_bias_coef_in: wp.array2d[float],
     dsbl_spring: bool,
     dsbl_damper: bool,
     ten_frc_in: wp.array2d[float],
@@ -1992,8 +2476,7 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     worldid, tenid = wp.tid()
 
     # fixed tendon: acts through the joints
-    adr = tendon_adr[tenid]
-    if wrap_type[adr] == WrapType.JOINT:
+    if tendon_type[tenid] == TendonType.FIXED:
       return
 
     frc = ten_frc_in[worldid, tenid]
@@ -2004,23 +2487,67 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
       spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
       if stiffness != 0.0 or spoly[0] != 0.0 or spoly[1] != 0.0:
         length = ten_length_in[worldid, tenid]
-        lengthspring = tendon_lengthspring[worldid % tendon_lengthspring.shape[0], tenid]
-        lower = lengthspring[0]
-        upper = lengthspring[1]
+        padr = tendon_plasticadr[tenid]
+        if padr >= 0:
+          lower = plastic_in[worldid, padr + 0]
+          upper = plastic_in[worldid, padr + 1]
+        else:
+          lengthspring = tendon_lengthspring[worldid % tendon_lengthspring.shape[0], tenid]
+          lower = lengthspring[0]
+          upper = lengthspring[1]
         x = wp.where(length > upper, length - upper, wp.where(length < lower, length - lower, 0.0))
         frc += -x * util_misc._poly_force(stiffness, spoly, x, 0)
 
     if not dsbl_damper:
-      damping = tendon_damping[worldid % tendon_damping.shape[0], tenid]
-      dpoly = tendon_dampingpoly[worldid % tendon_dampingpoly.shape[0], tenid]
+      damping, dpoly = util_misc.tendon_damping_total(
+        tendon_actuatorid,
+        tendon_damping,
+        tendon_dampingpoly,
+        actuator_trntype,
+        actuator_trnid,
+        actuator_damping,
+        actuator_dampingpoly,
+        actuator_gear,
+        worldid,
+        tenid,
+      )
       if damping != 0.0 or dpoly[0] != 0.0 or dpoly[1] != 0.0:
         v = ten_velocity_in[worldid, tenid]
         frc += -v * util_misc._poly_force(damping, dpoly, v, 1)
 
     # ten_frc -= armature * tendon acceleration: reaction of the armature inertia
-    armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
+    armature = util_misc.tendon_armature_total(
+      tendon_actuatorid, tendon_armature, actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, worldid, tenid
+    )
     if armature != 0.0:
-      acc = ten_bias_coef_in[worldid, tenid]
+      # tendon acceleration: Jdot' * qvel + J' * qacc
+      acc = _tendon_dot(
+        body_parentid,
+        body_rootid,
+        body_dofnum,
+        body_dofadr,
+        jnt_type,
+        jnt_dofadr,
+        dof_jntid,
+        site_bodyid,
+        tendon_type,
+        tendon_adr,
+        tendon_num,
+        ten_J_rownnz,
+        ten_J_rowadr,
+        ten_J_colind,
+        wrap_type,
+        wrap_objid,
+        wrap_prm,
+        qvel_in,
+        site_xpos_in,
+        subtree_com_in,
+        cdof_in,
+        cvel_in,
+        cdof_dot_in,
+        worldid,
+        tenid,
+      )
       rownnz = ten_J_rownnz[tenid]
       rowadr = ten_J_rowadr[tenid]
       for i in range(rownnz):
@@ -2031,6 +2558,7 @@ def _cfrc_ext_spatial_tendon(nwrap: int, deterministic: bool = False):
     if frc == 0.0:
       return
 
+    adr = tendon_adr[tenid]
     num = tendon_num[tenid]
     p = ten_wrapadr_in[worldid, tenid]
     pend = p + ten_wrapnum_in[worldid, tenid]
@@ -2127,15 +2655,14 @@ def rne_postconstraint(m: Model, d: Data):
       inputs=[
         m.body_rootid,
         m.site_bodyid,
-        m.site_pos,
-        m.site_quat,
         m.eq_obj1id,
         m.eq_obj2id,
         m.eq_objtype,
         m.eq_data,
         d.xpos,
         d.xquat,
-        d.xmat,
+        d.site_xpos,
+        d.site_xquat,
         d.subtree_com,
         d.efc.id,
         d.efc.force,
@@ -2182,6 +2709,7 @@ def rne_postconstraint(m: Model, d: Data):
         m.eq_obj2id,
         m.eq_data,
         m.tendon_range,
+        m.tendon_margin,
         m.tendon_length0,
         d.nefc,
         d.ten_length,
@@ -2194,7 +2722,7 @@ def rne_postconstraint(m: Model, d: Data):
 
     wp.launch(
       _cfrc_ext_tendon_actuator(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-      dim=(d.nworld, m.nu),
+      dim=(d.nworld, m.nactuator),
       inputs=[
         m.actuator_trntype,
         m.actuator_trnid,
@@ -2204,46 +2732,6 @@ def rne_postconstraint(m: Model, d: Data):
       outputs=[ten_frc],
     )
 
-    ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
-    if m.nJten > 0:
-      ten_Jdot = wp.zeros((d.nworld, m.nJten), dtype=float)
-      wp.launch(
-        _tendon_dot,
-        dim=(d.nworld, m.ntendon),
-        inputs=[
-          m.body_parentid,
-          m.body_rootid,
-          m.body_dofnum,
-          m.body_dofadr,
-          m.jnt_type,
-          m.jnt_dofadr,
-          m.dof_jntid,
-          m.site_bodyid,
-          m.tendon_adr,
-          m.tendon_num,
-          m.ten_J_rownnz,
-          m.ten_J_rowadr,
-          m.ten_J_colind,
-          m.tendon_armature,
-          m.wrap_type,
-          m.wrap_objid,
-          m.wrap_prm,
-          d.site_xpos,
-          d.subtree_com,
-          d.cdof,
-          d.cvel,
-          d.cdof_dot,
-        ],
-        outputs=[ten_Jdot],
-      )
-
-      wp.launch(
-        _tendon_bias_coef(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-        dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
-        inputs=[m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, m.tendon_armature, d.qvel, ten_Jdot],
-        outputs=[ten_bias_coef],
-      )
-
     dsbl_spring = bool(m.opt.disableflags & DisableBit.SPRING)
     dsbl_damper = bool(m.opt.disableflags & DisableBit.DAMPER)
 
@@ -2252,11 +2740,20 @@ def rne_postconstraint(m: Model, d: Data):
       _cfrc_ext_spatial_tendon(m.nwrap if det_atomics else 0, det_atomics),
       dim=(d.nworld, m.ntendon),
       inputs=[
+        m.body_parentid,
         m.body_rootid,
+        m.body_dofnum,
+        m.body_dofadr,
+        m.jnt_type,
+        m.jnt_dofadr,
+        m.dof_jntid,
         m.geom_bodyid,
         m.site_bodyid,
+        m.tendon_type,
         m.tendon_adr,
         m.tendon_num,
+        m.tendon_actuatorid,
+        m.tendon_plasticadr,
         m.ten_J_rownnz,
         m.ten_J_rowadr,
         m.ten_J_colind,
@@ -2269,8 +2766,18 @@ def rne_postconstraint(m: Model, d: Data):
         m.wrap_type,
         m.wrap_objid,
         m.wrap_prm,
+        m.actuator_trntype,
+        m.actuator_trnid,
+        m.actuator_damping,
+        m.actuator_dampingpoly,
+        m.actuator_armature,
+        m.actuator_gear,
+        d.qvel,
+        d.plastic,
         d.qacc,
+        d.site_xpos,
         d.subtree_com,
+        d.cdof,
         d.ten_wrapadr,
         d.ten_wrapnum,
         d.ten_J,
@@ -2278,7 +2785,8 @@ def rne_postconstraint(m: Model, d: Data):
         d.wrap_obj,
         d.wrap_xpos,
         d.ten_velocity,
-        ten_bias_coef,
+        d.cvel,
+        d.cdof_dot,
         dsbl_spring,
         dsbl_damper,
         ten_frc,
@@ -2293,9 +2801,6 @@ def rne_postconstraint(m: Model, d: Data):
   # cfrc_body = cinert * cacc + cvel x (cinert * cvel)
   _rne_cfrc(m, d, flg_cfrc_ext=True)
 
-  # backward pass over bodies: accumulate cfrc_int from children
-  _rne_cfrc_backward(m, d)
-
 
 @wp.func
 def _accumulate_jac_dot_chain(
@@ -2308,6 +2813,7 @@ def _accumulate_jac_dot_chain(
   dof_jntid: wp.array[int],
   ten_J_colind: wp.array[int],
   # Data in:
+  qvel_in: wp.array2d[float],
   cdof_in: wp.array2d[wp.spatial_vector],
   cvel_in: wp.array2d[wp.spatial_vector],
   cdof_dot_in: wp.array2d[wp.spatial_vector],
@@ -2321,10 +2827,9 @@ def _accumulate_jac_dot_chain(
   rownnz: int,
   scale: float,
   worldid: int,
-  # Out:
-  ten_Jdot_out: wp.array2d[float],
-):
-  """Walk body chain from bodyid to root, accumulate Jdot contributions."""
+) -> float:
+  """Walk body chain from bodyid to root, accumulate Jdot' * qvel contributions."""
+  dot = float(0.0)
   ptr = rownnz - 1
   bid = bodyid
   while bid > 0:
@@ -2352,23 +2857,18 @@ def _accumulate_jac_dot_chain(
         if (jnttype == JointType.BALL) or ((jnttype == JointType.FREE) and dof >= jntdofadr + 3):
           cdof_dot = math.motion_cross(cvel_in[worldid, bid], cdof)
 
-        cdof_dot_ang = wp.spatial_top(cdof_dot)
-        cdof_dot_lin = wp.spatial_bottom(cdof_dot)
-
-        # jacp_dot (from jac_dot_dof)
-        jacp_dot = cdof_dot_lin + wp.cross(cdof_dot_ang, offset) + wp.cross(cdof_ang, pvel_lin)
-
-        # jacp (from jac_dof)
+        # jacp_dot (from jac_dot_dof) and jacp (from jac_dof)
+        jacp_dot = wp.spatial_bottom(cdof_dot) + wp.cross(wp.spatial_top(cdof_dot), offset) + wp.cross(cdof_ang, pvel_lin)
         jacp = cdof_lin + wp.cross(cdof_ang, offset)
 
         # combined: dot(jacdot, dpnt) + dot(jac, dvel)
         Jdot = (wp.dot(jacp_dot, dpnt) + wp.dot(jacp, dvel)) * scale
-        if Jdot != 0.0:
-          ten_Jdot_out[worldid, sparseid] += Jdot
+        dot += Jdot * qvel_in[worldid, dof]
     bid = body_parentid[bid]
+  return dot
 
 
-@wp.kernel
+@wp.func
 def _tendon_dot(
   # Model:
   body_parentid: wp.array[int],
@@ -2379,38 +2879,38 @@ def _tendon_dot(
   jnt_dofadr: wp.array[int],
   dof_jntid: wp.array[int],
   site_bodyid: wp.array[int],
+  tendon_type: wp.array[int],
   tendon_adr: wp.array[int],
   tendon_num: wp.array[int],
   ten_J_rownnz: wp.array[int],
   ten_J_rowadr: wp.array[int],
   ten_J_colind: wp.array[int],
-  tendon_armature: wp.array2d[float],
   wrap_type: wp.array[int],
   wrap_objid: wp.array[int],
   wrap_prm: wp.array[float],
   # Data in:
+  qvel_in: wp.array2d[float],
   site_xpos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
   cvel_in: wp.array2d[wp.spatial_vector],
   cdof_dot_in: wp.array2d[wp.spatial_vector],
-  # Out:
-  ten_Jdot_out: wp.array2d[float],
-):
-  worldid, tenid = wp.tid()
-
-  armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
-  if armature == 0.0:
-    return
-
+  # In:
+  worldid: int,
+  tenid: int,
+) -> float:
+  """Returns Jdot' * qvel for tendon tenid, as in mj_tendonDot."""
   # fixed tendon has zero Jdot
-  adr = tendon_adr[tenid]
-  if wrap_type[adr] == WrapType.JOINT:
-    return
+  if tendon_type[tenid] == TendonType.FIXED:
+    return 0.0
 
   # process spatial tendon
+  adr = tendon_adr[tenid]
+  dot_total = float(0.0)
   divisor = float(1.0)
   num = tendon_num[tenid]
+  rownnz = ten_J_rownnz[tenid]
+  rowadr = ten_J_rowadr[tenid]
   j = int(0)
   while j < num - 1:
     # get 1st and 2nd object
@@ -2420,60 +2920,44 @@ def _tendon_dot(
     id1 = wrap_objid[adr + j + 1]
 
     # pulley
-    pulley = WrapType.PULLEY
-    if (type0 == pulley) or (type1 == pulley):
+    if (type0 == WrapType.PULLEY) or (type1 == WrapType.PULLEY):
       # get divisor
-      if type0 == pulley:
+      if type0 == WrapType.PULLEY:
         divisor = wrap_prm[adr + j]
-
       j += 1
       continue
-
-    # init sequence; assume it start with site
-    wpnt0 = site_xpos_in[worldid, id0]
-
-    wbody0 = site_bodyid[id0]
-    cvel0 = cvel_in[worldid, wbody0]
-    subtree_com0 = subtree_com_in[worldid, body_rootid[wbody0]]
-    offset0 = wpnt0 - subtree_com0
-    pvel_lin0 = wp.spatial_bottom(cvel0) - wp.cross(offset0, wp.spatial_top(cvel0))
 
     # second object is geom: process site-geom-site
     if (type1 == WrapType.SPHERE) or (type1 == WrapType.CYLINDER):
       # TODO(team): derivatives of util_misc.wrap
-      return
-
-    # complete sequence
-    wbody1 = site_bodyid[id1]
-    wpnt1 = site_xpos_in[worldid, id1]
-
-    cvel1 = cvel_in[worldid, wbody1]
-    subtree_com1 = subtree_com_in[worldid, body_rootid[wbody1]]
-    offset1 = wpnt1 - subtree_com1
-    pvel_lin1 = wp.spatial_bottom(cvel1) - wp.cross(offset1, wp.spatial_top(cvel1))
+      return dot_total
 
     # accumulate moments if consecutive points are in different bodies
+    wbody0 = site_bodyid[id0]
+    wbody1 = site_bodyid[id1]
     if wbody0 != wbody1:
-      # dpnt = 3D position difference, normalize
-      dpnt, norm = math.normalize_with_norm(wpnt1 - wpnt0)
+      wpnt0 = site_xpos_in[worldid, id0]
+      cvel0 = cvel_in[worldid, wbody0]
+      offset0 = wpnt0 - subtree_com_in[worldid, body_rootid[wbody0]]
+      pvel_lin0 = wp.spatial_bottom(cvel0) - wp.cross(offset0, wp.spatial_top(cvel0))
 
-      # dvel = d / dt (dpnt)
-      wvel0 = wp.spatial_bottom(cvel0) - wp.cross(wpnt0 - subtree_com0, wp.spatial_top(cvel0))
-      wvel1 = wp.spatial_bottom(cvel1) - wp.cross(wpnt1 - subtree_com1, wp.spatial_top(cvel1))
-      dvel = wvel1 - wvel0
-      dot = wp.dot(dpnt, dvel)
-      dvel += dpnt * (-dot)
+      wpnt1 = site_xpos_in[worldid, id1]
+      cvel1 = cvel_in[worldid, wbody1]
+      offset1 = wpnt1 - subtree_com_in[worldid, body_rootid[wbody1]]
+      pvel_lin1 = wp.spatial_bottom(cvel1) - wp.cross(offset1, wp.spatial_top(cvel1))
+
+      # dpnt = 3D position difference, normalize; dvel = d / dt (dpnt)
+      dpnt, norm = math.normalize_with_norm(wpnt1 - wpnt0)
+      dvel = pvel_lin1 - pvel_lin0
+      dvel += dpnt * (-wp.dot(dpnt, dvel))
       if norm > MJ_MINVAL:
         dvel /= norm
       else:
         dvel = wp.vec3(0.0)
 
-      rownnz = ten_J_rownnz[tenid]
-      rowadr = ten_J_rowadr[tenid]
-      inv_divisor = math.safe_div(float(1.0), divisor)
-
       # body0 contributes with negative sign, body1 with positive
-      _accumulate_jac_dot_chain(
+      inv_divisor = math.safe_div(float(1.0), divisor)
+      dot_total += _accumulate_jac_dot_chain(
         body_parentid,
         body_dofnum,
         body_dofadr,
@@ -2481,6 +2965,7 @@ def _tendon_dot(
         jnt_dofadr,
         dof_jntid,
         ten_J_colind,
+        qvel_in,
         cdof_in,
         cvel_in,
         cdof_dot_in,
@@ -2493,9 +2978,8 @@ def _tendon_dot(
         rownnz,
         -inv_divisor,
         worldid,
-        ten_Jdot_out,
       )
-      _accumulate_jac_dot_chain(
+      dot_total += _accumulate_jac_dot_chain(
         body_parentid,
         body_dofnum,
         body_dofadr,
@@ -2503,6 +2987,7 @@ def _tendon_dot(
         jnt_dofadr,
         dof_jntid,
         ten_J_colind,
+        qvel_in,
         cdof_in,
         cvel_in,
         cdof_dot_in,
@@ -2515,93 +3000,104 @@ def _tendon_dot(
         rownnz,
         inv_divisor,
         worldid,
-        ten_Jdot_out,
       )
 
     # TODO(team): j += 2 if geom wrapping
     j += 1
 
+  return dot_total
+
 
 @cache_kernel
-def _tendon_bias_coef(deterministic: bool = False):
+def _tendon_bias(max_ten_J_rownnz: int, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+    module_options["deterministic_max_records"] = max_ten_J_rownnz
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
+    body_parentid: wp.array[int],
+    body_rootid: wp.array[int],
+    body_dofnum: wp.array[int],
+    body_dofadr: wp.array[int],
+    jnt_type: wp.array[int],
+    jnt_dofadr: wp.array[int],
+    dof_jntid: wp.array[int],
+    site_bodyid: wp.array[int],
+    tendon_type: wp.array[int],
+    tendon_adr: wp.array[int],
+    tendon_num: wp.array[int],
+    tendon_actuatorid: wp.array[int],
     ten_J_rownnz: wp.array[int],
     ten_J_rowadr: wp.array[int],
     ten_J_colind: wp.array[int],
     tendon_armature: wp.array2d[float],
+    wrap_type: wp.array[int],
+    wrap_objid: wp.array[int],
+    wrap_prm: wp.array[float],
+    actuator_trntype: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
+    actuator_armature: wp.array2d[float],
+    actuator_gear: wp.array2d[wp.spatial_vector],
     # Data in:
     qvel_in: wp.array2d[float],
-    # In:
-    ten_Jdot_in: wp.array2d[float],
-    # Out:
-    ten_bias_coef_out: wp.array2d[float],
-  ):
-    worldid, tenid, dofid_sparse = wp.tid()
-
-    armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
-    if armature == 0.0:
-      return
-
-    rownnz = ten_J_rownnz[tenid]
-    if dofid_sparse >= rownnz:
-      return
-    rowadr = ten_J_rowadr[tenid]
-    sparseid = rowadr + dofid_sparse
-    ten_Jdot = ten_Jdot_in[worldid, sparseid]
-    if ten_Jdot == 0.0:
-      return
-
-    dofid = ten_J_colind[sparseid]
-    wp.atomic_add(ten_bias_coef_out[worldid], tenid, ten_Jdot * qvel_in[worldid, dofid])
-
-  return kernel
-
-
-@cache_kernel
-def _tendon_bias_qfrc(deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    ten_J_rownnz: wp.array[int],
-    ten_J_rowadr: wp.array[int],
-    ten_J_colind: wp.array[int],
-    tendon_armature: wp.array2d[float],
-    # Data in:
+    site_xpos_in: wp.array2d[wp.vec3],
+    subtree_com_in: wp.array2d[wp.vec3],
+    cdof_in: wp.array2d[wp.spatial_vector],
     ten_J_in: wp.array2d[float],
-    # In:
-    ten_bias_coef_in: wp.array2d[float],
+    cvel_in: wp.array2d[wp.spatial_vector],
+    cdof_dot_in: wp.array2d[wp.spatial_vector],
     # Out:
     qfrc_out: wp.array2d[float],
   ):
-    worldid, tenid, dofid = wp.tid()
+    worldid, tenid = wp.tid()
 
-    armature = tendon_armature[worldid % tendon_armature.shape[0], tenid]
+    armature = util_misc.tendon_armature_total(
+      tendon_actuatorid, tendon_armature, actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, worldid, tenid
+    )
     if armature == 0.0:
       return
 
+    # qfrc += J' * armature * (Jdot' * qvel)
+    coef = armature * _tendon_dot(
+      body_parentid,
+      body_rootid,
+      body_dofnum,
+      body_dofadr,
+      jnt_type,
+      jnt_dofadr,
+      dof_jntid,
+      site_bodyid,
+      tendon_type,
+      tendon_adr,
+      tendon_num,
+      ten_J_rownnz,
+      ten_J_rowadr,
+      ten_J_colind,
+      wrap_type,
+      wrap_objid,
+      wrap_prm,
+      qvel_in,
+      site_xpos_in,
+      subtree_com_in,
+      cdof_in,
+      cvel_in,
+      cdof_dot_in,
+      worldid,
+      tenid,
+    )
+    if coef == 0.0:
+      return
+
     rownnz = ten_J_rownnz[tenid]
-    if dofid >= rownnz:
-      return
     rowadr = ten_J_rowadr[tenid]
-    sparseid = rowadr + dofid
-    ten_J = ten_J_in[worldid, sparseid]
-
-    if ten_J == 0.0:
-      return
-
-    dofid = ten_J_colind[sparseid]
-
-    wp.atomic_add(qfrc_out[worldid], dofid, ten_J * armature * ten_bias_coef_in[worldid, tenid])
+    for i in range(rownnz):
+      sparseid = rowadr + i
+      ten_J = ten_J_in[worldid, sparseid]
+      if ten_J != 0.0:
+        wp.atomic_add(qfrc_out[worldid], ten_J_colind[sparseid], ten_J * coef)
 
   return kernel
 
@@ -2615,10 +3111,12 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
     d: The data object containing the current state and output arrays.
     qfrc: Force.
   """
-  # time derivative of tendon Jacobian
-  ten_Jdot = wp.zeros((d.nworld, m.nJten), dtype=float)
+  if m.ntendon == 0 or m.nJten == 0:
+    return
+
+  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
   wp.launch(
-    _tendon_dot,
+    _tendon_bias(m.max_ten_J_rownnz if det_atomics else 0, det_atomics),
     dim=(d.nworld, m.ntendon),
     inputs=[
       m.body_parentid,
@@ -2629,8 +3127,10 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
       m.jnt_dofadr,
       m.dof_jntid,
       m.site_bodyid,
+      m.tendon_type,
       m.tendon_adr,
       m.tendon_num,
+      m.tendon_actuatorid,
       m.ten_J_rownnz,
       m.ten_J_rowadr,
       m.ten_J_colind,
@@ -2638,28 +3138,18 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
       m.wrap_type,
       m.wrap_objid,
       m.wrap_prm,
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.actuator_armature,
+      m.actuator_gear,
+      d.qvel,
       d.site_xpos,
       d.subtree_com,
       d.cdof,
+      d.ten_J,
       d.cvel,
       d.cdof_dot,
     ],
-    outputs=[ten_Jdot],
-  )
-
-  # tendon bias force coefficients
-  ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
-  wp.launch(
-    _tendon_bias_coef(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-    dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
-    inputs=[m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, m.tendon_armature, d.qvel, ten_Jdot],
-    outputs=[ten_bias_coef],
-  )
-
-  wp.launch(
-    _tendon_bias_qfrc(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
-    dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
-    inputs=[m.ten_J_rownnz, m.ten_J_rowadr, m.ten_J_colind, m.tendon_armature, d.ten_J, ten_bias_coef],
     outputs=[qfrc],
   )
 
@@ -2670,80 +3160,88 @@ def _comvel_root(cvel_out: wp.array2d[wp.spatial_vector]):
   cvel_out[worldid, 0][elementid] = 0.0
 
 
-@wp.kernel
-def _comvel_branch(
-  # Model:
-  body_parentid: wp.array[int],
-  body_jntnum: wp.array[int],
-  body_jntadr: wp.array[int],
-  body_dofadr: wp.array[int],
-  jnt_type: wp.array[int],
-  body_branches: wp.array[int],
-  body_branch_start: wp.array[int],
-  # Data in:
-  qvel_in: wp.array2d[float],
-  cdof_in: wp.array2d[wp.spatial_vector],
-  # Data out:
-  cvel_out: wp.array2d[wp.spatial_vector],
-  cdof_dot_out: wp.array2d[wp.spatial_vector],
-):
-  worldid, branchid = wp.tid()
+@cache_kernel
+def _comvel_branch(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    body_jntnum: wp.array[int],
+    body_jntadr: wp.array[int],
+    body_dofadr: wp.array[int],
+    body_treeid: wp.array[int],
+    jnt_type: wp.array[int],
+    body_branches: wp.array[int],
+    body_branch_start: wp.array[int],
+    # Data in:
+    qvel_in: wp.array2d[float],
+    cdof_in: wp.array2d[wp.spatial_vector],
+    tree_awake_in: wp.array2d[int],
+    # Data out:
+    cvel_out: wp.array2d[wp.spatial_vector],
+    cdof_dot_out: wp.array2d[wp.spatial_vector],
+  ):
+    worldid, branchid = wp.tid()
 
-  start = body_branch_start[branchid]
-  end = body_branch_start[branchid + 1]
+    start = body_branch_start[branchid]
+    end = body_branch_start[branchid + 1]
 
-  qvel = qvel_in[worldid]
-  cdof = cdof_in[worldid]
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, body_treeid[body_branches[start]]):
+        return
 
-  for i in range(start, end):
-    bodyid = body_branches[i]
-    pid = body_parentid[bodyid]
-    cvel = cvel_out[worldid, pid]
-    dofid = body_dofadr[bodyid]
-    jntid = body_jntadr[bodyid]
-    jntnum = body_jntnum[bodyid]
+    qvel = qvel_in[worldid]
+    cdof = cdof_in[worldid]
 
-    if jntnum == 0:
+    cvel = wp.spatial_vector()
+    for i in range(start, end):
+      bodyid = body_branches[i]
+      dofid = body_dofadr[bodyid]
+      jntid = body_jntadr[bodyid]
+      jntnum = body_jntnum[bodyid]
+
+      if jntnum == 0:
+        cvel_out[worldid, bodyid] = cvel
+        continue
+
+      for j in range(jntid, jntid + jntnum):
+        jnttype = jnt_type[j]
+
+        if jnttype == JointType.FREE:
+          cvel += cdof[dofid + 0] * qvel[dofid + 0]
+          cvel += cdof[dofid + 1] * qvel[dofid + 1]
+          cvel += cdof[dofid + 2] * qvel[dofid + 2]
+
+          cdof_dot_out[worldid, dofid + 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+          cdof_dot_out[worldid, dofid + 1] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+          cdof_dot_out[worldid, dofid + 2] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+          cdof_dot_out[worldid, dofid + 3] = math.motion_cross(cvel, cdof[dofid + 3])
+          cdof_dot_out[worldid, dofid + 4] = math.motion_cross(cvel, cdof[dofid + 4])
+          cdof_dot_out[worldid, dofid + 5] = math.motion_cross(cvel, cdof[dofid + 5])
+
+          cvel += cdof[dofid + 3] * qvel[dofid + 3]
+          cvel += cdof[dofid + 4] * qvel[dofid + 4]
+          cvel += cdof[dofid + 5] * qvel[dofid + 5]
+
+          dofid += 6
+        elif jnttype == JointType.BALL:
+          cdof_dot_out[worldid, dofid + 0] = math.motion_cross(cvel, cdof[dofid + 0])
+          cdof_dot_out[worldid, dofid + 1] = math.motion_cross(cvel, cdof[dofid + 1])
+          cdof_dot_out[worldid, dofid + 2] = math.motion_cross(cvel, cdof[dofid + 2])
+
+          cvel += cdof[dofid + 0] * qvel[dofid + 0]
+          cvel += cdof[dofid + 1] * qvel[dofid + 1]
+          cvel += cdof[dofid + 2] * qvel[dofid + 2]
+
+          dofid += 3
+        else:
+          cdof_dot_out[worldid, dofid] = math.motion_cross(cvel, cdof[dofid])
+          cvel += cdof[dofid] * qvel[dofid]
+
+          dofid += 1
+
       cvel_out[worldid, bodyid] = cvel
-      continue
 
-    for j in range(jntid, jntid + jntnum):
-      jnttype = jnt_type[j]
-
-      if jnttype == JointType.FREE:
-        cvel += cdof[dofid + 0] * qvel[dofid + 0]
-        cvel += cdof[dofid + 1] * qvel[dofid + 1]
-        cvel += cdof[dofid + 2] * qvel[dofid + 2]
-
-        cdof_dot_out[worldid, dofid + 0] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        cdof_dot_out[worldid, dofid + 1] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        cdof_dot_out[worldid, dofid + 2] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        cdof_dot_out[worldid, dofid + 3] = math.motion_cross(cvel, cdof[dofid + 3])
-        cdof_dot_out[worldid, dofid + 4] = math.motion_cross(cvel, cdof[dofid + 4])
-        cdof_dot_out[worldid, dofid + 5] = math.motion_cross(cvel, cdof[dofid + 5])
-
-        cvel += cdof[dofid + 3] * qvel[dofid + 3]
-        cvel += cdof[dofid + 4] * qvel[dofid + 4]
-        cvel += cdof[dofid + 5] * qvel[dofid + 5]
-
-        dofid += 6
-      elif jnttype == JointType.BALL:
-        cdof_dot_out[worldid, dofid + 0] = math.motion_cross(cvel, cdof[dofid + 0])
-        cdof_dot_out[worldid, dofid + 1] = math.motion_cross(cvel, cdof[dofid + 1])
-        cdof_dot_out[worldid, dofid + 2] = math.motion_cross(cvel, cdof[dofid + 2])
-
-        cvel += cdof[dofid + 0] * qvel[dofid + 0]
-        cvel += cdof[dofid + 1] * qvel[dofid + 1]
-        cvel += cdof[dofid + 2] * qvel[dofid + 2]
-
-        dofid += 3
-      else:
-        cdof_dot_out[worldid, dofid] = math.motion_cross(cvel, cdof[dofid])
-        cvel += cdof[dofid] * qvel[dofid]
-
-        dofid += 1
-
-    cvel_out[worldid, bodyid] = cvel
+  return kernel
 
 
 @event_scope
@@ -2753,21 +3251,23 @@ def com_vel(m: Model, d: Data):
   Propagates velocities down the kinematic tree, updating the spatial velocity and
   derivative for each body.
   """
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   wp.launch(_comvel_root, dim=(d.nworld, 6), inputs=[], outputs=[d.cvel])
 
   wp.launch(
-    _comvel_branch,
+    _comvel_branch(enable_sleep),
     dim=(d.nworld, m.nbranch),
     inputs=[
-      m.body_parentid,
       m.body_jntnum,
       m.body_jntadr,
       m.body_dofadr,
+      m.body_treeid,
       m.jnt_type,
       m.body_branches,
       m.body_branch_start,
       d.qvel,
       d.cdof,
+      d.tree_awake,
     ],
     outputs=[d.cvel, d.cdof_dot],
   )
@@ -2794,7 +3294,6 @@ def _transmission(deterministic: bool = False):
     dof_bodyid: wp.array[int],
     dof_parentid: wp.array[int],
     site_bodyid: wp.array[int],
-    site_quat: wp.array2d[wp.quat],
     ten_J_rownnz: wp.array[int],
     ten_J_rowadr: wp.array[int],
     ten_J_colind: wp.array[int],
@@ -2805,9 +3304,8 @@ def _transmission(deterministic: bool = False):
     body_isdofancestor: wp.array2d[int],
     # Data in:
     qpos_in: wp.array2d[float],
-    xquat_in: wp.array2d[wp.quat],
     site_xpos_in: wp.array2d[wp.vec3],
-    site_xmat_in: wp.array2d[wp.mat33],
+    site_xquat_in: wp.array2d[wp.quat],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     ten_J_in: wp.array2d[float],
@@ -2896,7 +3394,7 @@ def _transmission(deterministic: bool = False):
       idslider = trnid[1]
       gear0 = gear[0]
       rod = actuator_cranklength[worldid % actuator_cranklength.shape[0], actid]
-      site_xmat = site_xmat_in[worldid, idslider]
+      site_xmat = math.quat_to_mat(site_xquat_in[worldid, idslider])
       axis = wp.vec3(site_xmat[0, 2], site_xmat[1, 2], site_xmat[2, 2])
       site_xpos_id = site_xpos_in[worldid, id]
       site_xpos_idslider = site_xpos_in[worldid, idslider]
@@ -3037,14 +3535,13 @@ def _transmission(deterministic: bool = False):
       refid = trnid[1]
 
       gear = actuator_gear[actuator_gear_id, actid]
-      site_quat_id = worldid % site_quat.shape[0]
       gear_translation = wp.spatial_top(gear)
       gear_rotational = wp.spatial_bottom(gear)
 
       # reference site undefined
       if refid == -1:
         # wrench: gear expressed in global frame
-        site_xmat = site_xmat_in[worldid, siteid]
+        site_xmat = math.quat_to_mat(site_xquat_in[worldid, siteid])
         wrench_translation = site_xmat @ gear_translation
         wrench_rotation = site_xmat @ gear_rotational
 
@@ -3120,7 +3617,8 @@ def _transmission(deterministic: bool = False):
 
         site_xpos = site_xpos_in[worldid, siteid]
         ref_xpos = site_xpos_in[worldid, refid]
-        ref_xmat = site_xmat_in[worldid, refid]
+        ref_xquat = site_xquat_in[worldid, refid]
+        ref_xmat = math.quat_to_mat(ref_xquat)
 
         length = float(0.0)
 
@@ -3132,12 +3630,8 @@ def _transmission(deterministic: bool = False):
           wrench_translation = ref_xmat @ gear_translation
 
         if rotational_transmission:
-          # get site and refsite quats from parent bodies (avoid converting matrix to quat)
-          quat = math.mul_quat(xquat_in[worldid, bodyid], site_quat[site_quat_id, siteid])
-          refquat = math.mul_quat(xquat_in[worldid, bodyrefid], site_quat[site_quat_id, refid])
-
           # convert difference to expmap (axis-angle)
-          vec = math.quat_sub(quat, refquat)
+          vec = math.quat_sub(site_xquat_in[worldid, siteid], ref_xquat)
           length += wp.dot(vec, gear_rotational)
 
           wrench_rotation = ref_xmat @ gear_rotational
@@ -3418,7 +3912,6 @@ def transmission(m: Model, d: Data):
       m.dof_bodyid,
       m.dof_parentid,
       m.site_bodyid,
-      m.site_quat,
       m.ten_J_rownnz,
       m.ten_J_rowadr,
       m.ten_J_colind,
@@ -3428,9 +3921,8 @@ def transmission(m: Model, d: Data):
       m.actuator_gear,
       m.body_isdofancestor,
       d.qpos,
-      d.xquat,
       d.site_xpos,
-      d.site_xmat,
+      d.site_xquat,
       d.subtree_com,
       d.cdof,
       d.ten_J,
@@ -3536,41 +4028,66 @@ def _solve_LD_sparse_update_fn(
     wp.atomic_sub(x_out[worldid], k, L_in[worldid, Madr_ki] * x_in[worldid, i])
 
 
-@wp.kernel
-def _solve_LD_sparse_copy(
-  # Model:
-  qLD_block_adr: wp.array[int],
-  # In:
-  y_in: wp.array2d[float],
-  # Out:
-  x_out: wp.array2d[float],
-):
-  worldid, dofid = wp.tid()
-  _solve_LD_sparse_copy_fn(qLD_block_adr, y_in, worldid, dofid, x_out)
+@cache_kernel
+def _solve_LD_sparse_copy(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
+    qLD_block_adr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
+    # In:
+    y_in: wp.array2d[float],
+    # Out:
+    x_out: wp.array2d[float],
+  ):
+    worldid, dofid = wp.tid()
+    if wp.static(enable_sleep):
+      if qLD_block_adr[dofid] == Q_LD_BLOCK_SPARSE and _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+        x_out[worldid, dofid] = 0.0
+        return
+    _solve_LD_sparse_copy_fn(qLD_block_adr, y_in, worldid, dofid, x_out)
 
-
-@wp.kernel
-def _solve_LD_sparse_diag(
-  # Model:
-  qLD_block_adr: wp.array[int],
-  # In:
-  D_in: wp.array2d[float],
-  x_in: wp.array2d[float],
-  # Out:
-  x_out: wp.array2d[float],
-):
-  worldid, dofid = wp.tid()
-  _solve_LD_sparse_diag_fn(qLD_block_adr, D_in, x_in, worldid, dofid, x_out)
+  return kernel
 
 
 @cache_kernel
-def _solve_LD_sparse_level(up: bool, deterministic: bool = False):
+def _solve_LD_sparse_diag(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
+    qLD_block_adr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
+    # In:
+    D_in: wp.array2d[float],
+    x_in: wp.array2d[float],
+    # Out:
+    x_out: wp.array2d[float],
+  ):
+    worldid, dofid = wp.tid()
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+        return
+    _solve_LD_sparse_diag_fn(qLD_block_adr, D_in, x_in, worldid, dofid, x_out)
+
+  return kernel
+
+
+@cache_kernel
+def _solve_LD_sparse_level(up: bool, enable_sleep: bool = False, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
+    # Model:
+    dof_treeid: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     L_in: wp.array2d[float],
     qLD_updates_: wp.array[wp.vec3i],
@@ -3579,13 +4096,17 @@ def _solve_LD_sparse_level(up: bool, deterministic: bool = False):
     x_out: wp.array2d[float],
   ):
     worldid, nodeid = wp.tid()
-    _solve_LD_sparse_update_fn(L_in, x_in, qLD_updates_[nodeid], worldid, wp.static(up), x_out)
+    update = qLD_updates_[nodeid]
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[update[0]]):
+        return
+    _solve_LD_sparse_update_fn(L_in, x_in, update, worldid, wp.static(up), x_out)
 
   return kernel
 
 
 @cache_kernel
-def _solve_LD_sparse_fused(nv: int, nlevels: int):
+def _solve_LD_sparse_fused(nv: int, nlevels: int, enable_sleep: bool = False):
   """Fused sparse backsubstitution: UP + diag + DOWN in one kernel."""
 
   @wp.func_native(snippet="WP_TILE_SYNC();")
@@ -3595,7 +4116,10 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     L: wp.array2d[float],
     D: wp.array2d[float],
@@ -3612,7 +4136,14 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
 
     # Copy y to x_out for sparse-block dofs only.
     for dofid in range(tid, NV, BLOCK_DIM):
-      _solve_LD_sparse_copy_fn(qLD_block_adr, y, worldid, dofid, x_out)
+      if qLD_block_adr[dofid] == Q_LD_BLOCK_SPARSE:
+        if wp.static(enable_sleep):
+          if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+            x_out[worldid, dofid] = 0.0
+          else:
+            x_out[worldid, dofid] = y[worldid, dofid]
+        else:
+          x_out[worldid, dofid] = y[worldid, dofid]
     _syncthreads()
 
     # Forward substitution (all_updates only references sparse-block dofs)
@@ -3622,14 +4153,21 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
       level_size = level_offsets[level_idx + 1] - level_offset
 
       for u in range(tid, level_size, BLOCK_DIM):
-        _solve_LD_sparse_update_fn(
-          L, x_out, all_updates[level_offset + u], worldid, True, x_out
-        )  # kernel_analyzer: ignore[atomic]
+        update = all_updates[level_offset + u]
+        i, k, Madr_ki = update[0], update[1], update[2]
+        if wp.static(enable_sleep):
+          if _tree_asleep(tree_awake_in, worldid, dof_treeid[i]):
+            continue
+        wp.atomic_sub(x_out[worldid], i, L[worldid, Madr_ki] * x_out[worldid, k])  # kernel_analyzer: ignore[atomic]
       _syncthreads()
 
     # Diagonal multiply (sparse-block dofs only)
     for dofid in range(tid, NV, BLOCK_DIM):
-      _solve_LD_sparse_diag_fn(qLD_block_adr, D, x_out, worldid, dofid, x_out)
+      if qLD_block_adr[dofid] == Q_LD_BLOCK_SPARSE:
+        if wp.static(enable_sleep):
+          if _tree_asleep(tree_awake_in, worldid, dof_treeid[dofid]):
+            continue
+        x_out[worldid, dofid] *= D[worldid, dofid]
     _syncthreads()
 
     # Backward substitution
@@ -3639,9 +4177,12 @@ def _solve_LD_sparse_fused(nv: int, nlevels: int):
       level_size = level_offsets[level_idx + 1] - level_offset
 
       for u in range(tid, level_size, BLOCK_DIM):
-        _solve_LD_sparse_update_fn(
-          L, x_out, all_updates[level_offset + u], worldid, False, x_out
-        )  # kernel_analyzer: ignore[atomic]
+        update = all_updates[level_offset + u]
+        i, k, Madr_ki = update[0], update[1], update[2]
+        if wp.static(enable_sleep):
+          if _tree_asleep(tree_awake_in, worldid, dof_treeid[i]):
+            continue
+        wp.atomic_sub(x_out[worldid], k, L[worldid, Madr_ki] * x_out[worldid, i])  # kernel_analyzer: ignore[atomic]
       _syncthreads()
 
   return kernel
@@ -3657,24 +4198,35 @@ def _solve_LD_sparse(
   x_scratch: Optional[wp.array] = None,
 ):
   """Computes sparse backsubstitution: x = inv(L'*D*L)*y."""
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   if m.opt.deterministic & DeterminismType.ATOMICS:
     x_in = x_scratch if x_scratch is not None else wp.empty_like(x)
-    wp.launch(_solve_LD_sparse_copy, dim=(d.nworld, m.nv), inputs=[m.qLD_block_adr, y], outputs=[x])
+    wp.launch(
+      _solve_LD_sparse_copy(enable_sleep),
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, y],
+      outputs=[x],
+    )
     for qLD_updates in reversed(m.qLD_updates):
       wp.copy(x_in, x)
       wp.launch(
-        _solve_LD_sparse_level(True, True),
+        _solve_LD_sparse_level(True, enable_sleep, True),
         dim=(d.nworld, qLD_updates.size),
-        inputs=[L, qLD_updates, x_in],
+        inputs=[m.dof_treeid, d.tree_awake, L, qLD_updates, x_in],
         outputs=[x],
       )
-    wp.launch(_solve_LD_sparse_diag, dim=(d.nworld, m.nv), inputs=[m.qLD_block_adr, D, x], outputs=[x])
+    wp.launch(
+      _solve_LD_sparse_diag(enable_sleep),
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, D, x],
+      outputs=[x],
+    )
     for qLD_updates in m.qLD_updates:
       wp.copy(x_in, x)
       wp.launch(
-        _solve_LD_sparse_level(False, True),
+        _solve_LD_sparse_level(False, enable_sleep, True),
         dim=(d.nworld, qLD_updates.size),
-        inputs=[L, qLD_updates, x_in],
+        inputs=[m.dof_treeid, d.tree_awake, L, qLD_updates, x_in],
         outputs=[x],
       )
     return
@@ -3687,9 +4239,9 @@ def _solve_LD_sparse(
     dim_block = 1
 
   wp.launch(
-    _solve_LD_sparse_fused(m.nv, nlevels),
+    _solve_LD_sparse_fused(m.nv, nlevels, enable_sleep),
     dim=(d.nworld, dim_block),
-    inputs=[m.qLD_block_adr, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
+    inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, L, D, m.qLD_all_updates, m.qLD_level_offsets, y],
     outputs=[x],
     block_dim=dim_block,
   )
@@ -3722,11 +4274,14 @@ def _small_cholesky_solve(
 
 
 @cache_kernel
-def _small_cholesky_solve_block(block_size: int):
+def _small_cholesky_solve_block(block_size: int, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     block_dof: wp.array[int],
     D_in: wp.array2d[float],
@@ -3738,6 +4293,11 @@ def _small_cholesky_solve_block(block_size: int):
     worldid, blk = wp.tid()
     start = block_dof[blk]
     size = wp.static(block_size)
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[start]):
+        for i in range(wp.static(block_size)):
+          x_out[worldid, start + i] = 0.0
+        return
     factor_adr = qLD_block_adr[start]
     if factor_adr == Q_LD_BLOCK_COMPACT:
       for i in range(wp.static(block_size)):
@@ -3749,7 +4309,7 @@ def _small_cholesky_solve_block(block_size: int):
 
 
 @cache_kernel
-def _tile_cholesky_solve_block(tile: TileSet):
+def _tile_cholesky_solve_block(tile: TileSet, enable_sleep: bool = False):
   # One diagonal block per (world, block) thread group; no densify, so a 2D grid suffices.
   block_size = tile.size
   block_area = block_size * block_size
@@ -3757,7 +4317,10 @@ def _tile_cholesky_solve_block(tile: TileSet):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     block_dof: wp.array[int],
     L_in: wp.array2d[float],
@@ -3767,6 +4330,10 @@ def _tile_cholesky_solve_block(tile: TileSet):
   ):
     worldid, blk = wp.tid()
     start = block_dof[blk]
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[start]):
+        wp.tile_store(x[worldid], wp.tile_zeros(shape=(block_size,), dtype=float), offset=(start,))
+        return
 
     L = wp.tile_reshape(
       wp.tile_load(L_in[worldid], shape=(block_area,), offset=(qLD_block_adr[start],)), (block_size, block_size)
@@ -3786,12 +4353,13 @@ def _solve_blocks(
   x: wp.array2d[float],
   y: wp.array2d[float],
 ):
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   for tile in m.M_tiles:
     if tile.elemid.size == 0:
       wp.launch(
-        _small_cholesky_solve_block(tile.size),
+        _small_cholesky_solve_block(tile.size, enable_sleep),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.qLD_block_adr, tile.adr, D, L, y],
+        inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, tile.adr, D, L, y],
         outputs=[x],
         block_dim=m.block_dim.small_cholesky,
       )
@@ -3800,9 +4368,9 @@ def _solve_blocks(
       # for better occupancy while moderate blocks still want a couple warps (16/27->64, 60->32).
       block_dim = m.block_dim.cholesky_solve if tile.size <= 40 else 32
       wp.launch_tiled(
-        _tile_cholesky_solve_block(tile),
+        _tile_cholesky_solve_block(tile, enable_sleep),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.qLD_block_adr, tile.adr, L, y],
+        inputs=[m.dof_treeid, m.qLD_block_adr, d.tree_awake, tile.adr, L, y],
         outputs=[x],
         block_dim=block_dim,
       )
@@ -3837,6 +4405,18 @@ def solve_LD(
     _solve_LD_sparse(m, d, L[:, m.qLD_block_total :], D, x, y, x_scratch=x_scratch)
 
 
+def skip_qacc_smooth(m: Model, d: Data) -> bool:
+  """Whether qacc_smooth and its factorization are skipped (opt.run_qacc_smooth)."""
+  return (
+    (not m.opt.run_qacc_smooth)
+    and (m.opt.solver == SolverType.NEWTON)
+    and (not (m.opt.disableflags & DisableBit.WARMSTART))
+    and (m.opt.noslip_iterations == 0)
+    and (m.opt.iterations > 0)
+    and (d.njmax > 0)
+  )
+
+
 @event_scope
 def solve_m(m: Model, d: Data, x: wp.array2d[float], y: wp.array2d[float], x_scratch: Optional[wp.array] = None):
   """Computes backsubstitution: x = qLD * y.
@@ -3851,8 +4431,58 @@ def solve_m(m: Model, d: Data, x: wp.array2d[float], y: wp.array2d[float], x_scr
   solve_LD(m, d, d.qLD, d.qLDiagInv, x, y, x_scratch=x_scratch)
 
 
+@wp.kernel
+def _store_inv_m_column(
+  # Model:
+  dof_treeid: wp.array[int],
+  tree_dofadr: wp.array[int],
+  tree_dofnum: wp.array[int],
+  Minv_block_adr: wp.array[int],
+  # In:
+  colid: int,
+  col_in: wp.array2d[float],
+  # Out:
+  Minv_out: wp.array2d[float],
+  unit_out: wp.array2d[float],
+):
+  """Stores column colid of each tree's inverse block and sets the next column's unit vector."""
+  worldid, dofid = wp.tid()
+  treeid = dof_treeid[dofid]
+  start = tree_dofadr[treeid]
+  size = tree_dofnum[treeid]
+  if (colid >= 0) and (colid < size):
+    Minv_out[worldid, Minv_block_adr[dofid] + (dofid - start) * size + colid] = col_in[worldid, dofid]
+  unit_out[worldid, dofid] = wp.where((dofid - start) == (colid + 1), 1.0, 0.0)
+
+
+@event_scope
+def inv_m(m: Model, d: Data, Minv: wp.array2d[float]):
+  """Computes the inverse of the factorized inertia matrix.
+
+  inv(M) is block diagonal per kinematic tree, so a single solve gives the same column of every
+  tree's block. Each block is dense, row-major, and starts at Minv_block_adr.
+
+  Args:
+    m: The model containing inertia and factorization information.
+    d: The data object containing factorization results.
+    Minv: Output inverse blocks, (nworld, Minv_block_total).
+  """
+  unit = wp.empty((d.nworld, m.nv), dtype=float)
+  col = wp.empty((d.nworld, m.nv), dtype=float)
+  # colid -1 only sets the unit vector of the first column
+  for colid in range(-1, m.Minv_block_dofmax):
+    if colid >= 0:
+      solve_m(m, d, col, unit)
+    wp.launch(
+      _store_inv_m_column,
+      dim=(d.nworld, m.nv),
+      inputs=[m.dof_treeid, m.tree_dofadr, m.tree_dofnum, m.Minv_block_adr, colid, col],
+      outputs=[Minv, unit],
+    )
+
+
 @cache_kernel
-def _tile_cholesky_factorize_solve_block(tile: TileSet):
+def _tile_cholesky_factorize_solve_block(tile: TileSet, enable_sleep: bool = False, store_factor: bool = True):
   # Fused factor+solve: densify the block, factor it, and back-substitute in one launch (avoids
   # re-loading the factor). Grid/densify structure matches _tile_cholesky_factorize_block.
   block_size = tile.size
@@ -3861,9 +4491,11 @@ def _tile_cholesky_factorize_solve_block(tile: TileSet):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     qLD_block_adr: wp.array[int],
     # Data in:
     M_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     # In:
     block_elemid: wp.array[int],
     block_dof: wp.array[int],
@@ -3874,6 +4506,10 @@ def _tile_cholesky_factorize_solve_block(tile: TileSet):
   ):
     worldid, blk = wp.tid()
     start = block_dof[blk]
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[start]):
+        wp.tile_store(x[worldid], wp.tile_zeros(shape=(block_size,), dtype=float), offset=(start,))
+        return
 
     # Densify the block (see _tile_cholesky_factorize_block for the gather rationale).
     idx = wp.tile_load(block_elemid, shape=(block_area,), offset=(blk * block_area,), storage="shared")
@@ -3881,7 +4517,8 @@ def _tile_cholesky_factorize_solve_block(tile: TileSet):
 
     L = wp.tile_reshape(block, (block_size, block_size))
     wp.tile_cholesky_inplace(L, fill_mode="upper")
-    wp.tile_store(L_out[worldid], wp.tile_reshape(L, (block_area,)), offset=(qLD_block_adr[start],))
+    if wp.static(store_factor):
+      wp.tile_store(L_out[worldid], wp.tile_reshape(L, (block_area,)), offset=(qLD_block_adr[start],))
 
     rhs = wp.tile_load(y[worldid], shape=(block_size,), offset=(start,))
     sol = wp.tile_cholesky_solve(L, rhs, fill_mode="upper")
@@ -3891,14 +4528,16 @@ def _tile_cholesky_factorize_solve_block(tile: TileSet):
 
 
 @cache_kernel
-def _small_cholesky_factorize_solve_block(block_size: int):
+def _small_cholesky_factorize_solve_block(block_size: int, enable_sleep: bool = False):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     M_rowadr: wp.array[int],
     qLD_block_adr: wp.array[int],
     # Data in:
     M_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
     # In:
     block_dof: wp.array[int],
     y: wp.array2d[float],
@@ -3910,6 +4549,11 @@ def _small_cholesky_factorize_solve_block(block_size: int):
     worldid, blk = wp.tid()
     start = block_dof[blk]
     size = wp.static(block_size)
+    if wp.static(enable_sleep):
+      if _tree_asleep(tree_awake_in, worldid, dof_treeid[start]):
+        for i in range(wp.static(block_size)):
+          x_out[worldid, start + i] = 0.0
+        return
     matrix_adr = M_rowadr[start]
 
     factor_adr = qLD_block_adr[start]
@@ -3956,27 +4600,29 @@ def _factor_solve_blocks(
   D: wp.array2d[float],
   x: wp.array2d[float],
   y: wp.array2d[float],
+  store_factor: bool,
 ):
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   for tile in m.M_tiles:
     if tile.elemid.size == 0:
       wp.launch(
-        _small_cholesky_factorize_solve_block(tile.size),
+        _small_cholesky_factorize_solve_block(tile.size, enable_sleep),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.M_rowadr, m.qLD_block_adr, M, tile.adr, y],
+        inputs=[m.dof_treeid, m.M_rowadr, m.qLD_block_adr, M, d.tree_awake, tile.adr, y],
         outputs=[D, x, L],
         block_dim=m.block_dim.small_cholesky,
       )
     else:
       wp.launch_tiled(
-        _tile_cholesky_factorize_solve_block(tile),
+        _tile_cholesky_factorize_solve_block(tile, enable_sleep, store_factor),
         dim=(d.nworld, tile.adr.size),
-        inputs=[m.qLD_block_adr, M, tile.elemid, tile.adr, y],
+        inputs=[m.dof_treeid, m.qLD_block_adr, M, d.tree_awake, tile.elemid, tile.adr, y],
         outputs=[x, L],
         block_dim=m.block_dim.cholesky_factorize_solve,
       )
 
 
-def factor_solve_i(m, d, M, L, D, x, y):
+def factor_solve_i(m, d, M, L, D, x, y, store_factor: bool = True):
   """Factorizes and solves the inertia-like linear system.
 
   Compact blocks use reciprocal diagonals, full small blocks use scalar Cholesky, dense blocks use
@@ -3990,9 +4636,10 @@ def factor_solve_i(m, d, M, L, D, x, y):
     D: Output reciprocal diagonal for compact and sparse blocks.
     x: Output array for the solution.
     y: Input right-hand side array.
+    store_factor: Write the factor of dense blocks to L; scalar and sparse blocks always use L.
   """
   if m.M_tiles:
-    _factor_solve_blocks(m, d, M, L, D, x, y)
+    _factor_solve_blocks(m, d, M, L, D, x, y, store_factor)
   if L.shape[1] > m.qLD_block_total:
     L_ldl = L[:, m.qLD_block_total :]
     _factor_i_sparse(m, d, M, L_ldl, D)
@@ -4000,16 +4647,19 @@ def factor_solve_i(m, d, M, L, D, x, y):
 
 
 @cache_kernel
-def _factor_solve_lu_sparse_fused(nv: int):
+def _factor_solve_lu_sparse_fused(nv: int, enable_sleep: bool = False):
   """Fused sparse LU factorization and solve in a single kernel."""
 
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    dof_treeid: wp.array[int],
     D_rownnz: wp.array[int],
     D_rowadr: wp.array[int],
     D_diag: wp.array[int],
     D_colind: wp.array[int],
+    # Data in:
+    tree_awake_in: wp.array2d[int],
     # In:
     qfrc: wp.array2d[float],
     # Data out:
@@ -4026,6 +4676,9 @@ def _factor_solve_lu_sparse_fused(nv: int):
     # process diagonal elements from n-1 down to 0
     for r_rev in range(NV):
       i = NV - 1 - r_rev
+      if wp.static(enable_sleep):
+        if _tree_asleep(tree_awake_in, worldid, dof_treeid[i]):
+          continue
 
       rem_i = int(qacc_out[worldid, i])
       rowadr_i = D_rowadr[i]
@@ -4038,6 +4691,9 @@ def _factor_solve_lu_sparse_fused(nv: int):
       # rows j above i (j < i), processed from i-1 down to 0
       for c in range(i):
         j = i - 1 - c
+        if wp.static(enable_sleep):
+          if _tree_asleep(tree_awake_in, worldid, dof_treeid[j]):
+            continue
 
         # get address of last remaining element of row j
         rem_j = int(qacc_out[worldid, j])
@@ -4075,6 +4731,10 @@ def _factor_solve_lu_sparse_fused(nv: int):
     # Backward substitution: solve (U+I)*qacc = qfrc
     for k_rev in range(NV):
       i = NV - 1 - k_rev
+      if wp.static(enable_sleep):
+        if _tree_asleep(tree_awake_in, worldid, dof_treeid[i]):
+          qacc_out[worldid, i] = 0.0
+          continue
 
       diag_i = D_diag[i]
       rowadr_i = D_rowadr[i]
@@ -4090,6 +4750,10 @@ def _factor_solve_lu_sparse_fused(nv: int):
 
     # Forward substitution: solve L*qacc = qacc
     for i in range(NV):
+      if wp.static(enable_sleep):
+        if _tree_asleep(tree_awake_in, worldid, dof_treeid[i]):
+          continue
+
       diag_i = D_diag[i]
       rowadr_i = D_rowadr[i]
 
@@ -4117,10 +4781,11 @@ def factor_solve_lu(m: Model, d: Data, qLU: wp.array2d[float], qacc: wp.array2d[
     qacc: output array for the solution.
     qfrc: input right-hand side.
   """
+  enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
   wp.launch(
-    _factor_solve_lu_sparse_fused(m.nv),
+    _factor_solve_lu_sparse_fused(m.nv, enable_sleep),
     dim=(d.nworld,),
-    inputs=[m.D_rownnz, m.D_rowadr, m.D_diag, m.D_colind, qfrc],
+    inputs=[m.dof_treeid, m.D_rownnz, m.D_rowadr, m.D_diag, m.D_colind, d.tree_awake, qfrc],
     outputs=[qacc, qLU],
   )
 
@@ -4133,15 +4798,13 @@ def _subtree_vel_forward(
   body_inertia: wp.array2d[wp.vec3],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
-  ximat_in: wp.array2d[wp.mat33],
+  xiquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cvel_in: wp.array2d[wp.spatial_vector],
-  # Data out:
-  subtree_linvel_out: wp.array2d[wp.vec3],
-  subtree_angmom_out: wp.array2d[wp.vec3],
   # Out:
-  subtree_bodyvel_out: wp.array2d[wp.spatial_vector],
+  body_mom_out: wp.array2d[wp.spatial_vector],
 ):
+  """Per-body angular momentum about the body com (top) and linear momentum (bottom)."""
   worldid, bodyid = wp.tid()
   body_mass_id = worldid % body_mass.shape[0]
   body_inertia_id = worldid % body_inertia.shape[0]
@@ -4150,219 +4813,120 @@ def _subtree_vel_forward(
   ang = wp.spatial_top(cvel)
   lin = wp.spatial_bottom(cvel)
   xipos = xipos_in[worldid, bodyid]
-  ximat = ximat_in[worldid, bodyid]
+  ximat = math.quat_to_mat(xiquat_in[worldid, bodyid])
   subtree_com_root = subtree_com_in[worldid, body_rootid[bodyid]]
 
-  # update linear velocity
   lin -= wp.cross(xipos - subtree_com_root, ang)
 
-  subtree_linvel_out[worldid, bodyid] = body_mass[body_mass_id, bodyid] * lin
   dv = wp.transpose(ximat) @ ang
   dv[0] *= body_inertia[body_inertia_id, bodyid][0]
   dv[1] *= body_inertia[body_inertia_id, bodyid][1]
   dv[2] *= body_inertia[body_inertia_id, bodyid][2]
-  subtree_angmom_out[worldid, bodyid] = ximat @ dv
-  subtree_bodyvel_out[worldid, bodyid] = wp.spatial_vector(ang, lin)
-
-
-@cache_kernel
-def _linear_momentum(deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    body_parentid: wp.array[int],
-    body_subtreemass: wp.array2d[float],
-    # Data in:
-    subtree_linvel_in: wp.array2d[wp.vec3],
-    # In:
-    body_tree_: wp.array[int],
-    # Data out:
-    subtree_linvel_out: wp.array2d[wp.vec3],
-  ):
-    worldid, nodeid = wp.tid()
-    bodyid = body_tree_[nodeid]
-    linvel = subtree_linvel_in[worldid, bodyid]
-    if bodyid:
-      pid = body_parentid[bodyid]
-      wp.atomic_add(subtree_linvel_out[worldid], pid, linvel)
-    if wp.static(not deterministic):
-      subtree_linvel_out[worldid, bodyid] = linvel / wp.max(
-        MJ_MINVAL, body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
-      )
-
-  return kernel
+  body_mom_out[worldid, bodyid] = wp.spatial_vector(ximat @ dv, body_mass[body_mass_id, bodyid] * lin)
 
 
 @wp.kernel
-def _linear_momentum_div(
+def _subtree_momentum(
   # Model:
   body_subtreemass: wp.array2d[float],
+  body_subtreenum: wp.array[int],
   # Data in:
-  subtree_linvel_in: wp.array2d[wp.vec3],
+  xipos_in: wp.array2d[wp.vec3],
+  subtree_com_in: wp.array2d[wp.vec3],
+  # In:
+  body_mom_in: wp.array2d[wp.spatial_vector],
   # Data out:
   subtree_linvel_out: wp.array2d[wp.vec3],
+  subtree_angmom_out: wp.array2d[wp.vec3],
 ):
+  """Subtree momentum about the subtree com.
+
+  Sums over the contiguous body range [b, b + body_subtreenum[b]). The com velocity term drops out
+  of sum_j m_j (x_j - c) x (v_j - v_c) since sum_j m_j (x_j - c) = 0.
+  """
   worldid, bodyid = wp.tid()
-  subtree_linvel_out[worldid, bodyid] = subtree_linvel_in[worldid, bodyid] / wp.max(
-    MJ_MINVAL, body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
-  )
+  if bodyid == 0:  # shifted from the tree roots in _subtree_momentum_world
+    return
+  com = subtree_com_in[worldid, bodyid]
+
+  linmom = wp.vec3(0.0)
+  angmom = wp.vec3(0.0)
+  for j in range(bodyid, bodyid + body_subtreenum[bodyid]):
+    mom = body_mom_in[worldid, j]
+    p = wp.spatial_bottom(mom)
+    linmom += p
+    angmom += wp.spatial_top(mom) + wp.cross(xipos_in[worldid, j] - com, p)
+
+  subtreemass = body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
+  subtree_linvel_out[worldid, bodyid] = linmom / wp.max(MJ_MINVAL, subtreemass)
+  subtree_angmom_out[worldid, bodyid] = angmom
 
 
 @wp.kernel
-def _angular_momentum_body(
+def _subtree_momentum_world(
   # Model:
-  body_mass: wp.array2d[float],
+  nbody: int,
+  body_subtreemass: wp.array2d[float],
+  body_subtreenum: wp.array[int],
   # Data in:
-  xipos_in: wp.array2d[wp.vec3],
   subtree_com_in: wp.array2d[wp.vec3],
   subtree_linvel_in: wp.array2d[wp.vec3],
   subtree_angmom_in: wp.array2d[wp.vec3],
   # In:
-  subtree_bodyvel_in: wp.array2d[wp.spatial_vector],
+  body_mom_in: wp.array2d[wp.spatial_vector],
   # Data out:
+  subtree_linvel_out: wp.array2d[wp.vec3],
   subtree_angmom_out: wp.array2d[wp.vec3],
 ):
-  worldid, bodyid = wp.tid()
-  if bodyid == 0:
-    return
-  dx = xipos_in[worldid, bodyid] - subtree_com_in[worldid, bodyid]
-  dv = wp.spatial_bottom(subtree_bodyvel_in[worldid, bodyid]) - subtree_linvel_in[worldid, bodyid]
-  dp = dv * body_mass[worldid % body_mass.shape[0], bodyid]
-  subtree_angmom_out[worldid, bodyid] = subtree_angmom_in[worldid, bodyid] + wp.cross(dx, dp)
+  """World body: the tree roots' momenta shifted to the world subtree com."""
+  worldid = wp.tid()
+  subtreemass_id = worldid % body_subtreemass.shape[0]
 
+  linmom = wp.spatial_bottom(body_mom_in[worldid, 0])
+  rootid = int(1)
+  while rootid < nbody:
+    # undo the root's division by its subtree mass
+    linmom += subtree_linvel_in[worldid, rootid] * wp.max(MJ_MINVAL, body_subtreemass[subtreemass_id, rootid])
+    rootid += body_subtreenum[rootid]
+  linvel = linmom / wp.max(MJ_MINVAL, body_subtreemass[subtreemass_id, 0])
 
-@cache_kernel
-def _angular_momentum(deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+  com = subtree_com_in[worldid, 0]
+  angmom = wp.spatial_top(body_mom_in[worldid, 0])
+  rootid = int(1)
+  while rootid < nbody:
+    dv = (subtree_linvel_in[worldid, rootid] - linvel) * body_subtreemass[subtreemass_id, rootid]
+    angmom += subtree_angmom_in[worldid, rootid] + wp.cross(subtree_com_in[worldid, rootid] - com, dv)
+    rootid += body_subtreenum[rootid]
 
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    body_parentid: wp.array[int],
-    body_mass: wp.array2d[float],
-    body_subtreemass: wp.array2d[float],
-    # Data in:
-    xipos_in: wp.array2d[wp.vec3],
-    subtree_com_in: wp.array2d[wp.vec3],
-    subtree_linvel_in: wp.array2d[wp.vec3],
-    subtree_angmom_in: wp.array2d[wp.vec3],
-    # In:
-    subtree_bodyvel_in: wp.array2d[wp.spatial_vector],
-    body_tree_: wp.array[int],
-    # Data out:
-    subtree_angmom_out: wp.array2d[wp.vec3],
-  ):
-    worldid, nodeid = wp.tid()
-    bodyid = body_tree_[nodeid]
-
-    if bodyid == 0:
-      return
-
-    pid = body_parentid[bodyid]
-
-    com = subtree_com_in[worldid, bodyid]
-    com_parent = subtree_com_in[worldid, pid]
-    linvel = subtree_linvel_in[worldid, bodyid]
-    linvel_parent = subtree_linvel_in[worldid, pid]  # Data field
-    subtreemass = body_subtreemass[worldid % body_subtreemass.shape[0], bodyid]
-
-    if wp.static(deterministic):
-      angmom = subtree_angmom_in[worldid, bodyid]
-    else:
-      xipos = xipos_in[worldid, bodyid]
-      vel = subtree_bodyvel_in[worldid, bodyid]
-      mass = body_mass[worldid % body_mass.shape[0], bodyid]
-
-      # momentum wrt body i
-      dx = xipos - com
-      dv = wp.spatial_bottom(vel) - linvel
-      dp = dv * mass
-      dL = wp.cross(dx, dp)
-
-      # add to subtree i
-      angmom = subtree_angmom_in[worldid, bodyid] + dL
-      subtree_angmom_out[worldid, bodyid] = angmom
-
-    # momentum wrt parent
-    dx = com - com_parent
-    dv = linvel - linvel_parent
-    dv *= subtreemass
-    dL_parent = wp.cross(dx, dv)
-
-    # add to parent
-    wp.atomic_add(subtree_angmom_out[worldid], pid, angmom + dL_parent)
-
-  return kernel
+  subtree_linvel_out[worldid, 0] = linvel
+  subtree_angmom_out[worldid, 0] = angmom
 
 
 def subtree_vel(m: Model, d: Data):
   """Computes subtree linear velocity and angular momentum.
 
-  Computes the linear momentum and angular momentum for each subtree, accumulating
-  contributions up the kinematic tree.
+  Sums each body's linear and angular momentum over its subtree, taking the angular momentum
+  about the subtree center of mass.
   """
-  subtree_bodyvel = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
-
-  # bodywise quantities
+  body_mom = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
   wp.launch(
     _subtree_vel_forward,
     dim=(d.nworld, m.nbody),
-    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.ximat, d.subtree_com, d.cvel],
-    outputs=[d.subtree_linvel, d.subtree_angmom, subtree_bodyvel],
+    inputs=[m.body_rootid, m.body_mass, m.body_inertia, d.xipos, d.xiquat, d.subtree_com, d.cvel],
+    outputs=[body_mom],
   )
-
-  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  subtree_vec_in = wp.empty_like(d.subtree_linvel) if det_atomics else None
-
-  # sum body linear momentum recursively up the kinematic tree
-  for body_tree in reversed(m.body_tree):
-    if det_atomics:
-      wp.copy(subtree_vec_in, d.subtree_linvel)
-    wp.launch(
-      _linear_momentum(det_atomics),
-      dim=[d.nworld, body_tree.size],
-      inputs=[m.body_parentid, m.body_subtreemass, subtree_vec_in if det_atomics else d.subtree_linvel, body_tree],
-      outputs=[d.subtree_linvel],
-    )
-  if det_atomics:
-    wp.launch(
-      _linear_momentum_div,
-      dim=(d.nworld, m.nbody),
-      inputs=[m.body_subtreemass, d.subtree_linvel],
-      outputs=[d.subtree_linvel],
-    )
-    wp.launch(
-      _angular_momentum_body,
-      dim=(d.nworld, m.nbody),
-      inputs=[m.body_mass, d.xipos, d.subtree_com, d.subtree_linvel, d.subtree_angmom, subtree_bodyvel],
-      outputs=[d.subtree_angmom],
-    )
-
-  for body_tree in reversed(m.body_tree):
-    if det_atomics:
-      wp.copy(subtree_vec_in, d.subtree_angmom)
-    wp.launch(
-      _angular_momentum(det_atomics),
-      dim=[d.nworld, body_tree.size],
-      inputs=[
-        m.body_parentid,
-        m.body_mass,
-        m.body_subtreemass,
-        d.xipos,
-        d.subtree_com,
-        d.subtree_linvel,
-        subtree_vec_in if det_atomics else d.subtree_angmom,
-        subtree_bodyvel,
-        body_tree,
-      ],
-      outputs=[d.subtree_angmom],
-    )
+  wp.launch(
+    _subtree_momentum,
+    dim=(d.nworld, m.nbody),
+    inputs=[m.body_subtreemass, m.body_subtreenum, d.xipos, d.subtree_com, body_mom],
+    outputs=[d.subtree_linvel, d.subtree_angmom],
+  )
+  wp.launch(
+    _subtree_momentum_world,
+    dim=d.nworld,
+    inputs=[m.nbody, m.body_subtreemass, m.body_subtreenum, d.subtree_com, d.subtree_linvel, d.subtree_angmom, body_mom],
+    outputs=[d.subtree_linvel, d.subtree_angmom],
+  )
 
 
 @cache_kernel
@@ -4425,6 +4989,7 @@ def _accumulate_jac_chain(
   offset: wp.vec3,
   vec: wp.vec3,
   bodyid: int,
+  stop_bodyid: int,
   rowadr: int,
   rownnz: int,
   scale: float,
@@ -4432,10 +4997,10 @@ def _accumulate_jac_chain(
   # Data out:
   ten_J_out: wp.array2d[float],
 ):
-  """Walk body chain from bodyid to root, accumulate Jacobian contributions."""
+  """Walk body chain from bodyid up to stop_bodyid (exclusive), accumulate Jacobian entries."""
   ptr = rownnz - 1
   bid = bodyid
-  while bid > 0:
+  while bid > 0 and bid != stop_bodyid:
     bdofadr = body_dofadr[bid]
     bdofnum = body_dofnum[bid]
     # iterate DOFs in this body in descending order
@@ -4479,6 +5044,7 @@ def _spatial_site_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
     wrap_objid: wp.array[int],
     tendon_site_pair_adr: wp.array[int],
     wrap_site_pair_adr: wp.array[int],
+    wrap_site_pair_lca: wp.array[int],
     wrap_pulley_scale: wp.array[float],
     # Data in:
     site_xpos_in: wp.array2d[wp.vec3],
@@ -4514,38 +5080,43 @@ def _spatial_site_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
     if body0 != body1:
       rownnz = ten_J_rownnz[tenid]
       rowadr = ten_J_rowadr[tenid]
-      offset0 = pnt0 - subtree_com_in[worldid, body_rootid[body0]]
-      offset1 = pnt1 - subtree_com_in[worldid, body_rootid[body1]]
-      _accumulate_jac_chain(
-        body_parentid,
-        body_dofnum,
-        body_dofadr,
-        ten_J_colind,
-        cdof_in,
-        offset0,
-        vec,
-        body0,
-        rowadr,
-        rownnz,
-        -pulley_scale,
-        worldid,
-        ten_J_out,
-      )
-      _accumulate_jac_chain(
-        body_parentid,
-        body_dofnum,
-        body_dofadr,
-        ten_J_colind,
-        cdof_in,
-        offset1,
-        vec,
-        body1,
-        rowadr,
-        rownnz,
-        pulley_scale,
-        worldid,
-        ten_J_out,
-      )
+      ancestor = wrap_site_pair_lca[elementid]
+      if body0 != ancestor:
+        offset0 = pnt0 - subtree_com_in[worldid, body_rootid[body0]]
+        _accumulate_jac_chain(
+          body_parentid,
+          body_dofnum,
+          body_dofadr,
+          ten_J_colind,
+          cdof_in,
+          offset0,
+          vec,
+          body0,
+          ancestor,
+          rowadr,
+          rownnz,
+          -pulley_scale,
+          worldid,
+          ten_J_out,
+        )
+      if body1 != ancestor:
+        offset1 = pnt1 - subtree_com_in[worldid, body_rootid[body1]]
+        _accumulate_jac_chain(
+          body_parentid,
+          body_dofnum,
+          body_dofadr,
+          ten_J_colind,
+          cdof_in,
+          offset1,
+          vec,
+          body1,
+          ancestor,
+          rowadr,
+          rownnz,
+          pulley_scale,
+          worldid,
+          ten_J_out,
+        )
 
   return kernel
 
@@ -4575,10 +5146,11 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
     wrap_prm: wp.array[float],
     tendon_geom_adr: wp.array[int],
     wrap_geom_adr: wp.array[int],
+    wrap_geom_lca: wp.array[wp.vec3i],
     wrap_pulley_scale: wp.array[float],
     # Data in:
     geom_xpos_in: wp.array2d[wp.vec3],
-    geom_xmat_in: wp.array2d[wp.mat33],
+    geom_xquat_in: wp.array2d[wp.quat],
     site_xpos_in: wp.array2d[wp.vec3],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
@@ -4606,7 +5178,7 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
 
     # get geom information
     geom_xpos = geom_xpos_in[worldid, wrap_objid_geom]
-    geom_xmat = geom_xmat_in[worldid, wrap_objid_geom]
+    geom_xmat = math.quat_to_mat(geom_xquat_in[worldid, wrap_objid_geom])
     geomsize = geom_size[worldid % geom_size.shape[0], wrap_objid_geom][0]
     geom_type = wrap_type[wrap_adr]
 
@@ -4614,6 +5186,7 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
     bodyid_site0 = site_bodyid[wrap_objid_site0]
     bodyid_geom = geom_bodyid[wrap_objid_geom]
     bodyid_site1 = site_bodyid[wrap_objid_site1]
+    lca = wrap_geom_lca[elementid]
 
     # find wrap object sidesite (if it exists)
     sideid = int(wp.round(wrap_prm[wrap_adr]))
@@ -4657,73 +5230,83 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
 
       # site-geom segment
       if dif_body_sitegeom:
-        offset_site0 = site_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_site0]]
-        offset_geom0 = geom_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_geom]]
-        _accumulate_jac_chain(
-          body_parentid,
-          body_dofnum,
-          body_dofadr,
-          ten_J_colind,
-          cdof_in,
-          offset_site0,
-          vec_sitegeom,
-          bodyid_site0,
-          rowadr,
-          rownnz,
-          -pulley_scale,
-          worldid,
-          ten_J_out,
-        )
-        _accumulate_jac_chain(
-          body_parentid,
-          body_dofnum,
-          body_dofadr,
-          ten_J_colind,
-          cdof_in,
-          offset_geom0,
-          vec_sitegeom,
-          bodyid_geom,
-          rowadr,
-          rownnz,
-          pulley_scale,
-          worldid,
-          ten_J_out,
-        )
+        ancestor_sitegeom = lca[0]
+        if bodyid_site0 != ancestor_sitegeom:
+          offset_site0 = site_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_site0]]
+          _accumulate_jac_chain(
+            body_parentid,
+            body_dofnum,
+            body_dofadr,
+            ten_J_colind,
+            cdof_in,
+            offset_site0,
+            vec_sitegeom,
+            bodyid_site0,
+            ancestor_sitegeom,
+            rowadr,
+            rownnz,
+            -pulley_scale,
+            worldid,
+            ten_J_out,
+          )
+        if bodyid_geom != ancestor_sitegeom:
+          offset_geom0 = geom_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_geom]]
+          _accumulate_jac_chain(
+            body_parentid,
+            body_dofnum,
+            body_dofadr,
+            ten_J_colind,
+            cdof_in,
+            offset_geom0,
+            vec_sitegeom,
+            bodyid_geom,
+            ancestor_sitegeom,
+            rowadr,
+            rownnz,
+            pulley_scale,
+            worldid,
+            ten_J_out,
+          )
 
       # geom-site segment
       if dif_body_geomsite:
-        offset_geom1 = geom_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_geom]]
-        offset_site1 = site_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_site1]]
-        _accumulate_jac_chain(
-          body_parentid,
-          body_dofnum,
-          body_dofadr,
-          ten_J_colind,
-          cdof_in,
-          offset_geom1,
-          vec_geomsite,
-          bodyid_geom,
-          rowadr,
-          rownnz,
-          -pulley_scale,
-          worldid,
-          ten_J_out,
-        )
-        _accumulate_jac_chain(
-          body_parentid,
-          body_dofnum,
-          body_dofadr,
-          ten_J_colind,
-          cdof_in,
-          offset_site1,
-          vec_geomsite,
-          bodyid_site1,
-          rowadr,
-          rownnz,
-          pulley_scale,
-          worldid,
-          ten_J_out,
-        )
+        ancestor_geomsite = lca[1]
+        if bodyid_geom != ancestor_geomsite:
+          offset_geom1 = geom_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_geom]]
+          _accumulate_jac_chain(
+            body_parentid,
+            body_dofnum,
+            body_dofadr,
+            ten_J_colind,
+            cdof_in,
+            offset_geom1,
+            vec_geomsite,
+            bodyid_geom,
+            ancestor_geomsite,
+            rowadr,
+            rownnz,
+            -pulley_scale,
+            worldid,
+            ten_J_out,
+          )
+        if bodyid_site1 != ancestor_geomsite:
+          offset_site1 = site_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_site1]]
+          _accumulate_jac_chain(
+            body_parentid,
+            body_dofnum,
+            body_dofadr,
+            ten_J_colind,
+            cdof_in,
+            offset_site1,
+            vec_geomsite,
+            bodyid_site1,
+            ancestor_geomsite,
+            rowadr,
+            rownnz,
+            pulley_scale,
+            worldid,
+            ten_J_out,
+          )
     else:
       dif_sitesite = site_pnt1 - site_pnt0
       vec_sitesite, length_sitesite = math.normalize_with_norm(dif_sitesite)
@@ -4737,199 +5320,213 @@ def _spatial_geom_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
         vec_sitesite = wp.vec3(1.0, 0.0, 0.0)
 
       if bodyid_site0 != bodyid_site1:
-        offset_site0 = site_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_site0]]
-        offset_site1 = site_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_site1]]
-        _accumulate_jac_chain(
-          body_parentid,
-          body_dofnum,
-          body_dofadr,
-          ten_J_colind,
-          cdof_in,
-          offset_site0,
-          vec_sitesite,
-          bodyid_site0,
-          rowadr,
-          rownnz,
-          -pulley_scale,
-          worldid,
-          ten_J_out,
-        )
-        _accumulate_jac_chain(
-          body_parentid,
-          body_dofnum,
-          body_dofadr,
-          ten_J_colind,
-          cdof_in,
-          offset_site1,
-          vec_sitesite,
-          bodyid_site1,
-          rowadr,
-          rownnz,
-          pulley_scale,
-          worldid,
-          ten_J_out,
-        )
+        ancestor_sitesite = lca[2]
+        if bodyid_site0 != ancestor_sitesite:
+          offset_site0 = site_pnt0 - subtree_com_in[worldid, body_rootid[bodyid_site0]]
+          _accumulate_jac_chain(
+            body_parentid,
+            body_dofnum,
+            body_dofadr,
+            ten_J_colind,
+            cdof_in,
+            offset_site0,
+            vec_sitesite,
+            bodyid_site0,
+            ancestor_sitesite,
+            rowadr,
+            rownnz,
+            -pulley_scale,
+            worldid,
+            ten_J_out,
+          )
+        if bodyid_site1 != ancestor_sitesite:
+          offset_site1 = site_pnt1 - subtree_com_in[worldid, body_rootid[bodyid_site1]]
+          _accumulate_jac_chain(
+            body_parentid,
+            body_dofnum,
+            body_dofadr,
+            ten_J_colind,
+            cdof_in,
+            offset_site1,
+            vec_sitesite,
+            bodyid_site1,
+            ancestor_sitesite,
+            rowadr,
+            rownnz,
+            pulley_scale,
+            worldid,
+            ten_J_out,
+          )
 
   return kernel
+
+
+@wp.func
+def _write_wrap_point(
+  # In:
+  worldid: int,
+  idx: int,
+  pnt: wp.vec3,
+  objid: int,
+  # Data out:
+  wrap_obj_out: wp.array2d[wp.vec2i],
+  wrap_xpos_out: wp.array2d[wp.spatial_vector],
+):
+  row = idx // 2
+  col = idx % 2
+  wrap_xpos_out[worldid, row][3 * col + 0] = pnt[0]
+  wrap_xpos_out[worldid, row][3 * col + 1] = pnt[1]
+  wrap_xpos_out[worldid, row][3 * col + 2] = pnt[2]
+  wrap_obj_out[worldid, row][col] = objid
+
+
+@wp.kernel
+def _spatial_tendon_wrapnum(
+  # Model:
+  tendon_type: wp.array[int],
+  tendon_adr: wp.array[int],
+  tendon_num: wp.array[int],
+  wrap_type: wp.array[int],
+  tendon_geom_wrapadr: wp.array[int],
+  # In:
+  wrap_geom_xpos_in: wp.array2d[wp.spatial_vector],
+  # Data out:
+  ten_wrapnum_out: wp.array2d[int],
+):
+  worldid, tenid = wp.tid()
+
+  # fixed tendon has no wrap points
+  if tendon_type[tenid] == TendonType.FIXED:
+    ten_wrapnum_out[worldid, tenid] = 0
+    return
+
+  # site and pulley: one point; geom: two points if the tendon wraps around it
+  adr = tendon_adr[tenid]
+  wrapgeomid = tendon_geom_wrapadr[tenid]
+  wrapnum = int(0)
+  for j in range(tendon_num[tenid]):
+    wtype = wrap_type[adr + j]
+    if wtype == WrapType.SITE or wtype == WrapType.PULLEY:
+      wrapnum += 1
+    else:
+      if wp.norm_l2(wp.spatial_top(wrap_geom_xpos_in[worldid, wrapgeomid])) < MJ_MAXVAL:
+        wrapnum += 2
+      wrapgeomid += 1
+
+  ten_wrapnum_out[worldid, tenid] = wrapnum
+
+
+@wp.kernel
+def _spatial_tendon_wrapadr(
+  # Model:
+  ntendon: int,
+  # Data in:
+  ten_wrapnum_in: wp.array2d[int],
+  # Data out:
+  ten_wrapadr_out: wp.array2d[int],
+):
+  worldid = wp.tid()
+  wrapcount = int(0)
+  for i in range(ntendon):
+    ten_wrapadr_out[worldid, i] = wrapcount
+    wrapcount += ten_wrapnum_in[worldid, i]
 
 
 @wp.kernel
 def _spatial_tendon_wrap(
   # Model:
-  ntendon: int,
+  tendon_type: wp.array[int],
   tendon_adr: wp.array[int],
   tendon_num: wp.array[int],
   wrap_type: wp.array[int],
   wrap_objid: wp.array[int],
+  tendon_geom_wrapadr: wp.array[int],
   # Data in:
   site_xpos_in: wp.array2d[wp.vec3],
+  ten_wrapadr_in: wp.array2d[int],
+  ten_wrapnum_in: wp.array2d[int],
   # In:
   wrap_geom_xpos_in: wp.array2d[wp.spatial_vector],
   # Data out:
-  ten_wrapadr_out: wp.array2d[int],
-  ten_wrapnum_out: wp.array2d[int],
   wrap_obj_out: wp.array2d[wp.vec2i],
   wrap_xpos_out: wp.array2d[wp.spatial_vector],
 ):
-  worldid = wp.tid()
+  worldid, tenid = wp.tid()
 
-  wrapcount = int(0)
-  wrapgeomid = int(0)
-  for i in range(ntendon):
-    adr = tendon_adr[i]
-    ten_wrapadr_out[worldid, i] = wrapcount
-    wrapnum = int(0)
-    tendonnum = tendon_num[i]
+  # zero the unused tail of the path, split across the tendon threads of this world
+  ntendon = ten_wrapadr_in.shape[1]
+  total = ten_wrapadr_in[worldid, ntendon - 1] + ten_wrapnum_in[worldid, ntendon - 1]
+  if tenid == 0 and total % 2 == 1:
+    _write_wrap_point(worldid, total, wp.vec3(0.0), 0, wrap_obj_out, wrap_xpos_out)
+  r = (total + 1) // 2 + tenid
+  while r < wrap_obj_out.shape[1]:
+    wrap_xpos_out[worldid, r] = wp.spatial_vector()
+    wrap_obj_out[worldid, r] = wp.vec2i()
+    r += ntendon
 
-    # process fixed tendon
-    if wrap_type[adr] == WrapType.JOINT:
+  # process fixed tendon
+  if tendon_type[tenid] == TendonType.FIXED:
+    return
+
+  # process spatial tendon
+  adr = tendon_adr[tenid]
+  wrapcount = ten_wrapadr_in[worldid, tenid]
+  wrapgeomid = tendon_geom_wrapadr[tenid]
+  tendonnum = tendon_num[tenid]
+
+  j = int(0)
+  while j < tendonnum - 1:
+    # get 1st and 2nd object
+    type0 = wrap_type[adr + j + 0]
+    type1 = wrap_type[adr + j + 1]
+    id0 = wrap_objid[adr + j + 0]
+    id1 = wrap_objid[adr + j + 1]
+
+    # pulley
+    pulley0 = type0 == WrapType.PULLEY
+    if pulley0 or type1 == WrapType.PULLEY:
+      if pulley0:
+        _write_wrap_point(worldid, wrapcount, wp.vec3(0.0), -2, wrap_obj_out, wrap_xpos_out)
+        wrapcount += 1
+
+      # move to next
+      j += 1
       continue
 
-    # process spatial tendon
-    j = int(0)
-    while j < tendonnum - 1:
-      # get 1st and 2nd object
-      type0 = wrap_type[adr + j + 0]
-      type1 = wrap_type[adr + j + 1]
-      id0 = wrap_objid[adr + j + 0]
-      id1 = wrap_objid[adr + j + 1]
+    # init sequence; assume it starts with site
+    wpnt_site0 = site_xpos_in[worldid, id0]
 
-      # pulley
-      pulley0 = type0 == WrapType.PULLEY
-      if pulley0 or type1 == WrapType.PULLEY:
-        if pulley0:
-          row = wrapcount // 2
-          col = wrapcount % 2
-          wrap_xpos_out[worldid, row][3 * col + 0] = 0.0
-          wrap_xpos_out[worldid, row][3 * col + 1] = 0.0
-          wrap_xpos_out[worldid, row][3 * col + 2] = 0.0
+    # second object is geom: process site-geom-site
+    if type1 == WrapType.SPHERE or type1 == WrapType.CYLINDER:
+      wrap_geom_xpos = wrap_geom_xpos_in[worldid, wrapgeomid]
+      wpnt_geom0 = wp.spatial_top(wrap_geom_xpos)
+      wrapgeomid += 1
 
-          wrap_obj_out[worldid, row][col] = -2
-
-          wrapnum += 1
-          wrapcount += 1
-
-        # move to next
-        j += 1
-        continue
-
-      # init sequence; assume it starts with site
-      wpnt_site0 = site_xpos_in[worldid, id0]
-
-      # second object is geom: process site-geom-site
-      if type1 == WrapType.SPHERE or type1 == WrapType.CYLINDER:
-        wrap_geom_xpos = wrap_geom_xpos_in[worldid, wrapgeomid]
-        wpnt_geom0 = wp.spatial_top(wrap_geom_xpos)
-        wrapgeomid += 1
-
-        wrapid = id1
-        id1 = wrap_objid[adr + j + 2]
-        if wp.norm_l2(wpnt_geom0) < MJ_MAXVAL:
-          wpnt_geom1 = wp.spatial_bottom(wrap_geom_xpos)
-          wpnt_site1 = site_xpos_in[worldid, id1]
-
-          # assign to wrap
-          row0 = (wrapcount + 0) // 2
-          col0 = (wrapcount + 0) % 2
-          row1 = (wrapcount + 1) // 2
-          col1 = (wrapcount + 1) % 2
-          row2 = (wrapcount + 2) // 2
-          col2 = (wrapcount + 2) % 2
-          row3 = (wrapcount + 3) // 2
-          col3 = (wrapcount + 3) % 2
-
-          wrap_xpos_out[worldid, row0][3 * col0 + 0] = wpnt_site0[0]
-          wrap_xpos_out[worldid, row0][3 * col0 + 1] = wpnt_site0[1]
-          wrap_xpos_out[worldid, row0][3 * col0 + 2] = wpnt_site0[2]
-
-          wrap_xpos_out[worldid, row1][3 * col1 + 0] = wpnt_geom0[0]
-          wrap_xpos_out[worldid, row1][3 * col1 + 1] = wpnt_geom0[1]
-          wrap_xpos_out[worldid, row1][3 * col1 + 2] = wpnt_geom0[2]
-
-          wrap_xpos_out[worldid, row2][3 * col2 + 0] = wpnt_geom1[0]
-          wrap_xpos_out[worldid, row2][3 * col2 + 1] = wpnt_geom1[1]
-          wrap_xpos_out[worldid, row2][3 * col2 + 2] = wpnt_geom1[2]
-
-          wrap_xpos_out[worldid, row3][3 * col3 + 0] = wpnt_site1[0]
-          wrap_xpos_out[worldid, row3][3 * col3 + 1] = wpnt_site1[1]
-          wrap_xpos_out[worldid, row3][3 * col3 + 2] = wpnt_site1[2]
-
-          wrap_obj_out[worldid, row0][col0] = -1
-          wrap_obj_out[worldid, row1][col1] = wrapid
-          wrap_obj_out[worldid, row2][col2] = wrapid
-
-          wrapnum += 3
-          wrapcount += 3
-          j += 2
-
-        else:
-          row0 = (wrapcount + 0) // 2
-          col0 = (wrapcount + 0) % 2
-
-          wrap_xpos_out[worldid, row0][3 * col0 + 0] = wpnt_site0[0]
-          wrap_xpos_out[worldid, row0][3 * col0 + 1] = wpnt_site0[1]
-          wrap_xpos_out[worldid, row0][3 * col0 + 2] = wpnt_site0[2]
-
-          wrap_obj_out[worldid, row0][col0] = -1
-
-          wrapnum += 1
-          wrapcount += 1
-          j += 2
-
+      wrapid = id1
+      id1 = wrap_objid[adr + j + 2]
+      if wp.norm_l2(wpnt_geom0) < MJ_MAXVAL:
+        _write_wrap_point(worldid, wrapcount + 0, wpnt_site0, -1, wrap_obj_out, wrap_xpos_out)
+        _write_wrap_point(worldid, wrapcount + 1, wpnt_geom0, wrapid, wrap_obj_out, wrap_xpos_out)
+        _write_wrap_point(worldid, wrapcount + 2, wp.spatial_bottom(wrap_geom_xpos), wrapid, wrap_obj_out, wrap_xpos_out)
+        wrapcount += 3
       else:
-        row0 = (wrapcount + 0) // 2
-        col0 = (wrapcount + 0) % 2
-
-        wrap_xpos_out[worldid, row0][3 * col0 + 0] = wpnt_site0[0]
-        wrap_xpos_out[worldid, row0][3 * col0 + 1] = wpnt_site0[1]
-        wrap_xpos_out[worldid, row0][3 * col0 + 2] = wpnt_site0[2]
-
-        wrap_obj_out[worldid, row0][col0] = -1
-
-        wrapnum += 1
+        _write_wrap_point(worldid, wrapcount, wpnt_site0, -1, wrap_obj_out, wrap_xpos_out)
         wrapcount += 1
-        j += 1
+      j += 2
+    else:
+      _write_wrap_point(worldid, wrapcount, wpnt_site0, -1, wrap_obj_out, wrap_xpos_out)
+      wrapcount += 1
+      j += 1
 
-      # assign last site before pulley or tendon end
-      if adr + j + 1 < wrap_type.shape[0]:
-        last_before_pulley = wrap_type[adr + j + 1] == WrapType.PULLEY
-      else:
-        last_before_pulley = False
+    # assign last site before pulley or tendon end
+    if adr + j + 1 < wrap_type.shape[0]:
+      last_before_pulley = wrap_type[adr + j + 1] == WrapType.PULLEY
+    else:
+      last_before_pulley = False
 
-      if j == tendonnum - 1 or last_before_pulley:
-        row0 = (wrapcount + 0) // 2
-        col0 = (wrapcount + 0) % 2
-
-        wpnt_site1 = site_xpos_in[worldid, id1]
-        wrap_xpos_out[worldid, row0][3 * col0 + 0] = wpnt_site1[0]
-        wrap_xpos_out[worldid, row0][3 * col0 + 1] = wpnt_site1[1]
-        wrap_xpos_out[worldid, row0][3 * col0 + 2] = wpnt_site1[2]
-
-        wrap_obj_out[worldid, row0][col0] = -1
-        wrapnum += 1
-        wrapcount += 1
-
-    ten_wrapnum_out[worldid, i] = wrapnum
+    if j == tendonnum - 1 or last_before_pulley:
+      _write_wrap_point(worldid, wrapcount, site_xpos_in[worldid, id1], -1, wrap_obj_out, wrap_xpos_out)
+      wrapcount += 1
 
 
 @event_scope
@@ -4970,10 +5567,6 @@ def tendon(m: Model, d: Data):
   spatial_site = m.wrap_site_pair_adr.size > 0
   spatial_geom = m.wrap_geom_adr.size > 0
 
-  if spatial_site or spatial_geom:
-    d.wrap_xpos.zero_()
-    d.wrap_obj.zero_()
-
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
   # process spatial site tendons
   wp.launch(
@@ -4991,6 +5584,7 @@ def tendon(m: Model, d: Data):
       m.wrap_objid,
       m.tendon_site_pair_adr,
       m.wrap_site_pair_adr,
+      m.wrap_site_pair_lca,
       m.wrap_pulley_scale,
       d.site_xpos,
       d.subtree_com,
@@ -5019,9 +5613,10 @@ def tendon(m: Model, d: Data):
       m.wrap_prm,
       m.tendon_geom_adr,
       m.wrap_geom_adr,
+      m.wrap_geom_lca,
       m.wrap_pulley_scale,
       d.geom_xpos,
-      d.geom_xmat,
+      d.geom_xquat,
       d.site_xpos,
       d.subtree_com,
       d.cdof,
@@ -5030,9 +5625,28 @@ def tendon(m: Model, d: Data):
   )
 
   if spatial_site or spatial_geom:
+    # wrap path: count points per (world, tendon), scan per world, then write per (world, tendon)
+    wp.launch(
+      _spatial_tendon_wrapnum,
+      dim=(d.nworld, m.ntendon),
+      inputs=[m.tendon_type, m.tendon_adr, m.tendon_num, m.wrap_type, m.tendon_geom_wrapadr, wrap_geom_xpos],
+      outputs=[d.ten_wrapnum],
+    )
+    wp.launch(_spatial_tendon_wrapadr, dim=d.nworld, inputs=[m.ntendon, d.ten_wrapnum], outputs=[d.ten_wrapadr])
     wp.launch(
       _spatial_tendon_wrap,
-      dim=d.nworld,
-      inputs=[m.ntendon, m.tendon_adr, m.tendon_num, m.wrap_type, m.wrap_objid, d.site_xpos, wrap_geom_xpos],
-      outputs=[d.ten_wrapadr, d.ten_wrapnum, d.wrap_obj, d.wrap_xpos],
+      dim=(d.nworld, m.ntendon),
+      inputs=[
+        m.tendon_type,
+        m.tendon_adr,
+        m.tendon_num,
+        m.wrap_type,
+        m.wrap_objid,
+        m.tendon_geom_wrapadr,
+        d.site_xpos,
+        d.ten_wrapadr,
+        d.ten_wrapnum,
+        wrap_geom_xpos,
+      ],
+      outputs=[d.wrap_obj, d.wrap_xpos],
     )
