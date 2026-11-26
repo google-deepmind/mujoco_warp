@@ -3517,6 +3517,69 @@ class DiscreteIntegratorTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(efm_fluid[0], efm_fluid[1]))
 
+  def test_discrete_fluid_metric_slender_ellipsoid(self):
+    """Discrete metric keeps the dissipative part of the ellipsoid drag derivative.
+
+    The symmetrized drag derivative of a slender ellipsoid at a small angle of
+    attack is indefinite; efm_fluid holds its projection, as in MuJoCo C.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="CG" density="1000"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="ellipsoid" size="0.5 0.05 0.05" pos="0.2 0 0" fluidshape="ellipsoid"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+    )
+    qvel = np.array([[-1.0, 0.006, 0.018, 0.0, 0.0, 0.0]], dtype=np.float32)
+    d.qvel = wp.array(qvel, dtype=float, device=d.qvel.device)
+    mjd.qvel[:] = qvel[0]
+
+    d.efm_fluid.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    efm_fluid = d.efm_fluid.numpy()[0]
+    self.assertTrue(np.all(np.isfinite(efm_fluid)))
+    self.assertGreater(np.linalg.norm(efm_fluid), 0.0)
+    # TODO(team): remove version check once mujoco >= 4.0.2 is required.
+    if util_pkg.check_version("mujoco>=4.0.2"):
+      mujoco.mj_forward(mjm, mjd)
+      np.testing.assert_allclose(efm_fluid, mjd.efm_fluid, atol=1e-4, rtol=1e-3)
+      np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, atol=1e-3, rtol=1e-3)
+
+  def test_discrete_flex_negative_damping(self):
+    """Negative flex damping is clamped in the discrete metric, as in MuJoCo C."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete"/>
+        <worldbody>
+          <flexcomp name="rod" type="grid" count="8 1 1" spacing="0.05 0.05 0.05" radius="0.01" dim="1" mass="0.1">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e7" damping="-0.01"/>
+            <pin id="0 1"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      qvel_noise=0.1,
+    )
+
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+    self.assertTrue(np.all(np.isfinite(d.qacc.numpy()[0])))
+
+    # TODO(team): remove version check once mujoco >= 4.0.2 is required.
+    if util_pkg.check_version("mujoco>=4.0.2"):
+      mujoco.mj_forward(mjm, mjd)
+      np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, atol=0.1, rtol=0.005)
+
   @parameterized.parameters(1, 2)
   def test_discrete_free_gyro_weak_constraint(self, nworld):
     """Verifies discrete free-body gyro solve skips bodies touched by weak constraints."""
