@@ -770,6 +770,32 @@ class DeterminismTest(parameterized.TestCase):
     )
     self._check_scene(mjm, m, d, covers, replay=True)
 
+  def test_sparse_hessian_records(self):
+    """Hessian records are bounded by the Jacobian row support, not by the number of dofs."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="0 0 .1"/>
+          <replicate count="100" offset=".09 0 0">
+            <body pos="0 0 .05">
+              <freejoint/>
+              <geom size=".05"/>
+            </body>
+          </replicate>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.deterministic": "ATOMICS"},
+      nworld=2,
+      njmax=8000,  # far more rows than the scene has: nv * (nv + 1) / 2 records per row would not fit
+    )
+    d.qacc.fill_(wp.inf)
+    mjw.step(m, d)
+    # neighboring spheres overlap: their contact rows span the dofs of two free bodies
+    self.assertEqual(d.efc.J_rownnz.numpy()[0, : d.nefc.numpy()[0]].max(), m.max_efc_J_rownnz)
+    self.assertTrue(np.isfinite(d.qacc.numpy()).all())
+
   @parameterized.named_parameters(*_SLEEP_CASES)
   def test_sleep(self, overrides, covers):
     """Sleeping trees, with awake bodies and dofs in ascending order."""

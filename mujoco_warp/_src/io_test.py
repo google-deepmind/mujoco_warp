@@ -546,6 +546,67 @@ class IOTest(parameterized.TestCase):
 
     self.assertEqual(io._default_njmax_nnz(mjm, nconmax=0, njmax=2), 2)
 
+  def test_max_efc_J_rownnz(self):
+    """Bound constraint rows by the widest contact, equality, friction or limit row."""
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size=".1"/>
+            <replicate count="2" euler="0 0 180">
+              <body pos=".2 0 0">
+                <joint axis="0 1 0"/>
+                <geom size=".05"/>
+                <body pos=".2 0 0">
+                  <joint axis="0 1 0"/>
+                  <geom size=".05"/>
+                </body>
+              </body>
+            </replicate>
+          </body>
+          <body pos="0 0 1">
+            <joint axis="0 1 0"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # the arm tips can collide; the bound counts the dofs that move either, shared or not: 6 + 2 + 2
+    self.assertEqual(mjwarp.put_model(mjm).max_efc_J_rownnz, 10)
+
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <worldbody>
+          <replicate count="4" offset=".5 0 0">
+            <body>
+              <joint name="hinge" axis="0 1 0"/>
+              <geom size=".1"/>
+            </body>
+          </replicate>
+        </worldbody>
+        <tendon>
+          <fixed name="tendon0">
+            <joint joint="hinge0" coef="1"/>
+            <joint joint="hinge1" coef="1"/>
+          </fixed>
+          <fixed name="tendon1">
+            <joint joint="hinge2" coef="1"/>
+            <joint joint="hinge3" coef="1"/>
+          </fixed>
+        </tendon>
+        <equality>
+          <tendon tendon1="tendon0" tendon2="tendon1"/>
+        </equality>
+      </mujoco>
+      """
+    )
+    # the tendon equality spans all four hinges, a contact only two
+    self.assertEqual(mjwarp.put_model(mjm).max_efc_J_rownnz, 4)
+
   def test_default_njmax_nnz_includes_bilateral_limits(self):
     """Count both limit sides when the range is narrower than twice the margin."""
     mjm = mujoco.MjModel.from_xml_string(

@@ -1733,6 +1733,7 @@ class Model:
     tendon_geom_adr: geom tendon address
     tendon_limited_adr: addresses for limited tendons
     max_ten_J_rownnz: maximum number of non-zeros in a tendon row
+    max_efc_J_rownnz: upper bound on the number of non-zeros in a constraint Jacobian row
     tendon_geom_wrapadr: first geom wrap index per tendon (into wrap_geom_adr)
     wrap_jnt_adr: addresses for joint tendon wrap object
     wrap_site_adr: addresses for site tendon wrap object
@@ -2339,6 +2340,7 @@ class Model:
   tendon_geom_adr: array("ntendon_geom", int)
   tendon_limited_adr: array("ntendon_limited", int)
   max_ten_J_rownnz: int
+  max_efc_J_rownnz: int
   tendon_geom_wrapadr: array("ntendon", int)
   wrap_jnt_adr: array("nwrap_jnt", int)
   wrap_site_adr: array("nwrap_site", int)
