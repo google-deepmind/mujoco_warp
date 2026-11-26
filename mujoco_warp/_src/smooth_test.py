@@ -2597,6 +2597,9 @@ class SmoothTest(parameterized.TestCase):
     mjw.fwd_position(m, d)
 
     moment = d.actuator_moment.numpy()
+    moment_rownnz = d.moment_rownnz.numpy()
+    moment_rowadr = d.moment_rowadr.numpy()
+    moment_colind = d.moment_colind.numpy()
     self.assertTrue(np.all(np.isfinite(moment)))
 
     # Compare against MuJoCo C where the same contact has efc_address == -1.
@@ -2619,9 +2622,7 @@ class SmoothTest(parameterized.TestCase):
       mujoco.mju_sparse2dense(
         ref_dense, mjd_ref.actuator_moment, mjd_ref.moment_rownnz, mjd_ref.moment_rowadr, mjd_ref.moment_colind
       )
-      mujoco.mju_sparse2dense(
-        wp_dense, moment[w], d.moment_rownnz.numpy()[w], d.moment_rowadr.numpy()[w], d.moment_colind.numpy()[w]
-      )
+      mujoco.mju_sparse2dense(wp_dense, moment[w], moment_rownnz[w], moment_rowadr[w], moment_colind[w])
       _assert_eq(wp_dense, ref_dense, f"actuator_moment_world_{w}")
       dense_moments.append(wp_dense)
 

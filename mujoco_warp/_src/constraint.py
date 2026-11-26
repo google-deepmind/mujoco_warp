@@ -307,7 +307,8 @@ def _reject_contact_efc(
   efc_aref_out: wp.array2d[float],
 ):
   """Reject a contact and clear any efc rows reserved below njmax."""
-  _clear_contact_efc_address(conid, 0, contact_efc_address_out)
+  for dim in range(ndim):
+    contact_efc_address_out[conid, dim] = -1
   for efcid in range(base_efcid, wp.min(base_efcid + ndim, njmax_in)):
     if is_sparse:
       efc_J_rownnz_out[worldid, efcid] = 0

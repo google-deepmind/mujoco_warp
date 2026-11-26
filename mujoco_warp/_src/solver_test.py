@@ -3371,15 +3371,13 @@ class SolverTest(parameterized.TestCase):
       np.testing.assert_array_equal(d.efc.force.numpy()[0, :nefc0], force_sep[0, :nefc0])
 
   @parameterized.product(
-    nworld=(1, 2),
     cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
     solver_type=(SolverType.CG, SolverType.NEWTON),
     jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
   )
-  def test_solve_njmax_overflow(self, nworld, cone, solver_type, jacobian):
+  def test_solve_njmax_overflow(self, cone, solver_type, jacobian):
     """Tests solve linesearch when ne > njmax_pad across cones and solvers."""
-    _, _, m, d = test_data.fixture(
-      xml="""
+    xml = """
       <mujoco>
         <option iterations="5" ls_iterations="5"/>
         <worldbody>
@@ -3399,39 +3397,48 @@ class SolverTest(parameterized.TestCase):
           <weld body1="b2" active="false"/>
         </equality>
       </mujoco>
-      """,
-      nworld=nworld,
-      njmax=5,
-      # Reserve enough sparse nnz so parallel equality threads overflow njmax first.
-      njmax_nnz=200,
-      overrides={"opt.cone": cone, "opt.solver": solver_type, "opt.jacobian": jacobian},
-    )
+    """
+    overrides = {"opt.cone": cone, "opt.solver": solver_type, "opt.jacobian": jacobian}
 
-    qpos = d.qpos.numpy()
-    qvel = d.qvel.numpy()
-    qpos[:, 2] = 0.05 if nworld == 1 else [0.05, 0.04]
-    qpos[:, 9] = 0.06 if nworld == 1 else [0.06, 0.03]
-    qvel[:, 0] = 1.0 if nworld == 1 else [1.0, 2.0]
-    d.qpos.assign(qpos)
-    d.qvel.assign(qvel)
-    d.eq_active.fill_(True)
+    qacc_by_nworld = {}
+    for nworld in (1, 2):
+      _, _, m, d = test_data.fixture(
+        xml=xml,
+        nworld=nworld,
+        njmax=5,
+        # Reserve enough sparse nnz so parallel equality threads overflow njmax first.
+        njmax_nnz=200,
+        overrides=overrides,
+      )
 
-    mjw.fwd_position(m, d)
-    mjw.fwd_velocity(m, d)
-    mjw.fwd_actuation(m, d)
-    self.assertTrue(np.all(d.ne.numpy() > d.njmax_pad))
+      qpos = d.qpos.numpy()
+      qvel = d.qvel.numpy()
+      qpos[:, 2] = 0.05 if nworld == 1 else [0.05, 0.04]
+      qpos[:, 9] = 0.06 if nworld == 1 else [0.06, 0.03]
+      qvel[:, 0] = 1.0 if nworld == 1 else [1.0, 2.0]
+      d.qpos.assign(qpos)
+      d.qvel.assign(qvel)
+      d.eq_active.fill_(True)
 
-    d.qacc.fill_(wp.inf)
-    d.qfrc_constraint.fill_(wp.inf)
-    d.efc.force.fill_(wp.inf)
-    d.efc.state.fill_(int(types.ConstraintState.QUADRATIC))
-    mjw.solve(m, d)
+      mjw.fwd_position(m, d)
+      mjw.fwd_velocity(m, d)
+      mjw.fwd_actuation(m, d)
+      self.assertTrue(np.all(d.ne.numpy() > d.njmax_pad))
 
-    qacc = d.qacc.numpy()
-    self.assertTrue(np.all(np.isfinite(qacc)))
-    self.assertTrue(np.all(np.isfinite(d.qfrc_constraint.numpy())))
-    if nworld == 2:
-      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+      d.qacc.fill_(wp.inf)
+      d.qfrc_constraint.fill_(wp.inf)
+      d.efc.force.fill_(wp.inf)
+      d.efc.state.fill_(int(types.ConstraintState.QUADRATIC))
+      mjw.solve(m, d)
+
+      qacc = d.qacc.numpy()
+      self.assertTrue(np.all(np.isfinite(qacc)))
+      self.assertTrue(np.all(np.isfinite(d.qfrc_constraint.numpy())))
+      qacc_by_nworld[nworld] = qacc
+
+    # Without clamping ne to nefc in linesearch, world 0 reads into world 1's rows.
+    np.testing.assert_array_equal(qacc_by_nworld[2][0], qacc_by_nworld[1][0])
+    self.assertFalse(np.allclose(qacc_by_nworld[2][0], qacc_by_nworld[2][1]))
 
 
 _FRICTION_CHAIN_XML = """

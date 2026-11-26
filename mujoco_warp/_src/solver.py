@@ -1234,28 +1234,27 @@ def _linesearch_iterative_kernel(
               det = float(0.0)
               for j in range(1, dim):
                 efcidj = contact_efc_address_in[conid, j]
-                if efcidj >= 0:
-                  jvj = ctx_jv_in[worldid, efcidj]
-                  jarefj = ctx_Jaref_in[worldid, efcidj]
-                  dj = efc_D_in[worldid, efcidj]
-                  DJj = dj * jarefj
+                jvj = ctx_jv_in[worldid, efcidj]
+                jarefj = ctx_Jaref_in[worldid, efcidj]
+                dj = efc_D_in[worldid, efcidj]
+                DJj = dj * jarefj
 
-                  quad += wp.vec3(0.5 * jarefj * DJj, jvj * DJj, 0.5 * jvj * dj * jvj)
+                quad += wp.vec3(0.5 * jarefj * DJj, jvj * DJj, 0.5 * jvj * dj * jvj)
 
-                  # rescale to make primal cone circular
-                  frictionj = friction[j - 1]
-                  uj = jarefj * frictionj
-                  vj = jvj * frictionj
+                # rescale to make primal cone circular
+                frictionj = friction[j - 1]
+                uj = jarefj * frictionj
+                vj = jvj * frictionj
 
-                  for k in range(j - 1):
-                    djk = uj * v_tan[k] - u_tan[k] * vj
-                    det += djk * djk
-                  u_tan[j - 1] = uj
-                  v_tan[j - 1] = vj
+                for k in range(j - 1):
+                  djk = uj * v_tan[k] - u_tan[k] * vj
+                  det += djk * djk
+                u_tan[j - 1] = uj
+                v_tan[j - 1] = vj
 
-                  uu += uj * uj
-                  uv += uj * vj
-                  vv += vj * vj
+                uu += uj * uj
+                uv += uj * vj
+                vv += vj * vj
 
               v_norm = float(0.0)
               u_par = float(0.0)
@@ -2071,7 +2070,6 @@ def _update_constraint_efc(
     efc_D_in: wp.array2d[float],
     efc_frictionloss_in: wp.array2d[float],
     njmax_in: int,
-    nacon_in: wp.array[int],
     # In:
     efc_stride: int,
     ctx_Jaref_in: wp.array2d[float],
@@ -2122,53 +2120,29 @@ def _update_constraint_efc(
         friction = types.vec5()
         u = types.vec6()
 
-      # rows of a contact truncated by an overflow are dropped, else they keep a stale force/state
       if is_elliptic:
         conid = efc_id_in[worldid, efcid]
-        if conid >= wp.min(nacon_in[0], contact_dim_in.shape[0]):
-          efc_force_out[worldid, efcid] = 0.0
-          efc_state_out[worldid, efcid] = types.ConstraintState.SATISFIED.value
-          continue
         efcid0 = contact_efc_address_in[conid, 0]
-        if efcid0 < 0:
-          efc_force_out[worldid, efcid] = 0.0
-          efc_state_out[worldid, efcid] = types.ConstraintState.SATISFIED.value
-          continue
-
         dim = contact_dim_in[conid]
         friction = contact_friction_in[conid]
         jaref0 = ctx_Jaref_in[worldid, efcid0]
         D0 = efc_D_in[worldid, efcid0]
         mu_scale = float(0.0)
         if wp.static(IS_DISCRETE):
-          efcid1 = contact_efc_address_in[conid, 1]
-          if efcid1 < 0:
-            efc_force_out[worldid, efcid] = 0.0
-            efc_state_out[worldid, efcid] = types.ConstraintState.SATISFIED.value
-            continue
-          mu_scale = _elliptic_mu_scale(D0, efc_D_in[worldid, efcid1])
+          mu_scale = _elliptic_mu_scale(D0, efc_D_in[worldid, contact_efc_address_in[conid, 1]])
         else:
           mu_scale = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
         mu = friction[0] * mu_scale
 
-        valid = bool(True)
         for j in range(1, dim):
           efcidj = contact_efc_address_in[conid, j]
-          if efcidj < 0:
-            valid = False
-            break
-          else:
-            frictionj = friction[j - 1]
-            uj = ctx_Jaref_in[worldid, efcidj] * frictionj
-            if wp.static(CONE_ROWS):
-              u[j] = uj
-            TT += uj * uj
-            if efcid == efcidj:
-              ufrictionj = uj * frictionj
-        if not valid:
-          efc_force_out[worldid, efcid] = 0.0
-          efc_state_out[worldid, efcid] = types.ConstraintState.SATISFIED.value
-          continue
+          frictionj = friction[j - 1]
+          uj = ctx_Jaref_in[worldid, efcidj] * frictionj
+          if wp.static(CONE_ROWS):
+            u[j] = uj
+          TT += uj * uj
+          if efcid == efcidj:
+            ufrictionj = uj * frictionj
 
       res = _eval_constraint(
         is_equality,
@@ -2622,7 +2596,6 @@ def _update_efc_force(m: types.Model, d: types.Data, ctx: SolverContext | Invers
       d.efc.D,
       d.efc.frictionloss,
       d.njmax,
-      d.nacon,
       efc_stride,
       ctx.Jaref,
       ctx.ls_exhausted,
@@ -3267,11 +3240,10 @@ def _rewrite_cone_rows(
     if enable:
       base = ctx_cone_base_in[worldid, efcid]
       coef = ctx_cone_coef_in[worldid, efcid]
-      # zero past condim; bound rows of contacts truncated by njmax
+      # zero past condim
       for dim in range(6):
-        row = base + dim
-        if (coef[dim] != 0.0) and (row >= 0) and (row < nefc_world):
-          value += coef[dim] * efc_J_in[worldid, row, dofid]
+        if coef[dim] != 0.0:
+          value += coef[dim] * efc_J_in[worldid, base + dim, dofid]
     wp.tile_scatter_masked(J_kj, erow, dofid, value, enable)
 
 
@@ -3687,8 +3659,7 @@ def _mark_h_tile_pattern_efc(nwords: int, skip_unchanged: bool = False, skip_nof
       conid = efc_id_in[worldid, efcid]
       if efcid != contact_efc_address_in[conid, 0]:
         return
-      # a contact that overflows njmax keeps only its leading rows
-      nrow = wp.min(contact_dim_in[conid], efc_J_rownnz_in.shape[1] - efcid)
+      nrow = contact_dim_in[conid]
 
     rownnz = efc_J_rownnz_in[worldid, efcid]
     rowadr = efc_J_rowadr_in[worldid, efcid]
@@ -4315,13 +4286,10 @@ def _JTDACJ_sparse(
       ctx_Jaref_in: wp.array2d[float],
       worldid: int,
       efcid0: int,
-      block_rows: int,
     ) -> types.vec16:
       D0 = efc_D_in[worldid, efcid0]
       mu_scale = float(0.0)
       if wp.static(IS_DISCRETE):
-        if block_rows < 2:
-          return types.vec16()
         mu_scale = _elliptic_mu_scale(D0, efc_D_in[worldid, efcid0 + 1])
       else:
         mu_scale = opt_impratio_invsqrt[worldid % opt_impratio_invsqrt.shape[0]]
@@ -4336,13 +4304,12 @@ def _JTDACJ_sparse(
       terms[6] = mu
       tt = float(0.0)
       for dim in range(1, wp.static(condim)):
-        if dim < block_rows:
-          efcid = efcid0 + dim
-          scale = fri[dim - 1]
-          u = ctx_Jaref_in[worldid, efcid] * scale
-          terms[dim] = u
-          terms[6 + dim] = scale
-          tt += u * u
+        efcid = efcid0 + dim
+        scale = fri[dim - 1]
+        u = ctx_Jaref_in[worldid, efcid] * scale
+        terms[dim] = u
+        terms[6 + dim] = scale
+        tt += u * u
 
       t = wp.max(wp.sqrt(tt), types.MJ_MINVAL)
       inv_t = math.safe_div(1.0, t)
@@ -4418,18 +4385,17 @@ def _JTDACJ_sparse(
     worldid: int,
     efcid0: int,
     condim: int,
-    block_rows: int,
   ) -> types.vec16:
     if wp.static(MAX_CONDIM == 3):
-      return curvature_terms3(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows)
+      return curvature_terms3(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0)
 
     if condim == 3:
-      return curvature_terms3(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows)
+      return curvature_terms3(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0)
     if wp.static(MAX_CONDIM == 4):
-      return curvature_terms4(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows)
+      return curvature_terms4(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0)
     if condim == 4:
-      return curvature_terms4(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows)
-    return curvature_terms6(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0, block_rows)
+      return curvature_terms4(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0)
+    return curvature_terms6(opt_impratio_invsqrt, efc_D_in, fri, ctx_Jaref_in, worldid, efcid0)
 
   @wp.func
   def hessian_entry(
@@ -4498,7 +4464,6 @@ def _JTDACJ_sparse(
       if wp.static(ELLIPTIC):
         is_cone = efc_state_in[worldid, head_row] == types.ConstraintState.CONE
         condim = int(0)
-        # Clipped cone rows retain the safe head address and a zero scale.
         cone_rowadr = types.vec6i(head_adr, head_adr, head_adr, head_adr, head_adr, head_adr)
         if is_cone:
           conid = efc_id_in[worldid, head_row]
@@ -4507,8 +4472,7 @@ def _JTDACJ_sparse(
           else:
             condim = contact_dim_in[conid]
           for dim in range(1, wp.static(MAX_CONDIM)):
-            if dim < block_rows:
-              cone_rowadr[dim] = head_adr + dim * support
+            cone_rowadr[dim] = head_adr + dim * support
           local_terms = types.vec16()
           if lane == 0:
             local_terms = curvature_terms(
@@ -4519,7 +4483,6 @@ def _JTDACJ_sparse(
               worldid,
               head_row,
               condim,
-              block_rows,
             )
           cone_terms = wp.tile_zeros(shape=(16,), dtype=float, storage="shared")
           for term_id in range(1, 16):
@@ -6555,7 +6518,7 @@ def _noslip_delassus(is_sparse: bool):
     elif efc_type == int(types.ConstraintType.CONTACT_PYRAMIDAL):
       A[0] = _noslip_dot(nv, IS_SPARSE, efc_J_rownnz_in, efc_J_rowadr_in, efc_J_colind_in, efc_J_in, worldid, efcid, Y[efcid])
       conid = efc_id_in[worldid, efcid]
-      if (efcid - contact_efc_address_in[conid, 0]) % 2 == 0 and efcid + 1 < nefc:
+      if (efcid - contact_efc_address_in[conid, 0]) % 2 == 0:
         Y1 = Y[efcid + 1]
         A[1] = _noslip_dot(nv, IS_SPARSE, efc_J_rownnz_in, efc_J_rowadr_in, efc_J_colind_in, efc_J_in, worldid, efcid, Y1)
     elif efc_type == int(types.ConstraintType.CONTACT_ELLIPTIC):
@@ -6564,8 +6527,8 @@ def _noslip_delassus(is_sparse: bool):
       n = contact_dim_in[conid] - 1
       k = efcid - adr - 1
 
-      # skip the normal row and contacts that do not fit
-      if k < 0 or adr + n >= nefc:
+      # skip the normal row
+      if k < 0:
         return
 
       for l in range(k, n):
