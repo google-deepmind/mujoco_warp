@@ -5080,8 +5080,8 @@ def _use_incremental(m: types.Model) -> bool:
 
 
 def _linesearch_update_efc(m: types.Model, d: types.Data) -> bool:
-  """Whether the linesearch sets pyramidal efc force and state with Jaref."""
-  if _use_incremental(m) or m.opt.cone == types.ConeType.ELLIPTIC:
+  """Whether the CG linesearch sets pyramidal efc force and state with Jaref."""
+  if m.opt.solver != types.SolverType.CG or m.opt.cone != types.ConeType.PYRAMIDAL:
     return False
   # with fewer worlds than SMs, long rows run faster over (nworld, njmax) in _update_efc_force
   device = d.qacc.device
