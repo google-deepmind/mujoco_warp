@@ -1207,6 +1207,44 @@ class ConstraintTest(parameterized.TestCase):
     self.assertEqual(d.nefc.numpy()[0], mjd.nefc, "nefc mismatch")
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_interpolated_trilinear_{elastic2d}", m.nv)
 
+  @parameterized.parameters(mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC)
+  def test_flex_interpolated_articulated_sparse(self, cone):
+    """Test sparse contact Jacobians for an interpolated flex mounted on an articulated chain."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+        <mujoco>
+          <worldbody>
+            <geom type="plane" size="2 2 0.05"/>
+            <body name="finger" pos="0 0 0.25">
+              <joint axis="0 1 0"/>
+              <geom size="0.03" mass="0.3"/>
+              <body name="mount" pos="0.04 0 -0.08">
+                <geom size="0.02" mass="0.1"/>
+                <flexcomp name="pad" type="grid" count="2 2 2" spacing="0.08 0.08 0.08"
+                          pos="0 0 -0.14" dim="3" dof="trilinear" radius="0.02" mass="0.4">
+                  <pin id="2 3 6 7"/>
+                  <contact condim="3" selfcollide="none"/>
+                  <elasticity young="2e4" poisson="0.3" elastic2d="none"/>
+                </flexcomp>
+              </body>
+            </body>
+          </worldbody>
+        </mujoco>
+      """,
+      qvel_noise=0.5,
+      overrides={
+        "opt.cone": cone,
+        "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE,
+      },
+    )
+
+    mjw.kinematics(m, d)
+    mjw.make_constraint(m, d)
+
+    self.assertGreater(mjd.nefc, 0, "Expected active contacts in MuJoCo")
+    self.assertEqual(d.nefc.numpy()[0], mjd.nefc, "nefc mismatch")
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, f"efc_flex_interp_articulated_{cone}", m.nv)
+
   # TODO(team): remove version check once mujoco >= 4.0.2 is required.
   @absltest.skipIf(not util_pkg.check_version("mujoco>=4.0.2"), "Requires MuJoCo >= 4.0.2")
   def test_flex_interpolated_empty_cell(self):

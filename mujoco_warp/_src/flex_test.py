@@ -6231,6 +6231,28 @@ class FlexContactNnzTest(parameterized.TestCase):
       """,
       8,
     ),
+    (
+      "articulated_box_shell",
+      """
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <geom type="plane" size="1 1 .01"/>
+          <body name="finger" pos="0 0 0.045">
+            <joint type="slide" axis="0 0 1"/>
+            <geom type="sphere" size=".01" contype="0" conaffinity="0"/>
+            <flexcomp name="shell_pad" type="box" count="3 3 3" cellcount="1 1 1" spacing=".04 .04 .04"
+                      dim="2" dof="trilinear" radius=".01" mass=".3">
+              <pin id="0 1"/>
+              <contact selfcollide="none" contype="1" conaffinity="1"/>
+              <elasticity young="2e4" poisson="0.3" thickness="0.005" elastic2d="stretch"/>
+            </flexcomp>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      19,
+    ),
   )
   def test_flex_contact_nnz_static_estimates(self, xml: str, expected_nnz: int):
     """Verifies that _calculate_max_contact_nnz produces expected upper bounds."""
@@ -6283,6 +6305,27 @@ class FlexContactNnzTest(parameterized.TestCase):
           <flexcomp name="solid2" type="grid" count="2 2 2" spacing=".1 .1 .1" pos="0 0 0.02" radius=".02" dim="3" mass=".5">
             <contact selfcollide="none" contype="1" conaffinity="1"/>
           </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+    ),
+    (
+      "articulated_box_shell",
+      """
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <geom type="plane" size="1 1 .01"/>
+          <body name="finger" pos="0 0 0.045">
+            <joint type="slide" axis="0 0 1"/>
+            <geom type="sphere" size=".01" contype="0" conaffinity="0"/>
+            <flexcomp name="shell_pad" type="box" count="3 3 3" cellcount="1 1 1" spacing=".04 .04 .04"
+                      dim="2" dof="trilinear" radius=".01" mass=".3">
+              <pin id="0 1"/>
+              <contact selfcollide="none" contype="1" conaffinity="1"/>
+              <elasticity young="2e4" poisson="0.3" thickness="0.005" elastic2d="stretch"/>
+            </flexcomp>
+          </body>
         </worldbody>
       </mujoco>
       """,

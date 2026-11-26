@@ -629,12 +629,16 @@ class DeterminismTest(parameterized.TestCase):
     )
     self._check_scene(mjm, m, d, covers)
 
-  def test_flex_attached(self):
-    """Interpolated flex attached to a hinged body with the discrete CG solver."""
+  @parameterized.parameters(
+    ("CG", ("derivative._eff_flex_interp_mul",)),
+    ("Newton", ("derivative._eff_flex_interp_stiff",)),
+  )
+  def test_flex_attached(self, solver, covers):
+    """Interpolated flex attached to a hinged body with the discrete solver."""
     mjm, _, m, d = test_data.fixture(
-      xml="""
+      xml=f"""
       <mujoco>
-        <option integrator="discrete" solver="CG">
+        <option integrator="discrete" solver="{solver}">
           <flag contact="disable"/>
         </option>
         <worldbody>
@@ -653,7 +657,7 @@ class DeterminismTest(parameterized.TestCase):
       nworld=2,
       qvel_noise=0.1,
     )
-    self._check_scene(mjm, m, d, ("derivative._eff_flex_interp_mul",))
+    self._check_scene(mjm, m, d, covers)
 
   @parameterized.named_parameters(*_FLEX_CONTACT_CASES)
   def test_flex_contact(self, overrides, covers):

@@ -15,6 +15,8 @@
 
 """Tests for derivative functions."""
 
+import copy
+
 import mujoco
 import numpy as np
 import warp as wp
@@ -3964,9 +3966,10 @@ class DerivativeTest(parameterized.TestCase):
 
   @parameterized.product(
     case=("hinge", "ball", "free", "reordered_slides", "moving_ancestor"),
+    solver=("CG", "Newton"),
     nworld=(1, 2),
   )
-  def test_discrete_flex_articulated_attachments(self, case, nworld):
+  def test_discrete_flex_articulated_attachments(self, case, solver, nworld):
     """Tests non-simple flex attachments (flex_simple == False) with 3D SNH and 2D bend."""
     inertia = '<inertial pos="0 0 0" mass="0.2" diaginertia="0.01 0.02 0.03"/>'
     slides = '<joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/><joint type="slide" axis="0 0 1"/>'
@@ -3990,7 +3993,7 @@ class DerivativeTest(parameterized.TestCase):
     spec = mujoco.MjSpec.from_string(
       f"""
       <mujoco>
-        <option integrator="discrete" solver="CG" timestep="0.002" gravity="0 0 0"/>
+        <option integrator="discrete" solver="{solver}" timestep="0.002" gravity="0 0 0"/>
         <worldbody>
           <body name="v0">{inertia}{slides}</body>
           <body name="v1" pos="0.2 0 0">{inertia}{slides}</body>
@@ -4021,6 +4024,7 @@ class DerivativeTest(parameterized.TestCase):
     self.assertFalse(bool(m.flex_simple.numpy()[0]))
     self.assertFalse(bool(m.flex_simple.numpy()[1]))
     self.assertTrue(m.has_non_simple_flex)
+    self.assertEqual(m.efm_general_csr, solver == "Newton")
 
     qpos = np.zeros((nworld, mjm.nq), dtype=np.float32)
     qvel = np.zeros((nworld, mjm.nv), dtype=np.float32)
@@ -4041,23 +4045,36 @@ class DerivativeTest(parameterized.TestCase):
 
     d.qpos.assign(qpos)
     d.qvel.assign(qvel)
-    for arr in (d.qfrc_spring, d.qfrc_damper, d.efm_c, d.qacc_smooth, d.qacc):
+    for arr in (d.qfrc_spring, d.qfrc_damper, d.efm_c, d.efm_K_val, d.qacc_smooth, d.qacc):
       arr.fill_(wp.inf)
     mjw.forward(m, d)
+
+    qfrc_spring = d.qfrc_spring.numpy()
+    qfrc_damper = d.qfrc_damper.numpy()
+    efm_c = d.efm_c.numpy()
+    efm_K_rownnz = m.efm_K_rownnz.numpy()
+    efm_K_colind = m.efm_K_colind.numpy()
+    efm_K_val = d.efm_K_val.numpy()
+    qacc_smooth = d.qacc_smooth.numpy()
+    qacc = d.qacc.numpy()
 
     mjds = [mujoco.MjData(mjm) for _ in range(nworld)]
     for w in range(nworld):
       mjds[w].qpos[:] = qpos[w]
       mjds[w].qvel[:] = qvel[w]
       mujoco.mj_forward(mjm, mjds[w])
-      _assert_eq(d.qfrc_spring.numpy()[w], mjds[w].qfrc_spring, f"qfrc_spring_{case}_w{w}")
-      _assert_eq(d.qfrc_damper.numpy()[w], mjds[w].qfrc_damper, f"qfrc_damper_{case}_w{w}")
-      _assert_eq(d.efm_c.numpy()[w], mjds[w].efm_c, f"efm_c_{case}_w{w}")
-      _assert_eq(d.qacc_smooth.numpy()[w], mjds[w].qacc_smooth, f"qacc_smooth_{case}_w{w}")
-      _assert_eq(d.qacc.numpy()[w], mjds[w].qacc, f"qacc_{case}_w{w}")
+      if solver == "Newton":
+        np.testing.assert_array_equal(efm_K_rownnz, mjds[w].efm_K_rownnz)
+        np.testing.assert_array_equal(efm_K_colind, mjds[w].efm_K_colind)
+        _assert_eq(efm_K_val[w], mjds[w].efm_K_val, f"efm_K_val_{case}_w{w}")
+      _assert_eq(qfrc_spring[w], mjds[w].qfrc_spring, f"qfrc_spring_{case}_w{w}")
+      _assert_eq(qfrc_damper[w], mjds[w].qfrc_damper, f"qfrc_damper_{case}_w{w}")
+      _assert_eq(efm_c[w], mjds[w].efm_c, f"efm_c_{case}_w{w}")
+      _assert_eq(qacc_smooth[w], mjds[w].qacc_smooth, f"qacc_smooth_{case}_w{w}")
+      _assert_eq(qacc[w], mjds[w].qacc, f"qacc_{case}_w{w}")
 
     if nworld == 2:
-      self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
 
   @parameterized.product(nworld=(1, 2), iterations=(0, 1))
   def test_eff_solve_pcg_overflow(self, nworld, iterations):
@@ -4270,7 +4287,7 @@ class DerivativeTest(parameterized.TestCase):
     m.opt.solver = int(types.SolverType.NEWTON)
     with self.assertRaisesRegex(
       ValueError,
-      "discrete integrator: interpolated flex with non-simple nodes not yet supported",
+      "discrete integrator: switching solver to 'Newton' with articulated flex attachments requires re-running put_model",
     ):
       mjw.forward(m, d)
 
@@ -4854,6 +4871,217 @@ class DerivativeTest(parameterized.TestCase):
       mjw.forward(m_passive, d_passive)
       _assert_eq(d_passive.efm_as.numpy()[0], mjd_passive.efm_as, "passive_efm_as")
       _assert_eq(d_passive.qacc_smooth.numpy()[0], mjd_passive.qacc_smooth, "passive_qacc_smooth")
+
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    nworld=(1, 2),
+  )
+  def test_discrete_newton_articulated_rod_and_simple_flex(self, jacobian, nworld):
+    """Tests articulated 1D twisting rod + simple 2D flex under discrete Newton and CG fallback."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" solver="Newton" iterations="300" tolerance="1e-10" ls_tolerance="1e-6"/>
+        <worldbody>
+          <geom type="plane" size="2 2 0.05"/>
+          <flexcomp name="cloth" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" pos="-0.4 0 0.2"
+                    dim="2" radius="0.01" mass="0.4">
+            <pin id="0"/>
+            <contact selfcollide="none"/>
+            <elasticity young="2e4" poisson="0.3" thickness="0.005" damping="0.02"/>
+          </flexcomp>
+          <body name="arm" pos="0 0 0.25">
+            <joint type="ball" damping="0.1"/>
+            <geom size="0.03" mass="0.3"/>
+            <body name="mount" pos="0.08 0 0">
+              <geom size="0.02" mass="0.1"/>
+              <flexcomp name="cable" type="grid" count="5 1 1" spacing="0.06 0.06 0.06"
+                        pos="0.02 0.01 -0.24" dim="1" radius="0.02" mass="0.5">
+                <pin id="0 1"/>
+                <edge equality="true"/>
+                <contact selfcollide="none"/>
+                <elasticity young="2e4" poisson="0.3" shear="8e3" damping="0.03"/>
+              </flexcomp>
+            </body>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.jacobian": jacobian},
+      nworld=nworld,
+    )
+    self.assertTrue(bool(m.flex_simple.numpy()[0]))
+    self.assertFalse(bool(m.flex_simple.numpy()[1]))
+    self.assertTrue(m.has_non_simple_flex)
+    self.assertTrue(m.efm_general_csr)
+    self.assertGreater(m.nefmK, 0)
+
+    # deterministic per-DOF, per-world perturbations
+    k = np.arange(mjm.nv)
+    qpos_np = np.tile(mjm.qpos0.astype(np.float32), (nworld, 1))
+    qvel_np = np.stack([0.3 * np.sin(1.7 * k + 0.9 * w + 0.3) for w in range(nworld)]).astype(np.float32)
+    for w in range(nworld):
+      q_w = mjm.qpos0.copy()
+      dq_w = 0.02 * np.sin(2.3 * k + 1.1 * w + 0.7) * (1.0 + 0.5 * w)
+      mujoco.mj_integratePos(mjm, q_w, dq_w, 1.0)
+      qpos_np[w] = q_w.astype(np.float32)
+
+    d.qpos.assign(qpos_np)
+    d.qvel.assign(qvel_np)
+    d.qacc_warmstart.zero_()
+    for arr in (d.efm_K_val, d.qacc_smooth, d.qacc):
+      arr.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    efm_K_rownnz = m.efm_K_rownnz.numpy()
+    efm_K_colind = m.efm_K_colind.numpy()
+    efm_K_val = d.efm_K_val.numpy()
+    qacc_smooth = d.qacc_smooth.numpy()
+    qacc = d.qacc.numpy()
+    nefc = d.nefc.numpy()
+
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qpos[:] = qpos_np[w]
+      mjd_w.qvel[:] = qvel_np[w]
+      mujoco.mj_forward(mjm, mjd_w)
+      self.assertGreater(nefc[w], 0)
+      np.testing.assert_array_equal(efm_K_rownnz, mjd_w.efm_K_rownnz)
+      np.testing.assert_array_equal(efm_K_colind, mjd_w.efm_K_colind)
+      _assert_eq(efm_K_val[w], mjd_w.efm_K_val, f"efm_K_val_w{w}")
+      _assert_eq(qacc_smooth[w], mjd_w.qacc_smooth, f"qacc_smooth_w{w}")
+      _assert_eq(qacc[w], mjd_w.qacc, f"qacc_w{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
+
+    # Switching a Newton-built model to CG reuses the general CSR without double-counting.
+    m.opt.solver = types.SolverType.CG
+    d.qacc_warmstart.zero_()
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+    qacc_smooth_cg = d.qacc_smooth.numpy()
+    qacc_cg = d.qacc.numpy()
+    mjm_cg = copy.copy(mjm)
+    mjm_cg.opt.solver = mujoco.mjtSolver.mjSOL_CG
+    for w in range(nworld):
+      mjd_cg = mujoco.MjData(mjm_cg)
+      mjd_cg.qpos[:] = qpos_np[w]
+      mjd_cg.qvel[:] = qvel_np[w]
+      mujoco.mj_forward(mjm_cg, mjd_cg)
+      _assert_eq(qacc_smooth_cg[w], mjd_cg.qacc_smooth, f"qacc_smooth_cg_fallback_w{w}")
+      np.testing.assert_allclose(qacc_cg[w], mjd_cg.qacc, err_msg=f"mismatch: qacc_cg_fallback_w{w}", atol=1e-2, rtol=1e-2)
+
+    # Switching a CG-built non-simple flex model to Newton without put_model raises ValueError.
+    if nworld == 1 and jacobian == mujoco.mjtJacobian.mjJAC_DENSE:
+      m_cg_init = mjw.put_model(mjm_cg)
+      m_cg_init.opt.solver = types.SolverType.NEWTON
+      with self.assertRaisesRegex(ValueError, "re-running put_model"):
+        forward.check_discrete(m_cg_init)
+
+  @parameterized.product(
+    solver=(mujoco.mjtSolver.mjSOL_CG, mujoco.mjtSolver.mjSOL_NEWTON),
+    nworld=(1, 2),
+  )
+  def test_discrete_newton_articulated_interp_and_free_gyro(self, solver, nworld):
+    """Tests trilinear volume/shell flexes on hinged/welded bodies plus decoupled free gyro."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" iterations="300" tolerance="1e-10" ls_tolerance="1e-6"/>
+        <worldbody>
+          <geom type="plane" size="2 2 0.05"/>
+          <body name="finger_l" pos="-0.15 0 0.25">
+            <joint axis="0 1 0" damping="0.1"/>
+            <geom size="0.03" mass="0.3"/>
+            <body name="pad_mount" pos="0.04 0 -0.05">
+              <geom size="0.02" mass="0.1"/>
+              <flexcomp name="vol_pad" type="grid" count="2 2 2" spacing="0.08 0.08 0.08"
+                        pos="0 0 -0.14" dim="3" dof="trilinear" radius="0.015" mass="0.4">
+                <pin id="2 3 6 7"/>
+                <contact selfcollide="none"/>
+                <elasticity young="3e4" poisson="0.3" damping="0.03"/>
+              </flexcomp>
+            </body>
+          </body>
+          <body name="finger_r" pos="0.25 0 0.25">
+            <joint axis="0 1 0" damping="0.1"/>
+            <geom size="0.03" mass="0.3"/>
+            <body name="shell_mount" pos="-0.04 0 -0.05">
+              <geom size="0.02" mass="0.1"/>
+              <flexcomp name="shell_pad" type="box" count="3 3 3" cellcount="1 1 1"
+                        spacing="0.04 0.04 0.04" pos="0 0 -0.1" dim="2" dof="trilinear"
+                        radius="0.01" mass="0.3">
+                <pin id="0 1"/>
+                <contact selfcollide="none"/>
+                <elasticity young="2e4" poisson="0.3" thickness="0.005" elastic2d="stretch" damping="0.02"/>
+              </flexcomp>
+            </body>
+          </body>
+          <body name="spinner" pos="0 0.6 0.8">
+            <freejoint/>
+            <geom type="box" size="0.05 0.08 0.12" mass="0.5"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.solver": solver},
+      nworld=nworld,
+    )
+    self.assertFalse(m.flex_interp_assemblable)
+    self.assertEqual(m.efm_general_csr, solver == mujoco.mjtSolver.mjSOL_NEWTON)
+    if solver == mujoco.mjtSolver.mjSOL_CG:
+      self.assertEqual(m.nefmK, 0)
+    else:
+      self.assertGreater(m.nefmK, 0)
+
+    # deterministic per-DOF, per-world perturbations
+    k = np.arange(mjm.nv)
+    qpos_np = np.tile(mjm.qpos0.astype(np.float32), (nworld, 1))
+    qvel_np = np.stack([0.4 * np.sin(1.3 * k + 0.7 * w + 0.5) for w in range(nworld)]).astype(np.float32)
+    # Give the decoupled free body fast off-axis spin to exercise discrete free gyro.
+    qvel_np[:, -3:] = np.array([3.5, -2.8, 4.1], dtype=np.float32)
+    if nworld == 2:
+      qvel_np[1, -3:] = np.array([-4.0, 3.1, -2.5], dtype=np.float32)
+    for w in range(nworld):
+      q_w = mjm.qpos0.copy()
+      dq_w = 0.015 * np.sin(2.1 * k + 1.3 * w + 0.2) * (1.0 + 0.4 * w)
+      dq_w[-6:] = 0.0
+      mujoco.mj_integratePos(mjm, q_w, dq_w, 1.0)
+      qpos_np[w] = q_w.astype(np.float32)
+
+    d.qpos.assign(qpos_np)
+    d.qvel.assign(qvel_np)
+    d.qacc_warmstart.zero_()
+    for arr in (d.efm_c, d.efm_K_val, d.qacc_smooth, d.qacc):
+      arr.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    efm_c = d.efm_c.numpy()
+    efm_K_rownnz = m.efm_K_rownnz.numpy()
+    efm_K_colind = m.efm_K_colind.numpy()
+    efm_K_val = d.efm_K_val.numpy()
+    qacc_smooth = d.qacc_smooth.numpy()
+    qacc = d.qacc.numpy()
+
+    for w in range(nworld):
+      mjd_w = mujoco.MjData(mjm)
+      mjd_w.qpos[:] = qpos_np[w]
+      mjd_w.qvel[:] = qvel_np[w]
+      mujoco.mj_forward(mjm, mjd_w)
+      if solver == mujoco.mjtSolver.mjSOL_NEWTON:
+        np.testing.assert_array_equal(efm_K_rownnz, mjd_w.efm_K_rownnz)
+        np.testing.assert_array_equal(efm_K_colind, mjd_w.efm_K_colind)
+        _assert_eq(efm_K_val[w], mjd_w.efm_K_val, f"efm_K_val_interp_w{w}")
+        _assert_eq(qacc[w], mjd_w.qacc, f"qacc_interp_w{w}")
+      else:
+        np.testing.assert_allclose(qacc[w], mjd_w.qacc, err_msg=f"mismatch: qacc_interp_w{w}", atol=1e-2, rtol=1e-2)
+      _assert_eq(efm_c[w], mjd_w.efm_c, f"efm_c_interp_w{w}")
+      _assert_eq(qacc_smooth[w], mjd_w.qacc_smooth, f"qacc_smooth_interp_w{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc[0], qacc[1]))
 
 
 if __name__ == "__main__":
