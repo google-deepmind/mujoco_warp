@@ -31,6 +31,8 @@ from mujoco_warp import GainType
 from mujoco_warp import IntegratorType
 from mujoco_warp import SolverType
 from mujoco_warp import test_data
+from mujoco_warp._src import derivative
+from mujoco_warp._src.types import mat66
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -1039,6 +1041,103 @@ class ForwardTest(parameterized.TestCase):
       wp.capture_launch(capture.graph)
       energy = float(d.energy.numpy()[0, 1])
       self.assertLess(energy, 1.01 * initial_energy, f"step {i}")
+
+  @parameterized.product(integrator=(IntegratorType.IMPLICIT, IntegratorType.IMPLICITFAST), nworld=(1, 2), dense=(False, True))
+  def test_standalone_free_body_actuator_tendon_damping(self, integrator, nworld, dense):
+    """Verify a standalone free body keeps actuator and tendon damping implicit, as MuJoCo does.
+
+    The free-body block is mjd_freeMhat's M - h * qDeriv: the site/refsite actuators' velocity
+    bias and the spatial tendon's damping act on the body's own DOFs (h * c / I ~ 120 about x),
+    which an explicit treatment turns unstable within a few steps.
+    """
+    mjm, mjd, m_warp, d_warp = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <site name="anchor" pos="0 .1 1.2"/>
+          <site name="ref" pos="0 0 1" euler="10 0 0"/>
+          <body pos="0 0 1" euler="5 -10 15">
+            <freejoint/>
+            <geom type="box" size=".05 .02 .01" mass=".05"/>
+            <site name="base"/>
+            <site name="tip" pos=".05 0 0"/>
+            {'<body pos=".02 .01 0"><geom type="sphere" size=".01" mass=".01"/></body>' if dense else ""}
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial damping="2">
+            <site site="anchor"/>
+            <site site="tip"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <general site="base" refsite="ref" gear="0 0 0 1 0 0" biastype="affine" biasprm="0 -1 -.5"/>
+          <general site="base" refsite="ref" gear="0 0 0 0 1 0" biastype="affine" biasprm="0 -1 -.5"/>
+          <general site="base" refsite="ref" gear="1 0 0 0 0 0" biastype="affine" biasprm="0 0 -5"/>
+        </actuator>
+        <keyframe>
+          <key qpos="0 0 1 1 0 0 0" qvel=".3 -.2 .1 2 -1 .5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+      overrides={"opt.integrator": integrator},
+    )
+    self.assertEqual(m_warp.body_freeadr.size, 1)
+    rownnz = m_warp.M_rownnz.numpy()
+    self.assertEqual(rownnz[5], 6 if dense else 1)
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd1, 0)
+      qvel = d_warp.qvel.numpy()
+      qvel[1] *= -0.5
+      d_warp.qvel.assign(qvel)
+      mjd1.qvel[:] = qvel[1]
+      mujoco.mj_forward(mjm, mjd1)
+      mjds.append(mjd1)
+
+    with wp.ScopedCapture() as capture:
+      mjw.step(m_warp, d_warp)
+
+    for i in range(10):
+      wp.capture_launch(capture.graph)
+      qvel = d_warp.qvel.numpy()
+      for w in range(nworld):
+        mujoco.mj_step(mjm, mjds[w])
+        np.testing.assert_allclose(qvel[w], mjds[w].qvel, atol=1e-5, rtol=1e-5, err_msg=f"step {i} world {w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(qvel[0], qvel[1]))
+
+    mjm.opt.enableflags |= EnableBit.INVDISCRETE
+    m_warp.opt.enableflags |= EnableBit.INVDISCRETE
+    d_warp.qfrc_inverse.fill_(wp.inf)
+    mjw.inverse(m_warp, d_warp)
+    for w in range(nworld):
+      mujoco.mj_inverse(mjm, mjds[w])
+      np.testing.assert_allclose(d_warp.qfrc_inverse.numpy()[w], mjds[w].qfrc_inverse, atol=1e-4, rtol=1e-4)
+
+  def test_free_body_block_skips_sleeping_tree(self):
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option><flag sleep="enable" actuation="disable" damper="disable"/></option>
+        <worldbody>
+          <body><freejoint/><geom type="sphere" size=".1" mass="1"/></body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+    d.tree_awake.assign(np.array([[1], [0]], dtype=np.int32))
+    out = wp.empty((2, m.nC), dtype=float)
+    block = wp.empty((2, m.body_freeadr.size), dtype=mat66)
+    block.fill_(wp.inf)
+    derivative.deriv_smooth_vel(m, d, out, block)
+    result = block.numpy()
+    self.assertTrue(np.isfinite(result[0]).all())
+    self.assertTrue(np.isinf(result[1]).all())
 
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_SPARSE, mujoco.mjtJacobian.mjJAC_DENSE)
   def test_implicit_tendon_damping(self, jacobian):
