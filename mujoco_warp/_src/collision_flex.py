@@ -2833,6 +2833,7 @@ def _flex_sdf_elem_contact(
   radius: float,
   sdf_pos: wp.vec3,
   sdf_rot: wp.mat33,
+  sdf_rot_t: wp.mat33,
   nstartpts: int,
   sdf_iterations: int,
   attr: vec_pluginattr,
@@ -2849,7 +2850,6 @@ def _flex_sdf_elem_contact(
   elem_max = wp.max(t0, wp.max(t1, t2)) + wp.vec3(radius, radius, radius)
 
   # MuJoCo's BVH leaf test: the SDF at the element box center against its half diagonal
-  sdf_rot_t = wp.transpose(sdf_rot)
   center_local = sdf_rot_t @ (0.5 * (elem_min + elem_max) - sdf_pos)
   half_len = wp.length(0.5 * (elem_max - elem_min))
   if not (sdf(int(GeomType.SDF), center_local, attr, sdf_type, volume_data, mesh_data) < half_len):
@@ -2961,16 +2961,13 @@ def _flex_sdf_narrowphase(warn_overflow: int):
     geomid = flex_sdf_pair[pairid][0]
     flexid = flex_sdf_pair[pairid][1]
 
+    plugin_id = geom_plugin_index[geomid]
+
     # The mesh of this geom is absent in this world
     dataid = geom_dataid[worldid % geom_dataid.shape[0], geomid]
-    if geom_plugin_index[geomid] == -1 and dataid < 0:
+    if plugin_id == -1 and dataid < 0:
       return
 
-    elemadr = flex_elemadr[flexid]
-    nelem = flex_elemnum[flexid]
-    vert_adr = flex_vertadr[flexid]
-    elemdataadr = flex_elemdataadr[flexid]
-    radius = flex_radius[flexid]
     flex_aabb_min_val = flex_aabb_min_in[worldid, flexid]
     flex_aabb_max_val = flex_aabb_max_in[worldid, flexid]
     nstartpts = wp.max(1, opt_sdf_initpoints)
@@ -2982,7 +2979,7 @@ def _flex_sdf_narrowphase(warn_overflow: int):
     # Skip the pair when the flex box misses the margin-inflated geom box, as MuJoCo's broadphase
     # does for body geoms. Only for mesh SDFs: their surface lies inside the geom box, while an
     # SDF plugin's surface can extend past it, where C still reports contacts.
-    if geom_bodyid[geomid] != 0 and geom_plugin_index[geomid] == -1:
+    if geom_bodyid[geomid] != 0 and plugin_id == -1:
       aabb_id = worldid % geom_aabb.shape[0]
       geom_center = geom_rot @ geom_aabb[aabb_id, geomid, 0] + geom_pos
       geom_half = geom_aabb[aabb_id, geomid, 1]
@@ -3005,16 +3002,23 @@ def _flex_sdf_narrowphase(warn_overflow: int):
       plugin_attr,
       int(GeomType.SDF),
       geom_size[worldid % geom_size.shape[0], geomid],
-      geom_plugin_index[geomid],
+      plugin_id,
       dataid,
     )
 
     # MuJoCo's BVH root test: the SDF at the flex box center against its half diagonal. The
     # flex box adds the flex margin, so for an exact SDF it keeps every penetrating element.
-    root_local = wp.transpose(geom_rot) @ (0.5 * (flex_aabb_min_val + flex_aabb_max_val) - geom_pos)
+    geom_rot_t = wp.transpose(geom_rot)
+    root_local = geom_rot_t @ (0.5 * (flex_aabb_min_val + flex_aabb_max_val) - geom_pos)
     root_half_len = wp.length(0.5 * (flex_aabb_max_val - flex_aabb_min_val))
     if not (sdf(int(GeomType.SDF), root_local, attr, sdf_type, volume_data, mesh_data) < root_half_len):
       return
+
+    elemadr = flex_elemadr[flexid]
+    nelem = flex_elemnum[flexid]
+    vert_adr = flex_vertadr[flexid]
+    elemdataadr = flex_elemdataadr[flexid]
+    radius = flex_radius[flexid]
 
     # Per-pair buffer of the first MJ_MAXCONPAIR penetrating elements in BVH order (candidate in
     # mjc_FlexSDF); slot_elem is -1 for an element with a degenerate gradient
@@ -3050,6 +3054,7 @@ def _flex_sdf_narrowphase(warn_overflow: int):
           radius,
           geom_pos,
           geom_rot,
+          geom_rot_t,
           nstartpts,
           opt_sdf_iterations,
           attr,

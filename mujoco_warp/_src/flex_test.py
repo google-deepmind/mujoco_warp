@@ -6068,6 +6068,9 @@ class FlexSDFCollisionTest(parameterized.TestCase):
     flex = d.contact.flex.numpy()[:nacon]
     elem = d.contact.elem.numpy()[:nacon]
     vert = d.contact.vert.numpy()[:nacon]
+    qfrc_constraint = d.qfrc_constraint.numpy()
+    qacc = d.qacc.numpy()
+    qfrc_passive = d.qfrc_passive.numpy()
 
     world_dist = []
     for w in range(nworld):
@@ -6099,9 +6102,9 @@ class FlexSDFCollisionTest(parameterized.TestCase):
         np.testing.assert_equal(elem[j], c.elem, err_msg=msg)
 
       if not sdf_only:
-        np.testing.assert_allclose(d.qfrc_constraint.numpy()[w], mjd.qfrc_constraint, atol=1e-3, rtol=1e-3)
-        np.testing.assert_allclose(d.qacc.numpy()[w], mjd.qacc, atol=1e-2, rtol=1e-3)
-        np.testing.assert_allclose(d.qfrc_passive.numpy()[w], mjd.qfrc_passive, atol=1e-3, rtol=1e-5)
+        np.testing.assert_allclose(qfrc_constraint[w], mjd.qfrc_constraint, atol=1e-3, rtol=1e-3)
+        np.testing.assert_allclose(qacc[w], mjd.qacc, atol=1e-2, rtol=1e-3)
+        np.testing.assert_allclose(qfrc_passive[w], mjd.qfrc_passive, atol=1e-3, rtol=1e-5)
       world_dist.append(np.sort(dist[ids]))
 
     for w in range(1, nworld):
@@ -6320,6 +6323,64 @@ class FlexSDFCollisionTest(parameterized.TestCase):
     geom_type = mjm.geom_type[d.contact.geom.numpy()[: d.nacon.numpy()[0], 0]]
     for t in (mujoco.mjtGeom.mjGEOM_PLANE, mujoco.mjtGeom.mjGEOM_BOX, mujoco.mjtGeom.mjGEOM_SDF):
       self.assertIn(t, geom_type)
+
+  @parameterized.parameters(1, 2)
+  def test_contact_parity_offsets(self, nworld):
+    """Tests a cloth with nonzero flex addresses that touches a mesh SDF and a plugin SDF.
+
+    A distant flex comes first, so the cloth starts at nonzero vertex, element and element data
+    addresses, and the two colliding pairs are pairs 1 and 3 of 4.
+    """
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option sdf_iterations="10" sdf_initpoints="20"/>
+        <extension>
+          <plugin plugin="mujoco.sdf.torus">
+            <instance name="torus">
+              <config key="radius1" value="0.3"/>
+              <config key="radius2" value="0.1"/>
+            </instance>
+          </plugin>
+        </extension>
+        <asset>
+          <mesh name="cube" scale=".3 .3 .3"
+                vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          <mesh name="torus">
+            <plugin instance="torus"/>
+          </mesh>
+        </asset>
+        <worldbody>
+          <body euler="10 20 30">
+            <freejoint/>
+            <geom type="sdf" mesh="cube"/>
+          </body>
+          <body pos=".9 0 .2" euler="5 15 0">
+            <freejoint/>
+            <geom type="sdf" mesh="torus">
+              <plugin instance="torus"/>
+            </geom>
+          </body>
+          <flexcomp name="offset_flex" type="grid" count="4 4 1" spacing=".1 .1 .1" pos="3 0 0" dim="2" radius=".005">
+            <contact selfcollide="none"/>
+          </flexcomp>
+          <flexcomp name="cloth" type="grid" count="12 6 1" spacing=".12 .12 .1" pos=".45 0 .28" dim="2" radius=".005">
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=2 * types.MJ_MAXCONPAIR,
+      njmax=1200,
+    )
+    self.assertGreater(mjm.flex_vertadr[1], 0)
+    self.assertGreater(mjm.flex_elemadr[1], 0)
+    self.assertGreater(mjm.flex_elemdataadr[1], 0)
+    np.testing.assert_equal(m.flex_sdf_pair.numpy(), [[0, 0], [0, 1], [1, 0], [1, 1]])
+    np.testing.assert_equal(np.unique([c.geom[0] for c in mjd.contact]), [0, 1])
+    np.testing.assert_equal(np.unique([c.flex[1] for c in mjd.contact]), [1])
+    self._assert_contact_parity(mjm, mjd, m, d, nworld)
 
   @parameterized.parameters(1, 2)
   def test_contact_parity_shallow(self, nworld):
@@ -6674,10 +6735,12 @@ class FlexSDFCollisionTest(parameterized.TestCase):
       wp.capture_launch(capture.graph)
 
     np.testing.assert_equal(d.nacon.numpy()[0], sum(x.ncon for x in mjds))
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
     for w, x in enumerate(mjds):
       self.assertGreater(x.ncon, 0)
-      np.testing.assert_allclose(d.qpos.numpy()[w], x.qpos, atol=1e-5, err_msg=f"qpos mismatch (world {w})")
-      np.testing.assert_allclose(d.qvel.numpy()[w], x.qvel, atol=1e-5, err_msg=f"qvel mismatch (world {w})")
+      np.testing.assert_allclose(qpos[w], x.qpos, atol=1e-5, err_msg=f"qpos mismatch (world {w})")
+      np.testing.assert_allclose(qvel[w], x.qvel, atol=1e-5, err_msg=f"qvel mismatch (world {w})")
     if nworld == 2:
       self.assertFalse(np.allclose(mjds[0].qpos, mjds[1].qpos, atol=1e-4))
 
