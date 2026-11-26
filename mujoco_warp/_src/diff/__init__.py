@@ -346,3 +346,7 @@ def differentiable(namespace: dict[str, object]) -> None:
   for name, obj in list(namespace.items()):
     if inspect.isfunction(obj) and not name.startswith("_"):
       namespace[name] = _wrap(obj)
+  if "step" in namespace:
+    from mujoco_warp._src.diff import flex
+
+    flex.register()

@@ -858,7 +858,7 @@ def _qfrc_passive_kernel(has_fluid: bool, flg_adhesion: bool, gravity_enabled: b
 
 
 @wp.func
-def _snh_cubic(tension: vec6, s: vec6, gamma: float) -> vec6:
+def snh_cubic(tension: vec6, s: vec6, gamma: float) -> vec6:
   a = s[0]
   b = s[2]
   c = s[4]
@@ -974,7 +974,7 @@ def _snh_cubic_metric(metric: mat66, s: vec6, gamma: float) -> mat66:
 
 
 @wp.func
-def _snh_positive3(A: wp.mat33) -> bool:
+def snh_positive3(A: wp.mat33) -> bool:
   scale = float(0.0)
   for row in range(3):
     for col in range(3):
@@ -990,7 +990,7 @@ def _snh_positive3(A: wp.mat33) -> bool:
 
 
 @wp.func
-def _snh_eigen3(A: wp.mat33) -> tuple[wp.vec3, wp.mat33]:
+def snh_eigen3(A: wp.mat33) -> tuple[wp.vec3, wp.mat33]:
   scale = float(0.0)
   for row in range(3):
     for col in range(3):
@@ -1128,7 +1128,7 @@ def _snh_swap_cols(A: wp.mat33, V: wp.mat33, s: wp.vec3, p: int, q: int) -> tupl
 
 
 @wp.func
-def _snh_svd(F: wp.mat33) -> tuple[wp.mat33, wp.vec3, wp.mat33]:
+def snh_svd(F: wp.mat33) -> tuple[wp.mat33, wp.vec3, wp.mat33]:
   scale = float(0.0)
   for row in range(3):
     for col in range(3):
@@ -1382,7 +1382,7 @@ def snh_project(
   grad2 = wp.cross(rest0, rest1) * k23
 
   F = -wp.outer(edgevec[0], grad0) + wp.outer(edgevec[2], grad1) - wp.outer(edgevec[4], grad2)
-  rotation, sigma, V = _snh_svd(F)
+  rotation, sigma, V = snh_svd(F)
   VT = wp.transpose(V)
 
   hg1 = VT * grad0
@@ -1396,7 +1396,7 @@ def snh_project(
   gradient[3] = hg3
 
   metric, tension = stretch_elasticity(flex_stiffness, stiffness_adr, elongation, 6)
-  tension = _snh_cubic(tension, elongation, k21)
+  tension = snh_cubic(tension, elongation, k21)
   metric = _snh_cubic_metric(metric, elongation, k21)
 
   vertex = mat43()
@@ -1435,10 +1435,10 @@ def snh_project(
   a12 = 2.0 * sigma[1] * sigma[2] * wp.dot(sq1, prod2) + volume_stiffness * cof[1] * cof[2] + pressure * sigma[0]
   A = wp.mat33(a00, a01, a02, a01, a11, a12, a02, a12, a22)
 
-  if _snh_positive3(A):
+  if snh_positive3(A):
     stretch = A
   else:
-    eig, Q = _snh_eigen3(A)
+    eig, Q = snh_eigen3(A)
     ev0 = wp.max(0.0, eig[0])
     ev1 = wp.max(0.0, eig[1])
     ev2 = wp.max(0.0, eig[2])
@@ -3697,7 +3697,7 @@ def _flex_elasticity(deterministic: bool = False):
 
     metric, tension_spring = stretch_elasticity(flex_stiffness, stiffness_adr, elongation_spring, nedge)
     if snh:
-      tension_spring = _snh_cubic(tension_spring, elongation_spring, flex_stiffness[stiffness_adr + 21])
+      tension_spring = snh_cubic(tension_spring, elongation_spring, flex_stiffness[stiffness_adr + 21])
 
     tension_damper = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     if kD > 0.0 and not snh:
