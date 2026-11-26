@@ -28,6 +28,12 @@ MJWarp is also available via PyPI:
 pip install mujoco-warp
 ```
 
+MJWarp depends only on the core MuJoCo bindings (`mujoco-core`). The `mjwarp-viewer` and `mjwarp-record` tools need the `viewer` extra:
+
+```bash
+pip install "mujoco-warp[viewer]"
+```
+
 # Examples
 
 MuJoCo Warp simulates many kinds of physical systems, from rigid bodies with contacts to soft bodies, cloth, signed distance fields, and more. Here are a few examples of what it can do:
@@ -137,6 +143,8 @@ Key capabilities:
 - Gaussian splat rendering
 - Heterogeneous multi-camera support (different resolutions/FOV/intrinsics for each camera)
 - Lighting and shadow support
+
+The renderer can optionally use OptiX hardware ray tracing in place of Warp's BVH: install it with `pip install mujoco-warp[optix]` (Python 3.12) and pass `backend="optix"` to `create_render_context`. OptiX rendering cannot be recorded into CUDA graphs.
 
 See the [announcement PR](https://github.com/google-deepmind/mujoco_warp/pull/1113) for more details.
 
