@@ -49,7 +49,8 @@ def _assert_eq(a, b, name, tol=_TOLERANCE * 20):
 
 
 def _mj_constraint_update(m, d, jar, cost):
-  # TODO(team): call mj_constraintUpdate directly once the minimum supported mujoco drops flg_coneHessian
+  # TODO(team): call mj_constraintUpdate directly once minimum supported mujoco drops
+  # flg_coneHessian.
   try:
     mujoco.mj_constraintUpdate(m, d, jar, cost)
   except TypeError:
