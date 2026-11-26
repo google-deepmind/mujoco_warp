@@ -19,6 +19,7 @@ import warp as wp
 
 from mujoco_warp._src import history
 from mujoco_warp._src import math
+from mujoco_warp._src import muscle
 from mujoco_warp._src import passive
 from mujoco_warp._src import smooth
 from mujoco_warp._src import support
@@ -403,6 +404,36 @@ def _qderiv_actuator_passive_vel(
     sigma1 = dynprm[6]
     if sigma1 > 0.0:
       bias -= sigma1
+  elif gaintype == GainType.MILLARD2012 or gaintype == GainType.GEYER2010:
+    # compliant-tendon muscle: total derivative of gain * act + bias
+    gain = 0.0
+    act_first = actuator_actadr[actid]
+    act_adr = act_first + actuator_actnum[actid] - 1
+    muscle_act = act_in[worldid, act_adr]
+    if actuator_actearly[actid]:
+      muscle_act = next_act(
+        opt_timestep[opt_timestep_id],
+        actuator_dyntype[actid],
+        actuator_dynprm[actuator_dynprm_id, actid],
+        actuator_actrange[worldid % actuator_actrange.shape[0], actid],
+        muscle_act,
+        act_dot_in[worldid, act_adr],
+        1.0,
+        actuator_actlimited[actid],
+      )
+    derivs = muscle.force_derivs(
+      gaintype == GainType.GEYER2010,
+      act_in[worldid, act_first],
+      act_dot_in[worldid, act_first],
+      actuator_length_in[worldid, actid],
+      actuator_velocity_in[worldid, actid],
+      muscle_act,
+      opt_timestep[opt_timestep_id],
+      actuator_dynprm[actuator_dynprm_id, actid],
+      actuator_gainprm[actuator_gainprm_id, actid],
+      actuator_biasprm[actuator_biasprm_id, actid],
+    )
+    bias += derivs[1]
   else:
     gain = 0.0
 
@@ -2526,6 +2557,36 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
       sigma1 = dynprm[6]
       if sigma1 > 0.0:
         bias_vel -= sigma1
+    elif gaintype == GainType.MILLARD2012 or gaintype == GainType.GEYER2010:
+      # compliant-tendon muscle: total derivatives of gain * act + bias, through the fiber solve
+      act_first = actuator_actadr[actid]
+      act_adr = act_first + actuator_actnum[actid] - 1
+      muscle_act = act_in[worldid, act_adr]
+      if actuator_actearly[actid]:
+        muscle_act = next_act(
+          h,
+          actuator_dyntype[actid],
+          dynprm,
+          actuator_actrange[worldid % actuator_actrange.shape[0], actid],
+          muscle_act,
+          act_dot_in[worldid, act_adr],
+          1.0,
+          actuator_actlimited[actid],
+        )
+      derivs = muscle.force_derivs(
+        gaintype == GainType.GEYER2010,
+        act_in[worldid, act_first],
+        act_dot_in[worldid, act_first],
+        actuator_length_in[worldid, actid],
+        actuator_velocity_in[worldid, actid],
+        muscle_act,
+        h,
+        dynprm,
+        gainprm,
+        biasprm,
+      )
+      bias_len += derivs[0]
+      bias_vel += derivs[1]
 
     if gain_len != 0.0 or gain_vel != 0.0:
       u_val = float(0.0)

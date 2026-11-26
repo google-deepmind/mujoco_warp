@@ -906,6 +906,8 @@ def eff_actuator_possible(
     or gaintype == GainType.SO3
     or gaintype == GainType.MUSCLE
     or gaintype == GainType.DCMOTOR
+    or gaintype == GainType.MILLARD2012
+    or gaintype == GainType.GEYER2010
   )
 
 

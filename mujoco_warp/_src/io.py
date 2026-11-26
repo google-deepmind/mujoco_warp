@@ -897,6 +897,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       | (mjm.actuator_biastype == mujoco.mjtBias.mjBIAS_DCMOTOR)
       | (mjm.actuator_gaintype == mujoco.mjtGain.mjGAIN_SO3)
       | (mjm.actuator_biastype == mujoco.mjtBias.mjBIAS_SO3)
+      | (mjm.actuator_gaintype == mujoco.mjtGain.mjGAIN_MILLARD2012)
+      | (mjm.actuator_gaintype == mujoco.mjtGain.mjGAIN_GEYER2010)
     )
   )
   has_actuator_wrap = False
