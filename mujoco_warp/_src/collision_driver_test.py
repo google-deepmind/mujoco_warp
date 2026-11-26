@@ -609,6 +609,28 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    "capsule_box_skewer_face": """
+        <mujoco>
+          <worldbody>
+            <geom type="box" size="0.4 0.3 0.2"/>
+            <body pos="0 0.01 0.05">
+              <geom type="capsule" size="0.1 0.5"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "capsule_box_skewer_edge": """
+        <mujoco>
+          <worldbody>
+            <geom type="box" size="1 0.1 0.1"/>
+            <body pos="0 0.01 0">
+              <geom type="capsule" size="0.05 1" euler="45 0 0"/>
+              <freejoint/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
   }
 
   @classmethod
@@ -693,6 +715,9 @@ class CollisionTest(parameterized.TestCase):
   @parameterized.parameters(_FIXTURES.keys())
   def test_collision(self, fixture):
     """Tests collisions with different geometries."""
+    # TODO(team): remove version check once mujoco >= 4.0.2 is required.
+    if fixture in ("capsule_box_skewer_face", "capsule_box_skewer_edge") and not util_pkg.check_version("mujoco>=4.0.2"):
+      self.skipTest("Requires MuJoCo >= 4.0.2")
     mjm, mjd, m, d = test_data.fixture(xml=self._FIXTURES[fixture])
 
     mujoco.mj_collision(mjm, mjd)
