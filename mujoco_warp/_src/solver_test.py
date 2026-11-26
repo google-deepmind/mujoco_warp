@@ -1621,6 +1621,23 @@ class SolverTest(parameterized.TestCase):
       _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
       _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
+  @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
+  def test_newton_decrement_is_search_slope(self, cone):
+    """The Newton linesearch takes its slope at alpha = 0 from the decrement of the solve."""
+    _, _, m, d = test_data.fixture(
+      "humanoid/humanoid.xml",
+      keyframe=2,
+      overrides={"opt.cone": cone, "opt.solver": SolverType.NEWTON},
+      nworld=2,
+    )
+    ctx = solver.create_solver_context(m, d)
+    ctx.newton_decrement.fill_(wp.inf)
+    solver.init_context(m, d, ctx, grad=True)
+
+    slope = np.sum(ctx.search.numpy() * ctx.grad.numpy()[:, : m.nv], axis=1)
+    self.assertTrue(np.all(slope < 0.0))
+    np.testing.assert_allclose(-ctx.newton_decrement.numpy() / ctx.grad_scale.numpy(), slope, rtol=1e-5)
+
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
     (ConeType.ELLIPTIC, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),

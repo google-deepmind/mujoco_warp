@@ -405,16 +405,6 @@ def _eval_frictionloss_alpha_zero(jaref: float, jv: float, f: float, rf: float, 
 
 
 @wp.func
-def _eval_frictionloss_cost_alpha_zero(jaref: float, f: float, rf: float, d: float) -> float:
-  if (-rf < jaref) and (jaref < rf):
-    return 0.5 * d * jaref * jaref
-  elif jaref <= -rf:
-    return f * (-0.5 * rf - jaref)
-  else:
-    return f * (-0.5 * rf + jaref)
-
-
-@wp.func
 def _eval_frictionloss_cost_diff(start: float, dx: float, f: float, rf: float, d: float) -> float:
   """Eval shifted frictionloss cost(start + dx) - cost(start) without float32 cancellation."""
   x = start + dx
@@ -737,7 +727,7 @@ def _compute_efc_eval_pt_pyramidal(
     rf = math.safe_div(f, efc_D)
     return _vec4(
       _eval_frictionloss_shifted(ctx_Jaref, ctx_jv, f, rf, efc_D, alpha),
-      _eval_frictionloss_cost_alpha_zero(ctx_Jaref, f, rf, efc_D),
+      _eval_frictionloss_alpha_zero(ctx_Jaref, ctx_jv, f, rf, efc_D)[0],
     )
 
   # Equality constraint
@@ -801,7 +791,7 @@ def _compute_efc_eval_pt_elliptic(
     rf = math.safe_div(f, efc_D)
     return _vec4(
       _eval_frictionloss_shifted(ctx_Jaref, ctx_jv, f, rf, efc_D, alpha),
-      _eval_frictionloss_cost_alpha_zero(ctx_Jaref, f, rf, efc_D),
+      _eval_frictionloss_alpha_zero(ctx_Jaref, ctx_jv, f, rf, efc_D)[0],
     )
 
   # Equality constraint — direct eval (no quad read)
@@ -1435,7 +1425,8 @@ def _linesearch_iterative_kernel(
     # must rebuild the world. Per quadratic row |q1| = sqrt(2 * cost * hessian),
     # so Cauchy-Schwarz bounds the row total by sums already reduced for p0; the
     # smooth term is added exactly. Friction linear rows fall outside the bound,
-    # which only lowers the floor toward the fixed 8-ulp base.
+    # which only lowers the floor toward the fixed 8-ulp base. On the Newton path
+    # the row hessian is p0[2] less the smooth term, as exact as the solve.
     q1_abs = wp.sqrt(2.0 * wp.max(rows_cost, 0.0) * wp.max(rows_hessian, 0.0)) + wp.abs(ctx_quad_gauss[1])
 
     # set acceptance tolerance to avoid exceeding gtol in f32
