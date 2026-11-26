@@ -901,8 +901,9 @@ def _dense_rows_h(width: int, elliptic: bool):
         JD = wp.tile_map(wp.mul, wp.tile_transpose(J_k), wp.tile_broadcast(D_k, shape=(W, K)))
         h += wp.tile_matmul(JD, J_k)
       wp.tile_store(H_out[worldid], h, offset=(row0, 0))
-      # the rest of the tile: identity on the padding diagonal
-      if wp.static(W < _TILE):
+      # the rest of the tile: identity on the padding diagonal (groups of up to half a tile factor
+      # at half size and read only their corner)
+      if wp.static(_TILE // 2 < W and W < _TILE):
         for idx in range(lane, wp.static(_TILE * _TILE), lanes):
           r = idx // _TILE
           c = idx % _TILE
