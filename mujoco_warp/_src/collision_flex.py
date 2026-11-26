@@ -19,11 +19,11 @@ import math
 import warp as wp
 
 from mujoco_warp._src import collision_primitive_core
+from mujoco_warp._src import sort
 from mujoco_warp._src import support
 from mujoco_warp._src.collision_core import Geom
-from mujoco_warp._src.collision_core import sap_binary_search
-from mujoco_warp._src.collision_core import sap_range
 from mujoco_warp._src.collision_gjk import ccd
+from mujoco_warp._src.collision_gjk import support as gjk_support
 from mujoco_warp._src.math import make_frame
 from mujoco_warp._src.math import orthogonals
 from mujoco_warp._src.math import quat_to_mat
@@ -36,6 +36,7 @@ from mujoco_warp._src.types import MJ_MINMU
 from mujoco_warp._src.types import MJ_MINVAL
 from mujoco_warp._src.types import ContactType
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import Model
@@ -50,7 +51,33 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 _FPS_SLOTS: int = 8  # candidates per thread kept in registers during FPS
 ENABLE_SAT_PREFILTER: bool = True
+# traversal stack for the flex BVHs, which MuJoCo builds balanced (depth ~ log2(nelem))
+_FLEX_BVH_STACK_SIZE: int = 32
+_FLEX_BVH_QUERY_THREADS: int = 1 << 16
+_FLEX_BVH_MAX_SPLIT_DEPTH: int = 4
 _FLEX_CONTACT_DEDUP_TOLERANCE: float = 1e-3
+
+_vec_bvh_stack = wp.types.vector(length=_FLEX_BVH_STACK_SIZE, dtype=int)
+
+
+@wp.func
+def _cmp_vec2i(a: wp.vec2i, b: wp.vec2i) -> int:
+  """Lexicographic comparison of two vec2i values (-1, 0, or 1)."""
+  for k in range(2):
+    if a[k] != b[k]:
+      return -1 if a[k] < b[k] else 1
+  return 0
+
+
+@wp.func
+def _cmp_vec3f(a: wp.vec3, b: wp.vec3) -> int:
+  """Lexicographic comparison of two vec3 values using total float bit order (-1, 0, or 1)."""
+  for k in range(3):
+    ka = sort.float_key(wp.cast(a[k], wp.uint32))
+    kb = sort.float_key(wp.cast(b[k], wp.uint32))
+    if ka != kb:
+      return -1 if ka < kb else 1
+  return 0
 
 
 @wp.func
@@ -948,9 +975,10 @@ def _collide_mesh_convex(
   mesh_graphadr: wp.array[int],
   mesh_vert: wp.array[wp.vec3],
   mesh_graph: wp.array[int],
-  mesh_pos: wp.array[wp.vec3],
+  mesh_polyadr: wp.array[int],
   mesh_polynormal: wp.array[wp.vec3],
   mesh_polyvertadr: wp.array[int],
+  mesh_polyvertnum: wp.array[int],
   mesh_polyvert: wp.array[int],
   mesh_polymapadr: wp.array[int],
   mesh_polymapnum: wp.array[int],
@@ -960,12 +988,11 @@ def _collide_mesh_convex(
   mesh_geom_pos: wp.vec3,
   geom_rot: wp.mat33,
   geom_size_val: wp.vec3,
+  r_geom: float,
   did: int,
   geom2: Geom,
   geom2_type: int,
   geom2_pos: wp.vec3,
-  geom2_bounding_radius: float,
-  geom2_radius: float,
   margin: float,
   geomid: int,
   flexid: int,
@@ -1007,115 +1034,106 @@ def _collide_mesh_convex(
   geom1.vert = mesh_vert
   geom1.graph = mesh_graph
 
-  geom_center = mesh_geom_pos
-  if did >= 0:
-    geom_center = mesh_geom_pos + geom_rot @ mesh_pos[did]
+  dist, ncontact, w1, w2, _ = ccd(
+    tolerance,
+    margin,
+    ccd_iterations,
+    ccd_iterations,
+    geom1,
+    geom2,
+    int(GeomType.MESH),
+    geom2_type,
+    mesh_geom_pos,
+    geom2_pos,
+    epa_vert,
+    epa_vert_index,
+    epa_face,
+    epa_pr,
+    epa_norm2,
+    epa_horizon,
+    warn_overflow,
+    worldid,
+    overflow_out,
+  )
 
-  r_geom = wp.length(geom_size_val)
-  if wp.length(geom2_pos - geom_center) <= r_geom + geom2_bounding_radius + margin + geom2_radius + 0.04:
-    dist, ncontact, w1, w2, idx = ccd(
-      tolerance,
-      margin + geom2_radius,
-      ccd_iterations,
-      ccd_iterations,
-      geom1,
-      geom2,
-      int(GeomType.MESH),
-      geom2_type,
-      mesh_geom_pos,
-      geom2_pos,
-      epa_vert,
-      epa_vert_index,
-      epa_face,
-      epa_pr,
-      epa_norm2,
-      epa_horizon,
-      warn_overflow,
+  if ncontact > 0 and dist < margin:
+    diff = (w1 - w2) if dist < 0.0 else (w2 - w1)
+    gjk_normal = wp.normalize(diff)
+    if wp.length(diff) < MJ_MINVAL:
+      fallback = geom2_pos - mesh_geom_pos
+      gjk_normal = wp.normalize(fallback) if wp.length(fallback) >= MJ_MINVAL else wp.vec3(1.0, 0.0, 0.0)
+
+    # If the mesh witness point lies strictly in the interior of a mesh face (a flex vertex or edge
+    # against the face), use the exact face normal instead of the single-precision GJK/EPA normal,
+    # which loses precision as the distance goes to zero.
+    normal = gjk_normal
+    if did >= 0:
+      sv0 = gjk_support(geom1, int(GeomType.MESH), gjk_normal).vertex_index
+      if sv0 >= 0:
+        vertadr = geom1.vertadr
+        polyadr = mesh_polyadr[did]
+        geom_rot_T = wp.transpose(geom_rot)
+        w1_local = geom_rot_T @ (w1 - mesh_geom_pos)
+        gjk_normal_local = geom_rot_T @ gjk_normal
+        plane_tol = 1.0e-3 * r_geom
+
+        polymapadr = mesh_polymapadr[vertadr + sv0]
+        polymapnum = mesh_polymapnum[vertadr + sv0]
+        for k in range(polymapnum):
+          poly = polyadr + mesh_polymap[polymapadr + k]
+          npv = mesh_polyvertnum[poly]
+          if npv < 3:
+            continue
+          poly_normal = mesh_polynormal[poly]
+          if wp.dot(poly_normal, gjk_normal_local) <= 0.0:
+            continue
+          pvadr = mesh_polyvertadr[poly]
+          v0 = mesh_vert[vertadr + mesh_polyvert[pvadr]]
+          if wp.abs(wp.dot(w1_local - v0, poly_normal)) > plane_tol:
+            continue
+
+          v_curr = v0
+          inside = bool(True)
+          for j in range(npv):
+            v_next = v0 if j + 1 == npv else mesh_vert[vertadr + mesh_polyvert[pvadr + j + 1]]
+            edge = v_next - v_curr
+            edge_len_sq = wp.length_sq(edge)
+            if (
+              edge_len_sq >= MJ_MINVAL * MJ_MINVAL
+              and wp.dot(wp.cross(poly_normal, edge), w1_local - v_curr) <= 1.0e-5 * edge_len_sq
+            ):
+              inside = False
+              break
+            v_curr = v_next
+          if inside:
+            normal = wp.normalize(geom_rot @ poly_normal)
+            break
+
+    contact_pos = 0.5 * (w1 + w2)
+
+    _write_candidate(
+      max_candidates,
+      dist,
+      contact_pos,
+      normal,
+      geomid,
+      -1,
+      flexid,
+      elemid,
+      vertid,
       worldid,
+      warn_overflow,
       overflow_out,
+      cand_dist_out,
+      cand_pos_out,
+      cand_nrm_out,
+      cand_geom_out,
+      cand_flex_out,
+      cand_elem_out,
+      cand_vert_out,
+      cand_worldid_out,
+      ncand_out,
     )
-
-    if ncontact > 0 and dist < margin + geom2_radius:
-      diff = (w1 - w2) if dist < 0.0 else (w2 - w1)
-      gjk_normal = wp.normalize(diff)
-      if wp.length_sq(diff) < 1e-12:
-        gjk_normal = wp.normalize(geom2_pos - geom_center)
-
-      best_normal = gjk_normal
-      if did >= 0:
-        w1_local = wp.transpose(geom_rot) @ (w1 - mesh_geom_pos)
-        v_offset = mesh_vertadr[did]
-
-        sv0 = int(0)
-        if idx >= 0:
-          f_verts = wp.vec3i(epa_face[idx] & 0x3FF, (epa_face[idx] >> 10) & 0x3FF, (epa_face[idx] >> 20) & 0x3FF)
-          sv0 = epa_vert_index[2 * f_verts[0]]
-        else:
-          min_v_dist = float(1e10)
-          for vi in range(mesh_vertnum[did]):
-            d_v = wp.length_sq(w1_local - mesh_vert[v_offset + vi])
-            if d_v < min_v_dist:
-              min_v_dist = d_v
-              sv0 = vi
-
-        min_plane_dist = float(1e10)
-        best_normal_local = wp.transpose(geom_rot) @ gjk_normal
-        best_poly_idx = int(-1)
-
-        v_global_idx = v_offset + sv0
-        polymap_start = mesh_polymapadr[v_global_idx]
-        npolygons = mesh_polymapnum[v_global_idx]
-
-        for k in range(npolygons):
-          poly_idx = mesh_polymap[polymap_start + k]
-          normal_local = mesh_polynormal[poly_idx]
-          v0_local_idx = mesh_polyvert[mesh_polyvertadr[poly_idx]]
-          v0_mesh_local = mesh_vert[v_offset + v0_local_idx]
-
-          dist_to_plane = wp.abs(wp.dot(w1_local - v0_mesh_local, normal_local))
-          if dist_to_plane < min_plane_dist:
-            min_plane_dist = dist_to_plane
-            best_normal_local = normal_local
-            best_poly_idx = poly_idx
-
-        if best_poly_idx >= 0:
-          vert_start = mesh_polyvertadr[best_poly_idx]
-          v0_idx = mesh_polyvert[vert_start]
-          v1_idx = mesh_polyvert[vert_start + 1]
-          v2_idx = mesh_polyvert[vert_start + 2]
-          v0_mesh_local = mesh_vert[v_offset + v0_idx]
-          v1_mesh_local = mesh_vert[v_offset + v1_idx]
-          v2_mesh_local = mesh_vert[v_offset + v2_idx]
-
-          if min_plane_dist <= 0.005 and _inside_triangle(w1_local, v0_mesh_local, v1_mesh_local, v2_mesh_local, 0.05):
-            best_normal = wp.normalize(geom_rot @ best_normal_local)
-
-      normal = wp.where(wp.dot(best_normal, gjk_normal) >= 0.0, best_normal, -best_normal)
-      contact_pos = 0.5 * (w1 + w2) - 0.5 * geom2_radius * normal
-
-      _write_candidate(
-        max_candidates,
-        dist - geom2_radius,
-        contact_pos,
-        normal,
-        geomid,
-        -1,
-        flexid,
-        elemid,
-        vertid,
-        worldid,
-        warn_overflow,
-        overflow_out,
-        cand_dist_out,
-        cand_pos_out,
-        cand_nrm_out,
-        cand_geom_out,
-        cand_flex_out,
-        cand_elem_out,
-        cand_vert_out,
-        cand_worldid_out,
-        ncand_out,
-      )
 
 
 @wp.func
@@ -1483,32 +1501,6 @@ def _flex_plane_narrowphase(warn_overflow: int):
 
 
 @wp.func
-def _inside_triangle(
-  # In:
-  P: wp.vec3,
-  A: wp.vec3,
-  B: wp.vec3,
-  C: wp.vec3,
-  tol: float,
-) -> bool:
-  v0 = B - A
-  v1 = C - A
-  v2 = P - A
-  d00 = wp.dot(v0, v0)
-  d01 = wp.dot(v0, v1)
-  d11 = wp.dot(v1, v1)
-  d20 = wp.dot(v2, v0)
-  d21 = wp.dot(v2, v1)
-  denom = d00 * d11 - d01 * d01
-  if wp.abs(denom) < 1e-12:
-    return False
-  v = (d11 * d20 - d01 * d21) / denom
-  w = (d00 * d21 - d01 * d20) / denom
-  u = 1.0 - v - w
-  return u >= -tol and v >= -tol and w >= -tol and u <= 1.0 + tol and v <= 1.0 + tol and w <= 1.0 + tol
-
-
-@wp.func
 def _exclude_self_collision(
   # Model:
   flex_vertbodyid: wp.array[int],
@@ -1570,54 +1562,38 @@ def _elem_active(
 
 
 @wp.kernel
-def _flex_sap_project(
+def _flex_bvh_leaf(
   # Model:
-  flex_margin: wp.array[float],
-  flex_gap: wp.array[float],
-  flex_activelayers: wp.array[int],
+  nbvhstatic: int,
+  bvh_nodeid: wp.array[int],
   flex_dim: wp.array[int],
   flex_vertadr: wp.array[int],
-  flex_elemadr: wp.array[int],
   flex_elemdataadr: wp.array[int],
   flex_elem: wp.array[int],
-  flex_elemlayer: wp.array[int],
   flex_radius: wp.array[float],
-  flex_elemflexid: wp.array[int],
+  flex_bvhflexid: wp.array[int],
   flex_rod_is_box: wp.array[bool],
   flex_rod_box_size: wp.array[wp.vec2],
   # Data in:
   flexvert_xpos_in: wp.array2d[wp.vec3],
-  nworld_in: int,
-  # In:
-  nelem: int,
-  direction: wp.vec3,
   # Out:
-  projection_lower_out: wp.array2d[float],
-  projection_upper_out: wp.array2d[float],
-  sort_index_out: wp.array2d[int],
-  elem_aabb_lower_out: wp.array2d[wp.vec3],
-  elem_aabb_upper_out: wp.array2d[wp.vec3],
-  segmented_index_out: wp.array[int],
+  bvh_lower_out: wp.array2d[wp.vec3],
+  bvh_upper_out: wp.array2d[wp.vec3],
 ):
-  worldid, elemid = wp.tid()
+  worldid, nodeid = wp.tid()
 
-  flexid = flex_elemflexid[elemid]
+  # leaves hold active elements only (MuJoCo excludes inactive 3D elements from the flex BVH)
+  e = bvh_nodeid[nbvhstatic + nodeid]
+  if e < 0:
+    return
 
-  # Initialize sort index
-  sort_index_out[worldid, elemid] = elemid
-
-  # Compute AABB from vertex positions
+  flexid = flex_bvhflexid[nodeid]
   dim = flex_dim[flexid]
   vert_adr = flex_vertadr[flexid]
-  elem_adr = flex_elemadr[flexid]
-  e = elemid - elem_adr
-  elem_data_idx = flex_elemdataadr[flexid] + e * (dim + 1)
-
-  v = _get_element_vertices(flex_elem, dim, elem_data_idx)
+  v = _get_element_vertices(flex_elem, dim, flex_elemdataadr[flexid] + e * (dim + 1))
 
   p0 = flexvert_xpos_in[worldid, vert_adr + v[0]]
   p1 = flexvert_xpos_in[worldid, vert_adr + v[1]]
-
   aabb_min = wp.min(p0, p1)
   aabb_max = wp.max(p0, p1)
 
@@ -1634,41 +1610,45 @@ def _flex_sap_project(
   is_box, box_2d = support.rod_box_size(flex_rod_is_box, flex_rod_box_size, flexid)
   if is_box:
     radius = wp.max(radius, wp.length(box_2d))
-  margin = flex_margin[flexid]
-  gap = flex_gap[flexid]
-  rbound = radius + margin + gap
-  inflate = wp.vec3(rbound, rbound, rbound)
-  aabb_min = aabb_min - inflate
-  aabb_max = aabb_max + inflate
+  inflate = wp.vec3(radius, radius, radius)
+  bvh_lower_out[worldid, nodeid] = aabb_min - inflate
+  bvh_upper_out[worldid, nodeid] = aabb_max + inflate
 
-  elem_aabb_lower_out[worldid, elemid] = aabb_min
-  elem_aabb_upper_out[worldid, elemid] = aabb_max
 
-  # Project AABB onto direction to get 1D interval
-  center = 0.5 * (aabb_min + aabb_max)
-  halfsize = 0.5 * (aabb_max - aabb_min)
-  proj_center = wp.dot(direction, center)
-  proj_radius = wp.abs(direction[0]) * halfsize[0] + wp.abs(direction[1]) * halfsize[1] + wp.abs(direction[2]) * halfsize[2]
+@wp.kernel
+def _flex_bvh_refit(
+  # Model:
+  nbvhstatic: int,
+  bvh_child: wp.array[wp.vec2i],
+  flex_bvhadr: wp.array[int],
+  flex_bvhflexid: wp.array[int],
+  # In:
+  level: wp.array[int],
+  # Out:
+  bvh_lower_out: wp.array2d[wp.vec3],
+  bvh_upper_out: wp.array2d[wp.vec3],
+):
+  worldid, levelid = wp.tid()
 
-  if not _elem_active(flex_activelayers, flex_dim, flex_elemadr, flex_elemlayer, flexid, e):
-    projection_lower_out[worldid, elemid] = MJ_MAXVAL
-    projection_upper_out[worldid, elemid] = MJ_MAXVAL
-  else:
-    projection_lower_out[worldid, elemid] = proj_center - proj_radius
-    projection_upper_out[worldid, elemid] = proj_center + proj_radius
-
-  # Segmented sort boundaries
-  if elemid == 0:
-    segmented_index_out[worldid] = worldid * nelem
-    if worldid == nworld_in - 1:
-      segmented_index_out[nworld_in] = nworld_in * nelem
+  bvhid = level[levelid]
+  nodeid = bvhid - nbvhstatic
+  child = bvh_child[bvhid]
+  adr = flex_bvhadr[flex_bvhflexid[nodeid]] - nbvhstatic
+  child1 = adr + child[0]
+  child2 = adr + child[1]
+  bvh_lower_out[worldid, nodeid] = wp.min(bvh_lower_out[worldid, child1], bvh_lower_out[worldid, child2])
+  bvh_upper_out[worldid, nodeid] = wp.max(bvh_upper_out[worldid, child1], bvh_upper_out[worldid, child2])
 
 
 @cache_kernel
-def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
+def _flex_bvh_query(is_self: bool, warn_overflow: int, enable_sat: bool, split_depth: int):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
+    nbvhstatic: int,
+    nflex: int,
+    bvh_child: wp.array[wp.vec2i],
+    bvh_nodeid: wp.array[int],
     flex_contype: wp.array[int],
     flex_conaffinity: wp.array[int],
     flex_margin: wp.array[float],
@@ -1681,18 +1661,15 @@ def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
     flex_vertbodyid: wp.array[int],
     flex_elem: wp.array[int],
     flex_radius: wp.array[float],
-    flex_elemflexid: wp.array[int],
+    flex_bvhadr: wp.array[int],
+    flex_bvhflexid: wp.array[int],
     # Data in:
     flexvert_xpos_in: wp.array2d[wp.vec3],
     flex_aabb_min_in: wp.array2d[wp.vec3],
     flex_aabb_max_in: wp.array2d[wp.vec3],
     # In:
-    nelem: int,
-    sort_index_in: wp.array2d[int],
-    cumulative_sum_in: wp.array[int],
-    nsweep_in: int,
-    aabb_lower_in: wp.array2d[wp.vec3],
-    aabb_upper_in: wp.array2d[wp.vec3],
+    bvh_lower_in: wp.array2d[wp.vec3],
+    bvh_upper_in: wp.array2d[wp.vec3],
     max_pairs: int,
     # Data out:
     ncollision_out: wp.array[int],
@@ -1701,46 +1678,46 @@ def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
     collision_pair_out: wp.array[wp.vec2i],
     collision_worldid_out: wp.array[int],
   ):
-    worldelemid = wp.tid()
+    # one thread per leaf and subtree split: query the trees of the flexes the leaf element can
+    # collide with
+    worldid, nodeid1, splitid = wp.tid()
 
-    nworldelem = cumulative_sum_in.shape[0]
-    nworkpackages = cumulative_sum_in[nworldelem - 1]
+    bvhid1 = nbvhstatic + nodeid1
+    e1 = bvh_nodeid[bvhid1]
+    if e1 < 0:
+      return
 
-    while worldelemid < nworkpackages:
-      i = sap_binary_search(cumulative_sum_in, worldelemid, 0, nworldelem)
-      j = i + worldelemid + 1
-      if i > 0:
-        j -= cumulative_sum_in[i - 1]
+    flexid1 = flex_bvhflexid[nodeid1]
+    if wp.static(is_self):
+      if flex_selfcollide[flexid1] == 0 or (flex_contype[flexid1] & flex_conaffinity[flexid1]) == 0:
+        return
+    elif flexid1 >= nflex - 1:
+      return
 
-      worldid = i // nelem
-      i = i % nelem
-      j = j % nelem
+    elem1 = flex_elemadr[flexid1] + e1
+    lower1 = bvh_lower_in[worldid, nodeid1]
+    upper1 = bvh_upper_in[worldid, nodeid1]
+    dim1 = flex_dim[flexid1]
+    vert_adr1 = flex_vertadr[flexid1]
+    v1_indices = _get_element_vertices(flex_elem, dim1, flex_elemdataadr[flexid1] + e1 * (dim1 + 1))
 
-      elem1 = sort_index_in[worldid, i]
-      elem2 = sort_index_in[worldid, j]
+    if wp.static(is_self):
+      flexid_start = flexid1
+      flexid_end = flexid1 + 1
+    else:
+      flexid_start = flexid1 + 1
+      flexid_end = nflex
 
-      flexid1 = flex_elemflexid[elem1]
-      flexid2 = flex_elemflexid[elem2]
+    stack = _vec_bvh_stack()
 
-      if wp.static(is_self):
-        if flexid1 != flexid2 or flex_selfcollide[flexid1] == 0 or (flex_contype[flexid1] & flex_conaffinity[flexid1]) == 0:
-          worldelemid += nsweep_in
-          continue
-      else:
-        if flexid1 == flexid2:
-          worldelemid += nsweep_in
-          continue
+    for flexid2 in range(flexid_start, flexid_end):
+      bvhadr = flex_bvhadr[flexid2]
+      if bvhadr < 0:
+        continue
 
-      if elem1 > elem2:
-        tmpelem = elem1
-        elem1 = elem2
-        elem2 = tmpelem
-        tmpid = flexid1
-        flexid1 = flexid2
-        flexid2 = tmpid
-
-      worldelemid += nsweep_in
-
+      q_lower1 = lower1
+      q_upper1 = upper1
+      pair_margin = float(0.0)
       if not wp.static(is_self):
         if _flex_element_aabb_filter(
           flex_aabb_min_in[worldid, flexid1],
@@ -1757,93 +1734,129 @@ def _flex_sap_sweep(is_self: bool, warn_overflow: int, enable_sat: bool = True):
         if not ((contype1 & conaffinity2) or (contype2 & conaffinity1)):
           continue
 
-      lower1 = aabb_lower_in[worldid, elem1]
-      upper1 = aabb_upper_in[worldid, elem1]
-      lower2 = aabb_lower_in[worldid, elem2]
-      upper2 = aabb_upper_in[worldid, elem2]
+        pair_margin = flex_margin[flexid1] + flex_margin[flexid2] + flex_gap[flexid1] + flex_gap[flexid2]
+        margin_vec = wp.vec3(pair_margin, pair_margin, pair_margin)
+        q_lower1 = lower1 - margin_vec
+        q_upper1 = upper1 + margin_vec
 
-      if _flex_element_aabb_filter(lower1, upper1, lower2, upper2):
+      # trees are stored in preorder, the subtree of a left child ends where its sibling starts:
+      # self-collision skips subtrees of leaves before this one, so each pair is visited once
+      leaf1 = bvhid1 - bvhadr
+
+      # start at the subtree selected by the bits of splitid, split_depth levels below the root
+      node = int(0)
+      valid = bool(True)
+      for k in range(wp.static(split_depth)):
+        if bvh_nodeid[bvhadr + node] >= 0:
+          valid = (splitid >> k) == 0
+          break
+        child = bvh_child[bvhadr + node]
+        if ((splitid >> k) & 1) != 0:
+          node = child[1]
+        else:
+          if wp.static(is_self):
+            if child[1] <= leaf1:
+              valid = False
+              break
+          node = child[0]
+      if not valid:
         continue
 
-      dim1 = flex_dim[flexid1]
-      vert_adr1 = flex_vertadr[flexid1]
-      elem_adr1 = flex_elemadr[flexid1]
-      e1 = elem1 - elem_adr1
-      elem_data_idx1 = flex_elemdataadr[flexid1] + e1 * (dim1 + 1)
-      v1_indices = _get_element_vertices(flex_elem, dim1, elem_data_idx1)
+      startid = bvhadr + node - nbvhstatic
+      if _flex_element_aabb_filter(q_lower1, q_upper1, bvh_lower_in[worldid, startid], bvh_upper_in[worldid, startid]):
+        continue
+      stack[0] = node
+      nstack = int(1)
 
-      if wp.static(is_self):
-        e2 = elem2 - elem_adr1
-        elem_data_idx2 = flex_elemdataadr[flexid1] + e2 * (dim1 + 1)
-        v2_indices = _get_element_vertices(flex_elem, dim1, elem_data_idx2)
-        if _exclude_self_collision(
-          flex_vertbodyid,
-          v1_indices,
-          dim1 + 1,
-          v2_indices,
-          dim1 + 1,
-          vert_adr1,
-        ):
-          continue
-      else:
-        dim2 = flex_dim[flexid2]
-        vert_adr2 = flex_vertadr[flexid2]
-        elem_adr2 = flex_elemadr[flexid2]
-        e2 = elem2 - elem_adr2
-        elem_data_idx2 = flex_elemdataadr[flexid2] + e2 * (dim2 + 1)
-        v2_indices = _get_element_vertices(flex_elem, dim2, elem_data_idx2)
-
-        shared_body = bool(False)
-        for ii in range(dim1 + 1):
-          idx1 = v1_indices[ii]
-          if idx1 >= 0:
-            b1 = flex_vertbodyid[vert_adr1 + idx1]
-            for jj in range(dim2 + 1):
-              idx2 = v2_indices[jj]
-              if idx2 >= 0 and b1 >= 0:
-                b2 = flex_vertbodyid[vert_adr2 + idx2]
-                if b1 == b2:
-                  shared_body = bool(True)
-                  break
-            if shared_body:
-              break
-
-        if shared_body:
-          continue
-
-      if dim1 == 2:
-        dim2 = dim1 if wp.static(is_self) else flex_dim[flexid2]
-        if dim2 == 2 and wp.static(enable_sat):
+      dim2 = flex_dim[flexid2]
+      vert_adr2 = flex_vertadr[flexid2]
+      elem_adr2 = flex_elemadr[flexid2]
+      elem_data_adr2 = flex_elemdataadr[flexid2]
+      cutoff_sq = float(0.0)
+      p0 = wp.vec3(0.0)
+      p1 = wp.vec3(0.0)
+      p2 = wp.vec3(0.0)
+      if wp.static(enable_sat):
+        if dim1 == 2 and dim2 == 2:
           r1 = flex_radius[flexid1]
           cutoff = float(2.0) * r1
           if not wp.static(is_self):
-            cutoff = (
-              r1 + flex_radius[flexid2] + flex_margin[flexid1] + flex_margin[flexid2] + flex_gap[flexid1] + flex_gap[flexid2]
-            )
+            cutoff = r1 + flex_radius[flexid2] + pair_margin
           cutoff_sq = cutoff * cutoff
           p0 = flexvert_xpos_in[worldid, vert_adr1 + v1_indices[0]]
           p1 = flexvert_xpos_in[worldid, vert_adr1 + v1_indices[1]]
           p2 = flexvert_xpos_in[worldid, vert_adr1 + v1_indices[2]]
-          vadr2 = vert_adr1 if wp.static(is_self) else flex_vertadr[flexid2]
-          q0 = flexvert_xpos_in[worldid, vadr2 + v2_indices[0]]
-          q1 = flexvert_xpos_in[worldid, vadr2 + v2_indices[1]]
-          q2 = flexvert_xpos_in[worldid, vadr2 + v2_indices[2]]
+
+      # nodes on the stack overlap the query element
+      while nstack > 0:
+        nstack -= 1
+        bvhid2 = bvhadr + stack[nstack]
+        e2 = bvh_nodeid[bvhid2]
+
+        if e2 < 0:
+          child = bvh_child[bvhid2]
+          for i in range(2):
+            if wp.static(is_self):
+              if i == 0 and child[1] <= leaf1:
+                continue
+            childid = bvhadr + child[i] - nbvhstatic
+            if not _flex_element_aabb_filter(
+              q_lower1, q_upper1, bvh_lower_in[worldid, childid], bvh_upper_in[worldid, childid]
+            ):
+              stack[nstack] = child[i]
+              nstack += 1
+          continue
+
+        if wp.static(is_self):
+          if bvhid2 - bvhadr <= leaf1:
+            continue
+
+        elem2 = elem_adr2 + e2
+        v2_indices = _get_element_vertices(flex_elem, dim2, elem_data_adr2 + e2 * (dim2 + 1))
+        if wp.static(is_self):
+          if _exclude_self_collision(flex_vertbodyid, v1_indices, dim1 + 1, v2_indices, dim1 + 1, vert_adr1):
+            continue
+        else:
+          shared_body = bool(False)
+          for ii in range(dim1 + 1):
+            idx1 = v1_indices[ii]
+            if idx1 >= 0:
+              b1 = flex_vertbodyid[vert_adr1 + idx1]
+              for jj in range(dim2 + 1):
+                idx2 = v2_indices[jj]
+                if idx2 >= 0 and b1 >= 0:
+                  b2 = flex_vertbodyid[vert_adr2 + idx2]
+                  if b1 == b2:
+                    shared_body = bool(True)
+                    break
+              if shared_body:
+                break
+
+          if shared_body:
+            continue
+
+        if dim1 == 2 and dim2 == 2 and wp.static(enable_sat):
+          q0 = flexvert_xpos_in[worldid, vert_adr2 + v2_indices[0]]
+          q1 = flexvert_xpos_in[worldid, vert_adr2 + v2_indices[1]]
+          q2 = flexvert_xpos_in[worldid, vert_adr2 + v2_indices[2]]
           if _triangle_sat_separated(p0, p1, p2, q0, q1, q2, cutoff_sq):
             continue
 
-      idx = wp.atomic_add(ncollision_out, 0, 1)  # kernel_analyzer: ignore[atomic]
-      if idx >= max_pairs:
-        if wp.static(bool(warn_overflow & OverflowType.BROADPHASE)):
-          wp.printf(
-            "Flex SAP buffer overflow - please increase naconmax beyond %u\n"
-            "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.BROADPHASE (or = 0 for all)\n",
-            max_pairs,
-          )
-        wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.BROADPHASE))
-        return
+        idx = wp.atomic_add(ncollision_out, 0, 1)  # kernel_analyzer: ignore[atomic]
+        if idx >= max_pairs:
+          if wp.static(bool(warn_overflow & OverflowType.BROADPHASE)):
+            wp.printf(
+              "Flex BVH buffer overflow - please increase naconmax beyond %u\n"
+              "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.BROADPHASE (or = 0 for all)\n",
+              max_pairs,
+            )
+          wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.BROADPHASE))
+          return
 
-      collision_pair_out[idx] = wp.vec2i(elem1, elem2)
-      collision_worldid_out[idx] = worldid
+        elem_a = wp.min(elem1, elem2) if wp.static(is_self) else elem1
+        elem_b = wp.max(elem1, elem2) if wp.static(is_self) else elem2
+        collision_pair_out[idx] = wp.vec2i(elem_a, elem_b)
+        collision_worldid_out[idx] = worldid
 
   return kernel
 
@@ -2244,6 +2257,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
     geom_dataid: wp.array2d[int],
     geom_size: wp.array2d[wp.vec3],
     geom_aabb: wp.array3d[wp.vec3],
+    geom_rbound: wp.array2d[float],
     geom_margin: wp.array2d[float],
     geom_gap: wp.array2d[float],
     flex_contype: wp.array[int],
@@ -2266,9 +2280,10 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
     mesh_graphadr: wp.array[int],
     mesh_vert: wp.array[wp.vec3],
     mesh_graph: wp.array[int],
-    mesh_pos: wp.array[wp.vec3],
+    mesh_polyadr: wp.array[int],
     mesh_polynormal: wp.array[wp.vec3],
     mesh_polyvertadr: wp.array[int],
+    mesh_polyvertnum: wp.array[int],
     mesh_polyvert: wp.array[int],
     mesh_polymapadr: wp.array[int],
     mesh_polymapnum: wp.array[int],
@@ -2597,6 +2612,10 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
           continue
 
       if gtype == int(GeomType.MESH) or gtype == int(GeomType.HFIELD):
+        if gtype == int(GeomType.MESH):
+          r_geom = geom_rbound[worldid % geom_rbound.shape[0], geomid]
+          if wp.length(centroid - geom_pos) > r_geom + r_elem + margin + elem_radius:
+            continue
         ccdid = wp.atomic_add(nccd, 0, 1)  # kernel_analyzer: ignore[atomic]
         if ccdid >= naccdmax_in:
           if wp.static(bool(warn_overflow & OverflowType.CCD)):
@@ -2651,17 +2670,18 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
           )
           continue
 
-        geom2_r = elem_radius if f_dim == 2 else 0.0
-        geom2_rbound = r_elem if f_dim == 2 else (r_elem + elem_radius)
+        if f_dim == 2:
+          geom2.margin = 2.0 * elem_radius
         _collide_mesh_convex(
           mesh_vertadr,
           mesh_vertnum,
           mesh_graphadr,
           mesh_vert,
           mesh_graph,
-          mesh_pos,
+          mesh_polyadr,
           mesh_polynormal,
           mesh_polyvertadr,
+          mesh_polyvertnum,
           mesh_polyvert,
           mesh_polymapadr,
           mesh_polymapnum,
@@ -2670,12 +2690,11 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
           geom_pos,
           geom_rot,
           geom_size_val,
+          r_geom,
           did,
           geom2,
           geom2_type,
           centroid,
-          geom2_rbound,
-          geom2_r,
           margin,
           geomid,
           flexid,
@@ -2702,6 +2721,8 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
           cand_worldid_out,
           ncand_out,
         )
+        if f_dim == 2:
+          geom2.margin = 0.0
 
       elif f_dim == 1 and (gtype == int(GeomType.SPHERE) or gtype == int(GeomType.CAPSULE) or gtype == int(GeomType.BOX)):
         if ok_box:
@@ -2961,13 +2982,51 @@ def _compare_candidate(
   return False
 
 
+@wp.func
+def _compare_candidate_canonical(
+  # In:
+  dist_i: float,
+  dist_j: float,
+  pos_i: wp.vec3,
+  pos_j: wp.vec3,
+  cand_idx_i: int,
+  cand_idx_j: int,
+  cand_nrm: wp.array[wp.vec3],
+  cand_flex: wp.array[wp.vec2i],
+  cand_elem: wp.array[wp.vec2i],
+  cand_vert: wp.array[wp.vec2i],
+) -> bool:
+  """Returns True if candidate i is dominated by j, breaking ties by candidate content."""
+  dist_key_i = sort.float_key(wp.cast(dist_i, wp.uint32))
+  dist_key_j = sort.float_key(wp.cast(dist_j, wp.uint32))
+  if dist_key_j != dist_key_i:
+    return dist_key_j < dist_key_i
+  # Break exact distance ties canonically by candidate content before raw atomic index.
+  c = _cmp_vec2i(cand_flex[cand_idx_j], cand_flex[cand_idx_i])
+  if c != 0:
+    return c < 0
+  c = _cmp_vec2i(cand_elem[cand_idx_j], cand_elem[cand_idx_i])
+  if c != 0:
+    return c < 0
+  c = _cmp_vec2i(cand_vert[cand_idx_j], cand_vert[cand_idx_i])
+  if c != 0:
+    return c < 0
+  c = _cmp_vec3f(pos_j, pos_i)
+  if c != 0:
+    return c < 0
+  c = _cmp_vec3f(cand_nrm[cand_idx_j], cand_nrm[cand_idx_i])
+  if c != 0:
+    return c < 0
+  return cand_idx_j < cand_idx_i
+
+
 # Note: MuJoCo Warp uses proximity deduplication (1 mm threshold) only for 1D and 2D
 # flex-geom collisions and ContactType.PASSIVE flex pairs. Non-passive 3D flex-geom,
 # flex self-collision, and flex-flex collisions apply proximity deduplication before
 # Farthest Point Sampling (FPS) limited to MJ_MAXCONPAIR.
 # TODO(thowell): Figure out an FPS version that utilizes a configurable mj_maxconpair.
 @cache_kernel
-def _filter_flex_candidates_sorted(has_passive_flex: bool):
+def _filter_flex_candidates_sorted(has_passive_flex: bool, canonical_ties: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -2985,6 +3044,7 @@ def _filter_flex_candidates_sorted(has_passive_flex: bool):
     sort_val: wp.array[int],
     cand_dist: wp.array[float],
     cand_pos: wp.array[wp.vec3],
+    cand_nrm: wp.array[wp.vec3],
     cand_geom: wp.array[wp.vec2i],
     cand_flex: wp.array[wp.vec2i],
     cand_elem: wp.array[wp.vec2i],
@@ -3050,7 +3110,13 @@ def _filter_flex_candidates_sorted(has_passive_flex: bool):
         pos_j = cand_pos[oj]
         diff = pos_i - pos_j
         if wp.dot(diff, diff) < eps2:
-          if _compare_candidate(dist_i, cand_dist[oj], i, oj):
+          if wp.static(canonical_ties):
+            if _compare_candidate_canonical(
+              dist_i, cand_dist[oj], pos_i, pos_j, i, oj, cand_nrm, cand_flex, cand_elem, cand_vert
+            ):
+              keep = 0
+              break
+          elif _compare_candidate(dist_i, cand_dist[oj], i, oj):
             keep = 0
             break
       j -= 1
@@ -3071,7 +3137,13 @@ def _filter_flex_candidates_sorted(has_passive_flex: bool):
           pos_j = cand_pos[oj]
           diff = pos_i - pos_j
           if wp.dot(diff, diff) < eps2:
-            if _compare_candidate(dist_i, cand_dist[oj], i, oj):
+            if wp.static(canonical_ties):
+              if _compare_candidate_canonical(
+                dist_i, cand_dist[oj], pos_i, pos_j, i, oj, cand_nrm, cand_flex, cand_elem, cand_vert
+              ):
+                keep = 0
+                break
+            elif _compare_candidate(dist_i, cand_dist[oj], i, oj):
               keep = 0
               break
         j += 1
@@ -3381,6 +3453,29 @@ def _tie_break_fps(
   return curr_idx < sel_idx
 
 
+@wp.func
+def _tie_break_fps_canonical(
+  # In:
+  curr_idx: int,
+  sel_idx: int,
+  cand_pos: wp.array[wp.vec3],
+  cand_elem: wp.array[wp.vec2i],
+  cand_vert: wp.array[wp.vec2i],
+) -> bool:
+  if sel_idx < 0:
+    return True
+  c = _cmp_vec2i(cand_elem[curr_idx], cand_elem[sel_idx])
+  if c != 0:
+    return c < 0
+  c = _cmp_vec2i(cand_vert[curr_idx], cand_vert[sel_idx])
+  if c != 0:
+    return c < 0
+  c = _cmp_vec3f(cand_pos[curr_idx], cand_pos[sel_idx])
+  if c != 0:
+    return c < 0
+  return curr_idx < sel_idx
+
+
 _fps_vecf = wp.types.vector(length=_FPS_SLOTS, dtype=float)
 _fps_veci = wp.types.vector(length=_FPS_SLOTS, dtype=int)
 
@@ -3393,6 +3488,15 @@ class _FpsPick:
   vert: wp.vec2i
 
 
+@wp.struct
+class _FpsPickCanonical:
+  dist: float
+  cidx: int
+  elem: wp.vec2i
+  vert: wp.vec2i
+  pos: wp.vec3
+
+
 @wp.func
 def _fps_pick(dist: float, cidx: int, cand_elem: wp.array[wp.vec2i], cand_vert: wp.array[wp.vec2i]) -> _FpsPick:
   pick = _FpsPick()
@@ -3401,6 +3505,25 @@ def _fps_pick(dist: float, cidx: int, cand_elem: wp.array[wp.vec2i], cand_vert: 
   if cidx >= 0:
     pick.elem = cand_elem[cidx]
     pick.vert = cand_vert[cidx]
+  return pick
+
+
+@wp.func
+def _fps_pick_canonical(
+  # In:
+  dist: float,
+  cidx: int,
+  cand_pos: wp.array[wp.vec3],
+  cand_elem: wp.array[wp.vec2i],
+  cand_vert: wp.array[wp.vec2i],
+) -> _FpsPickCanonical:
+  pick = _FpsPickCanonical()
+  pick.dist = dist
+  pick.cidx = cidx
+  if cidx >= 0:
+    pick.elem = cand_elem[cidx]
+    pick.vert = cand_vert[cidx]
+    pick.pos = cand_pos[cidx]
   return pick
 
 
@@ -3436,8 +3559,31 @@ def _fps_pick_max(a: _FpsPick, b: _FpsPick) -> _FpsPick:
   return b
 
 
+@wp.func
+def _fps_pick_max_canonical(a: _FpsPickCanonical, b: _FpsPickCanonical) -> _FpsPickCanonical:
+  """Returns the pick with the larger distance, breaking ties like _tie_break_fps_canonical."""
+  if b.cidx < 0:
+    return a
+  if a.cidx < 0:
+    return b
+  if a.dist > b.dist:
+    return a
+  if b.dist > a.dist:
+    return b
+  c = _cmp_vec2i(a.elem, b.elem)
+  if c != 0:
+    return a if c < 0 else b
+  c = _cmp_vec2i(a.vert, b.vert)
+  if c != 0:
+    return a if c < 0 else b
+  c = _cmp_vec3f(a.pos, b.pos)
+  if c != 0:
+    return a if c < 0 else b
+  return a if a.cidx < b.cidx else b
+
+
 @cache_kernel
-def _parallel_fps(has_passive_flex: bool):
+def _parallel_fps(has_passive_flex: bool, canonical_ties: bool):
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Model:
@@ -3529,7 +3675,10 @@ def _parallel_fps(has_passive_flex: bool):
             min_d = d_val
             seed = c_idx
           elif d_val == min_d:
-            if _tie_break_fps(c_idx, seed, cand_elem, cand_vert):
+            if wp.static(canonical_ties):
+              if _tie_break_fps_canonical(c_idx, seed, cand_pos, cand_elem, cand_vert):
+                seed = c_idx
+            elif _tie_break_fps(c_idx, seed, cand_elem, cand_vert):
               seed = c_idx
 
     overflow_start = g_start + tid + wp.static(_FPS_SLOTS) * nthread
@@ -3543,14 +3692,23 @@ def _parallel_fps(has_passive_flex: bool):
           min_d = d_val
           seed = c_idx
         elif d_val == min_d:
-          if _tie_break_fps(c_idx, seed, cand_elem, cand_vert):
+          if wp.static(canonical_ties):
+            if _tie_break_fps_canonical(c_idx, seed, cand_pos, cand_elem, cand_vert):
+              seed = c_idx
+          elif _tie_break_fps(c_idx, seed, cand_elem, cand_vert):
             seed = c_idx
 
     if wp.tile_sum(wp.tile(local_active))[0] <= MJ_MAXCONPAIR:
       return
 
     # negating the distance turns the min search into a max with the same tie-break
-    sel = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(-min_d, seed, cand_elem, cand_vert)))[0].cidx
+    if wp.static(canonical_ties):
+      sel = wp.tile_reduce(
+        _fps_pick_max_canonical,
+        wp.tile(_fps_pick_canonical(-min_d, seed, cand_pos, cand_elem, cand_vert)),
+      )[0].cidx
+    else:
+      sel = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(-min_d, seed, cand_elem, cand_vert)))[0].cidx
 
     for _ in range(MJ_MAXCONPAIR - 1):
       sel_p = cand_pos[sel]
@@ -3569,7 +3727,10 @@ def _parallel_fps(has_passive_flex: bool):
               max_d = md
               best = c_idx
             elif md == max_d:
-              if _tie_break_fps(c_idx, best, cand_elem, cand_vert):
+              if wp.static(canonical_ties):
+                if _tie_break_fps_canonical(c_idx, best, cand_pos, cand_elem, cand_vert):
+                  best = c_idx
+              elif _tie_break_fps(c_idx, best, cand_elem, cand_vert):
                 best = c_idx
 
       for si in range(overflow_start, g_end, nthread):
@@ -3588,10 +3749,19 @@ def _parallel_fps(has_passive_flex: bool):
                 max_d = md
                 best = c_idx
               elif md == max_d:
-                if _tie_break_fps(c_idx, best, cand_elem, cand_vert):
+                if wp.static(canonical_ties):
+                  if _tie_break_fps_canonical(c_idx, best, cand_pos, cand_elem, cand_vert):
+                    best = c_idx
+                elif _tie_break_fps(c_idx, best, cand_elem, cand_vert):
                   best = c_idx
 
-      pick = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(max_d, best, cand_elem, cand_vert)))[0]
+      if wp.static(canonical_ties):
+        pick = wp.tile_reduce(
+          _fps_pick_max_canonical,
+          wp.tile(_fps_pick_canonical(max_d, best, cand_pos, cand_elem, cand_vert)),
+        )[0]
+      else:
+        pick = wp.tile_reduce(_fps_pick_max, wp.tile(_fps_pick(max_d, best, cand_elem, cand_vert)))[0]
       if pick.cidx < 0 or pick.dist <= 0.0:
         sel = -1
         break
@@ -3739,10 +3909,10 @@ def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
   )
 
 
-def _run_filter_flex_fps(m: Model, ws: FlexWorkspace, has_passive_flex: bool):
+def _run_filter_flex_fps(m: Model, ws: FlexWorkspace, has_passive_flex: bool, canonical_ties: bool):
   """Applies Far Point Sampling to limit contact points per group to MJ_MAXCONPAIR in parallel."""
   wp.launch_tiled(
-    _parallel_fps(has_passive_flex),
+    _parallel_fps(has_passive_flex, canonical_ties),
     dim=ws.flex_group_start_indices.shape[0],
     inputs=[
       m.opt.integrator,
@@ -3800,8 +3970,9 @@ def _filter_and_write_contacts(
   wp.utils.radix_sort_pairs(ws.filter_key, ws.filter_val, d.naconmax)
 
   has_passive_flex = bool(m.opt.integrator == IntegratorType.DISCRETE and m.has_flex_passive)
+  canonical_ties = bool(m.opt.deterministic & DeterminismType.CONTACTS)
   wp.launch(
-    _filter_flex_candidates_sorted(has_passive_flex),
+    _filter_flex_candidates_sorted(has_passive_flex, canonical_ties),
     dim=d.naconmax,
     inputs=[
       m.opt.integrator,
@@ -3817,6 +3988,7 @@ def _filter_and_write_contacts(
       ws.filter_val,
       ws.dist,
       ws.pos,
+      ws.nrm,
       ws.geom,
       ws.flex,
       ws.elem,
@@ -3862,7 +4034,7 @@ def _filter_and_write_contacts(
       ],
     )
 
-    _run_filter_flex_fps(m, ws, has_passive_flex)
+    _run_filter_flex_fps(m, ws, has_passive_flex, canonical_ties)
 
   wp.launch(
     _write_filtered_contacts(int(m.opt.warn_overflow), has_passive_flex),
@@ -4021,6 +4193,7 @@ def _detect_elem_geom_candidates(
       m.geom_dataid,
       m.geom_size,
       m.geom_aabb,
+      m.geom_rbound,
       m.geom_margin,
       m.geom_gap,
       m.flex_contype,
@@ -4043,9 +4216,10 @@ def _detect_elem_geom_candidates(
       m.mesh_graphadr,
       m.mesh_vert,
       m.mesh_graph,
-      m.mesh_pos,
+      m.mesh_polyadr,
       m.mesh_polynormal,
       m.mesh_polyvertadr,
+      m.mesh_polyvertnum,
       m.mesh_polyvert,
       m.mesh_polymapadr,
       m.mesh_polymapnum,
@@ -4102,91 +4276,39 @@ def _detect_elem_geom_candidates(
   )
 
 
-def _run_flex_sap_sort(
-  m: Model,
-  d: Data,
-) -> tuple[wp.array, wp.array, wp.array, wp.array]:
-  """Performs SAP projection, segmented sorting, and cumulative range scan for flex elements."""
-  nelem = m.nflexelem
-  nworldelem = d.nworld * nelem
-
-  direction = wp.vec3(0.5935, 0.7790, 0.1235)
-  direction = wp.normalize(direction)
-
-  sap_lower = wp.empty((d.nworld, nelem, 2), dtype=float)
-  sap_upper = wp.empty((d.nworld, nelem), dtype=float)
-  sap_sort_index = wp.empty((d.nworld, nelem, 2), dtype=int)
-  sap_range_arr = wp.empty((d.nworld, nelem), dtype=int)
-  sap_cumsum = wp.empty((d.nworld, nelem), dtype=int)
-  sap_seg_index = wp.empty(d.nworld + 1, dtype=int)
-  elem_aabb_lower = wp.empty((d.nworld, nelem), dtype=wp.vec3)
-  elem_aabb_upper = wp.empty((d.nworld, nelem), dtype=wp.vec3)
+def _flex_bvh_update(m: Model, d: Data) -> tuple[wp.array, wp.array]:
+  """Refits the flex BVHs to the current element AABBs, leaves first then by decreasing depth."""
+  bvh_lower = wp.empty((d.nworld, m.nbvhdynamic), dtype=wp.vec3)
+  bvh_upper = wp.empty((d.nworld, m.nbvhdynamic), dtype=wp.vec3)
 
   wp.launch(
-    _flex_sap_project,
-    dim=(d.nworld, nelem),
+    _flex_bvh_leaf,
+    dim=(d.nworld, m.nbvhdynamic),
     inputs=[
-      m.flex_margin,
-      m.flex_gap,
-      m.flex_activelayers,
+      m.nbvhstatic,
+      m.bvh_nodeid,
       m.flex_dim,
       m.flex_vertadr,
-      m.flex_elemadr,
       m.flex_elemdataadr,
       m.flex_elem,
-      m.flex_elemlayer,
       m.flex_radius,
-      m.flex_elemflexid,
+      m.flex_bvhflexid,
       m.flex_rod_is_box,
       m.flex_rod_box_size,
       d.flexvert_xpos,
-      d.nworld,
-      nelem,
-      direction,
     ],
-    outputs=[
-      sap_lower.reshape((-1, nelem)),
-      sap_upper,
-      sap_sort_index.reshape((-1, nelem)),
-      elem_aabb_lower,
-      elem_aabb_upper,
-      sap_seg_index,
-    ],
+    outputs=[bvh_lower, bvh_upper],
   )
 
-  wp.utils.segmented_sort_pairs(
-    sap_lower.reshape((-1, nelem)),
-    sap_sort_index.reshape((-1, nelem)),
-    nworldelem,
-    sap_seg_index,
-  )
+  for level in reversed(m.flex_bvh_tree):
+    wp.launch(
+      _flex_bvh_refit,
+      dim=(d.nworld, level.size),
+      inputs=[m.nbvhstatic, m.bvh_child, m.flex_bvhadr, m.flex_bvhflexid, level],
+      outputs=[bvh_lower, bvh_upper],
+    )
 
-  wp.launch(
-    sap_range,
-    dim=(d.nworld, nelem),
-    inputs=[
-      nelem,
-      sap_lower.reshape((-1, nelem)),
-      sap_upper,
-      sap_sort_index.reshape((-1, nelem)),
-    ],
-    outputs=[
-      sap_range_arr,
-    ],
-  )
-
-  wp.utils.array_scan(
-    sap_range_arr.reshape(-1),
-    sap_cumsum.reshape(-1),
-    True,
-  )
-
-  return (
-    sap_sort_index.reshape((-1, nelem)),
-    sap_cumsum.reshape(-1),
-    elem_aabb_lower,
-    elem_aabb_upper,
-  )
+  return bvh_lower, bvh_upper
 
 
 def _run_flex_narrowphase(
@@ -4288,14 +4410,14 @@ def _flex_geom_collision(
   _filter_and_write_contacts(m, d, ws, enable_fps=m.has_3d_flex and m.ngeom > 0)
 
 
-def _flex_sap_collision(
+def _flex_bvh_collision(
   m: Model,
   d: Data,
   ctx,
   ws: FlexWorkspace,
   is_self: bool,
-  sap_data: tuple[wp.array, wp.array, wp.array, wp.array] | None = None,
-  enable_sat: bool | None = None,
+  bvh_bounds: tuple[wp.array, wp.array],
+  enable_sat: bool,
 ):
   """Detect and write flex self or flex-flex collision contacts (broadphase and narrowphase)."""
   if is_self and not m.has_flex_selfcollide:
@@ -4303,23 +4425,26 @@ def _flex_sap_collision(
   if not is_self and m.nflex <= 1:
     return
 
-  if enable_sat is None:
-    enable_sat = ENABLE_SAT_PREFILTER
-
   ws.ncand.zero_()
   if ws.flex_num_groups is not None:
     ws.flex_num_groups.zero_()
 
-  if sap_data is None:
-    sap_data = _run_flex_sap_sort(m, d)
-  sap_sort_index, sap_cumsum, elem_aabb_lower, elem_aabb_upper = sap_data
-  nsweep = 5 * d.nworld * m.nflexelem
+  bvh_lower, bvh_upper = bvh_bounds
   d.ncollision.zero_()
 
+  # with few worlds, split each query over subtrees to fill the GPU
+  split_depth = 0
+  while split_depth < _FLEX_BVH_MAX_SPLIT_DEPTH and (d.nworld * m.nbvhdynamic << (split_depth + 1)) <= _FLEX_BVH_QUERY_THREADS:
+    split_depth += 1
+
   wp.launch(
-    _flex_sap_sweep(is_self, int(m.opt.warn_overflow), enable_sat),
-    dim=nsweep,
+    _flex_bvh_query(is_self, int(m.opt.warn_overflow), enable_sat, split_depth),
+    dim=(d.nworld, m.nbvhdynamic, 1 << split_depth),
     inputs=[
+      m.nbvhstatic,
+      m.nflex,
+      m.bvh_child,
+      m.bvh_nodeid,
       m.flex_contype,
       m.flex_conaffinity,
       m.flex_margin,
@@ -4332,16 +4457,13 @@ def _flex_sap_collision(
       m.flex_vertbodyid,
       m.flex_elem,
       m.flex_radius,
-      m.flex_elemflexid,
+      m.flex_bvhadr,
+      m.flex_bvhflexid,
       d.flexvert_xpos,
       d.flex_aabb_min,
       d.flex_aabb_max,
-      m.nflexelem,
-      sap_sort_index,
-      sap_cumsum,
-      nsweep,
-      elem_aabb_lower,
-      elem_aabb_upper,
+      bvh_lower,
+      bvh_upper,
       d.naconmax,
     ],
     outputs=[
@@ -4376,18 +4498,16 @@ def flex_collision(m: Model, d: Data, ctx, enable_sat: bool | None = None):
 
   ws = _allocate_flex_workspace(m, d)
 
-  # Compute SAP projection and segmented sort once if needed by self or flex-flex collision
-  sap_data = None
-  needs_self_sap = m.has_flex_selfcollide
-  needs_flex_flex_sap = m.nflex > 1
-  if needs_self_sap or needs_flex_flex_sap:
-    sap_data = _run_flex_sap_sort(m, d)
-
   # 1. Flex-Geom Collision (Primitive and CCD)
   _flex_geom_collision(m, d, ws)
 
+  # Refit the flex BVHs once for self and flex-flex collision
+  if m.nbvhdynamic == 0 or not (m.has_flex_selfcollide or m.nflex > 1):
+    return
+  bvh_bounds = _flex_bvh_update(m, d)
+
   # 2. Flex Self-Collision (Broadphase and Narrowphase)
-  _flex_sap_collision(m, d, ctx, ws, is_self=True, sap_data=sap_data, enable_sat=enable_sat)
+  _flex_bvh_collision(m, d, ctx, ws, is_self=True, bvh_bounds=bvh_bounds, enable_sat=enable_sat)
 
   # 3. Flex-Flex Collision (Broadphase and Narrowphase)
-  _flex_sap_collision(m, d, ctx, ws, is_self=False, sap_data=sap_data, enable_sat=enable_sat)
+  _flex_bvh_collision(m, d, ctx, ws, is_self=False, bvh_bounds=bvh_bounds, enable_sat=enable_sat)

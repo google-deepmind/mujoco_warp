@@ -287,6 +287,28 @@ class CollisionTest(parameterized.TestCase):
           </worldbody>
         </mujoco>
         """,
+    "plane_capsule_steep": """
+        <mujoco>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            <body euler="15 10 0">
+              <freejoint/>
+              <geom size="0.05 0.05" type="capsule"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
+    "plane_capsule_vertical": """
+        <mujoco>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            <body pos="0 0 0.02">
+              <freejoint/>
+              <geom size="0.05 0.05" type="capsule"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """,
     "convex_convex": """
         <mujoco>
           <asset>
@@ -719,6 +741,168 @@ class CollisionTest(parameterized.TestCase):
       np.testing.assert_equal(result, True, f"Contact {i} not found in Gjk results")
 
     self.assertEqual(d.nacon.numpy()[0], mjd.ncon)
+
+  @parameterized.product(
+    nworld=(1, 2),
+    axes=(
+      ("0 0 1", ".3 -.2 .9327"),
+      (".4 .3 .866", ".47 .1 .877"),
+      (".4 .3 .866", ".401 .3 .866"),
+      ("0 0 1", "0 0 1"),
+      ("1 1 1", "1 1 1"),
+    ),
+  )
+  def test_plane_capsule_friction_frame(self, nworld, axes):
+    """Match contacts by position and verify the entire orthonormal frame."""
+    plane, capsule = axes
+    # MuJoCo's (1, 0, 0) fallback tangent is not orthogonal to a tilted normal; compare the normal.
+    frame_rows = 1 if axes == ("1 1 1", "1 1 1") else 3
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <default>
+          <geom margin="1"/>
+        </default>
+        <worldbody>
+          <geom type="plane" size="1 1 .1" zaxis="{plane}"/>
+          <body pos="0 0 .1">
+            <freejoint/>
+            <geom type="capsule" size=".08 .2" zaxis="{capsule}" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    positions = d.qpos.numpy().copy()
+    positions[:, :3] += np.arange(nworld)[:, None] * np.array([0.03, -0.01, 0.01])
+    d.qpos.assign(positions)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    d.contact.worldid.fill_(-1)
+    d.nacon.fill_(-1)
+    mjw.forward(m, d)
+    ncon = int(d.nacon.numpy()[0])
+    worlds = d.contact.worldid.numpy()[:ncon]
+    contact_pos = d.contact.pos.numpy()[:ncon]
+    contact_dist = d.contact.dist.numpy()[:ncon]
+    contact_frame = d.contact.frame.numpy()[:ncon]
+    for world in range(nworld):
+      ref = mujoco.MjData(mjm)
+      ref.qpos[:] = positions[world]
+      mujoco.mj_forward(mjm, ref)
+      ids = np.flatnonzero(worlds == world)
+      self.assertEqual(len(ids), ref.ncon)
+      self.assertGreater(len(ids), 0)
+      for index in ids:
+        nearest = min(range(ref.ncon), key=lambda i: np.linalg.norm(ref.contact[i].pos - contact_pos[index]))
+        contact = ref.contact[nearest]
+        frame = contact_frame[index]
+        np.testing.assert_allclose(contact_dist[index], contact.dist, atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(contact_pos[index], contact.pos, atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(frame[:frame_rows], contact.frame.reshape(3, 3)[:frame_rows], atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(frame @ frame.T, np.eye(3), atol=1e-5, rtol=1e-5)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(contact_pos[worlds == 0], contact_pos[worlds == 1]))
+
+  def test_plane_capsule_aligned_frame(self):
+    """A capsule along a tilted normal gets MuJoCo's (1, 0, 0) tangent, projected, at any twist."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <default>
+          <geom margin="1"/>
+        </default>
+        <worldbody>
+          <geom type="plane" size="1 1 .1" zaxis="1 1 1"/>
+          <body>
+            <freejoint/>
+            <geom type="capsule" size=".08 .2" zaxis="1 1 1" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=8,
+    )
+    normal = np.ones(3) / np.sqrt(3)
+    tangent = np.array([2.0, -1.0, -1.0]) / np.sqrt(6)  # (1, 0, 0) projected onto the plane
+    # Twist each world's capsule about its own axis; rounding leaves it parallel to the normal.
+    qpos, quat = d.qpos.numpy(), np.empty(4)
+    for w in range(8):
+      mujoco.mju_axisAngle2Quat(quat, normal, 0.4 * w)
+      qpos[w, 3:7] = quat
+    d.qpos.assign(qpos)
+    d.contact.frame.fill_(wp.inf)
+    d.contact.worldid.fill_(-1)
+    d.nacon.fill_(-1)
+    mjw.forward(m, d)
+    ncon = int(d.nacon.numpy()[0])
+    self.assertEqual(ncon, 16)
+    frame = d.contact.frame.numpy()[:ncon]
+    np.testing.assert_allclose(frame @ np.transpose(frame, (0, 2, 1)), np.broadcast_to(np.eye(3), frame.shape), atol=1e-5)
+    np.testing.assert_allclose(frame[:, 0], np.broadcast_to(normal, (ncon, 3)), atol=1e-5)
+    np.testing.assert_allclose(frame[:, 1], np.broadcast_to(tangent, (ncon, 3)), atol=1e-5)
+
+  @parameterized.product(euler=((17, 23, 9), (11, 78, 4), (3, 0, 0)), nworld=(1, 2))
+  def test_aligned_plane_cylinder_parity(self, euler, nworld):
+    """Contact depth, position, and frame agree for rotated aligned pairs in each world."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <default>
+          <geom condim="1"/>
+        </default>
+        <worldbody>
+          <geom type="plane" size="2 2 .1" euler="{" ".join(map(str, euler))}"/>
+          <body>
+            <freejoint/>
+            <geom type="cylinder" size=".05 .1" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=8,
+      njmax=32,
+    )
+    # Align the cylinder axis with the plane normal; world 1 sits higher along it.
+    quat = mjm.geom_quat[0].copy()
+    mat = np.empty(9)
+    mujoco.mju_quat2Mat(mat, quat)
+    qpos = d.qpos.numpy()
+    references = []
+    for w in range(nworld):
+      qpos[w, :3] = 0.015 * w * mat.reshape(3, 3)[:, 2]
+      qpos[w, 3:7] = quat
+      ref = mujoco.MjData(mjm)
+      ref.qpos[:] = qpos[w]
+      # Keep the reference exactly aligned; the float32-rounded quaternion would tilt it slightly.
+      ref.qpos[3:7] = quat
+      mujoco.mj_forward(mjm, ref)
+      references.append((ref.contact.dist.copy(), ref.contact.pos.copy(), ref.contact.frame.copy().reshape(-1, 3, 3)))
+    d.qpos.assign(qpos)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    d.contact.worldid.fill_(-1)
+    d.nacon.fill_(-1)
+    mjw.forward(m, d)
+    count = int(d.nacon.numpy()[0])
+    self.assertEqual(count, 3 * nworld)
+    worldid = d.contact.worldid.numpy()[:count]
+    contact_dist = d.contact.dist.numpy()[:count]
+    contact_pos = d.contact.pos.numpy()[:count]
+    contact_frame = d.contact.frame.numpy()[:count]
+    for w, (ref_dist, ref_pos, ref_frame) in enumerate(references):
+      rows = np.flatnonzero(worldid == w)
+      np.testing.assert_allclose(contact_dist[rows], ref_dist, rtol=1e-5, atol=2e-6)
+      np.testing.assert_allclose(contact_pos[rows], ref_pos, rtol=1e-5, atol=2e-6)
+      np.testing.assert_allclose(contact_frame[rows], ref_frame, rtol=1e-5, atol=2e-6)
+    if nworld == 2:
+      self.assertFalse(np.allclose(contact_dist[worldid == 0], contact_dist[worldid == 1]))
 
   @parameterized.named_parameters((fixture, fixture) for fixture in _FIXTURES if fixture.startswith("mesh_plane"))
   def test_plane_mesh_contact_selection(self, fixture):
@@ -1431,6 +1615,119 @@ class CollisionTest(parameterized.TestCase):
     np.testing.assert_allclose(pos[~lower, 2], 0.5 * z_upper, atol=1e-5)
     np.testing.assert_allclose(dist[~lower], z_upper, atol=1e-5)
 
+  @parameterized.named_parameters(
+    ("mesh_plate_first", '<geom type="mesh" mesh="plate"/>', True),
+    ("mesh_bar_first", '<geom type="mesh" mesh="plate"/>', False),
+    ("box_plate", '<geom type="box" size=".05 .05 .005"/>', True),
+    ("cylinder_plate", '<geom type="cylinder" size=".05 .005"/>', True),
+  )
+  def test_multiccd_edge_face_either_geom(self, plate_geom, plate_first):
+    """MULTICCD finds an edge-face contact whichever geom has the edge, as MuJoCo does."""
+    # a square bar lies level on one edge across the raised border of a plate tilted by 3
+    # degrees: the two edges cross at the deepest point, and only the edge of the bar lies
+    # along a face
+    plate = f'<body euler="0 -3 0">{plate_geom}</body>'
+    bar = '<body pos=".07 0 .0207" euler="45 0 0"><freejoint/><geom type="mesh" mesh="bar"/></body>'
+    _, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <mesh name="plate" scale=".05 .05 .005"
+                vertex="-1 -1 -1  1 -1 -1  -1 1 -1  1 1 -1  -1 -1 1  1 -1 1  -1 1 1  1 1 1"/>
+          <mesh name="bar" scale=".03 .01 .01"
+                vertex="-1 -1 -1  1 -1 -1  -1 1 -1  1 1 -1  -1 -1 1  1 -1 1  -1 1 1  1 1 1"/>
+        </asset>
+        <worldbody>
+          {plate + bar if plate_first else bar + plate}
+        </worldbody>
+      </mujoco>
+      """
+    )
+    d.nacon.fill_(-1)
+    d.contact.dist.fill_(wp.inf)
+    d.contact.pos.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+    mjw.collision(m, d)
+
+    # MuJoCo makes one contact where the edges cross and one at the end of the bar
+    self.assertEqual(mjd.ncon, 2)
+    nacon = int(d.nacon.numpy()[0])
+    self.assertEqual(nacon, mjd.ncon)
+    order = np.argsort(d.contact.pos.numpy()[:nacon, 0])
+    mj_order = np.argsort(mjd.contact.pos[:, 0])
+    np.testing.assert_allclose(d.contact.dist.numpy()[order], mjd.contact.dist[mj_order], atol=1e-5)
+    np.testing.assert_allclose(d.contact.pos.numpy()[order], mjd.contact.pos[mj_order], atol=1e-5)
+    np.testing.assert_allclose(d.contact.frame.numpy()[order, 0], mjd.contact.frame[mj_order, :3], atol=1e-4)
+
+  @parameterized.named_parameters(
+    ("box_mesh", 'type="box" size=".02 .015 .01"'),
+    ("mesh_mesh", 'type="mesh" mesh="box"'),
+  )
+  def test_multiccd_edge_face_random(self, geom1):
+    """Box-mesh and mesh-mesh MULTICCD contact counts match MuJoCo in random near-aligned poses."""
+    npose = 100
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <mesh name="box" scale=".02 .015 .01"
+                vertex="-1 -1 -1  1 -1 -1  -1 1 -1  1 1 -1  -1 -1 1  1 -1 1  -1 1 1  1 1 1"/>
+        </asset>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom {geom1}/>
+          </body>
+          <body>
+            <freejoint/>
+            <geom type="mesh" mesh="box"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=npose,
+    )
+
+    # rotations by multiples of 90 degrees, tilted by a few degrees, with geom 2 lowered onto
+    # geom 1 until they overlap by 0.1 to 2 mm
+    rng = np.random.default_rng(0)
+    fromto = np.zeros(6)
+    qpos = np.zeros((npose, mjm.nq))
+    ncon = np.zeros(npose, dtype=int)
+    for i in range(npose):
+      for adr in (3, 10):
+        mujoco.mju_mat2Quat(qpos[i, adr : adr + 4], _random_near_aligned_rotation(rng, 3.0).flatten())
+      qpos[i, 7:9] = rng.uniform(-0.01, 0.01, size=2)
+      lo, hi = 0.0, 0.1
+      for _ in range(50):
+        qpos[i, 9] = 0.5 * (lo + hi)
+        mjd.qpos[:] = qpos[i]
+        mujoco.mj_kinematics(mjm, mjd)
+        if mujoco.mj_geomDistance(mjm, mjd, 0, 1, 1.0, fromto) > 0.0:
+          hi = qpos[i, 9]
+        else:
+          lo = qpos[i, 9]
+      qpos[i, 9] = hi - rng.uniform(1e-4, 2e-3)
+      mjd.qpos[:] = qpos[i]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
+      ncon[i] = mjd.ncon
+
+    d.qpos.assign(qpos.astype(np.float32))
+    d.nacon.fill_(-1)
+    d.contact.worldid.fill_(-1)
+    mjw.kinematics(m, d)
+    mjw.collision(m, d)
+    nacon = int(d.nacon.numpy()[0])
+    worldid = d.contact.worldid.numpy()[:nacon]
+    # about 0.1% of such poses differ from MuJoCo for other reasons, so one pose may differ
+    differ = np.nonzero(np.bincount(worldid, minlength=npose) != ncon)[0]
+    self.assertLessEqual(len(differ), 1, f"contact counts differ from MuJoCo in poses {differ.tolist()}")
+    # the poses include face-face, edge-face and single-point contacts
+    self.assertGreater(np.sum(ncon == 4), 10)
+    self.assertGreater(np.sum(ncon == 2), 10)
+    self.assertGreater(np.sum(ncon == 1), 10)
+
   @parameterized.product(
     broadphase=list(BroadphaseType),
     broadphase_filter=[
@@ -1851,15 +2148,22 @@ class CollisionTest(parameterized.TestCase):
     self.assertEqual(d.nacon.numpy()[0], 1)
     np.testing.assert_allclose(d.contact.friction.numpy()[0], types.MJ_MINMU)
 
-  @parameterized.parameters(("1", "1"), ("1", "2"), ("2", "1"))
-  def test_contact_parameter_mixing(self, priority1, priority2):
+  @parameterized.product(
+    priority=[("1", "1"), ("1", "2"), ("2", "1")],
+    solref=[(".02 1", ".03 .8"), ("-1000 -10", ".03 .8"), (".02 1", "-500 -20")],
+  )
+  def test_contact_parameter_mixing(self, priority, solref):
+    priority1, priority2 = priority
+    solref1, solref2 = solref
     _, mjd, m, d = test_data.fixture(
       xml=f"""
     <mujoco>
       <worldbody>
-        <geom type="plane" size="10 10 .001" friction=".01 .02 .03" priority="{priority1}" condim="1" margin=".002"/>
+        <geom type="plane" size="10 10 .001" friction=".01 .02 .03" priority="{priority1}" condim="1" margin=".002"
+              solref="{solref1}" solimp=".8 .9 .01"/>
         <body>
-          <geom type="sphere" size=".1" friction=".123 .456 .789" priority="{priority2}" condim="3" margin=".004"/>
+          <geom type="sphere" size=".1" friction=".123 .456 .789" priority="{priority2}" condim="3" margin=".004"
+                solref="{solref2}"/>
           <freejoint/>
         </body>
       </worldbody>
@@ -1871,6 +2175,8 @@ class CollisionTest(parameterized.TestCase):
       keyframe=0,
     )
 
+    d.contact.solref.fill_(wp.inf)
+    d.contact.solimp.fill_(wp.inf)
     mjw.collision(m, d)
 
     nacon = d.nacon.numpy()[0]
@@ -2059,6 +2365,46 @@ class CollisionTest(parameterized.TestCase):
     for i in range(mjw_ncon):
       test_dist = d.contact.dist.numpy()[i]
       self.assertLess(test_dist, 0.1, f"Contact {i} dist={test_dist} not indicating penetration")
+
+  def test_sdf_among_other_candidates(self):
+    """SDF pairs give the same contacts with and without other collision candidates."""
+    cube = '<body pos="{} 0 .9" euler="45 0 0"><freejoint/><geom type="sdf" mesh="cube"/></body>'
+    sphere = '<body pos="{} 5 .9"><freejoint/><geom type="sphere" size="1"/></body>'
+    xml = """
+        <mujoco>
+          <option sdf_iterations="10" sdf_initpoints="12"/>
+          <asset>
+            <mesh name="cube"
+             vertex="1 1 1  1 1 -1  1 -1 1  1 -1 -1  -1 1 1  -1 1 -1  -1 -1 1  -1 -1 -1"/>
+          </asset>
+          <worldbody>
+            <geom size="40 40 40" type="plane"/>
+            {}
+          </worldbody>
+        </mujoco>
+    """
+    cubes = cube.format(-6) + cube.format(6)
+    spheres = [sphere.format(3 * i - 9) for i in range(7)]
+    nworld = 3
+
+    contacts = []
+    for bodies in (cubes, "".join(spheres[:3]) + cubes + "".join(spheres[3:])):
+      mjm, _, m, d = test_data.fixture(xml=xml.format(bodies), nworld=nworld, nconmax=64)
+      mjw.collision(m, d)
+      nacon = d.nacon.numpy()[0]
+      worldid = d.contact.worldid.numpy()[:nacon]
+      geom = d.contact.geom.numpy()[:nacon, 1]
+      sdf = mjm.geom_type[geom] == GeomType.SDF
+
+      # a sphere on the plane: one contact; a cube in the plane: one per initial point
+      self.assertEqual(nacon - sdf.sum(), nworld * (mjm.ngeom - 3))
+      _, count = np.unique(np.stack([worldid[sdf], geom[sdf]], axis=1), axis=0, return_counts=True)
+      np.testing.assert_array_equal(count, nworld * 2 * [mjm.opt.sdf_initpoints])
+
+      con = np.concatenate([worldid[:, None], d.contact.dist.numpy()[:nacon, None], d.contact.pos.numpy()[:nacon]], axis=1)[sdf]
+      contacts.append(con[np.lexsort(con.T[::-1])])
+
+    np.testing.assert_array_equal(contacts[0], contacts[1])
 
   def test_sdf_volume_gradient_physical_coordinates(self):
     """A linear field's physical gradient is independent of anisotropic cell size."""

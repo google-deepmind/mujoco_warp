@@ -86,8 +86,8 @@ class BlockDim:
     update_gradient_JTDAJ_sparse: update gradient JTDAJ sparse block dimension (solver)
     update_gradient_JTDAJ_dense: update gradient JTDAJ dense block dimension (solver)
     linesearch_iterative: linesearch iterative block dimension (solver)
+    update_constraint_qfrc_gradient_sparse_tiled: sparse gradient block dimension (solver)
     update_gradient_grad: update gradient grad block dimension (solver)
-    solve_beta_accumulate: solve beta accumulate block dimension (solver)
     solve_search_update_cg: solve search update CG block dimension (solver)
     solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
@@ -126,8 +126,8 @@ class BlockDim:
   update_gradient_JTDAJ_sparse: int = 128
   update_gradient_JTDAJ_dense: int = 128
   linesearch_iterative: int = 32
+  update_constraint_qfrc_gradient_sparse_tiled: int = 32
   update_gradient_grad: int = 256
-  solve_beta_accumulate: int = 256
   solve_search_update_cg: int = 256
   solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
@@ -1233,6 +1233,9 @@ class Model:
     nactuator: number of actuators
     na: number of activation states
     nbody: number of bodies
+    nbvh: number of total bounding volumes in all bodies
+    nbvhstatic: number of static bounding volumes (aabb stored in Model)
+    nbvhdynamic: number of dynamic bounding volumes (aabb computed per step)
     noct: number of total octree cells in all meshes
     njnt: number of joints
     ntree: number of kinematic trees
@@ -1311,6 +1314,8 @@ class Model:
     body_gravcomp: antigravity force, units of body weight   (*, nbody)
     body_contype: OR over all geom contypes                  (nbody,)
     body_conaffinity: OR over all geom conaffinities         (nbody,)
+    bvh_child: left and right children in tree               (nbvh, 2)
+    bvh_nodeid: geom or elem id of node; -1: non-leaf        (nbvh,)
     oct_child: octree children                               (noct, 8)
     oct_aabb: octree axis-aligned bounding boxes             (noct, 2, 3)
     oct_coeff: octree interpolation coefficients             (noct, 8)
@@ -1475,6 +1480,8 @@ class Model:
     flex_rigid: flex is rigid (all vertices on same body)    (nflex,)
     flexedge_rigid: edge is rigid (e.g. vertices welded to same body) (nflexedge,)
     flex_centered: flex vertices are centered at body origin (nflex,)
+    flex_bvhadr: address of bvh root; -1: no bvh             (nflex,)
+    flex_bvhnum: number of bounding volumes                  (nflex,)
     flexedge_J_rownnz: number of nonzeros in Jacobian row    (nflexedge,)
     flexedge_J_rowadr: row start address in colind array     (nflexedge,)
     flexedge_J_colind: column indices in sparse Jacobian     (nJfe,)
@@ -1726,12 +1733,15 @@ class Model:
     tendon_geom_adr: geom tendon address
     tendon_limited_adr: addresses for limited tendons
     max_ten_J_rownnz: maximum number of non-zeros in a tendon row
-    ten_wrapadr_site: wrap object starting address for sites
-    ten_wrapnum_site: number of site wrap objects per tendon
+    max_efc_J_rownnz: upper bound on the number of non-zeros in a constraint Jacobian row
+    tendon_geom_wrapadr: first geom wrap index per tendon (into wrap_geom_adr)
     wrap_jnt_adr: addresses for joint tendon wrap object
     wrap_site_adr: addresses for site tendon wrap object
     wrap_site_pair_adr: first address for site wrap pair
+    wrap_site_pair_lca: lowest common ancestor body of each site pair
     wrap_geom_adr: addresses for geom tendon wrap object
+    wrap_geom_lca: lowest common ancestor body of each geom wrap's
+                   (site0, geom), (geom, site1), (site0, site1) pairs
     wrap_pulley_scale: pulley scaling                        (nwrap,)
     actuator_trntype_body_adr: addresses for actuators
                                with body transmission
@@ -1772,8 +1782,6 @@ class Model:
     qLD_updates: sparse factor updates grouped by tree level
     qLD_all_updates: tuple of all levels concatenated
     qLD_level_offsets: tuple of start offsets for each level
-    M_fullm_i: sparse mass matrix addressing
-    M_fullm_j: sparse mass matrix addressing
     M_elemid: (row, col) -> CSR madr addresses; -1 if not a chain ancestor
     M_hinit_i: row index of each CSR M entry; for densifying M into the dense Newton H (nC,)
     M_tile_colmask: per Newton H tile, bitmask of the tiles above it coupled by M; read by the
@@ -1783,9 +1791,10 @@ class Model:
     qD_fullm_i: D-structure row indices for RNE derivatives
     qD_fullm_j: D-structure column indices for RNE derivatives
     M_mulm_rowadr: sparse matmul row pointers
-    M_mulm_col: sparse matmul column indices
-    M_mulm_madr: sparse matmul matrix addresses
+    M_mulm_entry: sparse matmul column (low 32 bits) and matrix address (high 32 bits)
     flex_elemflexid: maps each element index directly to its flexid         (nflexelem,)
+    flex_bvhflexid: maps each dynamic bvh node to its flexid                (nbvhdynamic,)
+    flex_bvh_tree: internal flex bvh node ids by tree depth
     flex_edgeflexid: maps each edge index directly to its flexid            (nflexedge,)
     flex_shellflexid: maps each shell index directly to its flexid          (nflexshelldata,)
     flex_vertflexid: maps each vertex index directly to its flexid          (nflexvert,)
@@ -1837,6 +1846,9 @@ class Model:
   nactuator: int
   na: int
   nbody: int
+  nbvh: int
+  nbvhstatic: int
+  nbvhdynamic: int
   noct: int
   njnt: int
   ntree: int
@@ -1916,6 +1928,8 @@ class Model:
   body_gravcomp: array("*", "nbody", float)
   body_contype: array("nbody", int)
   body_conaffinity: array("nbody", int)
+  bvh_child: array("nbvh", wp.vec2i)
+  bvh_nodeid: array("nbvh", int)
   oct_child: array("noct", vec8i)
   oct_aabb: array("noct", 2, wp.vec3)
   oct_coeff: array("noct", vec8)
@@ -2080,6 +2094,8 @@ class Model:
   flex_rigid: array("nflex", bool)
   flexedge_rigid: array("nflexedge", bool)
   flex_centered: array("nflex", bool)
+  flex_bvhadr: array("nflex", int)
+  flex_bvhnum: array("nflex", int)
   flexedge_J_rownnz: array("nflexedge", int)
   flexedge_J_rowadr: array("nflexedge", int)
   flexedge_J_colind: array("nJfe", int)
@@ -2324,12 +2340,14 @@ class Model:
   tendon_geom_adr: array("ntendon_geom", int)
   tendon_limited_adr: array("ntendon_limited", int)
   max_ten_J_rownnz: int
-  ten_wrapadr_site: array("nten_wrapadr_site", int)
-  ten_wrapnum_site: array("ntendon", int)
+  max_efc_J_rownnz: int
+  tendon_geom_wrapadr: array("ntendon", int)
   wrap_jnt_adr: array("nwrap_jnt", int)
   wrap_site_adr: array("nwrap_site", int)
   wrap_site_pair_adr: array("nwrap_site_pair", int)
+  wrap_site_pair_lca: array("nwrap_site_pair", int)
   wrap_geom_adr: array("nwrap_geom", int)
+  wrap_geom_lca: array("nwrap_geom", wp.vec3i)
   wrap_pulley_scale: array("nwrap", float)
   actuator_trntype_body_adr: array("nacttrnbody", int)
   sensor_pos_adr: array("nsensor_pos", int)
@@ -2366,10 +2384,6 @@ class Model:
   qLD_updates: tuple[array("nqLD_all_updates", wp.vec3i), ...]
   qLD_all_updates: array("nqLD_all_updates", wp.vec3i)
   qLD_level_offsets: array("nqLD_level_offsets", int)
-  # TODO(team): Remove M_fullm_i/j and M_elemid by iterating the M CSR layout
-  # directly in the solver/derivative kernels
-  M_fullm_i: array("nM_fullm", int)
-  M_fullm_j: array("nM_fullm", int)
   M_elemid: array("nv", "nv", int)  # (row, col) -> CSR madr address; -1 if col is not a chain ancestor of row
   M_hinit_i: array("nC", int)  # row index of each CSR M entry (for densifying M into the dense Newton H)
   M_tile_colmask: array("nv_tile", "nv_tile_word", wp.uint64)  # per Newton H tile, bitmask of the tiles above it coupled by M
@@ -2379,9 +2393,10 @@ class Model:
   qD_fullm_j: array("nqD_fullm", int)  # D-structure (full square) column indices for RNE derivatives
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
   M_mulm_rowadr: array("nv_plus_1", int)  # start address for each row [nv+1]
-  M_mulm_col: array("nM_mulm", int)  # column index to gather from
-  M_mulm_madr: array("nM_mulm", int)  # matrix address to read
+  M_mulm_entry: array("nM_mulm", wp.uint64)
   flex_elemflexid: array("nflexelem", int)
+  flex_bvhflexid: array("nbvhdynamic", int)
+  flex_bvh_tree: tuple[array("nbvhdynamic", int), ...]
   flex_edgeflexid: array("nflexedge", int)
   flex_shellflexid: array("nflexshelldata", int)
   flex_vertflexid: array("nflexvert", int)
@@ -2936,7 +2951,6 @@ class SolverContext:
   search_unchanged: wp.array[bool]
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
-  beta: wp.array[float]
   h: wp.array3d[float]
   hfactor: wp.array3d[float]
   quad_changed_ids: wp.array2d[int]

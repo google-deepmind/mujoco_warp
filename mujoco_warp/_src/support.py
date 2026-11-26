@@ -909,14 +909,18 @@ def eff_actuator_possible(
   )
 
 
+@wp.func
+def mul_m_indices(entry: wp.uint64):
+  return wp.int32(entry), wp.int32(entry >> wp.uint64(32))
+
+
 @cache_kernel
 def mul_m_kernel(check_skip: bool):
   @wp.kernel(module="unique", grid_stride=False)
   def _mul_m(
     # Model:
     M_mulm_rowadr: wp.array[int],
-    M_mulm_col: wp.array[int],
-    M_mulm_madr: wp.array[int],
+    M_mulm_entry: wp.array[wp.uint64],
     # Data in:
     M_in: wp.array2d[float],
     # In:
@@ -937,8 +941,7 @@ def mul_m_kernel(check_skip: bool):
     start = M_mulm_rowadr[dofid]
     end = M_mulm_rowadr[dofid + 1]
     for k in range(start, end):
-      col = M_mulm_col[k]
-      madr = M_mulm_madr[k]
+      col, madr = mul_m_indices(M_mulm_entry[k])
       acc += M_in[worldid, madr] * vec[worldid, col]
 
     res[worldid, dofid] = acc
@@ -1010,7 +1013,7 @@ def mul_m(
     wp.launch(
       mul_m_kernel(check_skip),
       dim=(d.nworld, m.nv),
-      inputs=[m.M_mulm_rowadr, m.M_mulm_col, m.M_mulm_madr, M, vec, skip],
+      inputs=[m.M_mulm_rowadr, m.M_mulm_entry, M, vec, skip],
       outputs=[res],
     )
 

@@ -16,6 +16,7 @@
 """Tests for constraint functions."""
 
 import itertools
+from unittest import mock
 
 import mujoco
 import numpy as np
@@ -26,6 +27,7 @@ from absl.testing import parameterized
 import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import test_data
+from mujoco_warp._src import constraint
 from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and MJWarp constraint calculations,
@@ -83,7 +85,8 @@ def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv, tol=_TOLERANCE):
     mj_efc_J = np.zeros((mjd.nefc, mjm.nv))
     mujoco.mju_sparse2dense(mj_efc_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
   else:
-    mj_efc_J = mjd.efc_J.reshape((mjd.nefc, mjm.nv))
+    # efc_J can be preallocated for rows that are later dropped (empty Jacobian)
+    mj_efc_J = mjd.efc_J[: mjd.nefc * mjm.nv].reshape((mjd.nefc, mjm.nv))
 
   if nv > 0:
     mjd_sorted_J = mj_efc_J[mjd_sort_indices].reshape(-1)
@@ -263,6 +266,152 @@ class ConstraintTest(parameterized.TestCase):
       self.assertFalse(np.allclose(J_dense[0], J_dense[1]))
       self.assertFalse(np.allclose(efc_vel[0, :nefc], efc_vel[1, :nefc]))
 
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    nworld=(1, 2),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_contact_row_stride(self, cone, nworld, jacobian):
+    """Active contact rows match MuJoCo across launch widths and heterogeneous worlds."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <default>
+          <geom size="0.1" condim="6" priority="1" adhesion="12"/>
+        </default>
+        <worldbody>
+          <geom type="plane" size="3 3 0.1" priority="0" adhesion="0"/>
+          <body pos="0 0 0.095">
+            <joint type="free" frictionloss="0.01"/>
+            <geom condim="1"/>
+          </body>
+          <body pos="0.3 0 0.095">
+            <freejoint/>
+            <geom condim="3"/>
+          </body>
+          <body pos="0.6 0 0.095">
+            <freejoint/>
+            <geom condim="4"/>
+          </body>
+          <body pos="0.9 0 0.095">
+            <freejoint/>
+            <geom/>
+          </body>
+          <body pos="1.2 0 0.095">
+            <freejoint/>
+            <geom adhesion="0"/>
+          </body>
+          <body pos="1.5 0 0.095">
+            <freejoint/>
+            <geom/>
+          </body>
+          <body pos="1.8 0 0.095">
+            <freejoint/>
+            <geom/>
+          </body>
+          <body pos="2.1 0 0.095">
+            <freejoint/>
+            <geom/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=128,
+      qvel_noise=0.1,
+      overrides={"opt.cone": cone, "opt.jacobian": jacobian},
+    )
+    qpos = np.tile(mjm.qpos0, (nworld, 1))
+    qvel = d.qvel.numpy()
+    if nworld == 2:
+      qpos[1, 0::7] += 0.02
+      qpos[1, 2::7] -= 0.001
+      qpos[1].reshape(-1, 7)[-2:, 2] += 0.2  # the last two spheres have no contact in world 1
+      qpos[1, 3:7] = [0.9238795, 0, 0.3826834, 0]
+      qvel[1] *= -0.5
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+    mjds = []
+    for world in range(nworld):
+      reference = mujoco.MjData(mjm)
+      reference.qpos[:] = qpos[world]
+      reference.qvel[:] = qvel[world]
+      mujoco.mj_forward(mjm, reference)
+      mjds.append(reference)
+    self.assertGreater(mjds[0].nefc - mjds[0].nf, 32)
+    self.assertGreater(mjds[0].nf, 0)
+    if nworld == 2:
+      self.assertNotEqual(mjds[0].nefc, mjds[1].nefc)
+
+    mjw.fwd_kinematics(m, d)
+    mjw.collision(m, d)
+    for width in (32, d.njmax):
+      for arr in (d.ne, d.nf, d.nl, d.nefc, d.efc.type, d.efc.id, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind):
+        arr.fill_(-1)
+      for arr in (d.efc.J, d.efc.Jqvel, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin, d.efc.frictionloss):
+        arr.fill_(wp.inf)
+      d.contact.efc_address.fill_(-1)
+
+      with mock.patch.object(constraint, "efc_threads_per_world", return_value=width):
+        mjw.make_constraint(m, d)
+
+      if nworld == 2:
+        common_rows = min(reference.nefc for reference in mjds)
+        aref = d.efc.aref.numpy()
+        self.assertFalse(np.allclose(aref[0, :common_rows], aref[1, :common_rows]))
+      contact_geom = d.contact.geom.numpy()
+      contact_efc_address = d.contact.efc_address.numpy()
+      efc_J = d.efc.J.numpy()
+      for world, reference in enumerate(mjds):
+        nefc = reference.nefc
+        self.assertEqual(d.ne.numpy()[world], reference.ne)
+        self.assertEqual(d.nf.numpy()[world], reference.nf)
+        self.assertEqual(d.nl.numpy()[world], reference.nl)
+        self.assertEqual(d.nefc.numpy()[world], reference.nefc)
+        order = np.arange(nefc)
+        ids = d.efc.id.numpy()[world, :nefc].copy()
+        contact_ids = {tuple(con.geom): i for i, con in enumerate(reference.contact)}
+        start = reference.ne + reference.nf + reference.nl
+        for row in range(start, nefc):
+          conid = ids[row]
+          self.assertGreaterEqual(conid, 0)
+          ids[row] = contact_ids[tuple(contact_geom[conid])]
+          dimid = row - contact_efc_address[conid, 0]
+          order[row] = reference.contact[ids[row]].efc_address + dimid
+
+        if m.is_sparse:
+          rownnz = d.efc.J_rownnz.numpy()[world, :nefc]
+          rowadr = d.efc.J_rowadr.numpy()[world, :nefc]
+          colind = d.efc.J_colind.numpy()[world, 0]
+          self.assertTrue(np.all(rownnz > 0))
+          self.assertTrue(np.all((rowadr >= 0) & (rowadr + rownnz <= d.njmax_nnz)))
+          for adr, nnz in zip(rowadr, rownnz):
+            self.assertTrue(np.all((colind[adr : adr + nnz] >= 0) & (colind[adr : adr + nnz] < mjm.nv)))
+          actual_j = np.zeros((nefc, mjm.nv))
+          reference_j = np.zeros_like(actual_j)
+          mujoco.mju_sparse2dense(actual_j, efc_J[world, 0], rownnz, rowadr, colind)
+          mujoco.mju_sparse2dense(
+            reference_j, reference.efc_J, reference.efc_J_rownnz, reference.efc_J_rowadr, reference.efc_J_colind
+          )
+        else:
+          actual_j = efc_J[world, :nefc, : mjm.nv]
+          reference_j = reference.efc_J.reshape(nefc, mjm.nv)
+
+        _assert_eq(actual_j, reference_j[order], "J")
+        np.testing.assert_array_equal(ids, reference.efc_id[order])
+        np.testing.assert_array_equal(d.efc.type.numpy()[world, :nefc], reference.efc_type[order])
+        for actual, expected in (
+          (d.efc.D, reference.efc_D),
+          (d.efc.vel, reference.efc_vel),
+          (d.efc.aref, reference.efc_aref),
+          (d.efc.pos, reference.efc_pos),
+          (d.efc.margin, reference.efc_margin),
+          (d.efc.frictionloss, reference.efc_frictionloss),
+        ):
+          _assert_eq(actual.numpy()[world, :nefc], expected[order], "efc")
+        _assert_eq(d.efc.Jqvel.numpy()[world, start:nefc], reference.efc_vel[order[start:]], "Jqvel")
+
   @parameterized.parameters(
     *itertools.product(
       (1, 2),  # nworld
@@ -379,6 +528,197 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
       _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
 
+  @parameterized.product(
+    xml=(
+      # no tendon touches a dof, so nJten is 0
+      """
+      <mujoco>
+        <worldbody>
+          <site name="w1"/>
+          <site name="w2" pos="1 0 0"/>
+          <body pos="0 0 1">
+            <freejoint/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="empty1" frictionloss="1">
+            <site site="w1"/>
+            <site site="w2"/>
+          </spatial>
+          <spatial name="empty2" limited="true" range="0 .5">
+            <site site="w1"/>
+            <site site="w2"/>
+          </spatial>
+        </tendon>
+        <equality>
+          <tendon tendon1="empty1" polycoef=".5 0 0 0 0"/>
+          <tendon tendon1="empty1" tendon2="empty2"/>
+        </equality>
+      </mujoco>
+      """,
+      # empty tendons next to a tendon with dofs
+      """
+      <mujoco>
+        <worldbody>
+          <site name="w1"/>
+          <site name="w2" pos="1 0 0"/>
+          <body pos="0 0 1">
+            <freejoint/>
+            <geom size=".1"/>
+            <site name="b"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="empty1" frictionloss="1">
+            <site site="w1"/>
+            <site site="w2"/>
+          </spatial>
+          <spatial name="empty2" limited="true" range="0 .5">
+            <site site="w1"/>
+            <site site="w2"/>
+          </spatial>
+          <spatial name="active" frictionloss="1">
+            <site site="w1"/>
+            <site site="b"/>
+          </spatial>
+        </tendon>
+        <equality>
+          <tendon tendon1="empty1" polycoef=".5 0 0 0 0"/>
+          <tendon tendon1="empty1" tendon2="empty2"/>
+          <tendon tendon1="empty1" tendon2="active"/>
+          <tendon tendon1="active" tendon2="empty1"/>
+        </equality>
+      </mujoco>
+      """,
+      # no dofs
+      """
+      <mujoco>
+        <worldbody>
+          <site name="w1"/>
+          <site name="w2" pos="1 0 0"/>
+        </worldbody>
+        <tendon>
+          <spatial name="empty1" frictionloss="1">
+            <site site="w1"/>
+            <site site="w2"/>
+          </spatial>
+          <spatial name="empty2" limited="true" range="0 .5">
+            <site site="w1"/>
+            <site site="w2"/>
+          </spatial>
+        </tendon>
+        <equality>
+          <tendon tendon1="empty1" polycoef=".5 0 0 0 0"/>
+          <tendon tendon1="empty1" tendon2="empty2"/>
+        </equality>
+      </mujoco>
+      """,
+    ),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_tendon_empty_jacobian(self, xml, jacobian):
+    """Tendons with an empty Jacobian do not add equality, friction or limit rows."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=xml,
+      overrides={"opt.jacobian": jacobian},
+      qvel_noise=0.1,
+    )
+
+    for arr in (d.nefc, d.ne, d.nf, d.nl, d.efc.type):
+      arr.fill_(-1)
+    for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
+      arr.fill_(wp.inf)
+
+    mjw.make_constraint(m, d)
+
+    _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
+    _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
+    _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
+    _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
+    if mjd.nefc > 0:
+      _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
+
+  @parameterized.product(
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    deterministic=(mjw.DeterminismType.NONE, mjw.DeterminismType.CONSTRAINT),
+  )
+  def test_limit_bilateral_margin(self, jacobian, deterministic):
+    """Test limits with both sides of the range within the margin."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option>
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <site name="anchor" pos="0 0 1"/>
+          <body>
+            <joint axis="0 1 0"/>
+            <joint name="hinge" axis="1 0 0" range="0 0.1" margin="0.2"/>
+            <geom size=".1"/>
+          </body>
+          <body pos="1 0 0">
+            <joint name="slide" type="slide" axis="0 0 1" range="0 0.1" margin="0.2"/>
+            <geom size=".1"/>
+            <site name="end"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="tendon" range="1.4 1.42" margin="0.1">
+            <site site="anchor"/>
+            <site site="end"/>
+          </spatial>
+        </tendon>
+        <sensor>
+          <jointlimitpos joint="hinge"/>
+          <jointlimitvel joint="hinge"/>
+          <jointlimitfrc joint="hinge"/>
+          <tendonlimitpos tendon="tendon"/>
+          <tendonlimitvel tendon="tendon"/>
+          <tendonlimitfrc tendon="tendon"/>
+        </sensor>
+        <keyframe>
+          <key qvel="0.1 0.3 -0.2"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      overrides={"opt.jacobian": jacobian},
+    )
+    m.opt.deterministic = deterministic
+
+    for arr in (d.nefc, d.nl, d.efc.type):
+      arr.fill_(-1)
+    for arr in (d.efc.J, d.efc.D, d.efc.vel, d.efc.aref, d.efc.pos, d.efc.margin):
+      arr.fill_(wp.inf)
+
+    mjw.make_constraint(m, d)
+
+    # two rows for each limit
+    _assert_eq(d.nefc.numpy()[0], 6, "nefc")
+    _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
+    _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
+
+    if m.is_sparse:
+      # each two-row limit block covers its own rows, so the blocks tile [0, nefc)
+      nblock = d.efc.jtdaj_nblock.numpy()[0]
+      adr = d.efc.jtdaj_adr.numpy()[0, :nblock]
+      nrow = d.efc.jtdaj_nrow.numpy()[0, :nblock]
+      rows = sorted(r for a, n in zip(adr, nrow) for r in range(a, a + n))
+      self.assertEqual(rows, list(range(d.nefc.numpy()[0])))
+
+    d = mjw.put_data(mjm, mjd)
+    for arr in (d.qfrc_constraint, d.sensordata, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    mjw.forward(m, d)
+    mjw.rne_postconstraint(m, d)
+    mujoco.mj_rnePostConstraint(mjm, mjd)
+
+    _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
+    _assert_eq(d.sensordata.numpy()[0], mjd.sensordata, "sensordata")
+    _assert_eq(d.cfrc_ext.numpy()[0], mjd.cfrc_ext, "cfrc_ext")
+
   @parameterized.parameters(
     mujoco.mjtJacobian.mjJAC_DENSE,
     mujoco.mjtJacobian.mjJAC_SPARSE,
@@ -439,6 +779,96 @@ class ConstraintTest(parameterized.TestCase):
     _assert_eq(d.nefc.numpy()[0], mjd.nefc, "nefc")
     _assert_eq(d.ne.numpy()[0], mjd.ne, "ne")
     _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
+
+  def test_equality_tendon_nan(self):
+    """A NaN tendon equality row keeps MuJoCo's columns, within its sparse Jacobian storage."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option jacobian="sparse"/>
+        <default>
+          <geom type="sphere" size=".1" contype="0" conaffinity="0"/>
+        </default>
+        <worldbody>
+          <body>
+            <geom/>
+            <joint name="joint0" type="hinge"/>
+            <body pos=".2 0 0">
+              <geom/>
+              <joint name="joint1" type="hinge"/>
+              <body pos=".2 0 0">
+                <geom/>
+                <joint name="joint2" type="hinge"/>
+              </body>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="tendon0">
+            <joint joint="joint1" coef=".1"/>
+          </fixed>
+          <fixed name="tendon1">
+            <joint joint="joint2" coef=".2"/>
+          </fixed>
+        </tendon>
+        <equality>
+          <joint joint1="joint0"/>
+          <tendon tendon1="tendon1" tendon2="tendon0"/>
+        </equality>
+        <keyframe>
+          <key qpos=".3 -.2 .1"/>
+        </keyframe>
+      </mujoco>
+    """,
+      keyframe=0,
+      nworld=2,
+    )
+    self.assertTrue(m.is_sparse)
+
+    # world 0 has a NaN state, so the coupling derivative of its tendon equality row is NaN
+    mjd_nan = mujoco.MjData(mjm)
+    mjd_nan.qpos[:] = np.nan
+    mujoco.mj_forward(mjm, mjd_nan)
+    d.qpos.assign(np.stack((mjd_nan.qpos, mjd.qpos)))
+
+    for arr in (d.nefc, d.efc.J_rownnz, d.efc.J_rowadr, d.efc.J_colind):
+      arr.fill_(-1)
+    for arr in (d.efc.J, d.qacc):
+      arr.fill_(wp.inf)
+
+    mjw.forward(m, d)
+
+    nefc = d.nefc.numpy()
+    rownnz = d.efc.J_rownnz.numpy()
+    rowadr = d.efc.J_rowadr.numpy()
+    colind = d.efc.J_colind.numpy()
+    for worldid, mjd_world in enumerate((mjd_nan, mjd)):
+      _assert_eq(nefc[worldid], mjd_world.nefc, f"nefc[{worldid}]")
+      _assert_eq(rownnz[worldid, : nefc[worldid]], mjd_world.efc_J_rownnz, f"J_rownnz[{worldid}]")
+      for r in range(mjd_world.nefc):
+        adr = rowadr[worldid, r]
+        nnz = rownnz[worldid, r]
+        mj_adr = mjd_world.efc_J_rowadr[r]
+        mj_nnz = mjd_world.efc_J_rownnz[r]
+        _assert_eq(
+          colind[worldid, 0, adr : adr + nnz],
+          mjd_world.efc_J_colind[mj_adr : mj_adr + mj_nnz],
+          f"J_colind[{worldid}, {r}]",
+        )
+
+    # world 1 is unaffected by world 0
+    J = np.zeros((mjd.nefc, mjm.nv))
+    mujoco.mju_sparse2dense(
+      J,
+      d.efc.J.numpy()[1, 0].astype(np.float64),
+      rownnz[1, : mjd.nefc],
+      rowadr[1, : mjd.nefc],
+      colind[1, 0],
+    )
+    mj_J = np.zeros((mjd.nefc, mjm.nv))
+    mujoco.mju_sparse2dense(mj_J, mjd.efc_J, mjd.efc_J_rownnz, mjd.efc_J_rowadr, mjd.efc_J_colind)
+    _assert_eq(J, mj_J, "J[1]")
+    _assert_eq(d.qacc.numpy()[1], mjd.qacc, "qacc[1]")
 
   def test_efc_address_inactive_contacts(self):
     """Test that efc_address is -1 for inactive contacts in the gap zone."""

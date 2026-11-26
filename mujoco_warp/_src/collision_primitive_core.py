@@ -17,7 +17,6 @@ from typing import Tuple
 
 import warp as wp
 
-from mujoco_warp._src.math import closest_segment_to_segment_points
 from mujoco_warp._src.math import normalize_with_norm
 from mujoco_warp._src.math import safe_div
 from mujoco_warp._src.types import MJ_MAXVAL
@@ -33,11 +32,27 @@ from mujoco_warp._src.types import vec11
 
 wp.set_module_options({"enable_backward": False})
 
+# Plane colliders treat a geom axis as parallel to the normal below this sin^2 (about 1e-6 rad).
+# MuJoCo uses MJ_MINVAL, but float32 rounding alone tilts aligned axes by a few 1e-7 rad.
+# MuJoCo's kFrameEps likewise treats frames within 1e-6 as equal.
+_PLANE_PAREPS = 1e-12
+
 
 # core
 @wp.func
 def plane_sphere(plane_normal: wp.vec3, plane_pos: wp.vec3, sphere_pos: wp.vec3, sphere_radius: float) -> Tuple[float, wp.vec3]:
-  # TODO(team): docstring
+  """Core contact geometry calculation for plane-sphere collision.
+
+  Args:
+    plane_normal: Unit normal vector of the plane.
+    plane_pos: Position of the plane.
+    sphere_pos: Center position of the sphere.
+    sphere_radius: Radius of the sphere.
+
+  Returns:
+    - Signed contact distance (negative for penetration).
+    - Contact position.
+  """
   dist = wp.dot(sphere_pos - plane_pos, plane_normal) - sphere_radius
   pos = sphere_pos - plane_normal * (sphere_radius + 0.5 * dist)
   return dist, pos
@@ -260,27 +275,34 @@ def plane_capsule(
     - Matrix of contact positions (one per row).
     - Contact frame for both contacts.
   """
-  n = plane_normal
+  n = wp.normalize(plane_normal)
   axis = capsule_axis
 
-  # align contact frames with capsule axis
-  b, b_norm = normalize_with_norm(axis - n * wp.dot(n, axis))
-
-  if b_norm < 0.5:
+  # Match mju_makeFrame: choose the hint before projecting it onto the plane.
+  b = axis
+  if wp.dot(b, b) < 0.25:
     if -0.5 < n[1] and n[1] < 0.5:
       b = wp.vec3(0.0, 1.0, 0.0)
     else:
       b = wp.vec3(0.0, 0.0, 1.0)
+  # A double cross product avoids float32 cancellation along n when b is nearly parallel to n.
+  b = wp.cross(n, wp.cross(b, n))
+  if wp.dot(b, b) < _PLANE_PAREPS:
+    # Unlike mju_makeFrame, project the (1, 0, 0) fallback so the frame stays orthonormal.
+    b = wp.cross(n, wp.cross(wp.vec3(1.0, 0.0, 0.0), n))
+    if wp.dot(b, b) < _PLANE_PAREPS:
+      b = wp.cross(n, wp.cross(wp.vec3(0.0, 1.0, 0.0), n))
+  b = wp.normalize(b)
 
   c = wp.cross(n, b)
   frame = wp.mat33(n[0], n[1], n[2], b[0], b[1], b[2], c[0], c[1], c[2])
   segment = axis * capsule_half_length
 
   # First contact (positive end of capsule)
-  dist1, pos1 = plane_sphere(n, plane_pos, capsule_pos + segment, capsule_radius)
+  dist1, pos1 = plane_sphere(plane_normal, plane_pos, capsule_pos + segment, capsule_radius)
 
   # Second contact (negative end of capsule)
-  dist2, pos2 = plane_sphere(n, plane_pos, capsule_pos - segment, capsule_radius)
+  dist2, pos2 = plane_sphere(plane_normal, plane_pos, capsule_pos - segment, capsule_radius)
 
   dist = wp.vec2(dist1, dist2)
   pos = mat23(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2])
@@ -448,7 +470,7 @@ def plane_cylinder(
   plane_normal: wp.vec3,
   plane_pos: wp.vec3,
   cylinder_center: wp.vec3,
-  cylinder_axis: wp.vec3,
+  cylinder_mat: wp.mat33,
   cylinder_radius: float,
   cylinder_half_height: float,
 ) -> Tuple[wp.vec4, mat43, wp.vec3]:
@@ -458,7 +480,7 @@ def plane_cylinder(
     plane_normal: Normal vector of the plane.
     plane_pos: Position point on the plane.
     cylinder_center: Center position of the cylinder.
-    cylinder_axis: Axis direction of the cylinder.
+    cylinder_mat: Orientation matrix of the cylinder.
     cylinder_radius: Radius of the cylinder.
     cylinder_half_height: Half height of the cylinder.
 
@@ -473,7 +495,7 @@ def plane_cylinder(
   contact_count = 0
 
   n = plane_normal
-  axis = cylinder_axis
+  axis = cylinder_mat[:, 2]
 
   # Project, make sure axis points toward plane
   prjaxis = wp.dot(n, axis)
@@ -484,17 +506,16 @@ def plane_cylinder(
   # Compute normal distance from plane to cylinder center
   dist0 = wp.dot(cylinder_center - plane_pos, n)
 
-  # Remove component of -normal along cylinder axis
-  vec = axis * prjaxis - n
+  # Cross products avoid subtracting nearly equal vectors when the cap faces the plane.
+  vec = wp.cross(axis, wp.cross(axis, n))
   len_sqr = wp.dot(vec, vec)
 
   # If vector is nondegenerate, normalize and scale by radius
   # Otherwise use cylinder's x-axis scaled by radius
-  vec = wp.where(
-    len_sqr >= 1e-12,
-    vec * safe_div(cylinder_radius, wp.sqrt(len_sqr)),
-    wp.vec3(1.0, 0.0, 0.0) * cylinder_radius,  # Default x-axis when degenerate
-  )
+  if len_sqr >= _PLANE_PAREPS:
+    vec = vec * safe_div(cylinder_radius, wp.sqrt(len_sqr))
+  else:
+    vec = cylinder_mat[:, 0] * cylinder_radius
 
   # Project scaled vector on normal
   prjvec = wp.dot(vec, n)
@@ -1735,211 +1756,6 @@ def capsule_triangle(
         contact_normal[2 + vi] = n
 
   return contact_dist, contact_pos, contact_normal
-
-
-@wp.func
-def cylinder_triangle(
-  # In:
-  cylinder_pos: wp.vec3,
-  cylinder_axis: wp.vec3,
-  cylinder_radius: float,
-  cylinder_half_height: float,
-  t1: wp.vec3,
-  t2: wp.vec3,
-  t3: wp.vec3,
-  tri_radius: float,
-) -> Tuple[wp.vec2, mat23, mat23]:
-  """Core contact geometry calculation for cylinder-triangle collision.
-
-  Args:
-    cylinder_pos: Center position of the cylinder.
-    cylinder_axis: Unit axis direction of the cylinder.
-    cylinder_radius: Radius of the cylinder.
-    cylinder_half_height: Half-height of the cylinder.
-    t1: Triangle vertex positions.
-    t2: Triangle vertex positions.
-    t3: Triangle vertex positions.
-    tri_radius: Triangle (flex element) radius.
-
-  Returns:
-    - wp.vec2 of distances for up to 2 contacts (MJ_MAXVAL if no collision).
-    - mat23 of contact positions (2 x vec3).
-    - mat23 of contact normals (2 x vec3).
-  """
-  dist1 = MJ_MAXVAL
-  dist2 = MJ_MAXVAL
-  pos1 = wp.vec3(0.0)
-  pos2 = wp.vec3(0.0)
-  nrm1 = wp.vec3(0.0)
-  nrm2 = wp.vec3(0.0)
-  cnt = int(0)
-
-  p1 = cylinder_pos - cylinder_axis * cylinder_half_height
-  p2 = cylinder_pos + cylinder_axis * cylinder_half_height
-
-  ab = p2 - p1
-  ab_len_sq = 4.0 * cylinder_half_height * cylinder_half_height
-
-  for vi in range(3):
-    if cnt >= 2:
-      break
-
-    vert = wp.vec3(0.0)
-    if vi == 0:
-      vert = t1
-    elif vi == 1:
-      vert = t2
-    else:
-      vert = t3
-
-    vec = vert - p1
-    t_param = wp.dot(vec, ab) / wp.max(MJ_MINVAL, ab_len_sq)
-
-    if t_param > MJ_MINVAL and t_param < 1.0 - MJ_MINVAL:
-      closest = p1 + ab * t_param
-      diff = vert - closest
-      dist_raw = wp.length(diff)
-
-      if dist_raw < cylinder_radius + tri_radius:
-        if dist_raw > MJ_MINVAL:
-          nrm = diff / dist_raw
-          d = dist_raw - cylinder_radius - tri_radius
-          p = (closest + vert + nrm * (cylinder_radius - tri_radius)) * 0.5
-        else:
-          dist_to_side = cylinder_radius
-          dist_to_p2 = (1.0 - t_param) * wp.sqrt(ab_len_sq)
-          dist_to_p1 = t_param * wp.sqrt(ab_len_sq)
-
-          if dist_to_p2 < dist_to_side and dist_to_p2 < dist_to_p1:
-            nrm = cylinder_axis
-            d = -dist_to_p2 - tri_radius
-            p = vert
-          elif dist_to_p1 < dist_to_side:
-            nrm = -cylinder_axis
-            d = -dist_to_p1 - tri_radius
-            p = vert
-          else:
-            tri_normal = wp.normalize(wp.cross(t2 - t1, t3 - t1))
-            nrm = tri_normal
-            d = -cylinder_radius - tri_radius
-            p = closest
-
-        if cnt == 0:
-          dist1 = d
-          pos1 = p
-          nrm1 = nrm
-        else:
-          dist2 = d
-          pos2 = p
-          nrm2 = nrm
-        cnt += 1
-    elif t_param <= MJ_MINVAL:
-      diff = vert - p1
-      signed_dist = wp.dot(diff, cylinder_axis)
-      perp = diff - cylinder_axis * signed_dist
-      perp_len = wp.length(perp)
-
-      if perp_len < cylinder_radius:
-        d = -signed_dist - tri_radius
-        nrm = -cylinder_axis
-        p = vert - nrm * (tri_radius + d * 0.5)
-        if cnt == 0:
-          dist1 = d
-          pos1 = p
-          nrm1 = nrm
-        else:
-          dist2 = d
-          pos2 = p
-          nrm2 = nrm
-        cnt += 1
-      elif perp_len < cylinder_radius + tri_radius:
-        edge_dir = perp / perp_len
-        edge_point = p1 + edge_dir * cylinder_radius
-        diff_to_edge = vert - edge_point
-        dist_raw = wp.length(diff_to_edge)
-        if dist_raw > MJ_MINVAL:
-          nrm = diff_to_edge / dist_raw
-          d = dist_raw - tri_radius
-          p = vert - nrm * (tri_radius + d * 0.5)
-          if cnt == 0:
-            dist1 = d
-            pos1 = p
-            nrm1 = nrm
-          else:
-            dist2 = d
-            pos2 = p
-            nrm2 = nrm
-          cnt += 1
-    else:
-      diff = vert - p2
-      signed_dist = wp.dot(diff, cylinder_axis)
-      perp = diff - cylinder_axis * signed_dist
-      perp_len = wp.length(perp)
-
-      if perp_len < cylinder_radius:
-        d = signed_dist - tri_radius
-        nrm = cylinder_axis
-        p = vert - nrm * (tri_radius + d * 0.5)
-        if cnt == 0:
-          dist1 = d
-          pos1 = p
-          nrm1 = nrm
-        else:
-          dist2 = d
-          pos2 = p
-          nrm2 = nrm
-        cnt += 1
-      elif perp_len < cylinder_radius + tri_radius:
-        edge_dir = perp / perp_len
-        edge_point = p2 + edge_dir * cylinder_radius
-        diff_to_edge = vert - edge_point
-        dist_raw = wp.length(diff_to_edge)
-        if dist_raw > MJ_MINVAL:
-          nrm = diff_to_edge / dist_raw
-          d = dist_raw - tri_radius
-          p = vert - nrm * (tri_radius + d * 0.5)
-          if cnt == 0:
-            dist1 = d
-            pos1 = p
-            nrm1 = nrm
-          else:
-            dist2 = d
-            pos2 = p
-            nrm2 = nrm
-          cnt += 1
-
-  # edge-vs-segment checks
-  for edge_idx in range(3):
-    if cnt >= 2:
-      break
-    u = t1 if edge_idx == 0 else (t2 if edge_idx == 1 else t3)
-    v = t2 if edge_idx == 0 else (t3 if edge_idx == 1 else t1)
-
-    closest_axis, closest_edge = closest_segment_to_segment_points(p1, p2, u, v)
-    diff = closest_edge - closest_axis
-    dist_raw = wp.length(diff)
-
-    if dist_raw < cylinder_radius + tri_radius:
-      if dist_raw > MJ_MINVAL:
-        nrm = diff / dist_raw
-        d = dist_raw - cylinder_radius - tri_radius
-        p = (closest_axis + closest_edge + nrm * (cylinder_radius - tri_radius)) * 0.5
-
-        if cnt == 0:
-          dist1 = d
-          pos1 = p
-          nrm1 = nrm
-        else:
-          dist2 = d
-          pos2 = p
-          nrm2 = nrm
-        cnt += 1
-
-  return (
-    wp.vec2(dist1, dist2),
-    mat23(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2]),
-    mat23(nrm1[0], nrm1[1], nrm1[2], nrm2[0], nrm2[1], nrm2[2]),
-  )
 
 
 @wp.func

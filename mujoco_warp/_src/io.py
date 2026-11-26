@@ -23,6 +23,7 @@ import numpy as np
 import warp as wp
 
 from mujoco_warp._src import history
+from mujoco_warp._src import math
 from mujoco_warp._src import sleep
 from mujoco_warp._src import support
 from mujoco_warp._src import types
@@ -605,6 +606,16 @@ def m_block_layout(mjm: mujoco.MjModel) -> dict:
   }
 
 
+def _lowest_common_ancestor(body_parentid: np.ndarray, body1: int, body2: int) -> int:
+  """Returns the deepest body that is an ancestor of both bodies (0 if only the world is shared)."""
+  while body1 != body2:
+    if body1 > body2:
+      body1 = body_parentid[body1]
+    else:
+      body2 = body_parentid[body2]
+  return int(body1)
+
+
 def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) -> types.Model:
   """Creates a model on device.
 
@@ -934,7 +945,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   # Derive CG solver block_dim from nv: clamp(round_up_to_32(nv), 32, 256)
   _nv_block = max(32, min(256, ((mjm.nv + 31) // 32) * 32))
   m.block_dim.update_gradient_grad = _nv_block
-  m.block_dim.solve_beta_accumulate = _nv_block
   m.block_dim.solve_search_update_cg = _nv_block
   m.block_dim.solve_init_search_cg = _nv_block
   if mjm.nv > 500:
@@ -1079,54 +1089,13 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   # precompute body_isdofancestor: which DOFs affect each body
   # TODO: Investigate alternative approach such as bitmap
   body_isdofancestor = np.zeros((mjm.nbody, m.nv_pad), dtype=np.int32)
-  for bodyid in range(mjm.nbody):
-    b = bodyid
-    while b > 0 and mjm.body_dofnum[b] == 0:
-      b = mjm.body_parentid[b]
-    if mjm.body_dofnum[b] == 0:
-      continue
-    dofid = mjm.body_dofadr[b] + mjm.body_dofnum[b] - 1
-    while dofid >= 0:
-      body_isdofancestor[bodyid, dofid] = 1
-      dofid = mjm.dof_parentid[dofid]
+  body_isdofancestor[:, : mjm.nv] = _body_isdofancestor(mjm)
   m.body_isdofancestor = body_isdofancestor
 
   # precalculated geom pairs
-  filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT)
-
-  geom1, geom2 = np.triu_indices(mjm.ngeom, k=1)
+  geom1, geom2, nxn_pairid_contact = _nxn_pairid_contact(mjm)
   m.nxn_geom_pair = np.stack((geom1, geom2), axis=1)
-
-  bodyid1 = mjm.geom_bodyid[geom1]
-  bodyid2 = mjm.geom_bodyid[geom2]
-  contype1 = mjm.geom_contype[geom1]
-  contype2 = mjm.geom_contype[geom2]
-  conaffinity1 = mjm.geom_conaffinity[geom1]
-  conaffinity2 = mjm.geom_conaffinity[geom2]
-  weldid1 = mjm.body_weldid[bodyid1]
-  weldid2 = mjm.body_weldid[bodyid2]
-  weld_parentid1 = mjm.body_weldid[mjm.body_parentid[weldid1]]
-  weld_parentid2 = mjm.body_weldid[mjm.body_parentid[weldid2]]
-
-  self_collision = weldid1 == weldid2
-  # both weld bodies dof-less: no forces can act, skip (matches filterBodyPair)
-  no_dofs = (mjm.body_dofnum[weldid1] == 0) & (mjm.body_dofnum[weldid2] == 0)
-  parent_child_collision = (
-    filterparent & (weldid1 != 0) & (weldid2 != 0) & ((weldid1 == weld_parentid2) | (weldid2 == weld_parentid1))
-  )
-  mask = np.array((contype1 & conaffinity2) | (contype2 & conaffinity1), dtype=bool)
-  exclude = np.isin((bodyid1 << 16) + bodyid2, mjm.exclude_signature)
-
-  nxn_pairid_contact = -1 * np.ones(len(geom1), dtype=int)
-  nxn_pairid_contact[~(mask & ~self_collision & ~no_dofs & ~parent_child_collision & ~exclude)] = -2
-
-  # contact pairs
-  def upper_tri_index(n, i, j):
-    i, j = (j, i) if j < i else (i, j)
-    return (i * (2 * n - i - 3)) // 2 + j - 1
-
-  for i in range(mjm.npair):
-    nxn_pairid_contact[upper_tri_index(mjm.ngeom, mjm.pair_geom1[i], mjm.pair_geom2[i])] = i
+  m.max_efc_J_rownnz = _max_efc_J_rownnz(mjm, (geom1, geom2, nxn_pairid_contact), body_isdofancestor[:, : mjm.nv])
 
   sensor_collision_adr = np.nonzero(is_collision_sensor)[0]
   collision_sensor_adr = np.full(mjm.nsensor, -1)
@@ -1159,7 +1128,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     # collide all pairs
     for geom1id in range(id1, id1 + n1):
       for geom2id in range(id2, id2 + n2):
-        pairid = upper_tri_index(mjm.ngeom, geom1id, geom2id)
+        pairid = math.upper_tri_index(mjm.ngeom, min(geom1id, geom2id), max(geom1id, geom2id))
 
         if pairid in pairids:
           sensor_collision_start_adr.append(nxn_pairid_collision[pairid])
@@ -1306,21 +1275,11 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
         m.wrap_jnt_adr.append(adr + j)
 
   # spatial tendon
-  m.tendon_site_pair_adr, m.tendon_geom_adr = [], []
-  m.ten_wrapadr_site, m.ten_wrapnum_site = [0], []
+  m.tendon_site_pair_adr, m.tendon_geom_adr, m.tendon_geom_wrapadr = [], [], []
   for i, tendon_num in enumerate(mjm.tendon_num):
     adr = mjm.tendon_adr[i]
-    # sites
-    if (mjm.wrap_type[adr : adr + tendon_num] == mujoco.mjtWrap.mjWRAP_SITE).all():
-      if i < mjm.ntendon:
-        m.ten_wrapadr_site.append(m.ten_wrapadr_site[-1] + tendon_num)
-      m.ten_wrapnum_site.append(tendon_num)
-    else:
-      if i < mjm.ntendon:
-        m.ten_wrapadr_site.append(m.ten_wrapadr_site[-1])
-      m.ten_wrapnum_site.append(0)
-
-    # geoms
+    # first geom wrap of this tendon, indexing the geom wrap arrays
+    m.tendon_geom_wrapadr.append(len(m.tendon_geom_adr))
     for j in range(tendon_num):
       wrap_type = mjm.wrap_type[adr + j]
       if j < tendon_num - 1:
@@ -1334,6 +1293,26 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.wrap_site_adr = np.nonzero(mjm.wrap_type == mujoco.mjtWrap.mjWRAP_SITE)[0]
   m.wrap_site_pair_adr = np.setdiff1d(m.wrap_site_adr[np.nonzero(np.diff(m.wrap_site_adr) == 1)[0]], mjm.tendon_adr[1:] - 1)
   m.wrap_geom_adr = np.nonzero(np.isin(mjm.wrap_type, [mujoco.mjtWrap.mjWRAP_SPHERE, mujoco.mjtWrap.mjWRAP_CYLINDER]))[0]
+
+  wrap_site_pair_lca = []
+  for adr in m.wrap_site_pair_adr:
+    site0_body = mjm.site_bodyid[mjm.wrap_objid[adr]]
+    site1_body = mjm.site_bodyid[mjm.wrap_objid[adr + 1]]
+    wrap_site_pair_lca.append(_lowest_common_ancestor(mjm.body_parentid, site0_body, site1_body))
+  m.wrap_site_pair_lca = np.array(wrap_site_pair_lca, dtype=np.int32)
+  wrap_geom_lca = []
+  for adr in m.wrap_geom_adr:
+    site0_body = mjm.site_bodyid[mjm.wrap_objid[adr - 1]]
+    geom_body = mjm.geom_bodyid[mjm.wrap_objid[adr]]
+    site1_body = mjm.site_bodyid[mjm.wrap_objid[adr + 1]]
+    wrap_geom_lca.append(
+      (
+        _lowest_common_ancestor(mjm.body_parentid, site0_body, geom_body),
+        _lowest_common_ancestor(mjm.body_parentid, geom_body, site1_body),
+        _lowest_common_ancestor(mjm.body_parentid, site0_body, site1_body),
+      )
+    )
+  m.wrap_geom_lca = np.array(wrap_geom_lca, dtype=np.int32).reshape(-1, 3)
 
   # pulley scaling
   m.wrap_pulley_scale = np.ones(mjm.nwrap, dtype=float)
@@ -1511,18 +1490,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.qLD_all_updates = all_updates_flat if all_updates_flat else [(0, 0, 0)]
   m.qLD_level_offsets = level_offsets
 
-  # Indices for sparse M_fullm (used in solver). M_fullm_i/j are built by
-  # walking dof_parentid for each dof, so for joint types whose internal block
-  # MuJoCo stores diagonal-only in the compact (M_rownnz, M_rowadr) layout
-  # (e.g. free joints), the chain-aware layout here has more entries per row
-  # than the compact layout.
-  m.M_fullm_i, m.M_fullm_j = [], []
-  for i in range(mjm.nv):
-    j = i
-    while j > -1:
-      m.M_fullm_i.append(i)
-      m.M_fullm_j.append(j)
-      j = mjm.dof_parentid[j]
   # M_elemid maps (row, col) -> madr index in the native CSR M layout
   M_elemid = np.full((mjm.nv, mjm.nv), -1, dtype=np.int32)
   # M_hinit_i: row index of each CSR entry (its madr is the flat index). The dense Newton H-init
@@ -1598,13 +1565,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # Flatten into CSR-like arrays
   m.M_mulm_rowadr = [0]
-  m.M_mulm_col = []
-  m.M_mulm_madr = []
-  for i in range(mjm.nv):
-    for col, madr in row_elements[i]:
-      m.M_mulm_col.append(col)
-      m.M_mulm_madr.append(madr)
-    m.M_mulm_rowadr.append(len(m.M_mulm_col))
+  m.M_mulm_entry = []
+  for row in row_elements:
+    m.M_mulm_entry.extend((int(madr) << 32) | col for col, madr in row)
+    m.M_mulm_rowadr.append(len(m.M_mulm_entry))
 
   m.flexedge_J_rownnz = mjm.flexedge_J_rownnz
   m.flexedge_J_rowadr = mjm.flexedge_J_rowadr
@@ -1661,6 +1625,20 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.flex_efcnnz = flex_efcnnz
   m.flexedge_efcadr = flexedge_efcadr
   m.flexedge_efcnnzadr = flexedge_efcnnzadr
+
+  # flex bvh nodes are the dynamic bvh nodes, stored after the static (body) nodes
+  flex_bvhflexid = np.zeros(mjm.nbvhdynamic, dtype=np.int32)
+  flex_bvh_tree = {}
+  for fi in range(mjm.nflex):
+    bvhadr, bvhnum = mjm.flex_bvhadr[fi], mjm.flex_bvhnum[fi]
+    if bvhadr < 0:
+      continue
+    flex_bvhflexid[bvhadr - mjm.nbvhstatic : bvhadr - mjm.nbvhstatic + bvhnum] = fi
+    for i in range(bvhadr, bvhadr + bvhnum):
+      if mjm.bvh_nodeid[i] < 0:
+        flex_bvh_tree.setdefault(mjm.bvh_depth[i], []).append(i)
+  m.flex_bvhflexid = flex_bvhflexid
+  m.flex_bvh_tree = tuple(wp.array(flex_bvh_tree[i], dtype=int) for i in sorted(flex_bvh_tree))
 
   flex_bend_interp_map = []
   flex_face_map = []
@@ -1928,7 +1906,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "ntendon_site_pair": len(m.tendon_site_pair_adr),
       "ntendon_geom": len(m.tendon_geom_adr),
       "ntendon_limited": len(m.tendon_limited_adr),
-      "nten_wrapadr_site": len(m.ten_wrapadr_site),
       "nwrap_jnt": len(m.wrap_jnt_adr),
       "nwrap_site": len(m.wrap_site_adr),
       "nwrap_site_pair": len(m.wrap_site_pair_adr),
@@ -1953,12 +1930,11 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nqLD_fused_pairs": len(m.qLD_fused_pairs),
       "nqLD_all_updates": len(m.qLD_all_updates),
       "nqLD_level_offsets": len(m.qLD_level_offsets),
-      "nM_fullm": len(m.M_fullm_i),
       "nv_tile": m.M_tile_colmask.shape[0],
       "nv_tile_word": m.M_tile_colmask.shape[1],
       "nqD_fullm": len(m.qD_fullm_i),
       "nv_plus_1": len(m.M_mulm_rowadr),
-      "nM_mulm": len(m.M_mulm_col),
+      "nM_mulm": len(m.M_mulm_entry),
       "nefm_3dof": len(m.efm_L_dofid),
       "nefm_bt_adr": len(m.efm_BT_adr),
     }
@@ -2125,6 +2101,59 @@ def _calculate_efm_con_max_dof(mjm: mujoco.MjModel) -> int:
   return int(min(max(max_passive + max_other, 1), max(mjm.nv, 1)))
 
 
+def _body_isdofancestor(mjm: mujoco.MjModel) -> np.ndarray:
+  """Returns which dofs move each body (nbody, nv)."""
+  body_isdofancestor = np.zeros((mjm.nbody, mjm.nv), dtype=np.int32)
+  for bodyid in range(mjm.nbody):
+    b = bodyid
+    while b > 0 and mjm.body_dofnum[b] == 0:
+      b = mjm.body_parentid[b]
+    if mjm.body_dofnum[b] == 0:
+      continue
+    dofid = mjm.body_dofadr[b] + mjm.body_dofnum[b] - 1
+    while dofid >= 0:
+      body_isdofancestor[bodyid, dofid] = 1
+      dofid = mjm.dof_parentid[dofid]
+  return body_isdofancestor
+
+
+def _nxn_pairid_contact(mjm: mujoco.MjModel) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+  """Returns the geom pairs and their contact pair id: -1 without a pair, -2 if filtered."""
+  filterparent = not (mjm.opt.disableflags & types.DisableBit.FILTERPARENT)
+
+  geom1, geom2 = np.triu_indices(mjm.ngeom, k=1)
+
+  bodyid1 = mjm.geom_bodyid[geom1]
+  bodyid2 = mjm.geom_bodyid[geom2]
+  contype1 = mjm.geom_contype[geom1]
+  contype2 = mjm.geom_contype[geom2]
+  conaffinity1 = mjm.geom_conaffinity[geom1]
+  conaffinity2 = mjm.geom_conaffinity[geom2]
+  weldid1 = mjm.body_weldid[bodyid1]
+  weldid2 = mjm.body_weldid[bodyid2]
+  weld_parentid1 = mjm.body_weldid[mjm.body_parentid[weldid1]]
+  weld_parentid2 = mjm.body_weldid[mjm.body_parentid[weldid2]]
+
+  self_collision = weldid1 == weldid2
+  # both weld bodies dof-less: no forces can act, skip (matches filterBodyPair)
+  no_dofs = (mjm.body_dofnum[weldid1] == 0) & (mjm.body_dofnum[weldid2] == 0)
+  parent_child_collision = (
+    filterparent & (weldid1 != 0) & (weldid2 != 0) & ((weldid1 == weld_parentid2) | (weldid2 == weld_parentid1))
+  )
+  mask = np.array((contype1 & conaffinity2) | (contype2 & conaffinity1), dtype=bool)
+  exclude = np.isin((bodyid1 << 16) + bodyid2, mjm.exclude_signature)
+
+  nxn_pairid_contact = -1 * np.ones(len(geom1), dtype=int)
+  nxn_pairid_contact[~(mask & ~self_collision & ~no_dofs & ~parent_child_collision & ~exclude)] = -2
+
+  # contact pairs
+  for i in range(mjm.npair):
+    g1, g2 = int(mjm.pair_geom1[i]), int(mjm.pair_geom2[i])
+    nxn_pairid_contact[math.upper_tri_index(mjm.ngeom, min(g1, g2), max(g1, g2))] = i
+
+  return geom1, geom2, nxn_pairid_contact
+
+
 def _body_pair_nnz(mjm: mujoco.MjModel, body1: int, body2: int) -> int:
   """Returns the number of unique DOFs in the kinematic tree union of two bodies."""
   body1 = mjm.body_weldid[body1]
@@ -2154,35 +2183,32 @@ def _body_set_nnz(mjm: mujoco.MjModel, bodies) -> int:
   return len(active_dofs)
 
 
-def _calculate_max_contact_nnz(mjm: mujoco.MjModel) -> int:
-  """Returns the maximum number of non-zeros for a single contact constraint."""
-  max_contact_nnz = 0
+def _calculate_max_contact_nnz(
+  mjm: mujoco.MjModel,
+  nxn_pair: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+  body_isdofancestor: np.ndarray | None = None,
+) -> int:
+  """Returns the maximum number of non-zeros for a single contact constraint.
 
-  # contact pairs
-  for i in range(mjm.npair):
-    g1, g2 = mjm.pair_geom1[i], mjm.pair_geom2[i]
-    b1, b2 = mjm.geom_bodyid[g1], mjm.geom_bodyid[g2]
-    max_contact_nnz = max(max_contact_nnz, _body_pair_nnz(mjm, b1, b2))
-
-  # filter geom-geom pairs (unique body pairs, filtered)
-  body_pair_seen = set()
-  for i in range(mjm.ngeom):
-    bi = mjm.geom_bodyid[i]
-    cti, cai = mjm.geom_contype[i], mjm.geom_conaffinity[i]
-    for j in range(i + 1, mjm.ngeom):
-      bj = mjm.geom_bodyid[j]
-      if bi == bj:
-        continue
-      if mjm.body_weldid[bi] == 0 and mjm.body_weldid[bj] == 0:
-        continue
-      bp = (min(bi, bj), max(bi, bj))
-      if bp in body_pair_seen:
-        continue
-      ctj, caj = mjm.geom_contype[j], mjm.geom_conaffinity[j]
-      if not ((cti & caj) or (ctj & cai)):
-        continue
-      body_pair_seen.add(bp)
-      max_contact_nnz = max(max_contact_nnz, _body_pair_nnz(mjm, bi, bj))
+  Args:
+    mjm: The model containing kinematic and dynamic information (host).
+    nxn_pair: The result of `_nxn_pairid_contact`, if the caller already has it.
+    body_isdofancestor: The result of `_body_isdofancestor`, if the caller already has it.
+  """
+  # a rigid contact row spans the dofs that move either body of a geom pair that can collide
+  geom1, geom2, nxn_pairid_contact = nxn_pair or _nxn_pairid_contact(mjm)
+  contact = nxn_pairid_contact > -2
+  weld = np.unique(mjm.body_weldid)
+  index = np.zeros(mjm.nbody, dtype=int)
+  index[weld] = np.arange(weld.size)
+  if body_isdofancestor is None:
+    body_isdofancestor = _body_isdofancestor(mjm)
+  moves = body_isdofancestor[weld].astype(np.float32)
+  ndof = moves.sum(axis=1)
+  union = ndof[:, None] + ndof[None, :] - moves @ moves.T
+  body1 = index[mjm.body_weldid[mjm.geom_bodyid[geom1[contact]]]]
+  body2 = index[mjm.body_weldid[mjm.geom_bodyid[geom2[contact]]]]
+  max_contact_nnz = int(union[body1, body2].max(initial=0))
 
   if mjm.nflex == 0:
     return max_contact_nnz
@@ -2297,6 +2323,112 @@ def _calculate_max_contact_nnz(mjm: mujoco.MjModel) -> int:
   return max_contact_nnz
 
 
+def _efc_rownnz(mjm: mujoco.MjModel) -> list[tuple[int, int]]:
+  """Returns (rows, non-zeros per row) of the equality, friction and limit constraints.
+
+  Assumes all of them are active.
+  """
+  rows = []
+
+  def _eq_bodies(i):
+    """Returns body pair for equality constraint i."""
+    obj1id, obj2id = mjm.eq_obj1id[i], mjm.eq_obj2id[i]
+    if mjm.eq_objtype[i] == mujoco.mjtObj.mjOBJ_SITE:
+      return mjm.site_bodyid[obj1id], mjm.site_bodyid[obj2id]
+    return obj1id, obj2id
+
+  # equality constraints (assume all active)
+  for i in range(mjm.neq):
+    eq_type = mjm.eq_type[i]
+
+    if eq_type == mujoco.mjtEq.mjEQ_CONNECT:
+      rows.append((3, _body_pair_nnz(mjm, *_eq_bodies(i))))
+
+    elif eq_type == mujoco.mjtEq.mjEQ_WELD:
+      rows.append((6, _body_pair_nnz(mjm, *_eq_bodies(i))))
+
+    elif eq_type == mujoco.mjtEq.mjEQ_JOINT:
+      rows.append((1, 2 if mjm.eq_obj2id[i] >= 0 else 1))
+
+    elif eq_type == mujoco.mjtEq.mjEQ_TENDON:
+      obj1id = mjm.eq_obj1id[i]
+      obj2id = mjm.eq_obj2id[i]
+      rownnz1 = mjm.ten_J_rownnz[obj1id] if obj1id < mjm.ntendon else 0
+      if obj2id >= 0 and obj2id < mjm.ntendon:
+        rowadr1 = mjm.ten_J_rowadr[obj1id]
+        rowadr2 = mjm.ten_J_rowadr[obj2id]
+        rownnz2 = mjm.ten_J_rownnz[obj2id]
+        cols = set()
+        for j in range(rownnz1):
+          cols.add(mjm.ten_J_colind[rowadr1 + j])
+        for j in range(rownnz2):
+          cols.add(mjm.ten_J_colind[rowadr2 + j])
+        rows.append((1, len(cols)))
+      else:
+        rows.append((1, rownnz1))
+
+    elif eq_type == mujoco.mjtEq.mjEQ_FLEX:
+      obj1id = mjm.eq_obj1id[i]
+      if obj1id < mjm.nflex:
+        edge_start = mjm.flex_edgeadr[obj1id]
+        edge_count = mjm.flex_edgenum[obj1id]
+        for e in range(edge_count):
+          if mjm.flexedge_rigid is not None and mjm.flexedge_rigid[edge_start + e]:
+            continue
+          rows.append((1, mjm.flexedge_J_rownnz[edge_start + e]))
+
+    elif eq_type == mujoco.mjtEq.mjEQ_FLEXSTRAIN:
+      # strain constraints: each cell produces neig rows, each dense (nv)
+      obj1id = mjm.eq_obj1id[i]
+      if obj1id < mjm.nflex:
+        # estimate neig from stiffness data
+        adr = mjm.flex_stiffnessadr[obj1id]
+        neig = int(mjm.flex_stiffness[adr])
+        rows.append((neig, mjm.nv))
+
+  # friction constraints
+  rows.append(((mjm.dof_frictionloss > 0).sum(), 1))
+  for i in range(mjm.ntendon):
+    if mjm.tendon_frictionloss[i] > 0:
+      rows.append((1, mjm.ten_J_rownnz[i]))
+
+  # limit constraints (assume all active)
+  for i in range(mjm.njnt):
+    if mjm.jnt_limited[i]:
+      jnt_type = int(mjm.jnt_type[i])
+      if jnt_type == mujoco.mjtJoint.mjJNT_BALL:
+        rows.append((1, 3))
+      elif jnt_type in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE):
+        # both sides are active when the range is narrower than twice the margin
+        rows.append((1 + int(mjm.jnt_range[i, 1] - mjm.jnt_range[i, 0] < 2 * mjm.jnt_margin[i]), 1))
+  for i in range(mjm.ntendon):
+    if mjm.tendon_limited[i]:
+      bilateral = mjm.tendon_range[i, 1] - mjm.tendon_range[i, 0] < 2 * mjm.tendon_margin[i]
+      rows.append((1 + int(bilateral), mjm.ten_J_rownnz[i]))
+
+  return rows
+
+
+def _max_efc_J_rownnz(
+  mjm: mujoco.MjModel, nxn_pair: tuple[np.ndarray, np.ndarray, np.ndarray], body_isdofancestor: np.ndarray
+) -> int:
+  """Returns an upper bound on the number of non-zeros in one constraint Jacobian row.
+
+  Args:
+    mjm: The model containing kinematic and dynamic information (host).
+    nxn_pair: The result of `_nxn_pairid_contact`.
+    body_isdofancestor: The result of `_body_isdofancestor`.
+  """
+  if mjm.nflex:
+    # the flex contact estimate samples one cell of an interpolated flex, so it is not a bound
+    return mjm.nv
+  rownnz = max([1, _calculate_max_contact_nnz(mjm, nxn_pair, body_isdofancestor)] + [nnz for _, nnz in _efc_rownnz(mjm)])
+  if mjm.ntendon:
+    # frictionloss can be set on any tendon after construction
+    rownnz = max(rownnz, int(mjm.ten_J_rownnz.max()))
+  return int(min(rownnz, mjm.nv))
+
+
 def _default_njmax_nnz(mjm: mujoco.MjModel, nconmax: int, njmax: int) -> int:
   """Returns a heuristic estimate for the number of non-zeros in the sparse constraint Jacobian.
 
@@ -2312,81 +2444,7 @@ def _default_njmax_nnz(mjm: mujoco.MjModel, nconmax: int, njmax: int) -> int:
   Returns:
     Estimated number of non-zeros in the constraint Jacobian.
   """
-  total_nnz = 0
-
-  def _eq_bodies(i):
-    """Returns body pair for equality constraint i."""
-    obj1id, obj2id = mjm.eq_obj1id[i], mjm.eq_obj2id[i]
-    if mjm.eq_objtype[i] == mujoco.mjtObj.mjOBJ_SITE:
-      return mjm.site_bodyid[obj1id], mjm.site_bodyid[obj2id]
-    return obj1id, obj2id
-
-  # equality constraints (assume all active)
-  for i in range(mjm.neq):
-    eq_type = mjm.eq_type[i]
-
-    if eq_type == mujoco.mjtEq.mjEQ_CONNECT:
-      total_nnz += 3 * _body_pair_nnz(mjm, *_eq_bodies(i))
-
-    elif eq_type == mujoco.mjtEq.mjEQ_WELD:
-      total_nnz += 6 * _body_pair_nnz(mjm, *_eq_bodies(i))
-
-    elif eq_type == mujoco.mjtEq.mjEQ_JOINT:
-      total_nnz += 2 if mjm.eq_obj2id[i] >= 0 else 1
-
-    elif eq_type == mujoco.mjtEq.mjEQ_TENDON:
-      obj1id = mjm.eq_obj1id[i]
-      obj2id = mjm.eq_obj2id[i]
-      rownnz1 = mjm.ten_J_rownnz[obj1id] if obj1id < mjm.ntendon else 0
-      if obj2id >= 0 and obj2id < mjm.ntendon:
-        rowadr1 = mjm.ten_J_rowadr[obj1id]
-        rowadr2 = mjm.ten_J_rowadr[obj2id]
-        rownnz2 = mjm.ten_J_rownnz[obj2id]
-        cols = set()
-        for j in range(rownnz1):
-          cols.add(mjm.ten_J_colind[rowadr1 + j])
-        for j in range(rownnz2):
-          cols.add(mjm.ten_J_colind[rowadr2 + j])
-        total_nnz += len(cols)
-      else:
-        total_nnz += rownnz1
-
-    elif eq_type == mujoco.mjtEq.mjEQ_FLEX:
-      obj1id = mjm.eq_obj1id[i]
-      if obj1id < mjm.nflex:
-        edge_start = mjm.flex_edgeadr[obj1id]
-        edge_count = mjm.flex_edgenum[obj1id]
-        for e in range(edge_count):
-          if mjm.flexedge_rigid is not None and mjm.flexedge_rigid[edge_start + e]:
-            continue
-          total_nnz += mjm.flexedge_J_rownnz[edge_start + e]
-
-    elif eq_type == mujoco.mjtEq.mjEQ_FLEXSTRAIN:
-      # strain constraints: each cell produces neig rows, each dense (nv)
-      obj1id = mjm.eq_obj1id[i]
-      if obj1id < mjm.nflex:
-        # estimate neig from stiffness data
-        adr = mjm.flex_stiffnessadr[obj1id]
-        neig = int(mjm.flex_stiffness[adr])
-        total_nnz += neig * mjm.nv
-
-  # friction constraints
-  total_nnz += (mjm.dof_frictionloss > 0).sum()
-  for i in range(mjm.ntendon):
-    if mjm.tendon_frictionloss[i] > 0:
-      total_nnz += mjm.ten_J_rownnz[i]
-
-  # limit constraints (assume all active)
-  for i in range(mjm.njnt):
-    if mjm.jnt_limited[i]:
-      jnt_type = int(mjm.jnt_type[i])
-      if jnt_type == mujoco.mjtJoint.mjJNT_BALL:
-        total_nnz += 3
-      elif jnt_type in (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE):
-        total_nnz += 1
-  for i in range(mjm.ntendon):
-    if mjm.tendon_limited[i]:
-      total_nnz += mjm.ten_J_rownnz[i]
+  total_nnz = sum(nrow * nnz for nrow, nnz in _efc_rownnz(mjm))
 
   # contact constraints: njmax rows at max contact non-zeros
   max_contact_nnz = _calculate_max_contact_nnz(mjm)
