@@ -1415,6 +1415,69 @@ class SupportTest(parameterized.TestCase):
     expected_m1_2 = np.cos(0.4) * m1_0 + np.sin(0.4) * m2_0
     _assert_eq(mats[2, :, 0], expected_m1_2, "twisted_m1_elem2")
 
+  @parameterized.product(
+    nworld=(1, 2),
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+  )
+  def test_contact_force_bounds_and_partial_overflow(self, nworld, cone):
+    """Tests contact_force with simultaneous naconmax and partial njmax overflow."""
+    # A box on a plane emits 4 contacts/world: nconmax=3 overflows naconmax while njmax=5 fits 1.
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <body pos="0 0 1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      nconmax=3,
+      njmax=5,
+      overrides={"opt.cone": cone},
+    )
+
+    qpos = d.qpos.numpy()
+    qpos[:, 2] = 0.05 if nworld == 1 else [0.05, 0.04]
+    d.qpos.assign(qpos)
+    mjwarp.forward(m, d)
+
+    self.assertGreater(d.nacon.numpy()[0], d.naconmax)
+
+    def _eval_force(ids, to_world=False):
+      out = wp.full(len(ids), wp.spatial_vector(wp.inf, wp.inf, wp.inf, wp.inf, wp.inf, wp.inf), dtype=wp.spatial_vector)
+      mjwarp.contact_force(m, d, wp.array(ids, dtype=int), to_world, out)
+      return out.numpy()
+
+    efc_addr = d.contact.efc_address.numpy()[: d.naconmax, 0]
+    worldids = d.contact.worldid.numpy()[: d.naconmax]
+    valid_ids = np.where(efc_addr >= 0)[0].astype(np.int32)
+    overflow_ids = np.where(efc_addr == -1)[0].astype(np.int32)
+    self.assertEqual(len(valid_ids), nworld)
+    self.assertEqual(len(overflow_ids), d.naconmax - nworld)
+
+    force_valid = _eval_force(valid_ids)
+    efc_force = d.efc.force.numpy()
+    friction = d.contact.friction.numpy()
+    expected = []
+    for cid in valid_ids:
+      f = efc_force[worldids[cid], :4]
+      if cone == ConeType.PYRAMIDAL:
+        mu = friction[cid]
+        expected.append([f.sum(), (f[0] - f[1]) * mu[0], (f[2] - f[3]) * mu[1], 0.0, 0.0, 0.0])
+      else:
+        expected.append([f[0], f[1], f[2], 0.0, 0.0, 0.0])
+    np.testing.assert_allclose(force_valid, np.array(expected, dtype=np.float32))
+    self.assertTrue(np.all(force_valid[:, 0] > 0.0))
+    if nworld == 2:
+      self.assertFalse(np.allclose(force_valid[0], force_valid[1]))
+
+    self.assertTrue(np.all(_eval_force(overflow_ids, to_world=True) == 0.0))
+    self.assertTrue(np.all(_eval_force([-1, d.naconmax, d.naconmax + 1], to_world=True) == 0.0))
+
 
 if __name__ == "__main__":
   wp.init()
