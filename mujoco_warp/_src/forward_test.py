@@ -1425,6 +1425,55 @@ class ForwardTest(parameterized.TestCase):
     mjw.step(m, d)
     self.assertGreater(d.time.numpy()[0], 0.0)
 
+  @parameterized.product(
+    capacity=((2, 64, mjw.OverflowType.BROADPHASE), (4, 4, mjw.OverflowType.NEFC)),
+    falling=(False, True),
+  )
+  def test_overflow_every_pass(self, capacity, falling):
+    """Tests that contacts and rows dropped by any forward pass set the overflow flags."""
+    nconmax, njmax, overflow = capacity
+    _, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <option timestep=".002" integrator="RK4"/>
+      <worldbody>
+        <geom type="box" size="1 1 .001"/>
+        <body pos="0 0 .02">
+          <freejoint/>
+          <geom size=".005"/>
+        </body>
+        <body pos=".1 0 .02">
+          <freejoint/>
+          <geom size=".005"/>
+        </body>
+        <body pos=".2 0 .02">
+          <freejoint/>
+          <geom size=".005"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """,
+      nconmax=nconmax,
+      njmax=njmax,
+    )
+    m.opt.warn_overflow = 0
+    d.overflow.zero_()
+
+    if falling:
+      # spheres falling through the plate: only RK4 stages 2 and 3 are inside it
+      qvel = d.qvel.numpy()
+      qvel[0, 2::6] = -20.0
+      d.qvel.assign(qvel)
+      mjw.step(m, d)
+    else:
+      # spheres inside the plate: 3 contacts and 12 rows
+      qpos = d.qpos.numpy()
+      qpos[0, 2::7] = 0.0
+      d.qpos.assign(qpos)
+      mjw.forward(m, d)
+
+    self.assertEqual(d.overflow.numpy()[0] & overflow, overflow)
+
   def test_control_callback(self):
     """Tests control_callback is called during forward and skipped when actuation disabled."""
     xml = """
