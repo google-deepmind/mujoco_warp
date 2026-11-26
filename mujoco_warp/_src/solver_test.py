@@ -1573,6 +1573,7 @@ class SolverTest(parameterized.TestCase):
       d.qacc.fill_(wp.inf)
       d.qfrc_constraint.fill_(wp.inf)
       d.efc.force.fill_(wp.inf)
+      d.efc.state.fill_(-1)
 
       if solver_ == mujoco.mjtSolver.mjSOL_CG:
         mjw.factor_m(m, d)
@@ -1589,10 +1590,13 @@ class SolverTest(parameterized.TestCase):
       mjwarp_cost = cost(d.qacc.numpy()[0])
       self.assertLessEqual(mjwarp_cost, mj_cost * 1.025)
 
+      # mjd holds the constraint update at the mjwarp solution
+      _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
+      np.testing.assert_array_equal(d.efc.state.numpy()[0, : mjd.nefc], mjd.efc_state)
+
       if m.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
         _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
         _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
-        _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
   @absltest.skipIf(not wp.get_device().is_cuda, "Side streams only fork during CUDA graph capture")
   def test_solve_graph_capture_sparse(self):

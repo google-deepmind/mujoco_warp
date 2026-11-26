@@ -1036,6 +1036,18 @@ def _compute_efc_eval_pt_3alphas_elliptic(
 # =============================================================================
 
 
+@wp.func_native(
+  snippet="""
+#if defined(__CUDA_ARCH__)
+  return __fdiv_rn(x, y);
+#else
+  return x / y;
+#endif
+"""
+)
+def _div_rn(x: float, y: float) -> float: ...
+
+
 @wp.func_native(snippet="WP_TILE_SYNC();")
 def _syncthreads():
   pass
@@ -1072,6 +1084,7 @@ def _linesearch_iterative_kernel(
   incremental: bool,
   warn_overflow: int,
   is_discrete: bool,
+  update_efc: bool,
 ):
   """Factory for iterative linesearch kernel.
 
@@ -1083,6 +1096,7 @@ def _linesearch_iterative_kernel(
     incremental: Use incremental linesearch updates.
     warn_overflow: Overflow warning bitmask.
     is_discrete: Discrete integrator (per-contact regularized cone scale).
+    update_efc: Set pyramidal efc force and state with the Jaref update.
   """
   LS_ITERATIONS = ls_iterations
   IS_ELLIPTIC = cone_type == types.ConeType.ELLIPTIC
@@ -1090,6 +1104,7 @@ def _linesearch_iterative_kernel(
   INCREMENTAL = incremental
   IS_SPARSE = is_sparse
   IS_DISCRETE = is_discrete
+  UPDATE_EFC = update_efc
 
   # Select specialized helper functions based on cone type
   if IS_ELLIPTIC:
@@ -1139,6 +1154,8 @@ def _linesearch_iterative_kernel(
     ctx_done_in: wp.array[bool],
     # Data out:
     qacc_out: wp.array2d[float],
+    efc_force_out: wp.array2d[float],
+    efc_state_out: wp.array2d[int],
     efc_Ma_out: wp.array2d[float],
     overflow_out: wp.array[int],
     # Out:
@@ -1618,6 +1635,28 @@ def _linesearch_iterative_kernel(
     for efcid in range(tid, nefc, wp.block_dim()):
       ctx_Jaref_out[worldid, efcid] += alpha * ctx_jv_in[worldid, efcid]
 
+      if wp.static(UPDATE_EFC):
+        jaref = ctx_Jaref_out[worldid, efcid]
+        efc_D = efc_D_in[worldid, efcid]
+        force = -efc_D * jaref
+        state = int(types.ConstraintState.QUADRATIC.value)
+        if efcid >= ne + nf:
+          if jaref >= 0.0:
+            force = 0.0
+            state = int(types.ConstraintState.SATISFIED.value)
+        elif efcid >= ne:
+          # IEEE division as in _eval_constraint, outside this fast-math module
+          frictionloss = efc_frictionloss_in[worldid, efcid]
+          rf = _div_rn(frictionloss, wp.where(efc_D != 0.0, efc_D, types.MJ_MINVAL))
+          if jaref <= -rf:
+            force = frictionloss
+            state = int(types.ConstraintState.LINEARNEG.value)
+          elif jaref >= rf:
+            force = -frictionloss
+            state = int(types.ConstraintState.LINEARPOS.value)
+        efc_force_out[worldid, efcid] = force
+        efc_state_out[worldid, efcid] = state
+
     if tid == 0:
       ctx_improvement_out[worldid] = improvement
       ctx_alpha_out[worldid] = alpha
@@ -1653,6 +1692,7 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
       _use_incremental(m),
       int(m.opt.warn_overflow),
       m.opt.integrator == types.IntegratorType.DISCRETE,
+      _linesearch_update_efc(m, d),
     ),
     dim=d.nworld,
     inputs=[
@@ -1689,6 +1729,8 @@ def _linesearch_iterative(m: types.Model, d: types.Data, ctx: SolverContext, fus
     ],
     outputs=[
       d.qacc,
+      d.efc.force,
+      d.efc.state,
       d.efc.Ma,
       d.overflow,
       ctx.Jaref,
@@ -5037,6 +5079,15 @@ def _use_incremental(m: types.Model) -> bool:
   return m.opt.solver == types.SolverType.NEWTON and m.opt.cone != types.ConeType.ELLIPTIC
 
 
+def _linesearch_update_efc(m: types.Model, d: types.Data) -> bool:
+  """Whether the CG linesearch sets pyramidal efc force and state with Jaref."""
+  if m.opt.solver != types.SolverType.CG or m.opt.cone != types.ConeType.PYRAMIDAL:
+    return False
+  # with fewer worlds than SMs, long rows run faster over (nworld, njmax) in _update_efc_force
+  device = d.qacc.device
+  return not device.is_cuda or d.nworld >= device.sm_count or d.njmax <= 8 * m.block_dim.linesearch_iterative
+
+
 @wp.kernel(grid_stride=True)
 def _zero_change_counters(
   # Out:
@@ -5136,7 +5187,8 @@ def _solver_iteration(
     _update_qfrc_constraint(m, d, ctx, stable_fast=True)
     _update_gradient_incremental(m, d, ctx, stable_fast=True, compact=compact, h_stream=h_stream)
   else:
-    _update_efc_force(m, d, ctx)
+    if not _linesearch_update_efc(m, d):
+      _update_efc_force(m, d, ctx)
     cg = m.opt.solver == types.SolverType.CG
     _update_qfrc_constraint(m, d, ctx, write_grad=cg)
     _update_gradient(m, d, ctx, compact=compact, grad=not cg)
