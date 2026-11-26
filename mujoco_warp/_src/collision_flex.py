@@ -2161,9 +2161,10 @@ def _flex_rod_box(
     elemid - flex_elemadr[flexid],
   )
   rod_box_out[worldid, elemid] = ok_box
-  rod_box_pos_out[worldid, elemid] = bpos
-  rod_box_mat_out[worldid, elemid] = bmat
-  rod_box_size_out[worldid, elemid] = bsize
+  if ok_box:
+    rod_box_pos_out[worldid, elemid] = bpos
+    rod_box_mat_out[worldid, elemid] = bmat
+    rod_box_size_out[worldid, elemid] = bsize
 
 
 @cache_kernel
@@ -2308,11 +2309,11 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
       geom2_type = int(GeomType.CAPSULE)
 
       ok_box = rod_box[worldid, elemid]
-      bpos = rod_box_pos[worldid, elemid]
-      bmat = rod_box_mat[worldid, elemid]
-      bsize = rod_box_size[worldid, elemid]
       pad = elem_radius
       if ok_box:
+        bpos = rod_box_pos[worldid, elemid]
+        bmat = rod_box_mat[worldid, elemid]
+        bsize = rod_box_size[worldid, elemid]
         pad = wp.max(pad, wp.sqrt(bsize[0] * bsize[0] + bsize[1] * bsize[1]))
 
       elem_min = wp.min(t1, t2) - wp.vec3(pad, pad, pad)
