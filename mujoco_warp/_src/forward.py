@@ -441,296 +441,358 @@ def _next_time_builder(warn_overflow: int):
 
 
 @wp.kernel
-def _next_rod_twist(
+def _compute_flex_awake(
   # Model:
-  opt_enableflags: int,
+  ntree: int,
+  body_treeid: wp.array[int],
   jnt_bodyid: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
   flex_vertadr: wp.array[int],
   flex_vertnum: wp.array[int],
   flex_plasticadr: wp.array[int],
+  flex_nodebodyid: wp.array[int],
   flex_vertbodyid: wp.array[int],
-  flex_rod_is_chain: wp.array[bool],
-  flex_rod_root_clamped: wp.array[bool],
-  flex_rod_tail_clamped: wp.array[bool],
+  flex_rod_has_twist: wp.array[bool],
   flex_rod_edgeadr: wp.array[int],
   flex_rod_edgenum: wp.array[int],
-  flex_rodedge_vert: wp.array[wp.vec2i],
   flex_rodedge_jnt: wp.array[int],
   # Data in:
-  plastic_in: wp.array2d[float],
-  xquat_in: wp.array2d[wp.quat],
-  flexvert_xpos_in: wp.array2d[wp.vec3],
+  ntree_awake_in: wp.array[int],
   body_awake_in: wp.array2d[int],
-  flex_rod_ref_ok_in: wp.array2d[bool],
-  flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
-  flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
-  flex_rod_tail_loc_in: wp.array3d[wp.vec3],
-  # Data out:
-  plastic_out: wp.array2d[float],
+  # Out:
+  flex_awake_out: wp.array2d[bool],
 ):
-  """Carries per-edge (t_e, u_e) reference directors and unwrapped dpsi_h of 1D DER rods."""
-  worldid, flexid = wp.tid()
-  if not flex_rod_is_chain[flexid] or not flex_rod_ref_ok_in[worldid, flexid]:
+  """Computes whole-flex awake mask matching mj_sleepState(mjOBJ_FLEX)."""
+  worldid, f = wp.tid()
+  if flex_plasticadr[f] < 0:
+    flex_awake_out[worldid, f] = False
     return
-  padr = flex_plasticadr[flexid]
-  eadr = flex_rod_edgeadr[flexid]
-  nedge = flex_rod_edgenum[flexid]
-  nhinge = nedge - 1
-  if padr < 0 or eadr < 0 or nhinge <= 0:
+  if ntree_awake_in[worldid] >= ntree:
+    flex_awake_out[worldid, f] = True
     return
 
-  vbase = flex_vertadr[flexid]
-  if opt_enableflags & EnableBit.SLEEP:
-    any_awake = bool(False)
-    for v in range(flex_vertnum[flexid]):
-      bid = flex_vertbodyid[vbase + v]
-      if bid >= 0 and body_awake_in[worldid, bid] == SleepState.AWAKE:
-        any_awake = bool(True)
-    for e in range(nedge):
-      jnt = flex_rodedge_jnt[eadr + e]
-      if jnt >= 0 and body_awake_in[worldid, jnt_bodyid[jnt]] == SleepState.AWAKE:
-        any_awake = bool(True)
-    if not any_awake:
-      return
-
-  # Pass 1: validate all edges and hinge parallel transports before mutating plastic_out.
-  z3 = wp.vec3(0.0)
-  ok0, _anc0, _tp0, t_prev, u_prev, _vp0, _l0 = support.rod_chain_edge_director(
-    flex_vertadr,
-    flex_plasticadr,
-    flex_vertbodyid,
-    flex_rod_root_clamped,
-    flex_rod_tail_clamped,
-    flex_rod_edgeadr,
-    flex_rod_edgenum,
-    flex_rodedge_vert,
-    plastic_in,
-    xquat_in,
-    flexvert_xpos_in,
-    flex_rod_frame0_loc_in,
-    flex_rod_frame0_ref_in,
-    flex_rod_tail_loc_in,
-    worldid,
-    flexid,
-    0,
-    z3,
-    z3,
-  )
-  if not ok0:
-    return
-  for h in range(nhinge):
-    ok1, _anc1, _tp1, t_cur, u_cur, _vp1, _l1 = support.rod_chain_edge_director(
-      flex_vertadr,
-      flex_plasticadr,
-      flex_vertbodyid,
-      flex_rod_root_clamped,
-      flex_rod_tail_clamped,
-      flex_rod_edgeadr,
-      flex_rod_edgenum,
-      flex_rodedge_vert,
-      plastic_in,
-      xquat_in,
-      flexvert_xpos_in,
-      flex_rod_frame0_loc_in,
-      flex_rod_frame0_ref_in,
-      flex_rod_tail_loc_in,
-      worldid,
-      flexid,
-      h + 1,
-      t_prev,
-      u_prev,
-    )
-    if not ok1:
-      return
-    ok_pth, _ut, _vt = support.rod_parallel_transport(t_prev, t_cur, u_prev)
-    if not ok_pth:
-      return
-    t_prev = t_cur
-    u_prev = u_cur
-
-  # Pass 2: write [6*nedge (t_e, u_e) | nhinge unwrapped dpsi_h].
-  # Read-before-write per slot keeps in-place plastic_in == plastic_out safe.
-  anc_prev = bool(False)
-  t_prev = z3
-  u_prev = z3
-  for e in range(nedge):
-    _ok_e, anc_cur, _tp_e, t_cur, u_cur, _v_cur, _l_e = support.rod_chain_edge_director(
-      flex_vertadr,
-      flex_plasticadr,
-      flex_vertbodyid,
-      flex_rod_root_clamped,
-      flex_rod_tail_clamped,
-      flex_rod_edgeadr,
-      flex_rod_edgenum,
-      flex_rodedge_vert,
-      plastic_in,
-      xquat_in,
-      flexvert_xpos_in,
-      flex_rod_frame0_loc_in,
-      flex_rod_frame0_ref_in,
-      flex_rod_tail_loc_in,
-      worldid,
-      flexid,
-      e,
-      t_prev,
-      u_prev,
-    )
-    if e > 0:
-      h = e - 1
-      _ok_pth, u_trans, v_trans = support.rod_parallel_transport(t_prev, t_cur, u_prev)
-      dpsi_h = wp.atan2(wp.dot(u_cur, v_trans), wp.dot(u_cur, u_trans))
-      if anc_prev and anc_cur:
-        psi_prev = plastic_in[worldid, padr + 6 * nedge + h]
-        jump = dpsi_h - psi_prev
-        dpsi_h -= 2.0 * wp.pi * wp.round(jump / (2.0 * wp.pi))
-      plastic_out[worldid, padr + 6 * nedge + h] = dpsi_h
-    plastic_out[worldid, padr + 6 * e + 0] = t_cur[0]
-    plastic_out[worldid, padr + 6 * e + 1] = t_cur[1]
-    plastic_out[worldid, padr + 6 * e + 2] = t_cur[2]
-    plastic_out[worldid, padr + 6 * e + 3] = u_cur[0]
-    plastic_out[worldid, padr + 6 * e + 4] = u_cur[1]
-    plastic_out[worldid, padr + 6 * e + 5] = u_cur[2]
-    anc_prev = anc_cur
-    t_prev = t_cur
-    u_prev = u_cur
-
-
-@wp.kernel
-def _next_plastic_joint(
-  # Model:
-  opt_enableflags: int,
-  jnt_type: wp.array[int],
-  jnt_qposadr: wp.array[int],
-  jnt_bodyid: wp.array[int],
-  jnt_plasticadr: wp.array[int],
-  jnt_springyield: wp.array2d[float],
-  # Data in:
-  qpos_in: wp.array2d[float],
-  plastic_in: wp.array2d[float],
-  body_awake_in: wp.array2d[int],
-  # Data out:
-  plastic_out: wp.array2d[float],
-):
-  worldid, jntid = wp.tid()
-  padr = jnt_plasticadr[jntid]
-  if padr < 0:
-    return
-  if (opt_enableflags & EnableBit.SLEEP) and body_awake_in[worldid, jnt_bodyid[jntid]] != SleepState.AWAKE:
-    return
-  yield_ = wp.max(0.0, jnt_springyield[worldid % jnt_springyield.shape[0], jntid])
-
-  qadr = jnt_qposadr[jntid]
-  jnttype = jnt_type[jntid]
-
-  if jnttype == JointType.SLIDE or jnttype == JointType.HINGE:
-    x = qpos_in[worldid, qadr] - plastic_in[worldid, padr]
-    if x > yield_:
-      plastic_out[worldid, padr] = qpos_in[worldid, qadr] - yield_
-    elif x < -yield_:
-      plastic_out[worldid, padr] = qpos_in[worldid, qadr] + yield_
-  elif jnttype == JointType.BALL:
-    quat = wp.normalize(
-      wp.quat(
-        qpos_in[worldid, qadr + 0],
-        qpos_in[worldid, qadr + 1],
-        qpos_in[worldid, qadr + 2],
-        qpos_in[worldid, qadr + 3],
-      )
-    )
-    qspring = wp.quat(
-      plastic_in[worldid, padr + 0],
-      plastic_in[worldid, padr + 1],
-      plastic_in[worldid, padr + 2],
-      plastic_in[worldid, padr + 3],
-    )
-    dif_rot = math.quat_sub(quat, qspring)
-    r_rot = wp.length(dif_rot)
-    if r_rot > yield_:
-      qspring_new = math.quat_integrate(qspring, dif_rot, (r_rot - yield_) / r_rot)
-      plastic_out[worldid, padr + 0] = qspring_new[0]
-      plastic_out[worldid, padr + 1] = qspring_new[1]
-      plastic_out[worldid, padr + 2] = qspring_new[2]
-      plastic_out[worldid, padr + 3] = qspring_new[3]
-
-
-@wp.kernel
-def _next_plastic_tendon(
-  # Model:
-  opt_timestep: wp.array[float],
-  opt_enableflags: int,
-  jnt_qposadr: wp.array[int],
-  jnt_bodyid: wp.array[int],
-  dof_treeid: wp.array[int],
-  tendon_adr: wp.array[int],
-  tendon_num: wp.array[int],
-  tendon_plasticadr: wp.array[int],
-  ten_J_rownnz: wp.array[int],
-  ten_J_rowadr: wp.array[int],
-  ten_J_colind: wp.array[int],
-  tendon_springyield: wp.array2d[float],
-  wrap_type: wp.array[int],
-  wrap_objid: wp.array[int],
-  wrap_prm: wp.array[float],
-  # Data in:
-  qpos_in: wp.array2d[float],
-  qvel_in: wp.array2d[float],
-  plastic_in: wp.array2d[float],
-  ten_J_in: wp.array2d[float],
-  ten_length_in: wp.array2d[float],
-  tree_awake_in: wp.array2d[int],
-  body_awake_in: wp.array2d[int],
-  # Data out:
-  plastic_out: wp.array2d[float],
-):
-  worldid, tenid = wp.tid()
-  padr = tendon_plasticadr[tenid]
-  if padr < 0:
-    return
-  yield_ = wp.max(0.0, tendon_springyield[worldid % tendon_springyield.shape[0], tenid])
-
-  adr = tendon_adr[tenid]
-  L_next = float(0.0)
-  if wrap_type[adr] == WrapType.JOINT:
-    num = tendon_num[tenid]
-    if opt_enableflags & EnableBit.SLEEP:
-      awake = bool(False)
-      for j in range(num):
-        if body_awake_in[worldid, jnt_bodyid[wrap_objid[adr + j]]] == SleepState.AWAKE:
-          awake = True
-      if not awake:
+  if flex_interp[f] != 0:
+    adr = flex_nodeadr[f]
+    num = flex_nodenum[f]
+    for i in range(num):
+      b = flex_nodebodyid[adr + i]
+      if b >= 0 and body_treeid[b] >= 0 and body_awake_in[worldid, b] == SleepState.AWAKE:
+        flex_awake_out[worldid, f] = True
         return
-    for j in range(num):
-      L_next += wrap_prm[adr + j] * qpos_in[worldid, jnt_qposadr[wrap_objid[adr + j]]]
   else:
-    rownnz = ten_J_rownnz[tenid]
-    rowadr = ten_J_rowadr[tenid]
-    if opt_enableflags & EnableBit.SLEEP:
-      awake = bool(False)
-      for k in range(rownnz):
-        t = dof_treeid[ten_J_colind[rowadr + k]]
-        if t >= 0 and tree_awake_in[worldid, t] != 0:
-          awake = True
-      if not awake:
+    adr = flex_vertadr[f]
+    num = flex_vertnum[f]
+    for i in range(num):
+      b = flex_vertbodyid[adr + i]
+      if b >= 0 and body_treeid[b] >= 0 and body_awake_in[worldid, b] == SleepState.AWAKE:
+        flex_awake_out[worldid, f] = True
         return
-    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-    dL_dt = float(0.0)
-    for k in range(rownnz):
-      sparseid = rowadr + k
-      dL_dt += ten_J_in[worldid, sparseid] * qvel_in[worldid, ten_J_colind[sparseid]]
-    L_next = ten_length_in[worldid, tenid] + timestep * dL_dt
 
-  lower = plastic_in[worldid, padr + 0]
-  upper = plastic_in[worldid, padr + 1]
-  x = wp.where(L_next > upper, L_next - upper, wp.where(L_next < lower, L_next - lower, 0.0))
-  if x > yield_:
-    delta = x - yield_
-    if lower != 0.0 or upper <= 0.0:
+  if flex_rod_has_twist[f]:
+    eadr = flex_rod_edgeadr[f]
+    nedge = flex_rod_edgenum[f]
+    for e in range(nedge):
+      j = flex_rodedge_jnt[eadr + e]
+      if j >= 0:
+        b = jnt_bodyid[j]
+        if b >= 0 and body_treeid[b] >= 0 and body_awake_in[worldid, b] == SleepState.AWAKE:
+          flex_awake_out[worldid, f] = True
+          return
+
+  flex_awake_out[worldid, f] = False
+
+
+@cache_kernel
+def _next_rod_twist(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    flex_vertadr: wp.array[int],
+    flex_plasticadr: wp.array[int],
+    flex_vertbodyid: wp.array[int],
+    flex_rod_is_chain: wp.array[bool],
+    flex_rod_root_clamped: wp.array[bool],
+    flex_rod_tail_clamped: wp.array[bool],
+    flex_rod_edgeadr: wp.array[int],
+    flex_rod_edgenum: wp.array[int],
+    flex_rodedge_vert: wp.array[wp.vec2i],
+    # Data in:
+    plastic_in: wp.array2d[float],
+    xquat_in: wp.array2d[wp.quat],
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    flex_rod_ref_ok_in: wp.array2d[bool],
+    flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
+    flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
+    flex_rod_tail_loc_in: wp.array3d[wp.vec3],
+    # In:
+    flex_awake_in: wp.array2d[bool],
+    # Data out:
+    plastic_out: wp.array2d[float],
+  ):
+    """Carries per-edge (t_e, u_e) reference directors and unwrapped dpsi_h of 1D DER rods."""
+    worldid, flexid = wp.tid()
+    if not flex_rod_is_chain[flexid] or not flex_rod_ref_ok_in[worldid, flexid]:
+      return
+    padr = flex_plasticadr[flexid]
+    eadr = flex_rod_edgeadr[flexid]
+    nedge = flex_rod_edgenum[flexid]
+    nhinge = nedge - 1
+    if padr < 0 or eadr < 0 or nhinge <= 0:
+      return
+
+    if wp.static(enable_sleep):
+      if not flex_awake_in[worldid, flexid]:
+        return
+
+    # Validate all edges and hinge parallel transports before mutating plastic_out.
+    z3 = wp.vec3(0.0)
+    ok0, _anc0, _tp0, t_prev, u_prev, _vp0, _l0 = support.rod_chain_edge_director(
+      flex_vertadr,
+      flex_plasticadr,
+      flex_vertbodyid,
+      flex_rod_root_clamped,
+      flex_rod_tail_clamped,
+      flex_rod_edgeadr,
+      flex_rod_edgenum,
+      flex_rodedge_vert,
+      plastic_in,
+      xquat_in,
+      flexvert_xpos_in,
+      flex_rod_frame0_loc_in,
+      flex_rod_frame0_ref_in,
+      flex_rod_tail_loc_in,
+      worldid,
+      flexid,
+      0,
+      z3,
+      z3,
+    )
+    if not ok0:
+      return
+    for h in range(nhinge):
+      ok1, _anc1, _tp1, t_cur, u_cur, _vp1, _l1 = support.rod_chain_edge_director(
+        flex_vertadr,
+        flex_plasticadr,
+        flex_vertbodyid,
+        flex_rod_root_clamped,
+        flex_rod_tail_clamped,
+        flex_rod_edgeadr,
+        flex_rod_edgenum,
+        flex_rodedge_vert,
+        plastic_in,
+        xquat_in,
+        flexvert_xpos_in,
+        flex_rod_frame0_loc_in,
+        flex_rod_frame0_ref_in,
+        flex_rod_tail_loc_in,
+        worldid,
+        flexid,
+        h + 1,
+        t_prev,
+        u_prev,
+      )
+      if not ok1:
+        return
+      ok_pth, _ut, _vt = support.rod_parallel_transport(t_prev, t_cur, u_prev)
+      if not ok_pth:
+        return
+      t_prev = t_cur
+      u_prev = u_cur
+
+    # Write [6*nedge (t_e, u_e) | nhinge unwrapped dpsi_h]; read-before-write keeps in-place safe.
+    anc_prev = bool(False)
+    t_prev = z3
+    u_prev = z3
+    for e in range(nedge):
+      _ok_e, anc_cur, _tp_e, t_cur, u_cur, _v_cur, _l_e = support.rod_chain_edge_director(
+        flex_vertadr,
+        flex_plasticadr,
+        flex_vertbodyid,
+        flex_rod_root_clamped,
+        flex_rod_tail_clamped,
+        flex_rod_edgeadr,
+        flex_rod_edgenum,
+        flex_rodedge_vert,
+        plastic_in,
+        xquat_in,
+        flexvert_xpos_in,
+        flex_rod_frame0_loc_in,
+        flex_rod_frame0_ref_in,
+        flex_rod_tail_loc_in,
+        worldid,
+        flexid,
+        e,
+        t_prev,
+        u_prev,
+      )
+      if e > 0:
+        h = e - 1
+        _ok_pth, u_trans, v_trans = support.rod_parallel_transport(t_prev, t_cur, u_prev)
+        dpsi_h = wp.atan2(wp.dot(u_cur, v_trans), wp.dot(u_cur, u_trans))
+        if anc_prev and anc_cur:
+          psi_prev = plastic_in[worldid, padr + 6 * nedge + h]
+          jump = dpsi_h - psi_prev
+          dpsi_h -= 2.0 * wp.pi * wp.round(jump / (2.0 * wp.pi))
+        plastic_out[worldid, padr + 6 * nedge + h] = dpsi_h
+      plastic_out[worldid, padr + 6 * e + 0] = t_cur[0]
+      plastic_out[worldid, padr + 6 * e + 1] = t_cur[1]
+      plastic_out[worldid, padr + 6 * e + 2] = t_cur[2]
+      plastic_out[worldid, padr + 6 * e + 3] = u_cur[0]
+      plastic_out[worldid, padr + 6 * e + 4] = u_cur[1]
+      plastic_out[worldid, padr + 6 * e + 5] = u_cur[2]
+      anc_prev = anc_cur
+      t_prev = t_cur
+      u_prev = u_cur
+
+  return kernel
+
+
+@cache_kernel
+def _next_plastic_joint(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    ntree: int,
+    jnt_type: wp.array[int],
+    jnt_qposadr: wp.array[int],
+    jnt_bodyid: wp.array[int],
+    jnt_plasticadr: wp.array[int],
+    jnt_springyield: wp.array2d[float],
+    # Data in:
+    ntree_awake_in: wp.array[int],
+    qpos_in: wp.array2d[float],
+    plastic_in: wp.array2d[float],
+    body_awake_in: wp.array2d[int],
+    # Data out:
+    plastic_out: wp.array2d[float],
+  ):
+    worldid, jntid = wp.tid()
+    padr = jnt_plasticadr[jntid]
+    if padr < 0:
+      return
+    if wp.static(enable_sleep):
+      if ntree_awake_in[worldid] < ntree and body_awake_in[worldid, jnt_bodyid[jntid]] != SleepState.AWAKE:
+        return
+    yield_ = wp.max(0.0, jnt_springyield[worldid % jnt_springyield.shape[0], jntid])
+
+    qadr = jnt_qposadr[jntid]
+    jnttype = jnt_type[jntid]
+
+    if jnttype == JointType.SLIDE or jnttype == JointType.HINGE:
+      q = qpos_in[worldid, qadr]
+      x = q - plastic_in[worldid, padr]
+      if x > yield_:
+        plastic_out[worldid, padr] = q - yield_
+      elif x < -yield_:
+        plastic_out[worldid, padr] = q + yield_
+    elif jnttype == JointType.BALL:
+      quat = wp.normalize(
+        wp.quat(
+          qpos_in[worldid, qadr + 0],
+          qpos_in[worldid, qadr + 1],
+          qpos_in[worldid, qadr + 2],
+          qpos_in[worldid, qadr + 3],
+        )
+      )
+      qspring = wp.quat(
+        plastic_in[worldid, padr + 0],
+        plastic_in[worldid, padr + 1],
+        plastic_in[worldid, padr + 2],
+        plastic_in[worldid, padr + 3],
+      )
+      dif_rot = math.quat_sub(quat, qspring)
+      r_rot = wp.length(dif_rot)
+      if r_rot > yield_:
+        qspring_new = math.quat_integrate(qspring, dif_rot, math.safe_div(r_rot - yield_, r_rot))
+        plastic_out[worldid, padr + 0] = qspring_new[0]
+        plastic_out[worldid, padr + 1] = qspring_new[1]
+        plastic_out[worldid, padr + 2] = qspring_new[2]
+        plastic_out[worldid, padr + 3] = qspring_new[3]
+
+  return kernel
+
+
+@cache_kernel
+def _next_plastic_tendon(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    ntree: int,
+    opt_timestep: wp.array[float],
+    jnt_qposadr: wp.array[int],
+    tendon_adr: wp.array[int],
+    tendon_num: wp.array[int],
+    tendon_plasticadr: wp.array[int],
+    tendon_treenum: wp.array[int],
+    tendon_treeid: wp.array[wp.vec2i],
+    ten_J_rownnz: wp.array[int],
+    ten_J_rowadr: wp.array[int],
+    ten_J_colind: wp.array[int],
+    tendon_springyield: wp.array2d[float],
+    wrap_type: wp.array[int],
+    wrap_objid: wp.array[int],
+    wrap_prm: wp.array[float],
+    # Data in:
+    ntree_awake_in: wp.array[int],
+    qpos_in: wp.array2d[float],
+    qvel_in: wp.array2d[float],
+    plastic_in: wp.array2d[float],
+    ten_J_in: wp.array2d[float],
+    ten_length_in: wp.array2d[float],
+    tree_awake_in: wp.array2d[int],
+    # Data out:
+    plastic_out: wp.array2d[float],
+  ):
+    worldid, tenid = wp.tid()
+    padr = tendon_plasticadr[tenid]
+    if padr < 0:
+      return
+    if wp.static(enable_sleep):
+      if ntree_awake_in[worldid] < ntree:
+        treenum = tendon_treenum[tenid]
+        if treenum == 0:
+          return
+        if treenum <= 2:
+          tid = tendon_treeid[tenid]
+          if treenum == 1:
+            if tree_awake_in[worldid, tid[0]] == 0:
+              return
+          elif tree_awake_in[worldid, tid[0]] == 0 and tree_awake_in[worldid, tid[1]] == 0:
+            return
+    yield_ = wp.max(0.0, tendon_springyield[worldid % tendon_springyield.shape[0], tenid])
+
+    adr = tendon_adr[tenid]
+    L_next = float(0.0)
+    if wrap_type[adr] == WrapType.JOINT:
+      num = tendon_num[tenid]
+      for j in range(num):
+        L_next += wrap_prm[adr + j] * qpos_in[worldid, jnt_qposadr[wrap_objid[adr + j]]]
+    else:
+      rownnz = ten_J_rownnz[tenid]
+      rowadr = ten_J_rowadr[tenid]
+      timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+      dL_dt = float(0.0)
+      for k in range(rownnz):
+        sparseid = rowadr + k
+        dL_dt += ten_J_in[worldid, sparseid] * qvel_in[worldid, ten_J_colind[sparseid]]
+      L_next = ten_length_in[worldid, tenid] + timestep * dL_dt
+
+    lower = plastic_in[worldid, padr + 0]
+    upper = plastic_in[worldid, padr + 1]
+    x = wp.where(L_next > upper, L_next - upper, wp.where(L_next < lower, L_next - lower, 0.0))
+    if x > yield_:
+      delta = x - yield_
+      if lower != 0.0 or upper <= 0.0:
+        plastic_out[worldid, padr + 0] = lower + delta
+      plastic_out[worldid, padr + 1] = upper + delta
+    elif x < -yield_:
+      delta = x + yield_
       plastic_out[worldid, padr + 0] = lower + delta
-    plastic_out[worldid, padr + 1] = upper + delta
-  elif x < -yield_:
-    delta = x + yield_
-    plastic_out[worldid, padr + 0] = lower + delta
-    plastic_out[worldid, padr + 1] = upper + delta
+      plastic_out[worldid, padr + 1] = upper + delta
+
+  return kernel
 
 
 @wp.func
@@ -759,552 +821,547 @@ def _gram_det_3d(q: vec6) -> Tuple[float, vec6]:
   return a * c0 + d * c3 + e * c4, grad
 
 
-@wp.kernel
-def _next_plastic_flex_stretch(
-  # Model:
-  opt_timestep: wp.array[float],
-  opt_enableflags: int,
-  body_rootid: wp.array[int],
-  body_weldid: wp.array[int],
-  body_dofnum: wp.array[int],
-  body_dofadr: wp.array[int],
-  body_simple: wp.array[int],
-  dof_parentid: wp.array[int],
-  flex_dim: wp.array[int],
-  flex_interp: wp.array[int],
-  flex_vertadr: wp.array[int],
-  flex_edgeadr: wp.array[int],
-  flex_elemadr: wp.array[int],
-  flex_elemdataadr: wp.array[int],
-  flex_stiffnessadr: wp.array[int],
-  flex_elemedgeadr: wp.array[int],
-  flex_plasticadr: wp.array[int],
-  flex_plasticmode: wp.array[int],
-  flex_vertbodyid: wp.array[int],
-  flex_elem: wp.array[int],
-  flex_elemedge: wp.array[int],
-  flexedge_length0: wp.array[float],
-  flex_stiffness: wp.array[float],
-  flex_yield: wp.array[wp.vec2],
-  flex_elemflexid: wp.array[int],
-  # Data in:
-  qvel_in: wp.array2d[float],
-  plastic_in: wp.array2d[float],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
-  flexvert_xpos_in: wp.array2d[wp.vec3],
-  body_awake_in: wp.array2d[int],
-  # Data out:
-  plastic_out: wp.array2d[float],
-  flex_hessian_valid_out: wp.array2d[bool],
-):
-  worldid, elemid = wp.tid()
-  f = flex_elemflexid[elemid]
-  padr_base = flex_plasticadr[f]
-  if padr_base < 0:
-    return
-  yield_ = wp.max(0.0, flex_yield[f][0])
-  dim = flex_dim[f]
-  if (dim != 2 and dim != 3) or flex_interp[f] != 0 or (flex_plasticmode[f] & 2) == 0:
-    return
-  stiffness_adr_base = flex_stiffnessadr[f]
-  if stiffness_adr_base < 0 or flex_stiffness[stiffness_adr_base] == 0.0:
-    return
+@cache_kernel
+def _next_plastic_flex_stretch(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    body_rootid: wp.array[int],
+    body_weldid: wp.array[int],
+    body_dofnum: wp.array[int],
+    body_dofadr: wp.array[int],
+    body_simple: wp.array[int],
+    dof_parentid: wp.array[int],
+    flex_dim: wp.array[int],
+    flex_interp: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_edgeadr: wp.array[int],
+    flex_elemadr: wp.array[int],
+    flex_elemdataadr: wp.array[int],
+    flex_stiffnessadr: wp.array[int],
+    flex_elemedgeadr: wp.array[int],
+    flex_plasticadr: wp.array[int],
+    flex_plasticmode: wp.array[int],
+    flex_vertbodyid: wp.array[int],
+    flex_elem: wp.array[int],
+    flex_elemedge: wp.array[int],
+    flexedge_length0: wp.array[float],
+    flex_stiffness: wp.array[float],
+    flex_yield: wp.array[wp.vec2],
+    flex_elemflexid: wp.array[int],
+    # Data in:
+    qvel_in: wp.array2d[float],
+    plastic_in: wp.array2d[float],
+    subtree_com_in: wp.array2d[wp.vec3],
+    cdof_in: wp.array2d[wp.spatial_vector],
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    # In:
+    flex_awake_in: wp.array2d[bool],
+    # Data out:
+    plastic_out: wp.array2d[float],
+    flex_hessian_valid_out: wp.array2d[bool],
+  ):
+    worldid, elemid = wp.tid()
+    f = flex_elemflexid[elemid]
+    padr_base = flex_plasticadr[f]
+    if padr_base < 0:
+      return
+    dim = flex_dim[f]
+    if (dim != 2 and dim != 3) or flex_interp[f] != 0 or (flex_plasticmode[f] & 2) == 0:
+      return
+    stiffness_adr_base = flex_stiffnessadr[f]
+    if stiffness_adr_base < 0:
+      return
+    if wp.static(enable_sleep):
+      if not flex_awake_in[worldid, f]:
+        return
 
-  local_elemid = elemid - flex_elemadr[f]
-  nedge = 3 if dim == 2 else 6
-  stride = 21 if dim == 2 else 24
-  padr = padr_base + local_elemid * nedge
-  vbase = flex_vertadr[f]
-  ebase = flex_edgeadr[f]
-  elem_data_adr = flex_elemdataadr[f] + local_elemid * (dim + 1)
-  ee_base = flex_elemedgeadr[f] + local_elemid * nedge
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+    yield_ = wp.max(0.0, flex_yield[f][0])
+    local_elemid = elemid - flex_elemadr[f]
+    nedge = 3 if dim == 2 else 6
+    stride = 21 if dim == 2 else 24
+    padr = padr_base + local_elemid * nedge
+    vbase = flex_vertadr[f]
+    ebase = flex_edgeadr[f]
+    elem_data_adr = flex_elemdataadr[f] + local_elemid * (dim + 1)
+    ee_base = flex_elemedgeadr[f] + local_elemid * nedge
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
-  if opt_enableflags & EnableBit.SLEEP:
-    any_awake = bool(False)
+    xpos_next = passive.mat43()
     for v in range(dim + 1):
-      gvert = vbase + flex_elem[elem_data_adr + v]
-      bid = flex_vertbodyid[gvert]
-      if bid >= 0 and body_awake_in[worldid, bid] == SleepState.AWAKE:
-        any_awake = bool(True)
-    if not any_awake:
+      vi = flex_elem[elem_data_adr + v]
+      gvert = vbase + vi
+      vel = passive.flex_gather_vert(
+        body_rootid,
+        body_weldid,
+        body_dofnum,
+        body_dofadr,
+        body_simple,
+        dof_parentid,
+        flex_vertbodyid,
+        subtree_com_in,
+        cdof_in,
+        flexvert_xpos_in,
+        qvel_in,
+        worldid,
+        gvert,
+      )
+      xpos_next[v] = flexvert_xpos_in[worldid, gvert] + timestep * vel
+
+    edges = passive.stretch_edge_endpoints(dim)
+    g = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    sp = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    s_el = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    for e in range(nedge):
+      dx = xpos_next[edges[e, 0]] - xpos_next[edges[e, 1]]
+      L_sq = wp.dot(dx, dx)
+      L0 = flexedge_length0[ebase + flex_elemedge[ee_base + e]]
+      g_e = L0 * L0
+      sp_e = plastic_in[worldid, padr + e]
+      g[e] = g_e
+      sp[e] = sp_e
+      s_el[e] = L_sq - g_e - sp_e
+
+    stiff_adr = stiffness_adr_base + stride * local_elemid
+    metric, f_vec = passive.stretch_elasticity(flex_stiffness, stiff_adr, s_el, nedge)
+    h_vec = passive.stretch_tension(metric, g, nedge)
+
+    g_h = wp.dot(g, h_vec)
+    if wp.abs(g_h) <= MJ_MINVAL:
       return
+    alpha = wp.dot(g, f_vec) / g_h
 
-  xpos_next = passive.mat43()
-  for v in range(dim + 1):
-    vi = flex_elem[elem_data_adr + v]
-    gvert = vbase + vi
-    vel = passive.flex_gather_vert(
-      body_rootid,
-      body_weldid,
-      body_dofnum,
-      body_dofadr,
-      body_simple,
-      dof_parentid,
-      flex_vertbodyid,
-      subtree_com_in,
-      cdof_in,
-      flexvert_xpos_in,
-      qvel_in,
-      worldid,
-      gvert,
-    )
-    xpos_next[v] = flexvert_xpos_in[worldid, gvert] + timestep * vel
+    s_dev = s_el - alpha * g
+    f_dev = f_vec - alpha * h_vec
 
-  edges = passive.stretch_edge_endpoints(dim)
-  g = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-  s_el = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-  for e in range(nedge):
-    dx = xpos_next[edges[e, 0]] - xpos_next[edges[e, 1]]
-    L_sq = wp.dot(dx, dx)
-    L0 = flexedge_length0[ebase + flex_elemedge[ee_base + e]]
-    g_e = L0 * L0
-    g[e] = g_e
-    s_el[e] = L_sq - g_e - plastic_in[worldid, padr + e]
-
-  stiff_adr = stiffness_adr_base + stride * local_elemid
-  metric, f_vec = passive.stretch_elasticity(flex_stiffness, stiff_adr, s_el, nedge)
-  h_vec = passive.stretch_tension(metric, g, nedge)
-
-  g_h = wp.dot(g, h_vec)
-  if wp.abs(g_h) <= MJ_MINVAL:
-    return
-  alpha = wp.dot(g, f_vec) / g_h
-
-  s_dev = s_el - alpha * g
-  f_dev = f_vec - alpha * h_vec
-
-  trPK = float(0.0)
-  for a in range(nedge):
-    trPK += g[a] * g[a] * metric[a, a]
-  if dim == 2:
-    trPK += _face_trpk(g, metric, 0, 1, 2)
-  else:
-    trPK += _face_trpk(g, metric, 0, 1, 2)
-    trPK += _face_trpk(g, metric, 0, 4, 5)
-    trPK += _face_trpk(g, metric, 1, 3, 5)
-    trPK += _face_trpk(g, metric, 2, 3, 4)
-    s0 = g[0] + g[3]
-    s1 = g[1] + g[4]
-    s2 = g[2] + g[5]
-    d03 = s1 - s2
-    d14 = s2 - s0
-    d25 = s0 - s1
-    trPK += 0.5 * (d03 * d03 * metric[0, 3] + d14 * d14 * metric[1, 4] + d25 * d25 * metric[2, 5])
-
-  mu_t = (trPK - g_h / float(dim)) / float(nedge - 1)
-  if mu_t <= MJ_MINVAL:
-    return
-
-  dev_norm_sq = wp.max(0.0, wp.dot(s_dev, f_dev) / (4.0 * mu_t))
-  alpha_pos = wp.max(0.0, alpha) if dim == 2 else 0.0
-  eps_eq = wp.sqrt((2.0 * dev_norm_sq) / 3.0 + alpha_pos * alpha_pos)
-  if eps_eq > yield_:
-    scale = 1.0 - yield_ / eps_eq
+    trPK = float(0.0)
+    for a in range(nedge):
+      trPK += g[a] * g[a] * metric[a, a]
     if dim == 2:
-      for e in range(3):
-        s_p = plastic_in[worldid, padr + e] + scale * (s_dev[e] + alpha_pos * g[e])
-        plastic_out[worldid, padr + e] = wp.max(s_p, -0.99 * g[e])
+      trPK += _face_trpk(g, metric, 0, 1, 2)
     else:
-      sp_dev = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-      for e in range(6):
-        sp_dev[e] = plastic_in[worldid, padr + e] + scale * s_dev[e]
-      beta = wp.dot(h_vec, sp_dev) / g_h
-      sp_dev = sp_dev - beta * g
+      trPK += _face_trpk(g, metric, 0, 1, 2)
+      trPK += _face_trpk(g, metric, 0, 4, 5)
+      trPK += _face_trpk(g, metric, 1, 3, 5)
+      trPK += _face_trpk(g, metric, 2, 3, 4)
+      s0 = g[0] + g[3]
+      s1 = g[1] + g[4]
+      s2 = g[2] + g[5]
+      d03 = s1 - s2
+      d14 = s2 - s0
+      d25 = s0 - s1
+      trPK += 0.5 * (d03 * d03 * metric[0, 3] + d14 * d14 * metric[1, 4] + d25 * d25 * metric[2, 5])
 
-      c3, _ = _gram_det_3d(g)
-      c0, grad = _gram_det_3d(sp_dev)
-      c1 = wp.dot(grad, g)
-      u = float(1.0)
-      if c3 > MJ_MINVAL:
-        m2 = wp.max(0.0, -c1 / (3.0 * c3))
-        if m2 > MJ_MINVAL:
-          m_val = wp.sqrt(m2)
-          R = (c3 - c0) / (2.0 * c3 * m_val * m2)
-          if R >= 1.0:
-            w_cbrt = wp.pow(R + wp.sqrt(wp.max(0.0, R * R - 1.0)), 1.0 / 3.0)
-            u = m_val * (w_cbrt + 1.0 / w_cbrt)
-          else:
-            u = 2.0 * m_val * wp.cos(wp.acos(wp.max(-1.0, R)) / 3.0)
-      for e in range(6):
-        plastic_out[worldid, padr + e] = wp.max(sp_dev[e] + (u - 1.0) * g[e], -0.99 * g[e])
-    flex_hessian_valid_out[worldid, f] = False
-
-
-@wp.kernel
-def _next_plastic_flex_bend(
-  # Model:
-  opt_timestep: wp.array[float],
-  opt_enableflags: int,
-  body_rootid: wp.array[int],
-  body_weldid: wp.array[int],
-  body_dofnum: wp.array[int],
-  body_dofadr: wp.array[int],
-  body_simple: wp.array[int],
-  dof_parentid: wp.array[int],
-  flex_dim: wp.array[int],
-  flex_interp: wp.array[int],
-  flex_vertadr: wp.array[int],
-  flex_edgeadr: wp.array[int],
-  flex_elemnum: wp.array[int],
-  flex_stiffnessadr: wp.array[int],
-  flex_bendingadr: wp.array[int],
-  flex_plasticadr: wp.array[int],
-  flex_plasticmode: wp.array[int],
-  flex_vertbodyid: wp.array[int],
-  flex_edge: wp.array[wp.vec2i],
-  flex_edgeflap: wp.array[wp.vec2i],
-  flexedge_length0: wp.array[float],
-  flex_stiffness: wp.array[float],
-  flex_bending: wp.array[float],
-  flex_yield: wp.array[wp.vec2],
-  flex_edgeflexid: wp.array[int],
-  # Data in:
-  qvel_in: wp.array2d[float],
-  plastic_in: wp.array2d[float],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
-  flexvert_xpos_in: wp.array2d[wp.vec3],
-  body_awake_in: wp.array2d[int],
-  # Data out:
-  plastic_out: wp.array2d[float],
-):
-  worldid, edgeid = wp.tid()
-  f = flex_edgeflexid[edgeid]
-  padr_base = flex_plasticadr[f]
-  if padr_base < 0:
-    return
-  if flex_dim[f] != 2 or flex_interp[f] != 0 or (flex_plasticmode[f] & 1) == 0:
-    return
-  bending_adr_base = flex_bendingadr[f]
-  stiffness_adr_base = flex_stiffnessadr[f]
-  if bending_adr_base < 0 or stiffness_adr_base < 0:
-    return
-  thickness = flex_stiffness[stiffness_adr_base + 6]
-  if thickness <= MJ_MINVAL:
-    return
-  flap = flex_edgeflap[edgeid]
-  if flap[1] == -1:
-    return
-
-  eid = edgeid - flex_edgeadr[f]
-  bbase = bending_adr_base + 17 * eid
-  b23 = flex_bending[bbase + 11]
-  if b23 <= MJ_MINVAL:
-    return
-
-  edge = flex_edge[edgeid]
-  vbase = flex_vertadr[f]
-  v = wp.vec4i(vbase + edge[0], vbase + edge[1], vbase + flap[0], vbase + flap[1])
-
-  if opt_enableflags & EnableBit.SLEEP:
-    any_awake = bool(False)
-    for j in range(4):
-      bid = flex_vertbodyid[v[j]]
-      if bid >= 0 and body_awake_in[worldid, bid] == SleepState.AWAKE:
-        any_awake = bool(True)
-    if not any_awake:
+    mu_t = (trPK - g_h / float(dim)) / float(nedge - 1)
+    if mu_t <= MJ_MINVAL:
       return
 
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-  vpos = passive.mat43()
-  for j in range(4):
-    vel = passive.flex_gather_vert(
-      body_rootid,
-      body_weldid,
-      body_dofnum,
-      body_dofadr,
-      body_simple,
-      dof_parentid,
-      flex_vertbodyid,
-      subtree_com_in,
-      cdof_in,
-      flexvert_xpos_in,
-      qvel_in,
-      worldid,
-      v[j],
-    )
-    vpos[j] = flexvert_xpos_in[worldid, v[j]] + timestep * vel
+    dev_norm_sq = wp.max(0.0, wp.dot(s_dev, f_dev) / (4.0 * mu_t))
+    alpha_pos = wp.max(0.0, alpha) if dim == 2 else 0.0
+    eps_eq = wp.sqrt((2.0 * dev_norm_sq) / 3.0 + alpha_pos * alpha_pos)
+    if eps_eq > yield_:
+      scale = 1.0 - math.safe_div(yield_, eps_eq)
+      if dim == 2:
+        for e in range(3):
+          s_p = sp[e] + scale * (s_dev[e] + alpha_pos * g[e])
+          plastic_out[worldid, padr + e] = wp.max(s_p, -0.99 * g[e])
+      else:
+        sp_dev = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        for e in range(6):
+          sp_dev[e] = sp[e] + scale * s_dev[e]
+        beta = wp.dot(h_vec, sp_dev) / g_h
+        sp_dev = sp_dev - beta * g
 
-  ed0 = vpos[1] - vpos[0]
-  ed1 = vpos[2] - vpos[0]
-  ed2 = vpos[3] - vpos[0]
-  frc2 = wp.cross(ed2, ed0)
-  frc3 = wp.cross(ed0, ed1)
+        c3, _ = _gram_det_3d(g)
+        c0, grad = _gram_det_3d(sp_dev)
+        c1 = wp.dot(grad, g)
+        u = float(1.0)
+        if c3 > MJ_MINVAL:
+          m2 = wp.max(0.0, -c1 / (3.0 * c3))
+          if m2 > MJ_MINVAL:
+            m_val = wp.sqrt(m2)
+            # Cancel c3 and factor R out of sqrt for scale-invariant float32 stability
+            # (diverges from MuJoCo C float64)
+            denom = 2.0 * m_val * m2
+            if denom > MJ_MINVAL:
+              R = (1.0 - c0 / c3) / denom
+              if R >= 1.0:
+                inv_R = 1.0 / R
+                w_cbrt = wp.pow(R * (1.0 + wp.sqrt(wp.max(0.0, 1.0 - inv_R * inv_R))), 1.0 / 3.0)
+                u = m_val * (w_cbrt + 1.0 / w_cbrt)
+              else:
+                u = 2.0 * m_val * wp.cos(wp.acos(wp.max(-1.0, R)) / 3.0)
+        for e in range(6):
+          plastic_out[worldid, padr + e] = wp.max(sp_dev[e] + (u - 1.0) * g[e], -0.99 * g[e])
+      flex_hessian_valid_out[worldid, f] = False
 
-  two_a1 = wp.length(frc3)
-  two_a2 = wp.length(frc2)
-  l0 = flexedge_length0[edgeid]
-  denom = two_a1 * two_a2
-  if denom <= MJ_MINVAL or l0 <= MJ_MINVAL:
-    return
-
-  yield_ = wp.max(0.0, flex_yield[f][1])
-  kappa_yield = 2.0 * yield_ / thickness
-  omega = wp.dot(ed2, frc3)
-  theta = wp.atan2(omega * l0, wp.dot(frc2, frc3))
-  theta_yield = 0.5 * (two_a1 + two_a2) / l0 * kappa_yield
-
-  stretch_pnum = 3 * flex_elemnum[f] if (flex_plasticmode[f] & 2) != 0 else 0
-  padr = padr_base + stretch_pnum + eid
-  b16_0 = flex_bending[bbase + 16]
-  b_p = plastic_in[worldid, padr]
-  theta_p = wp.atan2(-(b16_0 + b_p) * l0, b23)
-  theta_el = theta - theta_p
-  if theta_el > theta_yield or theta_el < -theta_yield:
-    theta_p = theta - theta_yield if theta_el > theta_yield else theta + theta_yield
-    theta_p = wp.clamp(theta_p, -1.3, 1.3)
-    plastic_out[worldid, padr] = -(b23 / l0) * wp.tan(theta_p) - b16_0
+  return kernel
 
 
-@wp.kernel
-def _next_plastic_flex_interp(
-  # Model:
-  opt_timestep: wp.array[float],
-  opt_enableflags: int,
-  body_rootid: wp.array[int],
-  body_weldid: wp.array[int],
-  body_dofnum: wp.array[int],
-  body_dofadr: wp.array[int],
-  body_simple: wp.array[int],
-  dof_parentid: wp.array[int],
-  flex_interp: wp.array[int],
-  flex_cellnum: wp.array[wp.vec3i],
-  flex_nodeadr: wp.array[int],
-  flex_stiffnessadr: wp.array[int],
-  flex_plasticadr: wp.array[int],
-  flex_nodebodyid: wp.array[int],
-  flex_node0: wp.array[wp.vec3],
-  flex_stiffness: wp.array[float],
-  flex_yield: wp.array[wp.vec2],
-  flex_faceadr: wp.array[int],
-  flex_cell_map: wp.array[wp.vec4i],
-  flex_face: wp.array2d[int],
-  # Data in:
-  qvel_in: wp.array2d[float],
-  plastic_in: wp.array2d[float],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
-  body_awake_in: wp.array2d[int],
-  flexnode_xpos_in: wp.array2d[wp.vec3],
-  # Data out:
-  plastic_out: wp.array2d[float],
-):
-  worldid, cellid = wp.tid()
-  mapping = flex_cell_map[cellid]
-  f = mapping[0]
-  ci = mapping[1]
-  cj = mapping[2]
-  ck = mapping[3]
+@cache_kernel
+def _next_plastic_flex_bend(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    body_rootid: wp.array[int],
+    body_weldid: wp.array[int],
+    body_dofnum: wp.array[int],
+    body_dofadr: wp.array[int],
+    body_simple: wp.array[int],
+    dof_parentid: wp.array[int],
+    flex_dim: wp.array[int],
+    flex_interp: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_edgeadr: wp.array[int],
+    flex_elemnum: wp.array[int],
+    flex_stiffnessadr: wp.array[int],
+    flex_bendingadr: wp.array[int],
+    flex_plasticadr: wp.array[int],
+    flex_plasticmode: wp.array[int],
+    flex_vertbodyid: wp.array[int],
+    flex_edge: wp.array[wp.vec2i],
+    flex_edgeflap: wp.array[wp.vec2i],
+    flexedge_length0: wp.array[float],
+    flex_stiffness: wp.array[float],
+    flex_bending: wp.array[float],
+    flex_yield: wp.array[wp.vec2],
+    flex_edgeflexid: wp.array[int],
+    # Data in:
+    qvel_in: wp.array2d[float],
+    plastic_in: wp.array2d[float],
+    subtree_com_in: wp.array2d[wp.vec3],
+    cdof_in: wp.array2d[wp.spatial_vector],
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    # In:
+    flex_awake_in: wp.array2d[bool],
+    # Data out:
+    plastic_out: wp.array2d[float],
+  ):
+    worldid, edgeid = wp.tid()
+    f = flex_edgeflexid[edgeid]
+    padr_base = flex_plasticadr[f]
+    if padr_base < 0:
+      return
+    mode = flex_plasticmode[f]
+    if flex_dim[f] != 2 or flex_interp[f] != 0 or (mode & 1) == 0:
+      return
+    bending_adr_base = flex_bendingadr[f]
+    stiffness_adr_base = flex_stiffnessadr[f]
+    if bending_adr_base < 0 or stiffness_adr_base < 0:
+      return
+    if wp.static(enable_sleep):
+      if not flex_awake_in[worldid, f]:
+        return
+    thickness = flex_stiffness[stiffness_adr_base + 6]
+    if thickness <= MJ_MINVAL:
+      return
+    flap = flex_edgeflap[edgeid]
+    if flap[1] == -1:
+      return
 
-  padr_base = flex_plasticadr[f]
-  if padr_base < 0:
-    return
-  order = flex_interp[f]
-  if order == 0:
-    return
-  shell_mode = order < 0
-  order_abs = -order if shell_mode else order
-  npc = (order_abs + 1) * (order_abs + 1) if shell_mode else (order_abs + 1) * (order_abs + 1) * (order_abs + 1)
-  ndof_cell = 3 * npc
+    eid = edgeid - flex_edgeadr[f]
+    bbase = bending_adr_base + 17 * eid
+    b23 = flex_bending[bbase + 11]
+    if b23 <= MJ_MINVAL:
+      return
 
-  cellnum = flex_cellnum[f]
-  cx = cellnum[0]
-  cy = cellnum[1]
-  cz = cellnum[2]
-  nstart = flex_nodeadr[f]
-  ny_g = cy * order_abs + 1
-  nz_g = cz * order_abs + 1
+    edge = flex_edge[edgeid]
+    vbase = flex_vertadr[f]
+    v = wp.vec4i(vbase + edge[0], vbase + edge[1], vbase + flap[0], vbase + flap[1])
 
-  stiffness_adr_base = flex_stiffnessadr[f]
-  if stiffness_adr_base < 0:
-    return
-  cell_idx = ci if shell_mode else ci * cy * cz + cj * cz + ck
-  k_base = stiffness_adr_base + cell_idx * ndof_cell * ndof_cell
-  if not shell_mode and flex_stiffness[k_base] == 0.0:
-    return
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+    vpos = passive.mat43()
+    for j in range(4):
+      vel = passive.flex_gather_vert(
+        body_rootid,
+        body_weldid,
+        body_dofnum,
+        body_dofadr,
+        body_simple,
+        dof_parentid,
+        flex_vertbodyid,
+        subtree_com_in,
+        cdof_in,
+        flexvert_xpos_in,
+        qvel_in,
+        worldid,
+        v[j],
+      )
+      vpos[j] = flexvert_xpos_in[worldid, v[j]] + timestep * vel
 
-  op1 = order_abs + 1
-  if opt_enableflags & EnableBit.SLEEP:
-    any_awake = bool(False)
+    ed0 = vpos[1] - vpos[0]
+    ed1 = vpos[2] - vpos[0]
+    ed2 = vpos[3] - vpos[0]
+    frc2 = wp.cross(ed2, ed0)
+    frc3 = wp.cross(ed0, ed1)
+
+    two_a1 = wp.length(frc3)
+    two_a2 = wp.length(frc2)
+    l0 = flexedge_length0[edgeid]
+    denom = two_a1 * two_a2
+    if denom <= MJ_MINVAL or l0 <= MJ_MINVAL:
+      return
+
+    yield_ = wp.max(0.0, flex_yield[f][1])
+    kappa_yield = 2.0 * yield_ / thickness
+    omega = wp.dot(ed2, frc3)
+    theta = wp.atan2(omega * l0, wp.dot(frc2, frc3))
+    theta_yield = 0.5 * (two_a1 + two_a2) / l0 * kappa_yield
+
+    stretch_pnum = 3 * flex_elemnum[f] if (mode & 2) != 0 else 0
+    padr = padr_base + stretch_pnum + eid
+    b16_0 = flex_bending[bbase + 16]
+    b_p = plastic_in[worldid, padr]
+    theta_p = wp.atan2(-(b16_0 + b_p) * l0, b23)
+    theta_el = theta - theta_p
+    if theta_el > theta_yield or theta_el < -theta_yield:
+      theta_p = theta - theta_yield if theta_el > theta_yield else theta + theta_yield
+      theta_p = wp.clamp(theta_p, -1.3, 1.3)
+      plastic_out[worldid, padr] = -(b23 / l0) * wp.tan(theta_p) - b16_0
+
+  return kernel
+
+
+@cache_kernel
+def _next_plastic_flex_interp(enable_sleep: bool = False):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    body_rootid: wp.array[int],
+    body_weldid: wp.array[int],
+    body_dofnum: wp.array[int],
+    body_dofadr: wp.array[int],
+    body_simple: wp.array[int],
+    dof_parentid: wp.array[int],
+    flex_interp: wp.array[int],
+    flex_cellnum: wp.array[wp.vec3i],
+    flex_nodeadr: wp.array[int],
+    flex_stiffnessadr: wp.array[int],
+    flex_plasticadr: wp.array[int],
+    flex_nodebodyid: wp.array[int],
+    flex_node0: wp.array[wp.vec3],
+    flex_stiffness: wp.array[float],
+    flex_yield: wp.array[wp.vec2],
+    flex_faceadr: wp.array[int],
+    flex_cell_map: wp.array[wp.vec4i],
+    flex_face: wp.array2d[int],
+    # Data in:
+    qvel_in: wp.array2d[float],
+    plastic_in: wp.array2d[float],
+    subtree_com_in: wp.array2d[wp.vec3],
+    cdof_in: wp.array2d[wp.spatial_vector],
+    flexnode_xpos_in: wp.array2d[wp.vec3],
+    # In:
+    flex_awake_in: wp.array2d[bool],
+    # Data out:
+    plastic_out: wp.array2d[float],
+  ):
+    worldid, cellid = wp.tid()
+    mapping = flex_cell_map[cellid]
+    f = mapping[0]
+    ci = mapping[1]
+    cj = mapping[2]
+    ck = mapping[3]
+
+    padr_base = flex_plasticadr[f]
+    if padr_base < 0:
+      return
+    order = flex_interp[f]
+    if order == 0:
+      return
+    if wp.static(enable_sleep):
+      if not flex_awake_in[worldid, f]:
+        return
+    shell_mode = order < 0
+    order_abs = -order if shell_mode else order
+    npc = (order_abs + 1) * (order_abs + 1) if shell_mode else (order_abs + 1) * (order_abs + 1) * (order_abs + 1)
+    ndof_cell = 3 * npc
+
+    cellnum = flex_cellnum[f]
+    cx = cellnum[0]
+    cy = cellnum[1]
+    cz = cellnum[2]
+    nstart = flex_nodeadr[f]
+    ny_g = cy * order_abs + 1
+    nz_g = cz * order_abs + 1
+
+    stiffness_adr_base = flex_stiffnessadr[f]
+    if stiffness_adr_base < 0:
+      return
+    cell_idx = ci if shell_mode else ci * cy * cz + cj * cz + ck
+    k_base = stiffness_adr_base + cell_idx * ndof_cell * ndof_cell
+    if not shell_mode and flex_stiffness[k_base] == 0.0:
+      return
+
+    op1 = order_abs + 1
+    face_id = flex_faceadr[f] + ci if shell_mode else 0
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+    f0 = wp.vec3(0.0)
+    f1 = wp.vec3(0.0)
+    f2 = wp.vec3(0.0)
     for idx_j in range(npc):
       if shell_mode:
-        node_j = flex_face[flex_faceadr[f] + ci, idx_j]
+        node_j = flex_face[face_id, idx_j]
       else:
         li_j = idx_j // (op1 * op1)
         lj_j = (idx_j // op1) % op1
         lk_j = idx_j % op1
         gidx_j = (ci * order_abs + li_j) * ny_g * nz_g + (cj * order_abs + lj_j) * nz_g + (ck * order_abs + lk_j)
         node_j = nstart + gidx_j
-      bid = flex_nodebodyid[node_j]
-      if bid >= 0 and body_awake_in[worldid, bid] == SleepState.AWAKE:
-        any_awake = bool(True)
-    if not any_awake:
-      return
+      vel_j = passive.flex_gather_vert(
+        body_rootid,
+        body_weldid,
+        body_dofnum,
+        body_dofadr,
+        body_simple,
+        dof_parentid,
+        flex_nodebodyid,
+        subtree_com_in,
+        cdof_in,
+        flexnode_xpos_in,
+        qvel_in,
+        worldid,
+        node_j,
+      )
+      xpos_j = flexnode_xpos_in[worldid, node_j] + timestep * vel_j
+      if shell_mode:
+        l0 = idx_j // op1
+        l1 = idx_j % op1
+        dphi0 = float(l0 - 1) if order_abs == 2 else (-1.0 + 2.0 * float(l0))
+        dphi1 = float(l1 - 1) if order_abs == 2 else (-1.0 + 2.0 * float(l1))
+        phi0 = wp.where(l0 == 1, 1.0, 0.0) if order_abs == 2 else 0.5
+        phi1 = wp.where(l1 == 1, 1.0, 0.0) if order_abs == 2 else 0.5
+        f0 += xpos_j * (dphi0 * phi1)
+        f1 += xpos_j * (phi0 * dphi1)
+      else:
+        dphi_x = float(li_j - 1) if order_abs == 2 else (-1.0 + 2.0 * float(li_j))
+        dphi_y = float(lj_j - 1) if order_abs == 2 else (-1.0 + 2.0 * float(lj_j))
+        dphi_z = float(lk_j - 1) if order_abs == 2 else (-1.0 + 2.0 * float(lk_j))
+        phi_x = wp.where(li_j == 1, 1.0, 0.0) if order_abs == 2 else 0.5
+        phi_y = wp.where(lj_j == 1, 1.0, 0.0) if order_abs == 2 else 0.5
+        phi_z = wp.where(lk_j == 1, 1.0, 0.0) if order_abs == 2 else 0.5
+        f0 += xpos_j * (dphi_x * phi_y * phi_z)
+        f1 += xpos_j * (phi_x * dphi_y * phi_z)
+        f2 += xpos_j * (phi_x * phi_y * dphi_z)
 
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-  f0 = wp.vec3(0.0)
-  f1 = wp.vec3(0.0)
-  f2 = wp.vec3(0.0)
-  for idx_j in range(npc):
+    yield_ = wp.max(0.0, flex_yield[f][0])
     if shell_mode:
-      node_j = flex_face[flex_faceadr[f] + ci, idx_j]
+      normal_axis = 0 if ci < 2 * cy * cz else (1 if ci < 2 * (cy * cz + cx * cz) else 2)
+      axis0 = (normal_axis + 1) % 3
+      axis1 = (normal_axis + 2) % 3
+      node_0 = flex_face[face_id, 0]
+      node_last = flex_face[face_id, npc - 1]
+      dref = flex_node0[node_last] - flex_node0[node_0]
+      d0 = dref[axis0]
+      d1 = dref[axis1]
+      if d0 <= MJ_MINVAL or d1 <= MJ_MINVAL:
+        return
+      t1_phys = f0 / d0
+      t2_phys = f1 / d1
+      normal = wp.cross(t1_phys, t2_phys)
+      F = wp.mat33(0.0)
+      if normal_axis == 0:
+        F = wp.matrix_from_cols(normal, t1_phys, t2_phys)
+      elif normal_axis == 1:
+        F = wp.matrix_from_cols(t2_phys, normal, t1_phys)
+      else:
+        F = wp.matrix_from_cols(t1_phys, t2_phys, normal)
+      cell_quat = mat33_to_quat_polar(F)
+      cell_quat_inv = wp.quat(-cell_quat[0], -cell_quat[1], -cell_quat[2], cell_quat[3])
+      t1_rot = wp.quat_rotate(cell_quat_inv, t1_phys)
+      t2_rot = wp.quat_rotate(cell_quat_inv, t2_phys)
+      padr = padr_base + 3 * cell_idx
+      sp0 = plastic_in[worldid, padr + 0]
+      sp1 = plastic_in[worldid, padr + 1]
+      sp2 = plastic_in[worldid, padr + 2]
+      e0 = (t1_rot[axis0] - 1.0) - sp0
+      e1 = (t2_rot[axis1] - 1.0) - sp1
+      g01 = (t2_rot[axis0] + t1_rot[axis1]) - sp2
+      alpha = 0.5 * (e0 + e1)
+      alpha_pos = wp.max(0.0, alpha)
+      dev0 = 0.5 * (e0 - e1)
+      dev1 = -dev0
+      dev_norm_sq = 2.0 * dev0 * dev0 + 0.5 * g01 * g01
+      eps_eq = wp.sqrt((2.0 * dev_norm_sq) / 3.0 + alpha_pos * alpha_pos)
+      if eps_eq > yield_:
+        scale = 1.0 - math.safe_div(yield_, eps_eq)
+        sp0 += scale * (dev0 + alpha_pos)
+        sp1 += scale * (dev1 + alpha_pos)
+        sp2 += scale * g01
+        fnorm_sq = sp0 * sp0 + sp1 * sp1 + 0.5 * sp2 * sp2
+        if fnorm_sq > 0.1225:
+          clamp_scale = math.safe_div(0.35, wp.sqrt(fnorm_sq))
+          sp0 *= clamp_scale
+          sp1 *= clamp_scale
+          sp2 *= clamp_scale
+        plastic_out[worldid, padr + 0] = sp0
+        plastic_out[worldid, padr + 1] = sp1
+        plastic_out[worldid, padr + 2] = sp2
     else:
-      li_j = idx_j // (op1 * op1)
-      lj_j = (idx_j // op1) % op1
-      lk_j = idx_j % op1
-      gidx_j = (ci * order_abs + li_j) * ny_g * nz_g + (cj * order_abs + lj_j) * nz_g + (ck * order_abs + lk_j)
-      node_j = nstart + gidx_j
-    vel_j = passive.flex_gather_vert(
-      body_rootid,
-      body_weldid,
-      body_dofnum,
-      body_dofadr,
-      body_simple,
-      dof_parentid,
-      flex_nodebodyid,
-      subtree_com_in,
-      cdof_in,
-      flexnode_xpos_in,
-      qvel_in,
-      worldid,
-      node_j,
-    )
-    xpos_j = flexnode_xpos_in[worldid, node_j] + timestep * vel_j
-    if shell_mode:
-      l0 = idx_j // op1
-      l1 = idx_j % op1
-      dphi0 = float(l0 - 1) if order_abs == 2 else (-1.0 + 2.0 * float(l0))
-      dphi1 = float(l1 - 1) if order_abs == 2 else (-1.0 + 2.0 * float(l1))
-      phi0 = wp.where(l0 == 1, 1.0, 0.0) if order_abs == 2 else 0.5
-      phi1 = wp.where(l1 == 1, 1.0, 0.0) if order_abs == 2 else 0.5
-      f0 += xpos_j * (dphi0 * phi1)
-      f1 += xpos_j * (phi0 * dphi1)
-    else:
-      dphi_x = float(li_j - 1) if order_abs == 2 else (-1.0 + 2.0 * float(li_j))
-      dphi_y = float(lj_j - 1) if order_abs == 2 else (-1.0 + 2.0 * float(lj_j))
-      dphi_z = float(lk_j - 1) if order_abs == 2 else (-1.0 + 2.0 * float(lk_j))
-      phi_x = wp.where(li_j == 1, 1.0, 0.0) if order_abs == 2 else 0.5
-      phi_y = wp.where(lj_j == 1, 1.0, 0.0) if order_abs == 2 else 0.5
-      phi_z = wp.where(lk_j == 1, 1.0, 0.0) if order_abs == 2 else 0.5
-      f0 += xpos_j * (dphi_x * phi_y * phi_z)
-      f1 += xpos_j * (phi_x * dphi_y * phi_z)
-      f2 += xpos_j * (phi_x * phi_y * dphi_z)
+      node_0 = nstart + (ci * order_abs) * ny_g * nz_g + (cj * order_abs) * nz_g + (ck * order_abs)
+      node_last = nstart + ((ci + 1) * order_abs) * ny_g * nz_g + ((cj + 1) * order_abs) * nz_g + ((ck + 1) * order_abs)
+      dref = flex_node0[node_last] - flex_node0[node_0]
+      dx = dref[0]
+      dy = dref[1]
+      dz = dref[2]
+      if dx <= MJ_MINVAL or dy <= MJ_MINVAL or dz <= MJ_MINVAL:
+        return
+      f0_phys = f0 / dx
+      f1_phys = f1 / dy
+      f2_phys = f2 / dz
+      F = wp.matrix_from_cols(f0_phys, f1_phys, f2_phys)
+      cell_quat = mat33_to_quat_polar(F)
+      cell_quat_inv = wp.quat(-cell_quat[0], -cell_quat[1], -cell_quat[2], cell_quat[3])
+      f0_rot = wp.quat_rotate(cell_quat_inv, f0_phys)
+      f1_rot = wp.quat_rotate(cell_quat_inv, f1_phys)
+      f2_rot = wp.quat_rotate(cell_quat_inv, f2_phys)
+      padr = padr_base + 6 * cell_idx
+      sp0 = plastic_in[worldid, padr + 0]
+      sp1 = plastic_in[worldid, padr + 1]
+      sp2 = plastic_in[worldid, padr + 2]
+      sp3 = plastic_in[worldid, padr + 3]
+      sp4 = plastic_in[worldid, padr + 4]
+      sp5 = plastic_in[worldid, padr + 5]
+      e0 = (f0_rot[0] - 1.0) - sp0
+      e1 = (f1_rot[1] - 1.0) - sp1
+      e2 = (f2_rot[2] - 1.0) - sp2
+      g01 = (f1_rot[0] + f0_rot[1]) - sp3
+      g02 = (f2_rot[0] + f0_rot[2]) - sp4
+      g12 = (f2_rot[1] + f1_rot[2]) - sp5
+      mean = (e0 + e1 + e2) / 3.0
+      dev0 = e0 - mean
+      dev1 = e1 - mean
+      dev2 = e2 - mean
+      dev_norm_sq = dev0 * dev0 + dev1 * dev1 + dev2 * dev2 + 0.5 * (g01 * g01 + g02 * g02 + g12 * g12)
+      eps_eq = wp.sqrt((2.0 * dev_norm_sq) / 3.0)
+      if eps_eq > yield_:
+        scale = 1.0 - math.safe_div(yield_, eps_eq)
+        sp0 += scale * dev0
+        sp1 += scale * dev1
+        sp2 += scale * dev2
+        sp3 += scale * g01
+        sp4 += scale * g02
+        sp5 += scale * g12
+        fnorm_sq = sp0 * sp0 + sp1 * sp1 + sp2 * sp2 + 0.5 * (sp3 * sp3 + sp4 * sp4 + sp5 * sp5)
+        if fnorm_sq > 0.1225:
+          clamp_scale = math.safe_div(0.35, wp.sqrt(fnorm_sq))
+          sp0 *= clamp_scale
+          sp1 *= clamp_scale
+          sp2 *= clamp_scale
+          sp3 *= clamp_scale
+          sp4 *= clamp_scale
+          sp5 *= clamp_scale
+        plastic_out[worldid, padr + 0] = sp0
+        plastic_out[worldid, padr + 1] = sp1
+        plastic_out[worldid, padr + 2] = sp2
+        plastic_out[worldid, padr + 3] = sp3
+        plastic_out[worldid, padr + 4] = sp4
+        plastic_out[worldid, padr + 5] = sp5
 
-  yield_ = wp.max(0.0, flex_yield[f][0])
-  if shell_mode:
-    normal_axis = 0 if ci < 2 * cy * cz else (1 if ci < 2 * (cy * cz + cx * cz) else 2)
-    axis0 = (normal_axis + 1) % 3
-    axis1 = (normal_axis + 2) % 3
-    node_0 = flex_face[flex_faceadr[f] + ci, 0]
-    node_last = flex_face[flex_faceadr[f] + ci, npc - 1]
-    dref = flex_node0[node_last] - flex_node0[node_0]
-    d0 = dref[axis0]
-    d1 = dref[axis1]
-    if d0 <= MJ_MINVAL or d1 <= MJ_MINVAL:
-      return
-    t1_phys = f0 / d0
-    t2_phys = f1 / d1
-    normal = wp.cross(t1_phys, t2_phys)
-    F = wp.mat33(0.0)
-    if normal_axis == 0:
-      F = wp.mat33(normal[0], t1_phys[0], t2_phys[0], normal[1], t1_phys[1], t2_phys[1], normal[2], t1_phys[2], t2_phys[2])
-    elif normal_axis == 1:
-      F = wp.mat33(t2_phys[0], normal[0], t1_phys[0], t2_phys[1], normal[1], t1_phys[1], t2_phys[2], normal[2], t1_phys[2])
-    else:
-      F = wp.mat33(t1_phys[0], t2_phys[0], normal[0], t1_phys[1], t2_phys[1], normal[1], t1_phys[2], t2_phys[2], normal[2])
-    cell_quat = mat33_to_quat_polar(F)
-    cell_quat_inv = wp.quat(-cell_quat[0], -cell_quat[1], -cell_quat[2], cell_quat[3])
-    t1_rot = wp.quat_rotate(cell_quat_inv, f0)
-    t2_rot = wp.quat_rotate(cell_quat_inv, f1)
-    padr = padr_base + 3 * cell_idx
-    sp0 = plastic_in[worldid, padr + 0]
-    sp1 = plastic_in[worldid, padr + 1]
-    sp2 = plastic_in[worldid, padr + 2]
-    e0 = (t1_rot[axis0] / d0 - 1.0) - sp0
-    e1 = (t2_rot[axis1] / d1 - 1.0) - sp1
-    g01 = (t2_rot[axis0] / d1 + t1_rot[axis1] / d0) - sp2
-    alpha = 0.5 * (e0 + e1)
-    alpha_pos = wp.max(0.0, alpha)
-    dev0 = 0.5 * (e0 - e1)
-    dev1 = -dev0
-    dev_norm_sq = 2.0 * dev0 * dev0 + 0.5 * g01 * g01
-    eps_eq = wp.sqrt((2.0 * dev_norm_sq) / 3.0 + alpha_pos * alpha_pos)
-    if eps_eq > yield_:
-      scale = 1.0 - yield_ / eps_eq
-      sp0 += scale * (dev0 + alpha_pos)
-      sp1 += scale * (dev1 + alpha_pos)
-      sp2 += scale * g01
-      fnorm_sq = sp0 * sp0 + sp1 * sp1 + 0.5 * sp2 * sp2
-      if fnorm_sq > 0.1225:
-        clamp_scale = 0.35 / wp.sqrt(fnorm_sq)
-        sp0 *= clamp_scale
-        sp1 *= clamp_scale
-        sp2 *= clamp_scale
-      plastic_out[worldid, padr + 0] = sp0
-      plastic_out[worldid, padr + 1] = sp1
-      plastic_out[worldid, padr + 2] = sp2
-  else:
-    node_0 = nstart + (ci * order_abs) * ny_g * nz_g + (cj * order_abs) * nz_g + (ck * order_abs)
-    node_last = nstart + ((ci + 1) * order_abs) * ny_g * nz_g + ((cj + 1) * order_abs) * nz_g + ((ck + 1) * order_abs)
-    dref = flex_node0[node_last] - flex_node0[node_0]
-    dx = dref[0]
-    dy = dref[1]
-    dz = dref[2]
-    if dx <= MJ_MINVAL or dy <= MJ_MINVAL or dz <= MJ_MINVAL:
-      return
-    f0_phys = f0 / dx
-    f1_phys = f1 / dy
-    f2_phys = f2 / dz
-    F = wp.mat33(f0_phys[0], f1_phys[0], f2_phys[0], f0_phys[1], f1_phys[1], f2_phys[1], f0_phys[2], f1_phys[2], f2_phys[2])
-    cell_quat = mat33_to_quat_polar(F)
-    cell_quat_inv = wp.quat(-cell_quat[0], -cell_quat[1], -cell_quat[2], cell_quat[3])
-    f0_rot = wp.quat_rotate(cell_quat_inv, f0)
-    f1_rot = wp.quat_rotate(cell_quat_inv, f1)
-    f2_rot = wp.quat_rotate(cell_quat_inv, f2)
-    padr = padr_base + 6 * cell_idx
-    sp0 = plastic_in[worldid, padr + 0]
-    sp1 = plastic_in[worldid, padr + 1]
-    sp2 = plastic_in[worldid, padr + 2]
-    sp3 = plastic_in[worldid, padr + 3]
-    sp4 = plastic_in[worldid, padr + 4]
-    sp5 = plastic_in[worldid, padr + 5]
-    e0 = (f0_rot[0] / dx - 1.0) - sp0
-    e1 = (f1_rot[1] / dy - 1.0) - sp1
-    e2 = (f2_rot[2] / dz - 1.0) - sp2
-    g01 = (f1_rot[0] / dy + f0_rot[1] / dx) - sp3
-    g02 = (f2_rot[0] / dz + f0_rot[2] / dx) - sp4
-    g12 = (f2_rot[1] / dz + f1_rot[2] / dy) - sp5
-    mean = (e0 + e1 + e2) / 3.0
-    dev0 = e0 - mean
-    dev1 = e1 - mean
-    dev2 = e2 - mean
-    dev_norm_sq = dev0 * dev0 + dev1 * dev1 + dev2 * dev2 + 0.5 * (g01 * g01 + g02 * g02 + g12 * g12)
-    eps_eq = wp.sqrt((2.0 * dev_norm_sq) / 3.0)
-    if eps_eq > yield_:
-      scale = 1.0 - yield_ / eps_eq
-      sp0 += scale * dev0
-      sp1 += scale * dev1
-      sp2 += scale * dev2
-      sp3 += scale * g01
-      sp4 += scale * g02
-      sp5 += scale * g12
-      fnorm_sq = sp0 * sp0 + sp1 * sp1 + sp2 * sp2 + 0.5 * (sp3 * sp3 + sp4 * sp4 + sp5 * sp5)
-      if fnorm_sq > 0.1225:
-        clamp_scale = 0.35 / wp.sqrt(fnorm_sq)
-        sp0 *= clamp_scale
-        sp1 *= clamp_scale
-        sp2 *= clamp_scale
-        sp3 *= clamp_scale
-        sp4 *= clamp_scale
-        sp5 *= clamp_scale
-      plastic_out[worldid, padr + 0] = sp0
-      plastic_out[worldid, padr + 1] = sp1
-      plastic_out[worldid, padr + 2] = sp2
-      plastic_out[worldid, padr + 3] = sp3
-      plastic_out[worldid, padr + 4] = sp4
-      plastic_out[worldid, padr + 5] = sp5
+  return kernel
 
 
 def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None, act_dot: Optional[wp.array] = None):
@@ -1372,16 +1429,44 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None,
     outputs=[d.qpos],
   )
 
+  # compute whole-flex awake mask once for rod twist transport and flex plasticity
+  spring_enabled = not (m.opt.disableflags & DisableBit.SPRING)
+  if sleep_enabled and m.nplastic > 0 and (m.nflexrodedge > 0 or spring_enabled):
+    flex_awake = wp.empty((d.nworld, m.nflex), dtype=bool)
+    wp.launch(
+      _compute_flex_awake,
+      dim=(d.nworld, m.nflex),
+      inputs=[
+        m.ntree,
+        m.body_treeid,
+        m.jnt_bodyid,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
+        m.flex_vertadr,
+        m.flex_vertnum,
+        m.flex_plasticadr,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
+        m.flex_rod_has_twist,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_jnt,
+        d.ntree_awake,
+        d.body_awake,
+      ],
+      outputs=[flex_awake],
+    )
+  else:
+    flex_awake = wp.empty((0, 0), dtype=bool)
+
   # carry the twist reference of 1D rods to the configuration of this step (flexvert_xpos)
   if m.nplastic > 0 and m.nflexrodedge > 0:
     wp.launch(
-      _next_rod_twist,
+      _next_rod_twist(sleep_enabled),
       dim=(d.nworld, m.nflex),
       inputs=[
-        m.opt.enableflags,
-        m.jnt_bodyid,
         m.flex_vertadr,
-        m.flex_vertnum,
         m.flex_plasticadr,
         m.flex_vertbodyid,
         m.flex_rod_is_chain,
@@ -1390,31 +1475,31 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None,
         m.flex_rod_edgeadr,
         m.flex_rod_edgenum,
         m.flex_rodedge_vert,
-        m.flex_rodedge_jnt,
         d.plastic,
         d.xquat,
         d.flexvert_xpos,
-        d.body_awake,
         d.flex_rod_ref_ok,
         d.flex_rod_frame0_loc,
         d.flex_rod_frame0_ref,
         d.flex_rod_tail_loc,
+        flex_awake,
       ],
       outputs=[d.plastic],
     )
 
   # update plastic spring references via return mapping
-  if m.nplastic > 0 and not (m.opt.disableflags & DisableBit.SPRING):
+  if m.nplastic > 0 and spring_enabled:
     wp.launch(
-      _next_plastic_joint,
+      _next_plastic_joint(sleep_enabled),
       dim=(d.nworld, m.njnt),
       inputs=[
-        m.opt.enableflags,
+        m.ntree,
         m.jnt_type,
         m.jnt_qposadr,
         m.jnt_bodyid,
         m.jnt_plasticadr,
         m.jnt_springyield,
+        d.ntree_awake,
         d.qpos,
         d.plastic,
         d.body_awake,
@@ -1422,17 +1507,17 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None,
       outputs=[d.plastic],
     )
     wp.launch(
-      _next_plastic_tendon,
+      _next_plastic_tendon(sleep_enabled),
       dim=(d.nworld, m.ntendon),
       inputs=[
+        m.ntree,
         m.opt.timestep,
-        m.opt.enableflags,
         m.jnt_qposadr,
-        m.jnt_bodyid,
-        m.dof_treeid,
         m.tendon_adr,
         m.tendon_num,
         m.tendon_plasticadr,
+        m.tendon_treenum,
+        m.tendon_treeid,
         m.ten_J_rownnz,
         m.ten_J_rowadr,
         m.ten_J_colind,
@@ -1440,22 +1525,21 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None,
         m.wrap_type,
         m.wrap_objid,
         m.wrap_prm,
+        d.ntree_awake,
         d.qpos,
         qvel_in,
         d.plastic,
         d.ten_J,
         d.ten_length,
         d.tree_awake,
-        d.body_awake,
       ],
       outputs=[d.plastic],
     )
     wp.launch(
-      _next_plastic_flex_stretch,
+      _next_plastic_flex_stretch(sleep_enabled),
       dim=(d.nworld, m.nflexelem),
       inputs=[
         m.opt.timestep,
-        m.opt.enableflags,
         m.body_rootid,
         m.body_weldid,
         m.body_dofnum,
@@ -1484,16 +1568,15 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None,
         d.subtree_com,
         d.cdof,
         d.flexvert_xpos,
-        d.body_awake,
+        flex_awake,
       ],
       outputs=[d.plastic, d.flex_hessian_valid],
     )
     wp.launch(
-      _next_plastic_flex_bend,
+      _next_plastic_flex_bend(sleep_enabled),
       dim=(d.nworld, m.nflexedge),
       inputs=[
         m.opt.timestep,
-        m.opt.enableflags,
         m.body_rootid,
         m.body_weldid,
         m.body_dofnum,
@@ -1522,16 +1605,15 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None,
         d.subtree_com,
         d.cdof,
         d.flexvert_xpos,
-        d.body_awake,
+        flex_awake,
       ],
       outputs=[d.plastic],
     )
     wp.launch(
-      _next_plastic_flex_interp,
+      _next_plastic_flex_interp(sleep_enabled),
       dim=(d.nworld, m.nflexintcell),
       inputs=[
         m.opt.timestep,
-        m.opt.enableflags,
         m.body_rootid,
         m.body_weldid,
         m.body_dofnum,
@@ -1554,8 +1636,8 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None,
         d.plastic,
         d.subtree_com,
         d.cdof,
-        d.body_awake,
         d.flexnode_xpos,
+        flex_awake,
       ],
       outputs=[d.plastic],
     )
@@ -1943,14 +2025,12 @@ def rungekutta4(m: Model, d: Data):
     flexnode_xpos_t0 = wp.clone(d.flexnode_xpos) if m.nflexnode > 0 else None
     cdof_t0 = wp.clone(d.cdof)
     subtree_com_t0 = wp.clone(d.subtree_com)
-    xpos_t0 = wp.clone(d.xpos)
-    xquat_t0 = wp.clone(d.xquat)
+    xquat_t0 = wp.clone(d.xquat) if m.nflexrodedge > 0 else None
   else:
     flexvert_xpos_t0 = None
     flexnode_xpos_t0 = None
     cdof_t0 = None
     subtree_com_t0 = None
-    xpos_t0 = None
     xquat_t0 = None
 
   # stage velocities with the RKMK correction (rates of the rotation vectors of ball and
@@ -1998,8 +2078,8 @@ def rungekutta4(m: Model, d: Data):
       wp.copy(d.flexnode_xpos, flexnode_xpos_t0)
     wp.copy(d.cdof, cdof_t0)
     wp.copy(d.subtree_com, subtree_com_t0)
-    wp.copy(d.xpos, xpos_t0)
-    wp.copy(d.xquat, xquat_t0)
+    if xquat_t0 is not None:
+      wp.copy(d.xquat, xquat_t0)
 
   _advance(m, d, qacc_rk, qvel_rk, act_dot_rk)
 

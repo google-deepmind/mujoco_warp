@@ -1415,6 +1415,116 @@ class SupportTest(parameterized.TestCase):
     expected_m1_2 = np.cos(0.4) * m1_0 + np.sin(0.4) * m2_0
     _assert_eq(mats[2, :, 0], expected_m1_2, "twisted_m1_elem2")
 
+  @parameterized.parameters(1, 2)
+  def test_plastic_state_get_set(self, nworld):
+    """Tests State.PLASTIC/PHYSICS get_state/set_state and flex_hessian_valid invalidation."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 0" timestep="0.005"/>
+        <worldbody>
+          <body name="b_slide">
+            <joint name="j_slide" type="slide" axis="1 0 0" stiffness="20" springyield="0.05"/>
+            <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+          </body>
+          <flexcomp name="tet_plastic" type="direct" dim="3" mass="1"
+                    point="0 1 0  1 1 0  0 2 0  0 1 1" element="0 1 2 3">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.25" yield="0.04"/>
+            <pin id="0 1 2"/>
+          </flexcomp>
+          <flexcomp name="tet_elastic" type="direct" dim="3" mass="1"
+                    point="3 1 0  4 1 0  3 2 0  3 1 1" element="0 1 2 3">
+            <contact contype="0" conaffinity="0" selfcollide="none"/>
+            <elasticity young="500" poisson="0.25"/>
+            <pin id="0 1 2"/>
+          </flexcomp>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.3  0.15 -0.1 0.25  0.05 0.05 0.05"
+               qvel="0.2  0.3 -0.2 0.4  0.1 0.1 0.1"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+
+    # Give world 1 distinct state so both worlds produce distinct plastic trajectories.
+    mjd_w0 = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd_w0, 0)
+    mujoco.mj_forward(mjm, mjd_w0)
+    mjd_w1 = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd_w1, 0)
+    mjd_w1.qpos[:] = -0.8 * mjd_w1.qpos
+    mjd_w1.qvel[:] = -1.2 * mjd_w1.qvel
+    mujoco.mj_forward(mjm, mjd_w1)
+    if nworld == 2:
+      qpos = d.qpos.numpy().copy()
+      qvel = d.qvel.numpy().copy()
+      qpos[1] = mjd_w1.qpos
+      qvel[1] = mjd_w1.qvel
+      d.qpos.assign(qpos)
+      d.qvel.assign(qvel)
+      mjwarp.forward(m, d)
+
+    mujoco.mj_step(mjm, mjd_w0, 3)
+    if nworld == 2:
+      mujoco.mj_step(mjm, mjd_w1, 3)
+    for _ in range(3):
+      mjwarp.step(m, d)
+
+    # Verify State.PLASTIC and State.PHYSICS get_state parity with wp.inf pre-fill.
+    for sig, mj_sig in (
+      (State.PLASTIC, int(mujoco.mjtState.mjSTATE_PLASTIC)),
+      (State.PHYSICS, int(mujoco.mjtState.mjSTATE_PHYSICS)),
+    ):
+      size = mujoco.mj_stateSize(mjm, mj_sig)
+      mj_s0 = np.zeros(size)
+      mujoco.mj_getState(mjm, mjd_w0, mj_s0, mj_sig)
+      mjw_s = wp.full((nworld, size), wp.inf, dtype=float)
+      mjwarp.get_state(m, d, mjw_s, sig)
+      mjw_s_np = mjw_s.numpy()
+      _assert_eq(mjw_s_np[0], mj_s0, f"get_state_{sig}_w0")
+      if nworld == 2:
+        mj_s1 = np.zeros(size)
+        mujoco.mj_getState(mjm, mjd_w1, mj_s1, mj_sig)
+        _assert_eq(mjw_s_np[1], mj_s1, f"get_state_{sig}_w1")
+        self.assertFalse(np.allclose(mjw_s_np[0], mjw_s_np[1]))
+
+    # Verify set_state(State.PLASTIC) writes plastic and invalidates only plastic flex Hessians.
+    psize = mujoco.mj_stateSize(mjm, int(mujoco.mjtState.mjSTATE_PLASTIC))
+    saved_plastic = wp.full((nworld, psize), wp.inf, dtype=float)
+    mjwarp.get_state(m, d, saved_plastic, State.PLASTIC)
+    saved_plastic_np = saved_plastic.numpy()
+
+    d_dst = mjwarp.make_data(mjm, nworld=nworld)
+    d_dst.plastic.fill_(wp.inf)
+    d_dst.flex_hessian_valid.fill_(True)
+    mjwarp.set_state(m, d_dst, saved_plastic, State.PLASTIC)
+    dst_plastic = d_dst.plastic.numpy()
+    dst_valid = d_dst.flex_hessian_valid.numpy()
+    for w in range(nworld):
+      _assert_eq(dst_plastic[w], saved_plastic_np[w], f"set_state_plastic_w{w}")
+      self.assertFalse(dst_valid[w, 0])
+      self.assertTrue(dst_valid[w, 1])
+
+    # Verify active mask only updates world 0 and leaves world 1 plastic and Hessian cache intact.
+    if nworld == 2:
+      d_masked = mjwarp.make_data(mjm, nworld=2)
+      d_masked.plastic.zero_()
+      d_masked.flex_hessian_valid.fill_(True)
+      active = wp.array([True, False], dtype=bool)
+      mjwarp.set_state(m, d_masked, saved_plastic, State.PLASTIC, active=active)
+      masked_plastic = d_masked.plastic.numpy()
+      masked_valid = d_masked.flex_hessian_valid.numpy()
+      _assert_eq(masked_plastic[0], saved_plastic_np[0], "masked_plastic_w0")
+      _assert_eq(masked_plastic[1], np.zeros(psize), "masked_plastic_w1_untouched")
+      self.assertFalse(masked_valid[0, 0])
+      self.assertTrue(masked_valid[0, 1])
+      self.assertTrue(masked_valid[1, 0])
+      self.assertTrue(masked_valid[1, 1])
+
 
 if __name__ == "__main__":
   wp.init()
