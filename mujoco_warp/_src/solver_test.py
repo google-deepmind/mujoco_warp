@@ -857,11 +857,14 @@ class SolverTest(parameterized.TestCase):
     columns = np.arange(d.njmax) % m.nv
     d.efc.J_colind.assign(np.tile(columns, (d.nworld, 1, 1)))
     d.efc.J.fill_(1.0)
-    # every row is its own JTDAJ block, the friction row like a tendon's
-    d.efc.jtdaj_adr.assign(np.tile(np.arange(d.njmax), (d.nworld, 1)))
+    # row 1 is a DOF friction row, which has no JTDAJ block; every other row is its own block
+    block_rows = np.delete(np.arange(d.njmax), 1)
+    d.efc.jtdaj_adr.assign(np.tile(np.append(block_rows, 0), (d.nworld, 1)))
     d.efc.jtdaj_nrow.fill_(1)
-    d.efc.jtdaj_nblock.fill_(d.njmax)
-    d.dof_frictionadr.fill_(-1)
+    d.efc.jtdaj_nblock.fill_(block_rows.size)
+    frictionadr = np.full(m.nv, -1)
+    frictionadr[columns[1]] = 1
+    d.dof_frictionadr.assign(np.tile(frictionadr, (d.nworld, 1)))
     d.efc.D.fill_(2.0)
     d.efc.frictionloss.fill_(1.0)
     jaref = np.full((d.nworld, d.njmax), -1.0)
@@ -3813,6 +3816,9 @@ class CompactSolverTest(parameterized.TestCase):
       """,
       overrides={"opt.cone": cone},
     )
+    # distinct DOF friction forces, so a friction row read at the wrong DOF changes qfrc_constraint
+    qvel = 0.01 * np.array([1.0, -2.0, 3.0, -1.0, 2.0, -3.0])
+    d_ref.qvel.assign(qvel[None])
     mjw.forward(m_ref, d_ref)
     ctx_ref = solver.create_solver_context(m_ref, d_ref)
     ctx_ref.h.fill_(wp.inf)
@@ -3838,6 +3844,7 @@ class CompactSolverTest(parameterized.TestCase):
       """,
       overrides={"opt.cone": cone},
     )
+    d.qvel.assign(np.append(0.0, qvel)[None])
     mjw.forward(m, d)
     d.tree_awake.assign(np.array([[0, 1]], dtype=int))
     island.update_active_dofs(m, d)
@@ -3862,6 +3869,7 @@ class CompactSolverTest(parameterized.TestCase):
     ctx.compact_m_full = m
     ctx.compact_d_full = d
     ctx.h.fill_(wp.inf)
+    d2.qfrc_constraint.fill_(wp.inf)
     solver.init_context(m2, d2, ctx, grad=True, compact=True)
     h = ctx.h.numpy()[0]
 
@@ -3872,6 +3880,7 @@ class CompactSolverTest(parameterized.TestCase):
     dof_friction = d_ref.efc.type.numpy()[0, :nefc] == types.ConstraintType.FRICTION_DOF
     self.assertTrue((quadratic & dof_friction).any())
     np.testing.assert_allclose(np.triu(h[:nv, :nv]), np.triu(href[:nv, :nv]), rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(d2.qfrc_constraint.numpy()[0, :nv], d_ref.qfrc_constraint.numpy()[0], rtol=1e-4, atol=1e-5)
 
   def test_solve_compact_populates_islands(self):
     """When using the compact solver via mjw.solve, island mapping fields are updated."""

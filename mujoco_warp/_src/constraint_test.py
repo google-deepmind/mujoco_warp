@@ -531,15 +531,24 @@ class ConstraintTest(parameterized.TestCase):
 
   @parameterized.parameters(
     *itertools.product(
-      (("constraints.xml", 3), ("flex/moving_base_strain.xml", 1), ("tendon/tendon_limit.xml", 1)),
+      (
+        ("constraints.xml", (0, 1, 2)),
+        ("humanoid/humanoid.xml", (None,)),
+        ("aloha_pot/scene.xml", (None,)),
+        ("jdotv/connect_3d.xml", (None,)),
+        ("jdotv/weld_3d.xml", (None,)),
+        ("flex/moving_base_strain.xml", (0,)),
+        ("flex/rope.xml", (None,)),
+        ("tendon/tendon_limit.xml", (0,)),
+      ),
       (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
     )
   )
   def test_jtdaj_blocks(self, xml_keys, cone):
     """Sparse Newton constraints group their rows into JTDAJ blocks."""
-    xml, nkey = xml_keys
+    xml, keys = xml_keys
     overrides = {"opt.cone": cone, "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": mujoco.mjtSolver.mjSOL_NEWTON}
-    for key in range(nkey):
+    for key in keys:
       mjm, _, m, d = test_data.fixture(xml, keyframe=key, overrides=overrides)
       d.efc.jtdaj_nblock.fill_(-1)
       if mjm.nflex > 0:
