@@ -62,6 +62,24 @@ def _set_inertia_scale(m, d, ctx):
   solver.launch_inertia_scale(m, d.M, ctx.inertia_scale, d)
 
 
+def _set_newton_ray(m, d, ctx, grad_scale=1.0):
+  """Set grad_scale and the decrement, -grad_scale * slope at alpha = 0, of a hand-built ray."""
+  ctx.grad_scale.assign(np.broadcast_to(np.float32(grad_scale), ctx.grad_scale.shape))
+  search = ctx.search.numpy().astype(np.float64)
+  slope = np.sum(search * (d.efc.Ma.numpy() - d.qfrc_smooth.numpy()), axis=1)
+  efc_J, efc_D, frictionloss = d.efc.J.numpy(), d.efc.D.numpy(), d.efc.frictionloss.numpy()
+  jaref, ne, nf, nefc = ctx.Jaref.numpy(), d.ne.numpy(), d.nf.numpy(), d.nefc.numpy()
+  for worldid in range(d.nworld):
+    for efcid in range(nefc[worldid]):
+      jv = efc_J[worldid, efcid, : m.nv] @ search[worldid]
+      x, D, f = jaref[worldid, efcid], efc_D[worldid, efcid], frictionloss[worldid, efcid]
+      if ne[worldid] <= efcid < ne[worldid] + nf[worldid] and abs(x) >= f / D:
+        slope[worldid] += np.sign(x) * f * jv
+      elif efcid < ne[worldid] + nf[worldid] or x < 0:
+        slope[worldid] += D * x * jv
+  ctx.newton_decrement.assign((-slope * ctx.grad_scale.numpy()).astype(np.float32))
+
+
 def _noslip_model(mjm, noslip_iterations):
   mjm = copy.deepcopy(mjm)
   mjm.opt.noslip_iterations = noslip_iterations
@@ -320,7 +338,7 @@ def _eval_elliptic_delta(
   # Out:
   result_out: wp.array[wp.vec3],
 ):
-  result_out[0] = solver._compute_efc_eval_pt_elliptic(
+  pt = solver._compute_efc_eval_pt_elliptic(
     0,
     alpha,
     0,
@@ -337,6 +355,7 @@ def _eval_elliptic_delta(
     quad1,
     quad2,
   )
+  result_out[0] = wp.vec3(pt[0], pt[1], pt[2])
 
 
 class SolverTest(parameterized.TestCase):
@@ -1106,6 +1125,7 @@ class SolverTest(parameterized.TestCase):
     ctx.search_dot = wp.array([1.0], dtype=float)
     ctx.done = wp.array([False], dtype=bool)
     ctx.search_unchanged.fill_(False)
+    _set_newton_ray(m, d, ctx)
 
     solver._linesearch(m, d, ctx)
 
@@ -1127,6 +1147,7 @@ class SolverTest(parameterized.TestCase):
     ctx.search_dot = wp.array([4.0], dtype=float)
     ctx.done = wp.array([False], dtype=bool)
     ctx.search_unchanged.fill_(False)
+    _set_newton_ray(m, d, ctx)
 
     solver._linesearch(m, d, ctx)
 
@@ -1176,6 +1197,7 @@ class SolverTest(parameterized.TestCase):
     ctx.search_dot.fill_(1.0)
     ctx.done.fill_(False)
     ctx.search_unchanged.fill_(False)
+    _set_newton_ray(m, d, ctx)
 
     solver._linesearch(m, d, ctx)
 
@@ -1266,6 +1288,7 @@ class SolverTest(parameterized.TestCase):
     ctx.done.fill_(False)
     d.overflow.zero_()
     ctx.alpha.fill_(wp.inf)
+    _set_newton_ray(m, d, ctx)
 
     solver._linesearch(m, d, ctx)
 
@@ -1404,10 +1427,64 @@ class SolverTest(parameterized.TestCase):
     ctx.search_dot.fill_(1.0)
     ctx.done.fill_(False)
     ctx.search_unchanged.fill_(False)
+    _set_newton_ray(m, d, ctx, 0.5 * (targets + 1.0))
 
     solver._linesearch(m, d, ctx)
 
     np.testing.assert_allclose(d.qacc.numpy()[:, 0], targets, rtol=1e-6)
+
+  @parameterized.parameters(
+    # without bracket rounds only the trial at the minimizer converges
+    (0, (4.0, 0.0, 0.0), (False, True, True)),
+    (50, (4.0, 4.0, 4.0), (False, False, False)),
+  )
+  def test_linesearch_newton_first_trial(self, ls_iterations, alpha, overflow):
+    """Newton linesearch takes its first trial at grad_scale and recovers from a wrong one."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint type="slide"/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE, "opt.ls_iterations": ls_iterations},
+      nworld=3,
+      njmax=1,
+    )
+    ctx = solver.create_solver_context(m, d)
+    _set_inertia_scale(m, d, ctx)
+
+    # cost 0.5 * (alpha - 4)^2 from one equality row
+    d.ne.fill_(1)
+    d.nf.fill_(0)
+    d.nefc.fill_(1)
+    d.nacon.fill_(0)
+    d.M.zero_()
+    d.qacc.zero_()
+    d.efc.Ma.zero_()
+    d.qfrc_smooth.zero_()
+    d.efc.J.fill_(1.0)
+    d.efc.D.fill_(1.0)
+    d.efc.frictionloss.zero_()
+    ctx.search.fill_(1.0)
+    ctx.Jaref.fill_(-4.0)
+    ctx.search_dot.fill_(1.0)
+    ctx.done.fill_(False)
+    ctx.search_unchanged.fill_(False)
+    d.overflow.zero_()
+    ctx.alpha.fill_(wp.inf)
+
+    # first trial at, short of and past the minimizer
+    _set_newton_ray(m, d, ctx, [4.0, 1.0, 16.0])
+
+    solver._linesearch(m, d, ctx)
+
+    np.testing.assert_allclose(ctx.alpha.numpy(), alpha, rtol=1e-6)
+    np.testing.assert_array_equal((d.overflow.numpy() & types.OverflowType.LS_ITERATIONS) != 0, overflow)
 
   @parameterized.product(
     case=(
@@ -1524,6 +1601,7 @@ class SolverTest(parameterized.TestCase):
     ctx.search_dot.fill_(1.0)
     ctx.done.fill_(False)
     ctx.search_unchanged.fill_(False)
+    _set_newton_ray(m, d, ctx)
 
     solver._linesearch(m, d, ctx)
 
@@ -1555,6 +1633,23 @@ class SolverTest(parameterized.TestCase):
       mjw.solve(m, d)
       _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
       _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
+
+  @parameterized.parameters(ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
+  def test_newton_decrement_is_search_slope(self, cone):
+    """The Newton linesearch takes its slope at alpha = 0 from the decrement of the solve."""
+    _, _, m, d = test_data.fixture(
+      "humanoid/humanoid.xml",
+      keyframe=2,
+      overrides={"opt.cone": cone},
+      nworld=2,
+    )
+    ctx = solver.create_solver_context(m, d)
+    ctx.newton_decrement.fill_(wp.inf)
+    solver.init_context(m, d, ctx, grad=True)
+
+    slope = np.sum(ctx.search.numpy() * ctx.grad.numpy()[:, : m.nv], axis=1)
+    np.testing.assert_array_less(slope, 0.0)
+    np.testing.assert_allclose(-ctx.newton_decrement.numpy() / ctx.grad_scale.numpy(), slope, rtol=1e-5)
 
   @parameterized.parameters(
     (ConeType.PYRAMIDAL, SolverType.CG, 10, 5, mujoco.mjtJacobian.mjJAC_DENSE),
