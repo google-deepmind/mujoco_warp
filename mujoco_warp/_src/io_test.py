@@ -32,6 +32,7 @@ from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
 from mujoco_warp._src import io
 from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import put_model
 
@@ -2980,6 +2981,25 @@ class IOTest(parameterized.TestCase):
     mjm, _, _, _ = test_data.fixture(xml=xml)
     mjm.tree_sleep_policy[0] = policy
 
+    with self.assertRaises(NotImplementedError):
+      mjwarp.put_model(mjm)
+
+  # TODO(team): remove version check once mujoco >= 4.0.2 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=4.0.2"), "Requires MuJoCo >= 4.0.2")
+  @parameterized.parameters(
+    '<camera name="c" projection="fisheye"/>',
+    '<camera name="c" projection="perspective" distortion="0.1"/>',
+  )
+  def test_camera_lens_distortion_error(self, camera_xml):
+    """Verify unsupported fisheye projection or distortion raises NotImplementedError."""
+    xml = f"""
+    <mujoco>
+      <worldbody>
+        {camera_xml}
+      </worldbody>
+    </mujoco>
+    """
+    mjm = mujoco.MjModel.from_xml_string(xml)
     with self.assertRaises(NotImplementedError):
       mjwarp.put_model(mjm)
 
