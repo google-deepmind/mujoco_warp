@@ -17,6 +17,7 @@ import dataclasses
 import functools
 import inspect
 import warnings
+from typing import Callable
 
 import warp as wp
 
@@ -124,7 +125,7 @@ def event_scope(fn, name: str = ""):
       return fn(*args, **kwargs)
 
     for frame_info in inspect.stack():
-      if frame_info.function in ("capture_while", "capture_if"):
+      if frame_info.function in ("capture_while", "capture_if", "capture_do_while"):
         return fn(*args, **kwargs)
 
     # push into next level of stack
@@ -144,6 +145,12 @@ def event_scope(fn, name: str = ""):
     return res
 
   return wrapper
+
+
+def capture_do_while(condition: wp.array, while_body: Callable, **kwargs):
+  """wp.capture_while with the body run once before the condition is read; event scopes skip it."""
+  while_body(**kwargs)
+  wp.capture_while(condition, while_body=while_body, **kwargs)
 
 
 _KERNEL_CACHE = {}
