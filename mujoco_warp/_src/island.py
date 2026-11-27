@@ -1546,9 +1546,14 @@ ROW_CONTACT = 3
 # 32-byte sector: a constraint takes its rows and finds their kind in one place)
 ROW_RECORD = 8
 ROW_DENSE = ROW_CLASSES
+# a dense group's block in efc.J (its rows of n entries each, from its first row on)
+ROW_DENSE_BASE = ROW_CLASSES + 1
+ROW_DENSE_ROW0 = ROW_CLASSES + 2
 
 # Groups of up to dense_width(m) DOFs (a humanoid, a few resting boxes) write their Jacobian rows
-# only to GroupBuffers.J, dense and in group-local columns; their sparse rows are empty.
+# dense: a block of efc.J ahead of the sparse rows, a row of the group's DOFs in group order
+# each (padded to 4), so kernels address them without row or column indices. They have no sparse
+# row fields (J_rownnz 0): readers of efc.J add them from the blocks (io._island_dense_rows).
 # DENSE_NV < 32 turns dense rows off.
 DENSE_NV = 32
 # Groups are runs of consecutive islands of up to MERGE_NV DOFs (e.g. resting boxes); their rows
@@ -1559,6 +1564,12 @@ MERGE_NV = 32
 MIN_NV = MERGE_NV
 # models of more trees are the world solver's: _island_world's shared memory grows with ntree
 MAX_NTREE = 1024
+
+
+@wp.func
+def dense_stride(n: int) -> int:
+  """Entries a dense row of n DOFs takes in its block: n padded to 4 (aligned vector loads)."""
+  return (n + 3) // 4 * 4
 
 
 @wp.func
@@ -1573,9 +1584,13 @@ def dense_set(
   # Out:
   dense_J_out: wp.array3d[float],
 ):
-  """Value of dense row srow + k at a DOF's column (srow < 0: sparse)."""
+  """Value of row k of a constraint's dense rows at a DOF's column (srow < 0: sparse).
+
+  srow packs the rows' address in efc.J and their length n (address * 64 + n, see rows_island).
+  """
   if srow >= 0:
-    dense_J_out[worldid, srow + k, dof_densecol_in[worldid, dofid]] = value
+    n = srow & 63  # the rows' stride
+    dense_J_out[worldid, 0, (srow >> 6) + k * n + dof_densecol_in[worldid, dofid]] = value
 
 
 @wp.func
@@ -1618,7 +1633,6 @@ class GroupBuffers:
     self.island_acc = wp.empty(shape, dtype=int)
     # dense rows by world row, plus a tile of rows tile kernels read past the last; not zeroed (in a
     # graph capture a fill would run every step)
-    self.J = wp.empty((d.nworld, d.njmax + types.TILE_SIZE_JTDAJ_DENSE, dense_width(m)), dtype=float)
 
 
 def dense_width(m: types.Model) -> int:
@@ -1705,6 +1719,7 @@ def _island_world(ntree: int):
     nidof_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
+    efc_J_out: wp.array3d[float],
     efc_force_out: wp.array2d[float],
     efc_state_out: wp.array2d[int],
     efc_island_out: wp.array2d[int],
@@ -1745,8 +1760,8 @@ def _island_world(ntree: int):
     idof_islandid_out: wp.array2d[int],
     dof_group_out: wp.array2d[int],
     dof_densecol_out: wp.array2d[int],
-    dense_J_out: wp.array3d[float],
     efc_group_out: wp.array2d[int],
+    efc_nnz_out: wp.array[int],
   ):
     """A world's islands, rows, DOFs and groups (free_groups: also of the trees outside islands)."""
     worldid, lane = wp.tid()
@@ -1945,34 +1960,54 @@ def _island_world(ntree: int):
         island_group_out[worldid, i] = -1
     _block_sync()
 
-    # dense rows: groups of islands up to wide DOFs (a tile per group gathers their H)
+    # dense rows: groups of islands up to wide DOFs (a tile per group gathers their H). A group's
+    # dense rows are a block of efc.J, n (its DOFs) entries a row, ahead of the sparse rows
     ngroup = ngroup_out[worldid]
+    dsize = wp.tile_zeros(shape=ntree, dtype=int, storage="shared")
+    for i in range(lane, ntree, lanes):
+      if i < ngroup:
+        if _dense_width(group_nv_out[worldid, i], wide) > 0 and group_nisland_out[worldid, i] > 0:
+          _tile_set(dsize, i, group_nefc_out[worldid, i] * dense_stride(group_nv_out[worldid, i]))
+    _block_sync()
+    dbase = wp.tile_zeros(shape=ntree, dtype=int, storage="shared")
+    wp.tile_assign(dbase, wp.tile_scan_exclusive(dsize))
+    # the blocks from the world's first 16-byte boundary in efc.J (rows padded to 4 stay aligned)
+    align = (4 - (worldid % 4) * (efc_J_out.shape[2] % 4) % 4) % 4
+    dtotal = align + wp.tile_sum(dsize)[0]
+    _block_sync()
     for i in range(lane, ntree, lanes):
       block = wp.vec4i(0)
-      if i < ngroup:
-        width = _dense_width(group_nv_out[worldid, i], wide)
-        if group_nisland_out[worldid, i] == 0:
-          width = 0
-        block = wp.vec4i(width, 0, group_nefc_out[worldid, i], group_iefcadr_out[worldid, i])
+      if i < ngroup and dsize[i] > 0:
+        # a block past the nonzero capacity keeps sparse rows
+        if align + dbase[i] + dsize[i] <= efc_J_out.shape[2]:
+          block = wp.vec4i(
+            group_nv_out[worldid, i], align + dbase[i], group_nefc_out[worldid, i], group_iefcadr_out[worldid, i]
+          )
       group_dense_out[worldid, i] = block
+    if lane == 0:
+      # the sparse rows' nonzeros follow the dense blocks
+      efc_nnz_out[worldid] = wp.min(dtotal, efc_J_out.shape[2])
     _block_sync()
     for i in range(lane, nisland, lanes):
       gi = igroup[i]
       block = group_dense_out[worldid, wp.where(gi < 0, -2 - gi, gi)]
       island_dense_out[worldid, i] = block
       island_cursor_out[worldid, i * ROW_RECORD + ROW_DENSE] = block[0]
+      island_cursor_out[worldid, i * ROW_RECORD + ROW_DENSE_BASE] = block[1]
+      island_cursor_out[worldid, i * ROW_RECORD + ROW_DENSE_ROW0] = block[3]
     _block_sync()
 
     # zero dense rows but contacts' (written whole), here rather than a row a thread: coalesced
-    width = dense_J_out.shape[2]
     for i in range(nisland):
-      if island_dense_out[worldid, i][0] > 0:
+      blk = island_dense_out[worldid, i]
+      if blk[0] > 0:
         r0 = iefc[i]
         base = i * ROW_CLASSES
         rc = r0 + counts[base + ROW_EQUALITY] + counts[base + ROW_FRICTION] + counts[base + ROW_LIMIT]
-        n = (wp.min(rc, njmax_in) - r0) * width
-        for k in range(lane, n, lanes):
-          dense_J_out[worldid, r0 + k // width, k % width] = 0.0
+        stride = dense_stride(blk[0])
+        start = blk[1] + (r0 - blk[3]) * stride
+        for k in range(start + lane, start + (wp.min(rc, njmax_in) - r0) * stride, lanes):
+          efc_J_out[worldid, 0, k] = 0.0
         # dense rows have no sparse entries (the row kernels leave them to this)
         re = wp.min(rc + counts[base + ROW_CONTACT], njmax_in)
         for r in range(r0 + lane, re, lanes):
@@ -2032,6 +2067,7 @@ def island_layout(
   tree_nrow: wp.array2d[int],
   island_rowadr: wp.array2d[int],
   island_cursor: wp.array2d[int],
+  efc_nnz: wp.array[int],
 ) -> GroupBuffers:
   """Islands, their row layout, DOF maps and groups, after the constraints discovered them."""
   buf = group_buffers(m, d)
@@ -2057,6 +2093,7 @@ def island_layout(
       d.nidof,
       d.efc.J_rownnz,
       d.efc.J_rowadr,
+      d.efc.J,
       d.efc.force,
       d.efc.state,
       d.efc.island,
@@ -2096,8 +2133,8 @@ def island_layout(
       d.dof_islandid,
       buf.dof_group,
       buf.dof_densecol,
-      buf.J,
       buf.efc_group,
+      efc_nnz,
     ],
     # whole warps of trees: its passes are bound by the block's barriers
     block_dim=min(types.BlockDim.island_scan_sizes, -(-m.ntree // 32) * 32),
@@ -2241,7 +2278,15 @@ def rows_island(
     return wp.vec2i(nrow_max, -1)
   island = tree_island_in[worldid, tree]
   efcid = rows_write(worldid, island, nrow, rowclass, island_cursor_out)
-  return wp.vec2i(efcid, wp.where(island_cursor_out[worldid, island * ROW_RECORD + ROW_DENSE] > 0, efcid, -1))
+  rec = island * ROW_RECORD
+  n = island_cursor_out[worldid, rec + ROW_DENSE]
+  srow = int(-1)
+  if n > 0:
+    adr = island_cursor_out[worldid, rec + ROW_DENSE_BASE] + (
+      efcid - island_cursor_out[worldid, rec + ROW_DENSE_ROW0]
+    ) * dense_stride(n)
+    srow = adr * 64 + dense_stride(n)
+  return wp.vec2i(efcid, srow)
 
 
 @wp.func

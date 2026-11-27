@@ -30,6 +30,7 @@ from mujoco_warp._src.island import ROW_LIMIT
 from mujoco_warp._src.island import _block_sync
 from mujoco_warp._src.island import _dsu_union
 from mujoco_warp._src.island import dense_set
+from mujoco_warp._src.island import dense_stride
 from mujoco_warp._src.island import rows_discover
 from mujoco_warp._src.island import rows_discover_tendon
 from mujoco_warp._src.island import rows_island
@@ -4632,9 +4633,9 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, nmaxcondim
   ):
     """Dense contact rows of a world, or (island) of an island group with dense rows.
 
-    efc_J_out holds a group's dense rows: a column per group DOF in group order, gathered (columns
-    past the group's DOFs read as zero). Only the contact rows of the group's islands are read: the
-    other rows may be written alongside.
+    Island: efc_J_out is efc.J, whose block of the group holds its dense rows, a row of its DOFs in
+    group order each (see island._island_world). Only the contact rows of the group's islands are
+    written.
     """
     worldid, groupid = wp.tid()
 
@@ -4642,8 +4643,10 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, nmaxcondim
     efcid_end = int(0)
     island0 = int(0)
     nisland = int(1)
+    dense = wp.vec4i(0)
     if wp.static(ISLAND):
-      if group_dense_in[worldid, groupid][0] == 0:
+      dense = group_dense_in[worldid, groupid]
+      if dense[0] == 0:
         return
       island0 = group_island0_in[worldid, groupid]
       nisland = group_nisland_in[worldid, groupid]
@@ -4747,7 +4750,14 @@ def _efc_contact_jac_dense(tile_size: int, cone_type: types.ConeType, nmaxcondim
             elif wp.static(nmaxcondim > 4):
               J_tile = wp.tile_map(wp.add, J_tile, wp.tile_map(wp.mul, Ji_2r_tile, frii_sign))
 
-        wp.tile_store(efc_J_out[worldid, efcid], J_tile, bounds_check=True)
+        if wp.static(ISLAND):
+          # the group's block in efc.J: rows of its n DOFs (see island._island_world)
+          stride = dense_stride(dense[0])
+          adr = dense[1] + (efcid - dense[3]) * stride
+          row = wp.array(ptr=efc_J_out[worldid, 0].ptr + wp.uint64(adr * 4), shape=(stride,), dtype=float)
+          wp.tile_store(row, J_tile, bounds_check=True)
+        else:
+          wp.tile_store(efc_J_out[worldid, efcid], J_tile, bounds_check=True)
 
         Jqvel_tile = wp.tile_map(wp.mul, J_tile, qvel_tile)
         Jqvel_sum = wp.tile_reduce(wp.add, Jqvel_tile)
@@ -6699,7 +6709,7 @@ def _make_rows(
           if island_dense is not None:
             g = island.group_buffers(m, d)
             wp.launch_tiled(
-              _efc_contact_jac_dense(dense_J.shape[2], m.opt.cone, int(m.nmaxcondim), True),
+              _efc_contact_jac_dense(island.dense_width(m), m.opt.cone, int(m.nmaxcondim), True),
               dim=(d.nworld, m.ntree),
               inputs=[
                 m.body_rootid,
@@ -7296,8 +7306,9 @@ def make_constraint(m: types.Model, d: types.Data):
     wp.launch(island._island_reset, dim=(d.nworld, m.ntree), outputs=[d.nisland, d.tree_island, island_parent, tree_nrow])
     rows = (island_rowadr, island_cursor, d.tree_island)
     _launch_island_discover(m, d, island_parent, tree_nrow)
-    groups = island.island_layout(m, d, island_parent, tree_nrow, island_rowadr, island_cursor)
-    dense = (groups.island_dense, groups.dof_densecol, groups.J)
+    groups = island.island_layout(m, d, island_parent, tree_nrow, island_rowadr, island_cursor, efc_nnz)
+    # dense rows go to their groups' blocks of efc.J (see island._island_world)
+    dense = (groups.island_dense, groups.dof_densecol, d.efc.J)
     # an island's rows of each class take places from its cursor: any launch order; contact rows
     # beside the others (a second stream while capturing)
     discover_stream = side_stream(d.qacc.device)

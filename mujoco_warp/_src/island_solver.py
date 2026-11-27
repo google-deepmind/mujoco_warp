@@ -24,6 +24,7 @@ DOFs, islands and the tile pairs of each island's Hessian.
 """
 
 import dataclasses
+from typing import Any
 
 import warp as wp
 
@@ -45,7 +46,6 @@ from mujoco_warp._src.solver import _is_friction
 from mujoco_warp._src.solver import _JTDACJ_sparse
 from mujoco_warp._src.solver import _jtdaj_groups_per_world
 from mujoco_warp._src.solver import _linesearch_iterative_kernel
-from mujoco_warp._src.solver import _rewrite_cone_rows
 from mujoco_warp._src.solver import _row_weight
 from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.warp_util import cache_kernel
@@ -384,8 +384,11 @@ def _init_rows(width: int):
       jaref = -efc_aref_in[worldid, row]
       if block[0] > 0:
         vbase = vbase_in[worldid, islandid]
+        # the row in its group's block of efc.J (see island._island_world)
+        adr = block[1] + (row - block[3]) * island.dense_stride(block[0])
         for c in range(wp.static(width)):
-          jaref += iJ_in[worldid, row, c] * iqacc_in[worldid, vbase + c]
+          if c < block[0]:
+            jaref += iJ_in[worldid, 0, adr + c] * iqacc_in[worldid, vbase + c]
       else:
         rowadr = efc_J_rowadr_in[worldid, row]
         for k in range(efc_J_rownnz_in[worldid, row]):
@@ -434,8 +437,11 @@ def _jv(width: int):
     jv = float(0.0)
     if island_dense_in[worldid, g][0] > 0:
       vbase = vbase_in[worldid, g]
+      block = island_dense_in[worldid, g]
+      adr = block[1] + (row - block[3]) * island.dense_stride(block[0])
       for c in range(wp.static(width)):
-        jv += iJ_in[worldid, row, c] * search_in[worldid, vbase + c]
+        if c < block[0]:
+          jv += iJ_in[worldid, 0, adr + c] * search_in[worldid, vbase + c]
     else:
       rowadr = efc_J_rowadr_in[worldid, row]
       for k in range(efc_J_rownnz_in[worldid, row]):
@@ -756,14 +762,16 @@ def _h_flips(
     row = quad_changed_ids_in[worldid, c]
     g = efc_island_in[worldid, row]
     w = row_w_in[worldid, row]
-    width = island_dense_in[worldid, g][0]
+    block = island_dense_in[worldid, g]
+    width = block[0]
     if width > 0:
-      # a dense group is one pool tile
+      # a dense group is one pool tile; its rows are its block of efc.J
       row0 = _TILE * tilebase_in[worldid, g]
+      adr = block[1] + (row - block[3]) * island.dense_stride(width)
       for entry in range(lane, width * (width + 1) // 2, wp.static(_JTDAJ_THREADS_PER_GROUP)):
         i = int((wp.sqrt(float(8 * entry + 1)) - 1.0) * 0.5)
         j = entry - i * (i + 1) // 2
-        h = w * iJ_in[worldid, row, i] * iJ_in[worldid, row, j]
+        h = w * iJ_in[worldid, 0, adr + i] * iJ_in[worldid, 0, adr + j]
         if h != 0.0:
           wp.atomic_add(H_out[worldid, row0 + j], i, h)  # kernel_analyzer: ignore[atomic]
     else:
@@ -786,6 +794,47 @@ def _h_flips(
 @wp.func
 def _quad_weight(D: float, state: int) -> float:
   return wp.where(state == types.ConstraintState.QUADRATIC.value, D, 0.0)
+
+
+@wp.func
+def _rewrite_cone_rows_block(
+  # Data in:
+  efc_J_in: wp.array3d[float],
+  efc_state_in: wp.array2d[int],
+  # In:
+  block: wp.vec4i,
+  ctx_cone_coef_in: wp.array2d[types.vec6],
+  ctx_cone_base_in: wp.array2d[int],
+  worldid: int,
+  rank: int,
+  lanes: int,
+  nefc_world: int,
+  k: int,
+  nrow: int,
+  ncol: int,
+  J_kj: Any,
+):
+  """_rewrite_cone_rows of a group whose rows are its block of efc.J (n = block[0] a row)."""
+  for it in range((nrow * ncol + lanes - 1) // lanes):
+    e = it * lanes + rank
+    in_tile = e < nrow * ncol
+    ec = wp.where(in_tile, e, 0)
+    erow = ec // ncol
+    dofid = ec - erow * ncol
+    efcid = k + erow
+    enable = in_tile and (efcid < nefc_world)
+    if enable:
+      enable = efc_state_in[worldid, efcid] == types.ConstraintState.CONE.value
+    value = float(0.0)
+    if enable and dofid < block[0]:
+      base = ctx_cone_base_in[worldid, efcid]
+      coef = ctx_cone_coef_in[worldid, efcid]
+      # zero past condim; bound rows of contacts truncated by njmax
+      for dim in range(6):
+        row = base + dim
+        if (coef[dim] != 0.0) and (row >= 0) and (row < nefc_world):
+          value += coef[dim] * efc_J_in[worldid, 0, block[1] + (row - block[3]) * island.dense_stride(block[0]) + dofid]
+    wp.tile_scatter_masked(J_kj, erow, dofid, value, enable)
 
 
 @cache_kernel
@@ -845,8 +894,11 @@ def _dense_rows_h(width: int, elliptic: bool):
       rowadr = block[3]
       nrow = block[2]
       row0 = _TILE * tilebase_in[worldid, g]
-      # views ending at the group's last row: the loads zero-fill past it (and past column W)
-      J = wp.array(ptr=iJ_in[worldid].ptr, shape=(rowadr + nrow, W), dtype=float)
+      # views ending at the group's last row: the loads zero-fill past it; the block's rows are the
+      # group's n DOFs, so the loads also zero-fill past column n
+      J = wp.array(
+        ptr=iJ_in[worldid, 0].ptr + wp.uint64(block[1] * 4), shape=(nrow, island.dense_stride(block[0])), dtype=float
+      )
       D = wp.array(ptr=efc_D_in[worldid].ptr, shape=(rowadr + nrow,), dtype=float)
       state = wp.array(ptr=efc_state_in[worldid].ptr, shape=(rowadr + nrow,), dtype=int)
       # M's upper triangle, tree by tree (a group's DOFs are whole trees in order, each tree's CSR
@@ -876,7 +928,7 @@ def _dense_rows_h(width: int, elliptic: bool):
       h = wp.tile_reshape(m_tile, (W, W))
       for k in range(0, nrow, K):
         if wp.static(ELLIPTIC):
-          J_k = wp.tile_load(J, shape=(K, W), offset=(rowadr + k, 0), bounds_check=True, storage="shared")
+          J_k = wp.tile_load(J, shape=(K, W), offset=(k, 0), bounds_check=True, storage="shared")
           state_k = wp.tile_load(state, shape=K, offset=rowadr + k, bounds_check=True)
           # not a shared wp.func: Warp does not reserve shared memory for a tile returned by one
           active = wp.tile_map(_active_check, wp.tile_arange(K, dtype=int), wp.tile_ones(shape=K, dtype=int) * (nrow - k))
@@ -888,11 +940,11 @@ def _dense_rows_h(width: int, elliptic: bool):
             active,
           )
           if wp.tile_reduce(wp.add, wp.tile_map(_is_cone, state_k, active))[0] > 0:
-            _rewrite_cone_rows(
-              iJ_in, efc_state_in, cone_coef_in, cone_base_in, worldid, lane, lanes, rowadr + nrow, rowadr + k, K, W, J_k
+            _rewrite_cone_rows_block(
+              iJ_in, efc_state_in, block, cone_coef_in, cone_base_in, worldid, lane, lanes, rowadr + nrow, rowadr + k, K, W, J_k
             )
         else:
-          J_k = wp.tile_load(J, shape=(K, W), offset=(rowadr + k, 0), bounds_check=True)
+          J_k = wp.tile_load(J, shape=(K, W), offset=(k, 0), bounds_check=True)
           D_k = wp.tile_map(
             _quad_weight,
             wp.tile_load(D, shape=K, offset=rowadr + k, bounds_check=True),
@@ -1065,7 +1117,9 @@ def _grad(final: bool):
           if col < block[0]:
             # independent loads (no test of the force first): the row loop is latency bound
             for r in range(block[3], block[3] + block[2]):
-              frc += iJ_in[worldid, r, col] * efc_force_in[worldid, r]
+              frc += (
+                iJ_in[worldid, 0, block[1] + (r - block[3]) * island.dense_stride(block[0]) + col] * efc_force_in[worldid, r]
+              )
           frc_out[worldid, row] = frc
         else:
           frc = frc_out[worldid, row]
@@ -1509,7 +1563,7 @@ def _evaluate(m: types.Model, d: types.Data, ctx: IslandContext, g: island.Group
 
   def dense_h():
     wp.launch_tiled(
-      _dense_rows_h(g.J.shape[2], elliptic),
+      _dense_rows_h(island.dense_width(m), elliptic),
       dim=_nblock(),
       inputs=[
         m.ntree,
@@ -1536,7 +1590,7 @@ def _evaluate(m: types.Model, d: types.Data, ctx: IslandContext, g: island.Group
         ctx.cone_coef,
         ctx.cone_weight,
         ctx.cone_base,
-        g.J,
+        d.efc.J,
       ],
       outputs=[ctx.H],
       block_dim=_ISLAND_THREADS,
@@ -1558,7 +1612,7 @@ def _evaluate(m: types.Model, d: types.Data, ctx: IslandContext, g: island.Group
         ctx.ntile,
         ctx.vbase,
         ctx.dof2row,
-        g.J,
+        d.efc.J,
         ctx.row_w,
         ctx.quad_changed_ids,
         ctx.quad_changed_count,
@@ -1617,7 +1671,7 @@ def _launch_grad(d: types.Data, ctx: IslandContext, g: island.GroupBuffers, fina
       ctx.group_list,
       nslot,
       g.group_dense,
-      g.J,
+      d.efc.J,
       ctx.ntile,
       ctx.vbase,
       ctx.done,
@@ -1745,7 +1799,7 @@ def _iteration(m: types.Model, d: types.Data, ctx: IslandContext, g: island.Grou
   jv_stream = side_stream(d.qacc.device)
   with wp.ScopedStream(jv_stream):
     wp.launch(
-      _jv(g.J.shape[2]),
+      _jv(island.dense_width(m)),
       dim=(d.nworld, d.njmax),
       inputs=[
         d.nefc,
@@ -1757,7 +1811,7 @@ def _iteration(m: types.Model, d: types.Data, ctx: IslandContext, g: island.Grou
         g.group_dense,
         ctx.vbase,
         ctx.dof2row,
-        g.J,
+        d.efc.J,
         ctx.search.reshape((d.nworld, nrow)),
         ctx.search_unchanged,
       ],
@@ -1861,7 +1915,7 @@ def _iteration(m: types.Model, d: types.Data, ctx: IslandContext, g: island.Grou
 def _solve_groups(m: types.Model, d: types.Data, ctx: IslandContext, g: island.GroupBuffers):
   """Solve the awake groups: one-tile groups whole, wider ones on the block path."""
   nrow = ctx.qacc.shape[1]
-  init_kernel = _init_rows(g.J.shape[2])
+  init_kernel = _init_rows(island.dense_width(m))
   init_lanes = efc_threads_per_world(d.nworld, d.njmax, d.qacc.device, init_kernel)
   wp.launch(
     init_kernel,
@@ -1877,7 +1931,7 @@ def _solve_groups(m: types.Model, d: types.Data, ctx: IslandContext, g: island.G
       g.group_dense,
       ctx.vbase,
       ctx.dof2row,
-      g.J,
+      d.efc.J,
       ctx.qacc,
       init_lanes,
     ],

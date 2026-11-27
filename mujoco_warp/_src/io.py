@@ -3051,16 +3051,20 @@ def put_data(
 
 
 def _island_dense_rows(efc_J: np.ndarray, d: types.Data, groups, worldid: int):
-  """Fill the rows of island groups with dense rows (see island.DENSE_NV)."""
-  group_dense, J = groups.group_dense.numpy()[worldid], groups.J.numpy()[worldid]
-  group_nv, group_idofadr = groups.group_nv.numpy()[worldid], groups.group_idofadr.numpy()[worldid]
+  """Fill the rows of island groups with dense rows (see island.DENSE_NV).
+
+  A group's dense rows are a block of efc.J, a row of its n DOFs in group order each.
+  """
+  group_dense, J = groups.group_dense.numpy()[worldid], d.efc.J.numpy()[worldid, 0]
+  group_idofadr = groups.group_idofadr.numpy()[worldid]
   idof2dof = d.map_idof2dof.numpy()[worldid]
   for g in range(groups.ngroup.numpy()[worldid]):
-    width, _, nrow, rowadr = group_dense[g]
-    if width == 0:
+    n, base, nrow, rowadr = group_dense[g]
+    if n == 0:
       continue
-    n = group_nv[g]
-    efc_J[rowadr : rowadr + nrow, idof2dof[group_idofadr[g] : group_idofadr[g] + n]] = J[rowadr : rowadr + nrow, :n]
+    cols = idof2dof[group_idofadr[g] : group_idofadr[g] + n]
+    stride = (n + 3) // 4 * 4
+    efc_J[rowadr : rowadr + nrow, cols] = J[base : base + nrow * stride].reshape((nrow, stride))[:, :n]
 
 
 def get_data_into(

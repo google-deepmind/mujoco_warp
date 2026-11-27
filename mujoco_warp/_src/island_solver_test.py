@@ -94,7 +94,6 @@ def _fixture(dense_nv: int = island.DENSE_NV, merge: bool = True, cone: int = Co
   # rows in island order, dense rows for groups up to dense_nv DOFs; no stale Jacobian entry may be
   # used
   d.efc.J.fill_(np.nan)
-  island.group_buffers(m, d).J.fill_(np.nan)
   with mock.patch.object(island, "DENSE_NV", dense_nv), mock.patch.object(island, "MERGE", merge):
     mjw.make_constraint(m, d)
   # start away from the solution so every island iterates
@@ -256,24 +255,23 @@ class IslandSolverTest(parameterized.TestCase):
         mjw.make_constraint(m, d)
       expect = rows()
       # every dense entry must be written (stale values from other steps are not zero)
-      island.group_buffers(m, d).J.fill_(np.nan)
+      d.efc.J.fill_(np.nan)
       mjw.make_constraint(m, d)
       np.testing.assert_allclose(rows(), expect, atol=1e-6)
 
       g = island.group_buffers(m, d)
-      group_dense, J = g.group_dense.numpy()[0], g.J.numpy()[0]
+      group_dense = g.group_dense.numpy()[0]
       nv, rownnz = g.group_nv.numpy()[0], d.efc.J_rownnz.numpy()[0]
       ngroup = g.ngroup.numpy()[0]
-      # dense rows for groups up to the dense width, of one tree or several
+      # dense rows for groups up to the dense width, of one tree or several: rows of its DOFs
       idof2dof, idofadr = d.map_idof2dof.numpy()[0], g.group_idofadr.numpy()[0]
-      wide = np.where(nv[:ngroup] <= island.dense_width(m), island.dense_width(m), 0)
+      wide = np.where(nv[:ngroup] <= island.dense_width(m), nv[:ngroup], 0)
       np.testing.assert_array_equal(group_dense[:ngroup, 0], wide)
       widths.update(group_dense[:ngroup, 0])
       for i in range(ngroup):
         width, _, nrow, rowadr = group_dense[i]
         if width:
           np.testing.assert_array_equal(rownnz[rowadr : rowadr + nrow], 0)
-          np.testing.assert_array_equal(J[rowadr : rowadr + nrow, nv[i] : width], 0.0)
           trees = np.unique(m.dof_treeid.numpy()[idof2dof[idofadr[i] : idofadr[i] + nv[i]]])
           multi_tree |= len(trees) > 1
     # dense rows (the chain; the welded pair, two trees) and sparse rows (the stacks)
@@ -325,7 +323,10 @@ class IslandSolverTest(parameterized.TestCase):
     d.efc.Ma.fill_(np.nan)
     island_solver.solve(m, d)
     g = island.group_buffers(m, d)
-    self.assertEqual(list(g.group_dense.numpy()[0, : g.ngroup.numpy()[0], 0]), [island.dense_width(m)])
+    # one dense group, its rows as long as its DOFs
+    self.assertEqual(
+      list(g.group_dense.numpy()[0, : g.ngroup.numpy()[0], 0]), list(g.group_nv.numpy()[0, : g.ngroup.numpy()[0]])
+    )
     np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-3, atol=2e-3)
     np.testing.assert_allclose(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, rtol=1e-3, atol=1e-3)
     _assert_Ma(mjm, mjd, d)
@@ -885,7 +886,7 @@ class IslandSolverTest(parameterized.TestCase):
     # three resting boxes (6 DOFs each, dense width 16): a pair and a single, both with dense rows
     self.assertEqual(island.dense_width(m), 16)
     self.assertEqual(list(g.group_nv.numpy()[0, :ngroup]), [12, 6])
-    self.assertEqual(list(g.group_dense.numpy()[0, :ngroup, 0]), [16, 16])
+    self.assertEqual(list(g.group_dense.numpy()[0, :ngroup, 0]), [12, 6])
 
   def test_island_groups(self):
     """Consecutive islands share a group up to MERGE_NV DOFs; the solution is unchanged."""
