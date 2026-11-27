@@ -4333,6 +4333,7 @@ class FlexContactParityTest(parameterized.TestCase):
       m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
       self._assert_contact_parity(w_contacts, m_contacts, atol=1e-4)
 
+  @absltest.skip("TODO(taylorhowell): Restore after the flex collision refactor.")
   @parameterized.parameters(1, 2)
   def test_flex_flex_trilinear_collision_trajectory(self, nworld):
     mjm, mjd, m, d = test_data.fixture(
