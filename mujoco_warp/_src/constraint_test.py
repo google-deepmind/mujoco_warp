@@ -1635,6 +1635,169 @@ class ConstraintTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.efc.aref.numpy()[0, :nefc], d.efc.aref.numpy()[1, :nefc]))
 
+  @parameterized.product(
+    nworld=(1, 2),
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+    has_flex=(False, True),
+  )
+  def test_contact_partial_njmax_overflow(self, nworld, cone, jacobian, has_flex):
+    """Rejects contacts straddling njmax as a whole and clears unused efc rows."""
+    flex_xml = (
+      """
+          <flexcomp name="f1" type="grid" count="2 2 1" spacing="0.1 0.1 0.1" pos="0 0 5" radius="0.01" dim="2" mass="0.1">
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+          </flexcomp>
+      """
+      if has_flex
+      else ""
+    )
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option>
+          <flag sleep="enable"/>
+        </option>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <body name="b1" pos="0 0 1">
+            <freejoint/>
+            <geom size="0.1" pos="-0.2 0 0"/>
+            <geom size="0.1" pos="0.2 0 0"/>
+          </body>
+          {flex_xml}
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=5,
+      # Reserve enough sparse nnz so parallel contacts overflow njmax rather than njmax_nnz.
+      njmax_nnz=200,
+      overrides={"opt.cone": cone, "opt.jacobian": jacobian},
+    )
+
+    qpos = d.qpos.numpy()
+    qpos[:, 2] = 0.05 if nworld == 1 else [0.05, 0.04]
+    d.qpos.assign(qpos)
+
+    mjw.kinematics(m, d)
+    mjw.com_pos(m, d)
+    mjw.crb(m, d)
+    mjw.collision(m, d)
+
+    d.efc.D.fill_(wp.inf)
+    d.efc.aref.fill_(wp.inf)
+    d.efc.type.fill_(99)
+    d.efc.id.fill_(99)
+    if m.is_sparse:
+      d.efc.J_rownnz.fill_(99)
+    else:
+      d.efc.J.fill_(wp.inf)
+
+    mjw.make_constraint(m, d)
+
+    ndim = 3 if cone == ConeType.ELLIPTIC else 4
+    self.assertTrue(np.all(d.nefc.numpy() == 2 * ndim))
+
+    # Exactly one contact per world fits; the straddling contact is rejected across all rows.
+    efc_addr = d.contact.efc_address.numpy()[: 2 * nworld, :ndim]
+    valid_mask = efc_addr[:, 0] >= 0
+    rejected_mask = efc_addr[:, 0] == -1
+    self.assertEqual(np.sum(valid_mask), nworld)
+    self.assertEqual(np.sum(rejected_mask), nworld)
+    np.testing.assert_array_equal(efc_addr[valid_mask], np.tile(np.arange(ndim, dtype=np.int32), (nworld, 1)))
+    self.assertTrue(np.all(efc_addr[rejected_mask] == -1))
+
+    # Straddling rows [ndim, njmax) must be cleared rather than retaining stale values.
+    tail = slice(ndim, d.njmax)
+    efc_aref = d.efc.aref.numpy()
+    self.assertTrue(np.all(d.efc.D.numpy()[:, tail] == 0.0))
+    self.assertTrue(np.all(efc_aref[:, tail] == 0.0))
+    self.assertTrue(np.all(d.efc.type.numpy()[:, tail] == -1))
+    self.assertTrue(np.all(d.efc.id.numpy()[:, tail] == -1))
+    if m.is_sparse:
+      self.assertTrue(np.all((d.overflow.numpy() & int(mjw.OverflowType.NJMAX_NNZ)) == 0))
+      self.assertTrue(np.all(d.efc.J_rownnz.numpy()[:, tail] == 0))
+      self.assertTrue(np.all(d.efc.jtdaj_nblock.numpy() == 1))
+      self.assertTrue(np.all(d.efc.jtdaj_nrow.numpy()[:, 0] == ndim))
+    else:
+      self.assertTrue(np.all(d.efc.J.numpy()[:, tail, : m.nv] == 0.0))
+
+    # Verify host transfer compacts rejected contacts and remaps island maps cleanly.
+    mjw.forward(m, d)
+    mjd_out = mujoco.MjData(mjm)
+    for w in range(nworld):
+      mjw.get_data_into(mjd_out, mjm, d, world_id=w)
+      self.assertEqual(mjd_out.nefc, ndim)
+      self.assertEqual(np.sum(mjd_out.contact.efc_address == -1), 1)
+      if has_flex:
+        self.assertEqual(mjd_out.nisland, 1)
+        self.assertEqual(int(mjd_out.island_nefc[0]), ndim)
+        np.testing.assert_array_equal(mjd_out.map_efc2iefc[mjd_out.map_iefc2efc[:ndim]], np.arange(ndim, dtype=np.int32))
+        np.testing.assert_array_equal(mjd_out.map_iefc2efc[mjd_out.map_efc2iefc[:ndim]], np.arange(ndim, dtype=np.int32))
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(efc_aref[0, :ndim], efc_aref[1, :ndim]))
+
+  @parameterized.product(
+    nworld=(1, 2),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_regularize_constraint_njmax_overflow(self, nworld, jacobian):
+    """regularize_constraint stays within njmax and skips cleared rows when nefc > njmax."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="discrete" timestep="0.01"/>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <body pos="0 0 1">
+            <joint name="jx" type="slide" axis="1 0 0" stiffness="10" damping="0.5"/>
+            <joint name="jz" type="slide" axis="0 0 1" stiffness="500" damping="20"/>
+            <geom size="0.1" pos="-0.2 0 0" mass="1"/>
+            <geom size="0.1" pos="0.2 0 0" mass="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=5,
+      njmax_nnz=32,
+      overrides={"opt.jacobian": jacobian},
+    )
+
+    qpos = d.qpos.numpy()
+    qpos[:, 1] = -0.95
+    if nworld == 2:
+      qpos[1, 1] = -0.96
+      qvel = d.qvel.numpy()
+      qvel[1] = [0.2, -0.3]
+      d.qvel.assign(qvel)
+    d.qpos.assign(qpos)
+
+    mjw.fwd_position(m, d)
+    mjw.fwd_velocity(m, d)
+
+    self.assertTrue(np.all(d.nefc.numpy() == 8))
+    self.assertGreater(d.efc.D.shape[1], d.njmax)
+
+    # Sentinel in padded efc.D slots past njmax must remain untouched.
+    efc_D_before = d.efc.D.numpy()
+    efc_D_before[:, d.njmax :] = 1234.0
+    d.efc.D.assign(efc_D_before)
+
+    mjw.fwd_actuation(m, d)
+
+    efc_D = d.efc.D.numpy()
+    efc_aref = d.efc.aref.numpy()
+    self.assertTrue(np.all(np.isfinite(efc_D[:, :4]) & (efc_D[:, :4] > 0.0)))
+    self.assertTrue(np.all(np.isfinite(efc_aref[:, :4])))
+    self.assertTrue(np.all(efc_D[:, 4] == 0.0))
+    self.assertTrue(np.all(efc_aref[:, 4] == 0.0))
+    self.assertTrue(np.all(efc_D[:, d.njmax :] == 1234.0))
+    if nworld == 2:
+      self.assertFalse(np.allclose(efc_aref[0, :4], efc_aref[1, :4]))
+
 
 if __name__ == "__main__":
   absltest.main()

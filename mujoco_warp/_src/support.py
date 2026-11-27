@@ -1146,7 +1146,7 @@ def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d[float]):
 
 
 @wp.func
-def _decode_pyramid(njmax_in: int, pyramid: wp.array[float], efc_address: int, mu: vec5, condim: int) -> wp.spatial_vector:
+def _decode_pyramid(pyramid: wp.array[float], efc_address: int, mu: vec5, condim: int) -> wp.spatial_vector:
   """Converts pyramid representation to contact force."""
   force = wp.spatial_vector()
 
@@ -1157,14 +1157,8 @@ def _decode_pyramid(njmax_in: int, pyramid: wp.array[float], efc_address: int, m
   force[0] = float(0.0)
   for i in range(condim - 1):
     adr = 2 * i + efc_address
-    if adr < njmax_in:
-      dir1 = pyramid[adr]
-    else:
-      dir1 = 0.0
-    if adr + 1 < njmax_in:
-      dir2 = pyramid[adr + 1]
-    else:
-      dir2 = 0.0
+    dir1 = pyramid[adr]
+    dir2 = pyramid[adr + 1]
     force[0] += dir1 + dir2
     force[i + 1] = (dir1 - dir2) * mu[i]
 
@@ -1182,7 +1176,6 @@ def contact_force_fn(
   contact_efc_address_in: wp.array2d[int],
   contact_adhesion_in: wp.array[float],
   efc_force_in: wp.array2d[float],
-  njmax_in: int,
   nacon_in: wp.array[int],
   # In:
   worldid: int,
@@ -1191,13 +1184,15 @@ def contact_force_fn(
 ) -> wp.spatial_vector:
   """Extract 6D force:torque for one contact, in contact frame by default."""
   force = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+  if contact_id < 0 or contact_id >= wp.min(nacon_in[0], contact_dim_in.shape[0]):
+    return force
+
   condim = contact_dim_in[contact_id]
   efc_address = contact_efc_address_in[contact_id, 0]
 
-  if contact_id >= 0 and contact_id <= nacon_in[0] and efc_address >= 0:
+  if efc_address >= 0:
     if opt_cone == ConeType.PYRAMIDAL:
       force = _decode_pyramid(
-        njmax_in,
         efc_force_in[worldid],
         efc_address,
         contact_friction_in[contact_id],
@@ -1205,8 +1200,7 @@ def contact_force_fn(
       )
     else:
       for i in range(condim):
-        if contact_efc_address_in[contact_id, i] < njmax_in:
-          force[i] = efc_force_in[worldid, contact_efc_address_in[contact_id, i]]
+        force[i] = efc_force_in[worldid, contact_efc_address_in[contact_id, i]]
 
     # report net interface force: solver cone force minus adhesive pull
     force[0] -= contact_adhesion_in[contact_id]
@@ -1232,7 +1226,6 @@ def contact_force_kernel(
   contact_worldid_in: wp.array[int],
   contact_adhesion_in: wp.array[float],
   efc_force_in: wp.array2d[float],
-  njmax_in: int,
   nacon_in: wp.array[int],
   # In:
   contact_ids: wp.array[int],
@@ -1244,7 +1237,8 @@ def contact_force_kernel(
 
   contactid = contact_ids[tid]
 
-  if contactid >= nacon_in[0]:
+  if contactid < 0 or contactid >= wp.min(nacon_in[0], contact_worldid_in.shape[0]):
+    out[tid] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     return
 
   worldid = contact_worldid_in[contactid]
@@ -1257,7 +1251,6 @@ def contact_force_kernel(
     contact_efc_address_in,
     contact_adhesion_in,
     efc_force_in,
-    njmax_in,
     nacon_in,
     worldid,
     contactid,
@@ -1287,7 +1280,6 @@ def contact_force(m: Model, d: Data, contact_ids: wp.array[int], to_world_frame:
       d.contact.worldid,
       d.contact.adhesion,
       d.efc.force,
-      d.njmax,
       d.nacon,
       contact_ids,
       to_world_frame,

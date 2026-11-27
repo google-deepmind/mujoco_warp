@@ -285,6 +285,41 @@ def _efc_row(
   id_out[worldid, efcid] = id
 
 
+@wp.func
+def _reject_contact_efc(
+  # Model:
+  is_sparse: bool,
+  # Data in:
+  njmax_in: int,
+  njmax_nnz_in: int,
+  # In:
+  worldid: int,
+  conid: int,
+  base_efcid: int,
+  ndim: int,
+  # Data out:
+  contact_efc_address_out: wp.array2d[int],
+  efc_type_out: wp.array2d[int],
+  efc_id_out: wp.array2d[int],
+  efc_J_rownnz_out: wp.array2d[int],
+  efc_J_rowadr_out: wp.array2d[int],
+  efc_D_out: wp.array2d[float],
+  efc_aref_out: wp.array2d[float],
+):
+  """Reject a contact and clear any efc rows reserved below njmax."""
+  for dim in range(ndim):
+    contact_efc_address_out[conid, dim] = -1
+  for efcid in range(base_efcid, wp.min(base_efcid + ndim, njmax_in)):
+    if is_sparse:
+      efc_J_rownnz_out[worldid, efcid] = 0
+      # place empty rows at the end of CSR storage so row ranges stay non-overlapping
+      efc_J_rowadr_out[worldid, efcid] = njmax_nnz_in
+    efc_D_out[worldid, efcid] = 0.0
+    efc_aref_out[worldid, efcid] = 0.0
+    efc_type_out[worldid, efcid] = -1
+    efc_id_out[worldid, efcid] = -1
+
+
 @cache_kernel
 def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
@@ -2655,12 +2690,15 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
     # Data out:
     nefc_out: wp.array[int],
     contact_efc_address_out: wp.array2d[int],
+    efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
     efc_jtdaj_adr_out: wp.array2d[int],
     efc_jtdaj_nrow_out: wp.array2d[int],
     efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
+    efc_D_out: wp.array2d[float],
+    efc_aref_out: wp.array2d[float],
     efc_Jqvel_out: wp.array2d[float],
     # Out:
     efc_nnz_out: wp.array[int],
@@ -2728,32 +2766,42 @@ def _efc_contact_init(cone_type: types.ConeType, is_sparse: bool, newton: bool, 
           contact_efc_address_out[conid, dim] = -1
         return
 
-    # Allocate contiguous block of efcids for all dimids
+    # Allocate contiguous block of efcids; reject the contact as a whole if it straddles njmax
     base_efcid = wp.atomic_add(nefc_out, worldid, ndim)  # kernel_analyzer: ignore[atomic]
+    if base_efcid + ndim > njmax_in:
+      _reject_contact_efc(
+        IS_SPARSE,
+        njmax_in,
+        njmax_nnz_in,
+        worldid,
+        conid,
+        base_efcid,
+        ndim,
+        contact_efc_address_out,
+        efc_type_out,
+        efc_id_out,
+        efc_J_rownnz_out,
+        efc_J_rowadr_out,
+        efc_D_out,
+        efc_aref_out,
+      )
+      return
+
     for dim in range(ndim):
       efcid = base_efcid + dim
-      if efcid >= njmax_in:
-        contact_efc_address_out[conid, dim] = -1
-      else:
-        contact_efc_address_out[conid, dim] = efcid
-        # This is redundant with the _efc_row call later but needed for the jac calculation
-        efc_id_out[worldid, efcid] = conid
-        if wp.static(IS_SPARSE):
-          # the sparse Jacobian kernel accumulates into this
-          efc_Jqvel_out[worldid, efcid] = 0.0
+      contact_efc_address_out[conid, dim] = efcid
+      # This is redundant with the _efc_row call later but needed for the jac calculation
+      efc_id_out[worldid, efcid] = conid
+      if wp.static(IS_SPARSE):
+        # the sparse Jacobian kernel accumulates into this
+        efc_Jqvel_out[worldid, efcid] = 0.0
+        efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
+        efc_J_rownnz_out[worldid, efcid] = rownnz
 
     if wp.static(is_sparse and newton):
-      if base_efcid < njmax_in:
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-        efc_jtdaj_adr_out[worldid, jgid] = base_efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = wp.min(ndim, njmax_in - base_efcid)
-
-    if wp.static(IS_SPARSE):
-      for dim in range(ndim):
-        efcid = base_efcid + dim
-        if efcid < njmax_in:
-          efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
-          efc_J_rownnz_out[worldid, efcid] = rownnz
+      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+      efc_jtdaj_adr_out[worldid, jgid] = base_efcid
+      efc_jtdaj_nrow_out[worldid, jgid] = ndim
 
   return kernel
 
@@ -2934,12 +2982,15 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
     # Data out:
     nefc_out: wp.array[int],
     contact_efc_address_out: wp.array2d[int],
+    efc_type_out: wp.array2d[int],
     efc_id_out: wp.array2d[int],
     efc_jtdaj_adr_out: wp.array2d[int],
     efc_jtdaj_nrow_out: wp.array2d[int],
     efc_jtdaj_nblock_out: wp.array[int],
     efc_J_rownnz_out: wp.array2d[int],
     efc_J_rowadr_out: wp.array2d[int],
+    efc_D_out: wp.array2d[float],
+    efc_aref_out: wp.array2d[float],
     # Out:
     efc_nnz_out: wp.array[int],
   ):
@@ -3155,29 +3206,40 @@ def _efc_contact_init_flex(cone_type: types.ConeType, is_sparse: bool, newton: b
           contact_efc_address_out[conid, dim] = -1
         return
 
-    # Allocate contiguous block of efcids for all dimids
+    # Allocate contiguous block of efcids; reject the contact as a whole if it straddles njmax
     base_efcid = wp.atomic_add(nefc_out, worldid, ndim)  # kernel_analyzer: ignore[atomic]
+    if base_efcid + ndim > njmax_in:
+      _reject_contact_efc(
+        IS_SPARSE,
+        njmax_in,
+        njmax_nnz_in,
+        worldid,
+        conid,
+        base_efcid,
+        ndim,
+        contact_efc_address_out,
+        efc_type_out,
+        efc_id_out,
+        efc_J_rownnz_out,
+        efc_J_rowadr_out,
+        efc_D_out,
+        efc_aref_out,
+      )
+      return
+
     for dim in range(ndim):
       efcid = base_efcid + dim
-      if efcid >= njmax_in:
-        contact_efc_address_out[conid, dim] = -1
-      else:
-        contact_efc_address_out[conid, dim] = efcid
-        # This is redundant with the _efc_row call later but needed for the jac calculation
-        efc_id_out[worldid, efcid] = conid
+      contact_efc_address_out[conid, dim] = efcid
+      # This is redundant with the _efc_row call later but needed for the jac calculation
+      efc_id_out[worldid, efcid] = conid
+      if wp.static(IS_SPARSE):
+        efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
+        efc_J_rownnz_out[worldid, efcid] = rownnz
 
     if wp.static(is_sparse and newton):
-      if base_efcid < njmax_in:
-        jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
-        efc_jtdaj_adr_out[worldid, jgid] = base_efcid
-        efc_jtdaj_nrow_out[worldid, jgid] = wp.min(ndim, njmax_in - base_efcid)
-
-    if wp.static(IS_SPARSE):
-      for dim in range(ndim):
-        efcid = base_efcid + dim
-        if efcid < njmax_in:
-          efc_J_rowadr_out[worldid, efcid] = rowadr + dim * rownnz
-          efc_J_rownnz_out[worldid, efcid] = rownnz
+      jgid = wp.atomic_add(efc_jtdaj_nblock_out, worldid, 1)  # kernel_analyzer: ignore[atomic]
+      efc_jtdaj_adr_out[worldid, jgid] = base_efcid
+      efc_jtdaj_nrow_out[worldid, jgid] = ndim
 
   return kernel
 
@@ -4203,6 +4265,9 @@ def _efc_contact_jac_dense(nv_pad: int, cone_type: types.ConeType, nmaxcondim: i
 
     for efcid in range(efcid_start, efcid_end):
       conid = efc_id_in[worldid, efcid]
+      if conid < 0:
+        wp.tile_store(efc_J_out[worldid, efcid], wp.tile_zeros(shape=TILE_SIZE, dtype=float), bounds_check=True)
+        continue
 
       # Recompute per-contact data only when contact changes
       if conid != prev_conid:
@@ -4359,6 +4424,9 @@ def _efc_contact_jac_dense_flex(nv_pad: int, cone_type: types.ConeType, nmaxcond
 
     for efcid in range(efcid_start, efcid_end):
       conid = efc_id_in[worldid, efcid]
+      if conid < 0:
+        wp.tile_store(efc_J_out[worldid, efcid], wp.tile_zeros(shape=TILE_SIZE, dtype=float), bounds_check=True)
+        continue
 
       # Recompute per-contact data only when contact changes
       if conid != prev_conid:
@@ -4786,6 +4854,8 @@ def _efc_contact_update(cone_type: types.ConeType, flg_adhesion: bool, is_discre
 
     for efcid in range(efcid_start, efcid_end, efc_stride_in):
       conid = efc_id_out[worldid, efcid]
+      if conid < 0:
+        continue
       dimid = efcid - contact_efc_address_in[conid, 0]
       condim = condim_in[conid]
 
@@ -5993,12 +6063,15 @@ def make_constraint(m: types.Model, d: types.Data):
           outputs=[
             d.nefc,
             d.contact.efc_address,
+            d.efc.type,
             d.efc.id,
             d.efc.jtdaj_adr,
             d.efc.jtdaj_nrow,
             d.efc.jtdaj_nblock,
             d.efc.J_rownnz,
             d.efc.J_rowadr,
+            d.efc.D,
+            d.efc.aref,
             efc_nnz,
           ],
         )
@@ -6026,12 +6099,15 @@ def make_constraint(m: types.Model, d: types.Data):
           outputs=[
             d.nefc,
             d.contact.efc_address,
+            d.efc.type,
             d.efc.id,
             d.efc.jtdaj_adr,
             d.efc.jtdaj_nrow,
             d.efc.jtdaj_nblock,
             d.efc.J_rownnz,
             d.efc.J_rowadr,
+            d.efc.D,
+            d.efc.aref,
             d.efc.Jqvel,
             efc_nnz,
           ],
@@ -6454,7 +6530,7 @@ def regularize_constraint(m: types.Model, d: types.Data):
   """Regularizes constraints against effective metric (discrete integrator)."""
   wp.launch(
     _regularize_constraint(m.is_sparse, m.flg_adhesion),
-    dim=(d.nworld, d.efc.D.shape[1]),
+    dim=(d.nworld, d.njmax),
     inputs=[
       m.nv,
       m.M_rownnz,

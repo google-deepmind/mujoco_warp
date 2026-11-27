@@ -1668,6 +1668,7 @@ class SolverTest(parameterized.TestCase):
       d.qacc.fill_(wp.inf)
       d.qfrc_constraint.fill_(wp.inf)
       d.efc.force.fill_(wp.inf)
+      d.efc.state.fill_(-1)
 
       if solver_ == mujoco.mjtSolver.mjSOL_CG:
         mjw.factor_m(m, d)
@@ -1684,10 +1685,13 @@ class SolverTest(parameterized.TestCase):
       mjwarp_cost = cost(d.qacc.numpy()[0])
       self.assertLessEqual(mjwarp_cost, mj_cost * 1.025)
 
+      # mjd holds the constraint update at the mjwarp solution
+      _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
+      np.testing.assert_array_equal(d.efc.state.numpy()[0, : mjd.nefc], mjd.efc_state)
+
       if m.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON:
         _assert_eq(d.qacc.numpy()[0], mjd.qacc, "qacc")
         _assert_eq(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, "qfrc_constraint")
-        _assert_eq(d.efc.force.numpy()[0, : mjd.nefc], mjd.efc_force, "efc_force")
 
   @absltest.skipIf(not wp.get_device().is_cuda, "Side streams only fork during CUDA graph capture")
   def test_solve_graph_capture_sparse(self):
@@ -1961,7 +1965,11 @@ class SolverTest(parameterized.TestCase):
     self.assertGreater(d.nefc.numpy()[0], d.njmax)
     efc_address = d.contact.efc_address.numpy()[: d.nacon.numpy()[0], :3]
     truncated = efc_address[(efc_address < 0).any(axis=1)]
-    rows = truncated[truncated >= 0]
+    self.assertEqual(truncated.shape[0], 1)
+    np.testing.assert_array_equal(truncated, -1)
+    # Unused rows reserved by the rejected contact get zero force and SATISFIED state.
+    valid_rows = set(efc_address[efc_address >= 0].tolist())
+    rows = np.array([r for r in range(d.njmax) if r not in valid_rows], dtype=np.int32)
     self.assertGreater(rows.size, 0)
     np.testing.assert_array_equal(d.efc.state.numpy()[0, rows], types.ConstraintState.SATISFIED)
     np.testing.assert_array_equal(d.efc.force.numpy()[0, rows], 0.0)
@@ -3456,6 +3464,76 @@ class SolverTest(parameterized.TestCase):
       np.testing.assert_array_equal(d.qacc.numpy()[:, : m.nv], qacc_sep[:, : m.nv])
       np.testing.assert_array_equal(d.qfrc_constraint.numpy()[:, : m.nv], qfrc_sep[:, : m.nv])
       np.testing.assert_array_equal(d.efc.force.numpy()[0, :nefc0], force_sep[0, :nefc0])
+
+  @parameterized.product(
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+    solver_type=(SolverType.CG, SolverType.NEWTON),
+    jacobian=(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE),
+  )
+  def test_solve_njmax_overflow(self, cone, solver_type, jacobian):
+    """Tests solve linesearch when ne > njmax_pad across cones and solvers."""
+    xml = """
+      <mujoco>
+        <option iterations="5" ls_iterations="5"/>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <body name="b1" pos="0 0 1">
+            <freejoint/>
+            <geom size="0.1" friction="0.8 0.8 0.01"/>
+          </body>
+          <body name="b2" pos="0.5 0 1">
+            <freejoint/>
+            <geom size="0.1" friction="0.8 0.8 0.01"/>
+          </body>
+        </worldbody>
+        <equality>
+          <weld body1="b1" body2="b2" active="false"/>
+          <weld body1="b1" active="false"/>
+          <weld body1="b2" active="false"/>
+        </equality>
+      </mujoco>
+    """
+    overrides = {"opt.cone": cone, "opt.solver": solver_type, "opt.jacobian": jacobian}
+
+    qacc_by_nworld = {}
+    for nworld in (1, 2):
+      _, _, m, d = test_data.fixture(
+        xml=xml,
+        nworld=nworld,
+        njmax=5,
+        # Reserve enough sparse nnz so parallel equality threads overflow njmax first.
+        njmax_nnz=200,
+        overrides=overrides,
+      )
+
+      qpos = d.qpos.numpy()
+      qvel = d.qvel.numpy()
+      qpos[:, 2] = 0.05 if nworld == 1 else [0.05, 0.04]
+      qpos[:, 9] = 0.06 if nworld == 1 else [0.06, 0.03]
+      qvel[:, 0] = 1.0 if nworld == 1 else [1.0, 2.0]
+      d.qpos.assign(qpos)
+      d.qvel.assign(qvel)
+      d.eq_active.fill_(True)
+
+      mjw.fwd_position(m, d)
+      mjw.fwd_velocity(m, d)
+      mjw.fwd_actuation(m, d)
+      self.assertTrue(np.all(d.ne.numpy() > d.njmax_pad))
+
+      d.qacc.fill_(wp.inf)
+      d.qfrc_constraint.fill_(wp.inf)
+      d.efc.force.fill_(wp.inf)
+      d.efc.state.fill_(int(types.ConstraintState.QUADRATIC))
+      mjw.solve(m, d)
+
+      qacc = d.qacc.numpy()
+      self.assertTrue(np.all(np.isfinite(qacc)))
+      self.assertTrue(np.all(np.isfinite(d.qfrc_constraint.numpy())))
+      qacc_by_nworld[nworld] = qacc
+
+    # Without clamping ne to nefc in linesearch, world 0 reads into world 1's rows.
+    np.testing.assert_array_equal(qacc_by_nworld[2][0], qacc_by_nworld[1][0])
+    self.assertFalse(np.allclose(qacc_by_nworld[2][0], qacc_by_nworld[2][1]))
 
 
 _FRICTION_CHAIN_XML = """

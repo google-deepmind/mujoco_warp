@@ -2261,7 +2261,6 @@ def _cfrc_ext_contact(deterministic: bool = False):
     contact_worldid_in: wp.array[int],
     contact_adhesion_in: wp.array[float],
     efc_force_in: wp.array2d[float],
-    njmax_in: int,
     nacon_in: wp.array[int],
     # Data out:
     cfrc_ext_out: wp.array2d[wp.spatial_vector],
@@ -2289,7 +2288,6 @@ def _cfrc_ext_contact(deterministic: bool = False):
       contact_efc_address_in,
       contact_adhesion_in,
       efc_force_in,
-      njmax_in,
       nacon_in,
       worldid,
       contactid,
@@ -2690,7 +2688,6 @@ def rne_postconstraint(m: Model, d: Data):
       d.contact.worldid,
       d.contact.adhesion,
       d.efc.force,
-      d.njmax,
       d.nacon,
     ],
     outputs=[d.cfrc_ext],
@@ -3788,6 +3785,8 @@ def _transmission_body_moment(nmaxpyramid: int, deterministic: bool = False):
       return
 
     contact_exclude = int(contact_dist_in[conid] >= contact_includemargin_in[conid])
+    if contact_exclude == 0 and contact_efc_address_in[conid, 0] < 0:
+      return
 
     if dofid == 0:
       wp.atomic_add(actuator_trntype_body_ncon_out[worldid], trnbodyid, 1)
