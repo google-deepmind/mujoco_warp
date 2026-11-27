@@ -68,6 +68,20 @@ class WarpUtilTest(parameterized.TestCase):
         self.assertEqual(fn(), 1)
         self.assertEqual(tracer.trace(), {})
 
+  @absltest.skipIf(not wp.get_device().is_cuda, "CUDA event timing")
+  def test_capture_do_while(self):
+    """The body runs once before the condition is read and stays out of the event trace."""
+    calls = []
+
+    @warp_util.event_scope
+    def body():
+      calls.append(1)
+
+    with warp_util.EventTracer() as tracer:
+      warp_util.capture_do_while(wp.zeros(1, dtype=int), body)
+      self.assertEqual(len(calls), 1)
+      self.assertEqual(tracer.trace(), {})
+
 
 if __name__ == "__main__":
   absltest.main()

@@ -37,6 +37,7 @@ from mujoco_warp._src.types import InverseContext
 from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import SolverContext
 from mujoco_warp._src.warp_util import cache_kernel
+from mujoco_warp._src.warp_util import capture_do_while
 from mujoco_warp._src.warp_util import efc_threads_per_world
 from mujoco_warp._src.warp_util import event_scope
 from mujoco_warp._src.warp_util import side_stream
@@ -5876,9 +5877,6 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
       block_dim=m.block_dim.solve_init_search_cg,
     )
   if m.opt.iterations != 0 and m.opt.graph_conditional:
-    if m.opt.solver == types.SolverType.NEWTON and not skip_empty_efc:
-      # no launch above marks a world as done, so the first iteration needs no condition
-      _solver_iteration(m, d, ctx, nsolving, compact=compact)
     # Note: the iteration kernel (indicated by while_body) is repeatedly launched
     # as long as condition_iteration is not zero.
     # condition_iteration is a warp array of size 1 and type int, it counts the number
@@ -5886,7 +5884,9 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
     # When the number of iterations reaches m.opt.iterations, solver_niter
     # becomes zero and all worlds are marked as converged to avoid an infinite loop.
     # note: we only launch the iteration kernel if everything is not done
-    wp.capture_while(nsolving, while_body=_solver_iteration, m=m, d=d, ctx=ctx, nsolving=nsolving, compact=compact)
+    # every Newton world is still solving unless empty ones were skipped: skip the first condition
+    loop = capture_do_while if m.opt.solver == types.SolverType.NEWTON and not skip_empty_efc else wp.capture_while
+    loop(nsolving, while_body=_solver_iteration, m=m, d=d, ctx=ctx, nsolving=nsolving, compact=compact)
   else:
     # This branch is mostly for when JAX is used as it is currently not compatible
     # with CUDA graph conditional.
