@@ -4195,29 +4195,29 @@ def find_keys(model: mujoco.MjModel, keyname_prefix: str) -> list[int]:
 
 
 def make_trajectory(model: mujoco.MjModel, keys: list[int]) -> np.ndarray:
-  """Make a ctrl trajectory with linear interpolation."""
-  ctrls = []
-  prev_ctrl_key = np.zeros(model.nu, dtype=np.float64)
-  prev_time, time = 0.0, 0.0
+  """Sample a linearly interpolated ctrl trajectory at the model timestep.
 
-  for key in keys:
-    ctrl_key, ctrl_time = model.key_ctrl[key], model.key_time[key]
-    if not ctrls and ctrl_time != 0.0:
-      raise ValueError("first keyframe must have time 0.0")
-    elif ctrls and ctrl_time <= prev_time:
-      raise ValueError("keyframes must be in time order")
+  An off-grid final keyframe is held at the first timestep after its timestamp.
+  """
+  if not keys:
+    return np.array([])
 
-    while time < ctrl_time:
-      frac = (time - prev_time) / (ctrl_time - prev_time)
-      ctrls.append(prev_ctrl_key * (1 - frac) + ctrl_key * frac)
-      time += model.opt.timestep
+  key_times = model.key_time[keys]
+  if key_times[0] != 0.0:
+    raise ValueError("first keyframe must have time 0.0")
+  if not np.all(np.isfinite(key_times)) or np.any(np.diff(key_times) <= 0.0):
+    raise ValueError("keyframes must have finite times in strictly increasing order")
 
-    ctrls.append(ctrl_key)
-    time += model.opt.timestep
-    prev_ctrl_key = ctrl_key
-    prev_time = time
-
-  return np.array(ctrls)
+  dt = model.opt.timestep
+  # Move one ULP down before rounding up to avoid an extra step from division roundoff.
+  last_step = int(np.ceil(np.nextafter(key_times[-1] / dt, -np.inf)))
+  sample_times = np.arange(last_step + 1) * dt
+  sample_times[-1] = key_times[-1]
+  key_ctrls = model.key_ctrl[keys]
+  ctrls = np.empty((sample_times.size, model.nu), dtype=key_ctrls.dtype)
+  for actuator in range(model.nu):
+    ctrls[:, actuator] = np.interp(sample_times, key_times, key_ctrls[:, actuator])
+  return ctrls
 
 
 def load_trajectory(npz_path: str, mjm: mujoco.MjModel, mjd: mujoco.MjData) -> np.ndarray:

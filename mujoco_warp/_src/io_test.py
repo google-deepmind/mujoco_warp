@@ -446,6 +446,26 @@ _MESH_RANDOMIZE_XML = """
 
 class IOTest(parameterized.TestCase):
   @parameterized.named_parameters(
+    ("on_grid", "0.3", "0.6", [0.0, 1.0, 2.0, 3.0, 5.0, 7.0, 9.0]),
+    ("off_grid", "0.15", "0.35", [0.0, 2.0, 4.5, 7.5, 9.0]),
+    ("substep_key", "0.04", "0.35", [0.0, 129.0 / 31.0, 189.0 / 31.0, 249.0 / 31.0, 9.0]),
+  )
+  def test_make_trajectory_uses_timestep_grid(self, middle, end, expected):
+    model = mujoco.MjModel.from_xml_string(f"""
+      <mujoco>
+        <option timestep="0.1"/>
+        <worldbody><body><joint name="joint"/><geom size="0.1"/></body></worldbody>
+        <actuator><motor joint="joint"/></actuator>
+        <keyframe>
+          <key time="0.0" ctrl="0"/>
+          <key time="{middle}" ctrl="3"/>
+          <key time="{end}" ctrl="9"/>
+        </keyframe>
+      </mujoco>
+    """)
+    np.testing.assert_allclose(io.make_trajectory(model, [0, 1, 2]), np.array(expected)[:, None])
+
+  @parameterized.named_parameters(
     dict(
       testcase_name="control_timestamps",
       times=np.array([0.0, 0.1, 0.4]),
