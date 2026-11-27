@@ -88,9 +88,7 @@ MJ_COLLISION_TABLE = {
 }
 
 
-# TODO(team): Implement narrowphase flex collision support for:
-#             - HFIELD
-#             - SDF
+# TODO(team): Implement narrowphase flex collision support for HFIELD
 MJ_FLEX_COLLISION_TABLE = {
   (GeomType.PLANE, GeomType.FLEX): CollisionType.PRIMITIVE,
   (GeomType.SPHERE, GeomType.FLEX): CollisionType.PRIMITIVE,
@@ -99,6 +97,7 @@ MJ_FLEX_COLLISION_TABLE = {
   (GeomType.CYLINDER, GeomType.FLEX): CollisionType.CONVEX,
   (GeomType.MESH, GeomType.FLEX): CollisionType.CONVEX,
   (GeomType.ELLIPSOID, GeomType.FLEX): CollisionType.CONVEX,
+  (GeomType.SDF, GeomType.FLEX): CollisionType.SDF,  # 2D flexes only
 }
 
 

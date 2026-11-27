@@ -24,6 +24,11 @@ from mujoco_warp._src import support
 from mujoco_warp._src.collision_core import Geom
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import support as gjk_support
+from mujoco_warp._src.collision_sdf import MeshData
+from mujoco_warp._src.collision_sdf import VolumeData
+from mujoco_warp._src.collision_sdf import get_sdf_params
+from mujoco_warp._src.collision_sdf import sdf
+from mujoco_warp._src.collision_sdf import sdf_grad
 from mujoco_warp._src.math import make_frame
 from mujoco_warp._src.math import orthogonals
 from mujoco_warp._src.math import quat_to_mat
@@ -44,6 +49,10 @@ from mujoco_warp._src.types import OverflowType
 from mujoco_warp._src.types import mat23
 from mujoco_warp._src.types import mat63
 from mujoco_warp._src.types import vec5
+from mujoco_warp._src.types import vec8
+from mujoco_warp._src.types import vec8i
+from mujoco_warp._src.types import vec_pluginattr
+from mujoco_warp._src.util_misc import halton
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
@@ -56,6 +65,10 @@ _FLEX_BVH_STACK_SIZE: int = 32
 _FLEX_BVH_QUERY_THREADS: int = 1 << 16
 _FLEX_BVH_MAX_SPLIT_DEPTH: int = 4
 _FLEX_CONTACT_DEDUP_TOLERANCE: float = 1e-3
+# MuJoCo C (isknown) drops a flex-SDF point closer than mjMINVAL (1e-15) to a kept point, in SDF
+# coordinates. That is a few float64 ulps at unit scale; scaling by FLT_EPSILON / DBL_EPSILON (2^29)
+# gives the same few ulps in float32.
+_FLEX_SDF_DEDUP_TOLERANCE: float = 1e-15 * 2.0**29
 
 _vec_bvh_stack = wp.types.vector(length=_FLEX_BVH_STACK_SIZE, dtype=int)
 
@@ -2753,6 +2766,412 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
   return kernel
 
 
+@wp.func
+def _flex_sdf_max_vert_dist(
+  # In:
+  c0: wp.vec3,
+  c1: wp.vec3,
+  c2: wp.vec3,
+  p: wp.vec3,
+) -> float:
+  """Returns the largest distance from p to a triangle corner."""
+  return wp.sqrt(wp.max(wp.length_sq(c0 - p), wp.max(wp.length_sq(c1 - p), wp.length_sq(c2 - p))))
+
+
+@wp.func
+def _flex_sdf_triangle_intersect(
+  # In:
+  c0: wp.vec3,
+  c1: wp.vec3,
+  c2: wp.vec3,
+  attr: vec_pluginattr,
+  sdf_type: int,
+  volume_data: VolumeData,
+  mesh_data: MeshData,
+) -> bool:
+  """Culls a triangle against an SDF with the circumsphere of a tetrahedron built on it.
+
+  The fourth vertex is the centroid moved along the triangle normal by a tenth of the
+  centroid distance. Shallow and degenerate tetrahedra fall back to a sphere around the
+  centroid that holds the corners.
+  """
+  third = 1.0 / 3.0
+  centroid = c0 * third + c1 * third + c2 * third
+  dist_centroid = sdf(int(GeomType.SDF), centroid, attr, sdf_type, volume_data, mesh_data)
+  h = -dist_centroid / 10.0
+
+  if wp.abs(h) < 0.1:
+    return dist_centroid < _flex_sdf_max_vert_dist(c0, c1, c2, centroid)
+
+  # mju_normalize3 returns the x axis for a zero-length vector
+  normal = wp.cross(c1 - c0, c2 - c0)
+  normal_len = wp.length(normal)
+  if normal_len < MJ_MINVAL:
+    normal = wp.vec3(1.0, 0.0, 0.0)
+  else:
+    normal = normal / normal_len
+
+  p = centroid - h * normal
+  v0 = c0 - p
+  v1 = c1 - p
+  v2 = c2 - p
+  cross0 = wp.cross(v1, v2)
+  cross1 = wp.cross(v2, v0)
+  cross2 = wp.cross(v0, v1)
+  center = wp.dot(v0, v0) * cross0 + wp.dot(v1, v1) * cross1 + wp.dot(v2, v2) * cross2
+
+  denom = 2.0 * wp.dot(v0, cross0)
+  if wp.abs(denom) < MJ_MINVAL:
+    return dist_centroid < _flex_sdf_max_vert_dist(c0, c1, c2, centroid)
+
+  center = center / denom
+  radius = wp.length(center)
+  return sdf(int(GeomType.SDF), center + p, attr, sdf_type, volume_data, mesh_data) < radius
+
+
+@wp.func
+def _flex_sdf_frank_wolfe(
+  # In:
+  x: wp.vec3,
+  c0: wp.vec3,
+  c1: wp.vec3,
+  c2: wp.vec3,
+  iterations: int,
+  attr: vec_pluginattr,
+  sdf_type: int,
+  volume_data: VolumeData,
+  mesh_data: MeshData,
+) -> tuple[wp.vec3, float]:
+  """Minimizes the SDF over a triangle with Frank-Wolfe steps and returns the point and distance."""
+  xk = x
+  for step in range(iterations):
+    grad = sdf_grad(int(GeomType.SDF), xk, attr, sdf_type, volume_data, mesh_data)
+
+    # Corner with the smallest directional derivative, first one on ties; starting from xk
+    # keeps the point in place if the gradient is not finite
+    best = float(MJ_MAXVAL)
+    s = xk
+    fun = wp.dot(c0, grad)
+    if fun < best:
+      best = fun
+      s = c0
+    fun = wp.dot(c1, grad)
+    if fun < best:
+      best = fun
+      s = c1
+    fun = wp.dot(c2, grad)
+    if fun < best:
+      s = c2
+
+    xk += (2.0 / (float(step) + 2.0)) * (s - xk)
+
+  return xk, sdf(int(GeomType.SDF), xk, attr, sdf_type, volume_data, mesh_data)
+
+
+@wp.func
+def _flex_sdf_elem_contact(
+  # In:
+  t0: wp.vec3,
+  t1: wp.vec3,
+  t2: wp.vec3,
+  radius: float,
+  sdf_pos: wp.vec3,
+  sdf_rot: wp.mat33,
+  sdf_rot_t: wp.mat33,
+  nstartpts: int,
+  sdf_iterations: int,
+  attr: vec_pluginattr,
+  sdf_type: int,
+  volume_data: VolumeData,
+  mesh_data: MeshData,
+) -> tuple[bool, bool, float, wp.vec3, wp.vec3, wp.vec3]:
+  """Returns penetrating, valid normal, dist, SDF-local point, pos and normal of one element.
+
+  Follows flexElemCallback and addPreContact.
+  """
+  no_contact = wp.vec3(0.0)
+  elem_min = wp.min(t0, wp.min(t1, t2)) - wp.vec3(radius, radius, radius)
+  elem_max = wp.max(t0, wp.max(t1, t2)) + wp.vec3(radius, radius, radius)
+
+  # MuJoCo's BVH leaf test: the SDF at the element box center against its half diagonal
+  center_local = sdf_rot_t @ (0.5 * (elem_min + elem_max) - sdf_pos)
+  half_len = wp.length(0.5 * (elem_max - elem_min))
+  if not (sdf(int(GeomType.SDF), center_local, attr, sdf_type, volume_data, mesh_data) < half_len):
+    return False, False, 0.0, no_contact, no_contact, no_contact
+
+  c0 = sdf_rot_t @ (t0 - sdf_pos)
+  c1 = sdf_rot_t @ (t1 - sdf_pos)
+  c2 = sdf_rot_t @ (t2 - sdf_pos)
+  if not _flex_sdf_triangle_intersect(c0, c1, c2, attr, sdf_type, volume_data, mesh_data):
+    return False, False, 0.0, no_contact, no_contact, no_contact
+
+  # Deepest minimum over the Halton starts; MuJoCo stops after MJ_MAXCONPAIR penetrating starts
+  best_dist = float(0.0)
+  best_x = wp.vec3(0.0)
+  npenetrating = int(0)
+  for sp in range(nstartpts):
+    if npenetrating >= MJ_MAXCONPAIR:
+      break
+    u = halton(sp + 1, 2)
+    v = halton(sp + 1, 3)
+    if u + v > 1.0:
+      u = 1.0 - u
+      v = 1.0 - v
+    x = (1.0 - u - v) * c0 + u * c1 + v * c2
+    x, depth = _flex_sdf_frank_wolfe(x, c0, c1, c2, sdf_iterations, attr, sdf_type, volume_data, mesh_data)
+    if depth < 0.0:
+      npenetrating += 1
+      if depth < best_dist:
+        best_dist = depth
+        best_x = x
+
+  if npenetrating == 0:
+    return False, False, 0.0, no_contact, no_contact, no_contact
+
+  # Normal points out of the SDF, towards the flex
+  grad = sdf_grad(int(GeomType.SDF), best_x, attr, sdf_type, volume_data, mesh_data)
+  grad_len = wp.length(grad)
+  if not (grad_len >= MJ_MINVAL):
+    return True, False, 0.0, best_x, no_contact, no_contact
+  normal = sdf_rot @ (grad / grad_len)
+  pos = sdf_rot @ best_x + sdf_pos - 0.5 * best_dist * normal
+  return True, True, best_dist, best_x, pos, normal
+
+
+@cache_kernel
+def _flex_sdf_narrowphase(warn_overflow: int):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    opt_sdf_initpoints: int,
+    opt_sdf_iterations: int,
+    oct_child: wp.array[vec8i],
+    oct_aabb: wp.array2d[wp.vec3],
+    oct_coeff: wp.array[vec8],
+    geom_bodyid: wp.array[int],
+    geom_dataid: wp.array2d[int],
+    geom_size: wp.array2d[wp.vec3],
+    geom_aabb: wp.array3d[wp.vec3],
+    geom_margin: wp.array2d[float],
+    geom_gap: wp.array2d[float],
+    flex_vertadr: wp.array[int],
+    flex_elemadr: wp.array[int],
+    flex_elemnum: wp.array[int],
+    flex_elemdataadr: wp.array[int],
+    flex_elem: wp.array[int],
+    flex_radius: wp.array[float],
+    mesh_octadr: wp.array[int],
+    plugin: wp.array[int],
+    plugin_attr: wp.array[vec_pluginattr],
+    geom_plugin_index: wp.array[int],
+    flex_elem_bvhorder: wp.array[int],
+    flex_sdf_pair: wp.array[wp.vec2i],
+    # Data in:
+    geom_xpos_in: wp.array2d[wp.vec3],
+    geom_xquat_in: wp.array2d[wp.quat],
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    flex_aabb_min_in: wp.array2d[wp.vec3],
+    flex_aabb_max_in: wp.array2d[wp.vec3],
+    # In:
+    dedup_tolerance: float,
+    max_candidates: int,
+    # Data out:
+    overflow_out: wp.array[int],
+    # Out:
+    cand_dist_out: wp.array[float],
+    cand_pos_out: wp.array[wp.vec3],
+    cand_nrm_out: wp.array[wp.vec3],
+    cand_geom_out: wp.array[wp.vec2i],
+    cand_flex_out: wp.array[wp.vec2i],
+    cand_elem_out: wp.array[wp.vec2i],
+    cand_vert_out: wp.array[wp.vec2i],
+    cand_worldid_out: wp.array[int],
+    cand_active_out: wp.array[int],
+    ncand_out: wp.array[int],
+  ):
+    """Detects the contacts of one (SDF geom, 2D flex) pair, following mjc_FlexSDF.
+
+    One block handles one (world, pair) and visits the flex elements in MuJoCo's BVH order, one
+    chunk of block_dim elements at a time. As in MuJoCo, the first MJ_MAXCONPAIR penetrating
+    elements are kept in a per-pair buffer, each with its deepest Frank-Wolfe minimum over
+    sdf_initpoints Halton starts. An element whose SDF gradient is degenerate takes a slot but
+    gives no contact. The buffer is then merged in BVH order as addPreContact does: a point closer
+    than dedup_tolerance to an already kept point, in SDF coordinates, is dropped. The kept points
+    are written as active candidates for _write_filtered_contacts, which applies margin and gap.
+    The margin does not widen detection, as in MuJoCo.
+    """
+    worldid, pairid, lane = wp.tid()
+    # All threads of the block share the pair, so the returns below are uniform
+    geomid = flex_sdf_pair[pairid][0]
+    flexid = flex_sdf_pair[pairid][1]
+
+    plugin_id = geom_plugin_index[geomid]
+
+    # The mesh of this geom is absent in this world
+    dataid = geom_dataid[worldid % geom_dataid.shape[0], geomid]
+    if plugin_id == -1 and dataid < 0:
+      return
+
+    flex_aabb_min_val = flex_aabb_min_in[worldid, flexid]
+    flex_aabb_max_val = flex_aabb_max_in[worldid, flexid]
+    nstartpts = wp.max(1, opt_sdf_initpoints)
+    chunk = wp.block_dim()
+
+    geom_pos = geom_xpos_in[worldid, geomid]
+    geom_rot = quat_to_mat(geom_xquat_in[worldid, geomid])
+
+    # Skip the pair when the flex box misses the margin-inflated geom box, as MuJoCo's broadphase
+    # does for body geoms. Only for mesh SDFs: their surface lies inside the geom box, while an
+    # SDF plugin's surface can extend past it, where C still reports contacts.
+    if geom_bodyid[geomid] != 0 and plugin_id == -1:
+      aabb_id = worldid % geom_aabb.shape[0]
+      geom_center = geom_rot @ geom_aabb[aabb_id, geomid, 0] + geom_pos
+      geom_half = geom_aabb[aabb_id, geomid, 1]
+      inflate = geom_margin[worldid % geom_margin.shape[0], geomid] + geom_gap[worldid % geom_gap.shape[0], geomid]
+      geom_half_world = wp.vec3(inflate, inflate, inflate)
+      for i in range(3):
+        for j in range(3):
+          geom_half_world[i] += wp.abs(geom_rot[i, j]) * geom_half[j]
+      if _flex_element_aabb_filter(
+        geom_center - geom_half_world, geom_center + geom_half_world, flex_aabb_min_val, flex_aabb_max_val
+      ):
+        return
+
+    attr, sdf_type, volume_data, mesh_data = get_sdf_params(
+      oct_child,
+      oct_aabb,
+      oct_coeff,
+      mesh_octadr,
+      plugin,
+      plugin_attr,
+      int(GeomType.SDF),
+      geom_size[worldid % geom_size.shape[0], geomid],
+      plugin_id,
+      dataid,
+    )
+
+    # MuJoCo's BVH root test: the SDF at the flex box center against its half diagonal. The
+    # flex box adds the flex margin, so for an exact SDF it keeps every penetrating element.
+    geom_rot_t = wp.transpose(geom_rot)
+    root_local = geom_rot_t @ (0.5 * (flex_aabb_min_val + flex_aabb_max_val) - geom_pos)
+    root_half_len = wp.length(0.5 * (flex_aabb_max_val - flex_aabb_min_val))
+    if not (sdf(int(GeomType.SDF), root_local, attr, sdf_type, volume_data, mesh_data) < root_half_len):
+      return
+
+    elemadr = flex_elemadr[flexid]
+    nelem = flex_elemnum[flexid]
+    vert_adr = flex_vertadr[flexid]
+    elemdataadr = flex_elemdataadr[flexid]
+    radius = flex_radius[flexid]
+
+    # Per-pair buffer of the first MJ_MAXCONPAIR penetrating elements in BVH order (candidate in
+    # mjc_FlexSDF); slot_elem is -1 for an element with a degenerate gradient
+    slot_x = wp.tile_zeros(shape=MJ_MAXCONPAIR, dtype=wp.vec3, storage="shared")
+    slot_dist = wp.tile_zeros(shape=MJ_MAXCONPAIR, dtype=float, storage="shared")
+    slot_pos = wp.tile_zeros(shape=MJ_MAXCONPAIR, dtype=wp.vec3, storage="shared")
+    slot_nrm = wp.tile_zeros(shape=MJ_MAXCONPAIR, dtype=wp.vec3, storage="shared")
+    slot_elem = wp.tile_zeros(shape=MJ_MAXCONPAIR, dtype=int, storage="shared")
+
+    # Every thread reaches the tile operations below together: nselected and start are the
+    # same for all threads of the block
+    nselected = int(0)
+    start = int(0)
+    while start < nelem and nselected < MJ_MAXCONPAIR:
+      rank = start + lane
+      penetrating = False
+      valid = False
+      dist = float(0.0)
+      x = wp.vec3(0.0)
+      pos = wp.vec3(0.0)
+      normal = wp.vec3(0.0)
+      local_elemid = int(-1)
+      if rank < nelem:
+        local_elemid = flex_elem_bvhorder[elemadr + rank]
+        edata_idx = elemdataadr + local_elemid * 3
+        t0 = flexvert_xpos_in[worldid, vert_adr + flex_elem[edata_idx]]
+        t1 = flexvert_xpos_in[worldid, vert_adr + flex_elem[edata_idx + 1]]
+        t2 = flexvert_xpos_in[worldid, vert_adr + flex_elem[edata_idx + 2]]
+        penetrating, valid, dist, x, pos, normal = _flex_sdf_elem_contact(
+          t0,
+          t1,
+          t2,
+          radius,
+          geom_pos,
+          geom_rot,
+          geom_rot_t,
+          nstartpts,
+          opt_sdf_iterations,
+          attr,
+          sdf_type,
+          volume_data,
+          mesh_data,
+        )
+
+      # Slot of each penetrating element in BVH order; MuJoCo keeps slots below MJ_MAXCONPAIR
+      pen = wp.where(penetrating, 1, 0)
+      slot = nselected + wp.untile(wp.tile_scan_inclusive(wp.tile(pen))) - pen
+      store = penetrating and slot < MJ_MAXCONPAIR
+      wp.tile_scatter_masked(slot_x, slot, x, store)
+      wp.tile_scatter_masked(slot_dist, slot, dist, store)
+      wp.tile_scatter_masked(slot_pos, slot, pos, store)
+      wp.tile_scatter_masked(slot_nrm, slot, normal, store)
+      wp.tile_scatter_masked(slot_elem, slot, wp.where(valid, local_elemid, -1), store)
+
+      nselected += wp.tile_sum(wp.tile(pen))[0]
+      start += chunk
+
+    # One thread merges the buffer in slot order, as addPreContact does: isknown compares a point
+    # with the kept points only. Bit i of kept marks slot i as kept.
+    if lane != 0:
+      return
+    nslot = wp.min(nselected, MJ_MAXCONPAIR)
+    tol2 = dedup_tolerance * dedup_tolerance
+    kept = wp.int64(0)
+    nkept = int(0)
+    for i in range(nslot):
+      if slot_elem[i] < 0:
+        continue
+      x_i = slot_x[i]
+      known = bool(False)
+      for j in range(i):
+        if ((kept >> wp.int64(j)) & wp.int64(1)) != wp.int64(0):
+          if wp.length_sq(x_i - slot_x[j]) < tol2:
+            known = True
+            break
+      if not known:
+        kept |= wp.int64(1) << wp.int64(i)
+        nkept += 1
+
+    if nkept == 0:
+      return
+    base = wp.atomic_add(ncand_out, 0, nkept)  # kernel_analyzer: ignore[atomic]
+    candid = base
+    for i in range(nslot):
+      if ((kept >> wp.int64(i)) & wp.int64(1)) == wp.int64(0):
+        continue
+      if candid >= max_candidates:
+        if wp.static(bool(warn_overflow & OverflowType.NARROWPHASE)):
+          wp.printf(
+            "flex candidate overflow - please increase naconmax beyond %u\n"
+            "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.NARROWPHASE (or = 0 for all)\n",
+            max_candidates,
+          )
+        wp.atomic_or(overflow_out, worldid, wp.static(OverflowType.NARROWPHASE))
+        return
+      cand_dist_out[candid] = slot_dist[i]
+      cand_pos_out[candid] = slot_pos[i]
+      cand_nrm_out[candid] = slot_nrm[i]
+      cand_geom_out[candid] = wp.vec2i(geomid, -1)
+      cand_flex_out[candid] = wp.vec2i(-1, flexid)
+      cand_elem_out[candid] = wp.vec2i(-1, slot_elem[i])
+      cand_vert_out[candid] = wp.vec2i(-1, -1)
+      cand_worldid_out[candid] = worldid
+      cand_active_out[candid] = 1
+      candid += 1
+
+  return kernel
+
+
 @wp.kernel
 def _compute_filter_key(
   # Model:
@@ -3887,6 +4306,11 @@ def _filter_and_write_contacts(
 
     _run_filter_flex_fps(m, ws, has_passive_flex, canonical_ties)
 
+  _write_contacts(m, d, ws, has_passive_flex)
+
+
+def _write_contacts(m: Model, d: Data, ws: FlexWorkspace, has_passive_flex: bool):
+  """Writes the active candidates in the workspace to d.contact."""
   wp.launch(
     _write_filtered_contacts(int(m.opt.warn_overflow), has_passive_flex),
     dim=d.naconmax,
@@ -4020,6 +4444,76 @@ def _detect_plane_flex_candidates(
       ws.ncand,
     ],
   )
+
+
+def _detect_sdf_flex_contacts(
+  m: Model,
+  d: Data,
+  ws: FlexWorkspace,
+):
+  """Detect and write contacts between SDF geoms and 2D flex elements.
+
+  The narrowphase caps and merges each pair's contacts as MuJoCo does, so its candidates skip the
+  generic filter and go to the contact writer.
+  """
+  npair = m.flex_sdf_pair.shape[0]
+  if npair == 0:
+    return
+
+  ws.ncand.zero_()
+  wp.launch_tiled(
+    _flex_sdf_narrowphase(int(m.opt.warn_overflow)),
+    dim=(d.nworld, npair),
+    inputs=[
+      m.opt.sdf_initpoints,
+      m.opt.sdf_iterations,
+      m.oct_child,
+      m.oct_aabb,
+      m.oct_coeff,
+      m.geom_bodyid,
+      m.geom_dataid,
+      m.geom_size,
+      m.geom_aabb,
+      m.geom_margin,
+      m.geom_gap,
+      m.flex_vertadr,
+      m.flex_elemadr,
+      m.flex_elemnum,
+      m.flex_elemdataadr,
+      m.flex_elem,
+      m.flex_radius,
+      m.mesh_octadr,
+      m.plugin,
+      m.plugin_attr,
+      m.geom_plugin_index,
+      m.flex_elem_bvhorder,
+      m.flex_sdf_pair,
+      d.geom_xpos,
+      d.geom_xquat,
+      d.flexvert_xpos,
+      d.flex_aabb_min,
+      d.flex_aabb_max,
+      _FLEX_SDF_DEDUP_TOLERANCE,
+      d.naconmax,
+    ],
+    outputs=[
+      d.overflow,
+      ws.dist,
+      ws.pos,
+      ws.nrm,
+      ws.geom,
+      ws.flex,
+      ws.elem,
+      ws.vert,
+      ws.worldid,
+      ws.cand_active,
+      ws.ncand,
+    ],
+    block_dim=m.block_dim.flex_sdf,
+  )
+
+  has_passive_flex = bool(m.opt.integrator == IntegratorType.DISCRETE and m.has_flex_passive)
+  _write_contacts(m, d, ws, has_passive_flex)
 
 
 def _detect_elem_geom_candidates(
@@ -4275,6 +4769,9 @@ def _flex_geom_collision(
 
   # Contact writing pass
   _filter_and_write_contacts(m, d, ws, enable_fps=m.has_3d_flex and m.ngeom > 0)
+
+  # 2D cloth element collisions with SDF geoms
+  _detect_sdf_flex_contacts(m, d, ws)
 
 
 def _flex_bvh_collision(

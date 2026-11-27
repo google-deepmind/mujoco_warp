@@ -376,6 +376,47 @@ def _mjm_rod_vert_elems(mjm: mujoco.MjModel, fi: int) -> list[int]:
   return res
 
 
+def _flex_elem_bvhorder(mjm: mujoco.MjModel) -> np.ndarray:
+  """Local element ids of each 2D flex in the order MuJoCo C visits them in the flex BVH.
+
+  mjc_FlexSDF keeps the first MJ_MAXCONPAIR penetrating elements in this order. Box culling only
+  skips elements, so it does not change the order. Other flexes get the identity order.
+  """
+  order = (np.arange(mjm.nflexelem) - np.repeat(mjm.flex_elemadr, mjm.flex_elemnum)).astype(np.int32)
+  for fi in range(mjm.nflex):
+    bvhadr = int(mjm.flex_bvhadr[fi])
+    # mjCFlex::Compile builds a BVH over every element of a 2D flex (user_flexcomp.cc CreateBVH),
+    # and flex_bvhadr is -1 only for a flex with no elements (user_model.cc), which has no order
+    if mjm.flex_dim[fi] != 2 or bvhadr < 0:
+      continue
+    # depth-first like traverseBVH: child 1 is pushed last, so it is visited first
+    visited = []
+    stack = [0]
+    while stack:
+      node = bvhadr + stack.pop()
+      if mjm.bvh_nodeid[node] != -1:
+        visited.append(int(mjm.bvh_nodeid[node]))
+      else:
+        stack.extend(int(c) for c in mjm.bvh_child[node] if c != -1)
+    elemadr, elemnum = int(mjm.flex_elemadr[fi]), int(mjm.flex_elemnum[fi])
+    if sorted(visited) != list(range(elemnum)):
+      raise ValueError(f"BVH of flex {fi} does not hold each of its {elemnum} elements once.")
+    order[elemadr : elemadr + elemnum] = visited
+  return order
+
+
+def _flex_sdf_pair(mjm: mujoco.MjModel) -> np.ndarray:
+  """(geom id, flex id) of each SDF geom and 2D flex that pass the contype/conaffinity filter.
+
+  These are the pairs MuJoCo C passes to mjc_FlexSDF (engine_collision_driver.c, filterGeomFlex).
+  """
+  geomid = np.nonzero(mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF)[0]
+  flexid = np.nonzero(mjm.flex_dim == 2)[0]
+  g, f = (a.ravel() for a in np.meshgrid(geomid, flexid, indexing="ij"))
+  keep = (mjm.geom_contype[g] & mjm.flex_conaffinity[f]) | (mjm.flex_contype[f] & mjm.geom_conaffinity[g])
+  return np.stack((g[keep != 0], f[keep != 0]), axis=1).astype(np.int32).reshape(-1, 2)
+
+
 def _get_efm_data(mjm: mujoco.MjModel) -> mujoco.MjData | None:
   """Runs position kinematics under discrete integrator on a temp MjData for flex stiffness."""
   if mjm.nflex == 0:
@@ -818,8 +859,6 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
   if mjm.nflex > 0:
     condim_arrays.append(mjm.flex_condim)
-    if (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any():
-      raise NotImplementedError("Flex-SDF collision is not implemented.")
     if (mjm.geom_type == mujoco.mjtGeom.mjGEOM_HFIELD).any():
       raise NotImplementedError("Flex-HField collision is not implemented.")
     is_discrete = mjm.opt.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE
@@ -1792,6 +1831,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.flex_rodedge_jnt = np.array(rodedge_jnt_list, dtype=np.int32)
   m.flex_elem_rodedge = flex_elem_rodedge
   m.flex_vert_rodelem = flex_vert_rodelem
+  m.flex_elem_bvhorder = _flex_elem_bvhorder(mjm)
+  m.flex_sdf_pair = _flex_sdf_pair(mjm)
 
   if m.efm_chol_active:
     all_twist_chains_exact = True
@@ -1891,6 +1932,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "njnt_limited_ball": len(m.jnt_limited_ball_adr),
       "nnxn_geom_pair": len(m.nxn_geom_pair),
       "nnxn_geom_pair_filtered": len(m.nxn_geom_pair_filtered),
+      "nflex_sdf_pair": len(m.flex_sdf_pair),
       "neq_connect": len(m.eq_connect_adr),
       "neq_wld": len(m.eq_wld_adr),
       "neq_jnt": len(m.eq_jnt_adr),
