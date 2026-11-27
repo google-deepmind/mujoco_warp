@@ -2084,6 +2084,19 @@ def _sensor_acc(
     _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, vec3, out)
 
 
+@wp.kernel
+def _zero_sensor(
+  # Model:
+  sensor_adr: wp.array[int],
+  # In:
+  sensorid_in: wp.array[int],
+  # Data out:
+  sensordata_out: wp.array2d[float],
+):
+  worldid, i = wp.tid()
+  sensordata_out[worldid, sensor_adr[sensorid_in[i]]] = 0.0
+
+
 @cache_kernel
 def _sensor_touch(deterministic: bool = False):
   module_options = {"enable_backward": False}
@@ -2975,6 +2988,10 @@ def sensor_acc(m: Model, d: Data, skip_rne_postconstraint: bool = False):
   """Compute acceleration-dependent sensor values."""
   if m.opt.disableflags & DisableBit.SENSOR:
     return
+
+  # touch and tendon actuator force sensors accumulate into sensordata, clear them first
+  for sensorid in (m.sensor_touch_adr, m.sensor_tendonactfrc_adr):
+    wp.launch(_zero_sensor, dim=(d.nworld, sensorid.size), inputs=[m.sensor_adr, sensorid], outputs=[d.sensordata])
 
   wp.launch(
     _sensor_touch(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
