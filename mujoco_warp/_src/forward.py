@@ -384,26 +384,34 @@ def _next_activation(
       act_out[worldid, j] = act
 
 
+@wp.kernel
+def _next_time(
+  # Model:
+  opt_timestep: wp.array[float],
+  # Data in:
+  time_in: wp.array[float],
+  # Data out:
+  time_out: wp.array[float],
+):
+  worldid = wp.tid()
+  time_out[worldid] = time_in[worldid] + opt_timestep[worldid % opt_timestep.shape[0]]
+
+
 @cache_kernel
-def _next_time_builder(warn_overflow: int):
+def _check_overflow_builder(warn_overflow: int):
   @wp.kernel(module="unique", enable_backward=False)
-  def _next_time(
-    # Model:
-    opt_timestep: wp.array[float],
+  def _check_overflow(
     # Data in:
     nefc_in: wp.array[int],
-    time_in: wp.array[float],
     nworld_in: int,
     naconmax_in: int,
     njmax_in: int,
     nacon_in: wp.array[int],
     ncollision_in: wp.array[int],
     # Data out:
-    time_out: wp.array[float],
     overflow_out: wp.array[int],
   ):
     worldid = wp.tid()
-    time_out[worldid] = time_in[worldid] + opt_timestep[worldid % opt_timestep.shape[0]]
     nefc = nefc_in[worldid]
 
     if nefc > njmax_in:
@@ -437,7 +445,7 @@ def _next_time_builder(warn_overflow: int):
         )
       overflow_out[worldid] = overflow_out[worldid] | OverflowType.NARROWPHASE
 
-  return _next_time
+  return _check_overflow
 
 
 @wp.kernel
@@ -1563,21 +1571,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None,
   # advance history buffers before time advance
   history.insert_ctrl_history(m, d)
 
-  wp.launch(
-    _next_time_builder(int(m.opt.warn_overflow)),
-    dim=d.nworld,
-    inputs=[
-      m.opt.timestep,
-      d.nefc,
-      d.time,
-      d.nworld,
-      d.naconmax,
-      d.njmax,
-      d.nacon,
-      d.ncollision,
-    ],
-    outputs=[d.time, d.overflow],
-  )
+  wp.launch(_next_time, dim=d.nworld, inputs=[m.opt.timestep, d.time], outputs=[d.time])
 
   if sleep_enabled:
     nslept = sleep.sleep(m, d)
@@ -2931,6 +2925,14 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   if needs_eq_com_vel(m):
     smooth.com_vel(m, d)
   constraint.make_constraint(m, d)
+
+  # flag contacts and rows dropped by this pass: forward and the RK4 stages never reach _advance
+  wp.launch(
+    _check_overflow_builder(int(m.opt.warn_overflow)),
+    dim=d.nworld,
+    inputs=[d.nefc, d.nworld, d.naconmax, d.njmax, d.nacon, d.ncollision],
+    outputs=[d.overflow],
+  )
 
   if sleep_enabled:
     if m.neq > 0:
