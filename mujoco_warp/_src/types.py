@@ -189,7 +189,7 @@ class OverflowType(enum.IntFlag):
     ITERATIONS: solver iteration limit reached
     LS_ITERATIONS: linesearch iteration limit reached
     TACTILE: tactile sensor collision pair overflow
-    BADQACC: bad number in qacc (NaN, Inf, or |qacc| > MJ_MAXVAL)
+    BADQACC: bad number in integrated acceleration (NaN, Inf, or |qacc| > MJ_MAXVAL)
     ALL: all overflows
   """
 
