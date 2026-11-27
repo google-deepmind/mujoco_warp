@@ -1674,6 +1674,7 @@ class Model:
     Minv_block_adr: offset of the dof's tree block in the packed inverse inertia (nv,)
     Minv_block_dofmax: number of dofs of the largest tree
     flg_adhesion: flag indicating if model has passive adhesion
+    flg_gravcomp: whether any body has non-zero gravcomp
     has_fluid: True if wind, density, or viscosity are non-zero at put_model time
     flg_surfacevel: whether model has non-zero surfacevel
     has_sdf_geom: whether the model contains SDF geoms
@@ -2285,6 +2286,7 @@ class Model:
   Minv_block_adr: array("nv", int)
   Minv_block_dofmax: int
   flg_adhesion: bool
+  flg_gravcomp: array(1, int)
   has_fluid: bool
   flg_surfacevel: bool
   has_sdf_geom: bool

@@ -1507,6 +1507,92 @@ class SetConstTest(parameterized.TestCase):
       if nworld == 2:
         self.assertFalse(np.allclose(m_val[0], m_val[1]), f"{f} should differ across worlds")
 
+  @parameterized.parameters(1, 2)
+  def test_set_const_gravcomp_graph_capture(self, nworld):
+    """Test toggling body_gravcomp via set_const(FIXED) stays compatible with CUDA graph capture."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 -9.81">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body pos="0 0 1" gravcomp="0">
+            <joint name="j0" type="hinge" axis="0 1 0"/>
+            <geom type="sphere" size="0.1" pos="0.3 0 0" mass="2"/>
+            <body pos="0.5 0 0" gravcomp="0">
+              <joint name="j1" type="hinge" axis="0 1 0" actuatorgravcomp="true"/>
+              <geom type="sphere" size="0.1" pos="0.2 0 0" mass="1.5"/>
+            </body>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="j0"/>
+          <motor joint="j1"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"body_gravcomp": nworld},
+    )
+
+    qpos_np = np.array([[0.3, -0.4], [-0.2, 0.5]][:nworld], dtype=np.float32)
+    d.qpos.assign(qpos_np)
+
+    # Warmup and capture forward() while body_gravcomp is all zero (flg_gravcomp == 0)
+    self.assertEqual(m.flg_gravcomp.numpy()[0], 0)
+    mjwarp.forward(m, d)
+    with wp.ScopedCapture() as capture:
+      mjwarp.forward(m, d)
+
+    # Replay with all-zero gravcomp
+    wp.capture_launch(capture.graph)
+    for field in ("qfrc_gravcomp", "qfrc_passive", "qfrc_actuator"):
+      np.testing.assert_allclose(getattr(d, field).numpy(), 0.0, atol=1e-6)
+
+    # Enable body_gravcomp with distinct per-world values and update via set_const(FIXED)
+    gc_on = np.array([[0.0, 1.0, 1.5], [0.0, 0.0, 2.0]][:nworld], dtype=np.float32)
+    m.body_gravcomp.assign(gc_on)
+    mjwarp.set_const(m, d, groups=mjwarp.SetConstGroup.FIXED, restore=False)
+    self.assertEqual(m.flg_gravcomp.numpy()[0], 1)
+
+    # Replay same captured graph with non-zero gravcomp
+    wp.capture_launch(capture.graph)
+    for w in range(nworld):
+      mjm_w = copy.copy(mjm)
+      mjm_w.body_gravcomp[:] = gc_on[w]
+      mjd_w = mujoco.MjData(mjm_w)
+      mujoco.mj_setConst(mjm_w, mjd_w)
+      mjd_w.qpos[:] = qpos_np[w]
+      mujoco.mj_forward(mjm_w, mjd_w)
+      _assert_eq(d.qfrc_gravcomp.numpy()[w], mjd_w.qfrc_gravcomp, f"qfrc_gravcomp_on_w{w}")
+      _assert_eq(d.qfrc_passive.numpy()[w], mjd_w.qfrc_passive, f"qfrc_passive_on_w{w}")
+      _assert_eq(d.qfrc_actuator.numpy()[w], mjd_w.qfrc_actuator, f"qfrc_actuator_on_w{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(d.qfrc_gravcomp.numpy()[0], d.qfrc_gravcomp.numpy()[1]))
+      self.assertFalse(np.allclose(d.qfrc_passive.numpy()[0], d.qfrc_passive.numpy()[1]))
+      self.assertFalse(np.allclose(d.qfrc_actuator.numpy()[0], d.qfrc_actuator.numpy()[1]))
+
+    # Calling set_const(FIXED) while flg_gravcomp == 1 preserves existing qfrc_gravcomp
+    qfrc_gc_before = d.qfrc_gravcomp.numpy().copy()
+    mjwarp.set_const(m, d, groups=mjwarp.SetConstGroup.FIXED, restore=False)
+    np.testing.assert_array_equal(d.qfrc_gravcomp.numpy(), qfrc_gc_before)
+
+    # Clear non-world body_gravcomp (leaving world body 0 non-zero) and update via set_const(FIXED)
+    gc_world_only = np.zeros((nworld, mjm.nbody), dtype=np.float32)
+    gc_world_only[:, 0] = 1.0
+    m.body_gravcomp.assign(gc_world_only)
+    mjwarp.set_const(m, d, groups=mjwarp.SetConstGroup.FIXED, restore=False)
+    self.assertEqual(m.flg_gravcomp.numpy()[0], 0)
+    # set_const(FIXED) must clear stale qfrc_gravcomp immediately
+    np.testing.assert_allclose(d.qfrc_gravcomp.numpy(), 0.0, atol=1e-6)
+
+    # Replay same captured graph with zero gravcomp forces and no stale data
+    wp.capture_launch(capture.graph)
+    for field in ("qfrc_gravcomp", "qfrc_passive", "qfrc_actuator"):
+      np.testing.assert_allclose(getattr(d, field).numpy(), 0.0, atol=1e-6)
+
 
 if __name__ == "__main__":
   wp.init()
