@@ -2186,24 +2186,176 @@ def _update_constraint_efc(
   return kernel
 
 
-@wp.kernel
-def _zero_qfrc_constraint_sparse(
-  # In:
-  state_changed_count_in: wp.array[int],
-  ctx_done_in: wp.array[bool],
-  # Data out:
-  qfrc_constraint_out: wp.array2d[float],
+@cache_kernel
+def _init_qfrc_constraint_sparse(compact: bool, dof_friction: bool):
+  COMPACT = compact
+  DOF_FRICTION = dof_friction
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Data in:
+    nf_in: wp.array[int],
+    efc_force_in: wp.array2d[float],
+    dof_frictionadr_in: wp.array2d[int],
+    cdof_dof_in: wp.array2d[int],
+    # In:
+    state_changed_count_in: wp.array[int],
+    ctx_done_in: wp.array[bool],
+    # Data out:
+    qfrc_constraint_out: wp.array2d[float],
+  ):
+    # Only reset worlds the rebuild will repopulate; done worlds keep their value.
+    worldid, dofid = wp.tid()
+
+    if ctx_done_in[worldid]:
+      return
+
+    if state_changed_count_in[worldid] == 0:
+      return
+
+    qfrc = float(0.0)
+    # a DOF friction row (J = e_dof) has no JTDAJ block: its force lands on the diagonal here
+    if wp.static(DOF_FRICTION):
+      if nf_in[worldid] > 0:
+        dof = dofid
+        if wp.static(COMPACT):
+          dof = cdof_dof_in[worldid, dofid]
+        efcid = dof_frictionadr_in[worldid, dof]
+        if efcid >= 0:
+          qfrc = efc_force_in[worldid, efcid]
+    qfrc_constraint_out[worldid, dofid] = qfrc
+
+  return kernel
+
+
+def _scatter_qfrc_blocks(compact: bool):
+  """J' force over JTDAJ blocks: one thread per block column sums its rows into one atomic."""
+  COMPACT = compact
+
+  @wp.func
+  def scatter(
+    # Data in:
+    efc_jtdaj_adr_in: wp.array2d[int],
+    efc_jtdaj_nrow_in: wp.array2d[int],
+    efc_jtdaj_nblock_in: wp.array[int],
+    efc_J_rownnz_in: wp.array2d[int],
+    efc_J_rowadr_in: wp.array2d[int],
+    efc_J_colind_in: wp.array3d[int],
+    efc_J_in: wp.array3d[float],
+    efc_force_in: wp.array2d[float],
+    dof_cdof_in: wp.array2d[int],
+    njmax_in: int,
+    # In:
+    worldid: int,
+    tid: int,
+    # Data out:
+    qfrc_constraint_out: wp.array2d[float],
+  ):
+    nblock = wp.min(efc_jtdaj_nblock_in[worldid], njmax_in)
+    for pass_start in range(0, nblock, wp.block_dim()):
+      blockid = pass_start + tid
+      head = int(0)
+      nrow = int(0)
+      adr = int(0)
+      ncol = int(0)
+      if blockid < nblock:
+        head = efc_jtdaj_adr_in[worldid, blockid]
+        nrow = efc_jtdaj_nrow_in[worldid, blockid]
+        adr = efc_J_rowadr_in[worldid, head]
+        for row in range(nrow):
+          if efc_force_in[worldid, head + row] != 0.0:
+            ncol = efc_J_rownnz_in[worldid, head]
+            break
+
+      col_end = wp.tile_scan_inclusive(wp.tile(ncol))
+      blocks = wp.tile(wp.vec3i(head, nrow, adr), preserve_type=True)
+
+      # columns are handed out in order, so a thread's owning block only moves forward
+      ncol_pass = col_end[wp.block_dim() - 1]
+      owner = int(0)
+      for entry in range(tid, ncol_pass, wp.block_dim()):
+        while col_end[owner] <= entry:
+          owner += 1
+        col_start = int(0)
+        if owner > 0:
+          col_start = col_end[owner - 1]
+        col = entry - col_start
+        width = col_end[owner] - col_start
+
+        block = blocks[owner]
+        block_head = block[0]
+        block_nrow = block[1]
+        # a block's rows are stored back to back
+        sparseid = block[2] + col
+        colind = efc_J_colind_in[worldid, 0, sparseid]
+        if wp.static(COMPACT):
+          colind = dof_cdof_in[worldid, colind]
+          if colind < 0:
+            continue
+
+        qfrc = float(0.0)
+        for row in range(block_nrow):
+          qfrc += efc_J_in[worldid, 0, sparseid + row * width] * efc_force_in[worldid, block_head + row]
+        # the calling kernel's module options decide determinism
+        wp.atomic_add(qfrc_constraint_out[worldid], colind, qfrc)  # kernel_analyzer: ignore[atomic]
+
+  return scatter
+
+
+@cache_kernel
+def _update_constraint_init_qfrc_constraint_blocks(
+  compact: bool, block_dim: int, max_records: int = 0, deterministic: bool = False
 ):
-  # Only zero worlds the rebuild will repopulate; done worlds keep their value.
-  worldid, dofid = wp.tid()
+  module_options = {"enable_backward": False, "block_dim": block_dim}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+    module_options["deterministic_max_records"] = max_records
+  scatter = _scatter_qfrc_blocks(compact)
 
-  if ctx_done_in[worldid]:
-    return
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Data in:
+    efc_jtdaj_adr_in: wp.array2d[int],
+    efc_jtdaj_nrow_in: wp.array2d[int],
+    efc_jtdaj_nblock_in: wp.array[int],
+    efc_J_rownnz_in: wp.array2d[int],
+    efc_J_rowadr_in: wp.array2d[int],
+    efc_J_colind_in: wp.array3d[int],
+    efc_J_in: wp.array3d[float],
+    efc_force_in: wp.array2d[float],
+    dof_cdof_in: wp.array2d[int],
+    njmax_in: int,
+    # In:
+    state_changed_count_in: wp.array[int],
+    ctx_done_in: wp.array[bool],
+    # Data out:
+    qfrc_constraint_out: wp.array2d[float],
+  ):
+    worldid, tid = wp.tid()
 
-  if state_changed_count_in[worldid] == 0:
-    return
+    if ctx_done_in[worldid]:
+      return
 
-  qfrc_constraint_out[worldid, dofid] = 0.0
+    if state_changed_count_in[worldid] == 0:
+      return
+
+    scatter(
+      efc_jtdaj_adr_in,
+      efc_jtdaj_nrow_in,
+      efc_jtdaj_nblock_in,
+      efc_J_rownnz_in,
+      efc_J_rowadr_in,
+      efc_J_colind_in,
+      efc_J_in,
+      efc_force_in,
+      dof_cdof_in,
+      njmax_in,
+      worldid,
+      tid,
+      qfrc_constraint_out,
+    )
+
+  return kernel
 
 
 @cache_kernel
@@ -2261,6 +2413,8 @@ def _update_constraint_init_qfrc_constraint_sparse(compact: bool, max_records: i
 
 @cache_kernel
 def _update_constraint_qfrc_gradient_sparse_tiled(nv: int):
+  scatter = _scatter_qfrc_blocks(False)
+
   @wp.kernel(module="unique", enable_backward=False)
   def kernel(
     # Data in:
@@ -2268,6 +2422,9 @@ def _update_constraint_qfrc_gradient_sparse_tiled(nv: int):
     nf_in: wp.array[int],
     nefc_in: wp.array[int],
     qfrc_smooth_in: wp.array2d[float],
+    efc_jtdaj_adr_in: wp.array2d[int],
+    efc_jtdaj_nrow_in: wp.array2d[int],
+    efc_jtdaj_nblock_in: wp.array[int],
     efc_J_rownnz_in: wp.array2d[int],
     efc_J_rowadr_in: wp.array2d[int],
     efc_J_colind_in: wp.array3d[int],
@@ -2275,6 +2432,8 @@ def _update_constraint_qfrc_gradient_sparse_tiled(nv: int):
     efc_D_in: wp.array2d[float],
     efc_frictionloss_in: wp.array2d[float],
     efc_Ma_in: wp.array2d[float],
+    dof_frictionadr_in: wp.array2d[int],
+    dof_cdof_in: wp.array2d[int],
     njmax_in: int,
     # In:
     ctx_Jaref_in: wp.array2d[float],
@@ -2348,22 +2507,31 @@ def _update_constraint_qfrc_gradient_sparse_tiled(nv: int):
         ctx_grad_scale_out[worldid] = new_sigma
       return
 
+    # a DOF friction row (J = e_dof) has no JTDAJ block: its force lands on the diagonal here
     for dofid in range(tid, wp.static(nv), wp.block_dim()):
-      qfrc_constraint_out[worldid, dofid] = 0.0
-    # All DOFs must be zero before any warp accumulates J^T f.
+      qfrc = float(0.0)
+      if nf > 0:
+        efcid = dof_frictionadr_in[worldid, dofid]
+        if efcid >= 0:
+          qfrc = efc_force_out[worldid, efcid]
+      qfrc_constraint_out[worldid, dofid] = qfrc
+    # All DOFs must be initialized before any warp accumulates J^T f.
     _syncthreads()
-    for efcid in range(tid, nefc, wp.block_dim()):
-      force = efc_force_out[worldid, efcid]
-      if force == 0.0:
-        continue
-      rownnz = efc_J_rownnz_in[worldid, efcid]
-      rowadr = efc_J_rowadr_in[worldid, efcid]
-      for i in range(rownnz):
-        sparseid = rowadr + i
-        colind = efc_J_colind_in[worldid, 0, sparseid]
-        wp.atomic_add(
-          qfrc_constraint_out[worldid], colind, efc_J_in[worldid, 0, sparseid] * force
-        )  # kernel_analyzer: ignore[atomic]
+    scatter(
+      efc_jtdaj_adr_in,
+      efc_jtdaj_nrow_in,
+      efc_jtdaj_nblock_in,
+      efc_J_rownnz_in,
+      efc_J_rowadr_in,
+      efc_J_colind_in,
+      efc_J_in,
+      efc_force_out,
+      dof_cdof_in,
+      njmax_in,
+      worldid,
+      tid,
+      qfrc_constraint_out,
+    )
     _syncthreads()
 
     local_grad_dot = float(0.0)
@@ -2614,6 +2782,71 @@ def _update_efc_force(m: types.Model, d: types.Data, ctx: SolverContext | Invers
   )
 
 
+def _update_qfrc_constraint_rows(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, changed: wp.array):
+  sc = _sparse_compact(ctx)
+  dj = ctx.compact_d_full if sc else d
+  det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+  # a deterministic launch gives each thread one row, which adds one record per non-zero
+  max_records = min(m.nv, m.max_efc_J_rownnz) if det_atomics else 0
+  kernel = _update_constraint_init_qfrc_constraint_sparse(sc, max_records, det_atomics)
+  efc_stride = d.njmax if det_atomics else efc_threads_per_world(d.nworld, d.njmax, d.qacc.device, kernel)
+  wp.launch(
+    kernel,
+    dim=(d.nworld, efc_stride),
+    inputs=[
+      d.nefc,
+      dj.efc.J_rownnz,
+      dj.efc.J_rowadr,
+      dj.efc.J_colind,
+      dj.efc.J,
+      d.efc.force,
+      dj.dof_cdof,
+      d.njmax,
+      efc_stride,
+      changed,
+      ctx.done,
+    ],
+    outputs=[d.qfrc_constraint],
+  )
+
+
+def _update_qfrc_constraint_blocks(m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, changed: wp.array):
+  sc = _sparse_compact(ctx)
+  mj = ctx.compact_m_full if sc else m
+  dj = ctx.compact_d_full if sc else d
+  device = d.qacc.device
+  det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
+  # one thread block per world, sized for a single resident wave: more waves only add scan barriers
+  block_dim = 1
+  if device.is_cuda:
+    # occupancy follows the registers, which do not depend on the block size
+    probe = _update_constraint_init_qfrc_constraint_blocks(sc, 32, 1 if det_atomics else 0, det_atomics)
+    block_size, _ = wp.get_suggested_block_size(probe, device)
+    block_dim = max(1, min(block_size, efc_threads_per_world(d.nworld, d.njmax, device, probe, num_waves=1)))
+  # a pass gives each thread at most one block's worth of columns
+  max_records = ceil(d.njmax / block_dim) * mj.max_efc_J_rownnz if det_atomics else 0
+  wp.launch(
+    _update_constraint_init_qfrc_constraint_blocks(sc, block_dim, max_records, det_atomics),
+    dim=(d.nworld, block_dim),
+    inputs=[
+      dj.efc.jtdaj_adr,
+      dj.efc.jtdaj_nrow,
+      dj.efc.jtdaj_nblock,
+      dj.efc.J_rownnz,
+      dj.efc.J_rowadr,
+      dj.efc.J_colind,
+      dj.efc.J,
+      d.efc.force,
+      dj.dof_cdof,
+      d.njmax,
+      changed,
+      ctx.done,
+    ],
+    outputs=[d.qfrc_constraint],
+    block_dim=block_dim,
+  )
+
+
 def _update_qfrc_constraint(
   m: types.Model, d: types.Data, ctx: SolverContext | InverseContext, stable_fast: bool = False, write_grad: bool = False
 ):
@@ -2624,35 +2857,18 @@ def _update_qfrc_constraint(
   sc = _sparse_compact(ctx)
   if m.is_sparse or sc:
     dj = ctx.compact_d_full if sc else d
+    # Newton builds JTDAJ blocks for its Hessian; they cover every row but DOF friction
+    blocks = m.opt.solver == types.SolverType.NEWTON
     wp.launch(
-      _zero_qfrc_constraint_sparse,
+      _init_qfrc_constraint_sparse(sc, blocks),
       dim=(d.nworld, m.nv),
-      inputs=[changed, ctx.done],
+      inputs=[d.nf, d.efc.force, d.dof_frictionadr, dj.cdof_dof, changed, ctx.done],
       outputs=[d.qfrc_constraint],
     )
-    det_atomics = bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
-    # a deterministic launch gives each thread one row, which adds one record per non-zero
-    max_records = min(m.nv, m.max_efc_J_rownnz) if det_atomics else 0
-    kernel = _update_constraint_init_qfrc_constraint_sparse(sc, max_records, det_atomics)
-    efc_stride = d.njmax if det_atomics else efc_threads_per_world(d.nworld, d.njmax, d.qacc.device, kernel)
-    wp.launch(
-      kernel,
-      dim=(d.nworld, efc_stride),
-      inputs=[
-        d.nefc,
-        dj.efc.J_rownnz,
-        dj.efc.J_rowadr,
-        dj.efc.J_colind,
-        dj.efc.J,
-        d.efc.force,
-        dj.dof_cdof,
-        d.njmax,
-        efc_stride,
-        changed,
-        ctx.done,
-      ],
-      outputs=[d.qfrc_constraint],
-    )
+    if blocks:
+      _update_qfrc_constraint_blocks(m, d, ctx, changed)
+    else:
+      _update_qfrc_constraint_rows(m, d, ctx, changed)
     if write_grad:
       wp.launch(
         _update_gradient_grad_cg,
@@ -5097,6 +5313,9 @@ def _solver_iteration(
         d.nf,
         d.nefc,
         d.qfrc_smooth,
+        d.efc.jtdaj_adr,
+        d.efc.jtdaj_nrow,
+        d.efc.jtdaj_nblock,
         d.efc.J_rownnz,
         d.efc.J_rowadr,
         d.efc.J_colind,
@@ -5104,6 +5323,8 @@ def _solver_iteration(
         d.efc.D,
         d.efc.frictionloss,
         d.efc.Ma,
+        d.dof_frictionadr,
+        d.dof_cdof,
         d.njmax,
         ctx.Jaref,
         ctx.ls_exhausted,

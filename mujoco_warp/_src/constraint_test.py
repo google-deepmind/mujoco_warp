@@ -40,6 +40,27 @@ def _assert_eq(a, b, name, tol=_TOLERANCE):
   np.testing.assert_allclose(a, b, err_msg=err_msg, atol=tol, rtol=tol)
 
 
+def _assert_jtdaj_blocks(d):
+  """Blocks and DOF friction rows cover each row once; block rows share columns, back to back."""
+  nefc = d.nefc.numpy()[0]
+  nblock = d.efc.jtdaj_nblock.numpy()[0]
+  rownnz = d.efc.J_rownnz.numpy()[0]
+  rowadr = d.efc.J_rowadr.numpy()[0]
+  colind = d.efc.J_colind.numpy()[0, 0]
+  friction_rows = d.dof_frictionadr.numpy()[0]
+  covered = [friction_rows[friction_rows >= 0]]
+  for head, nrow in zip(d.efc.jtdaj_adr.numpy()[0, :nblock], d.efc.jtdaj_nrow.numpy()[0, :nblock]):
+    rows = np.arange(head, head + nrow)
+    covered.append(rows)
+    width = rownnz[head]
+    np.testing.assert_array_equal(rownnz[rows], width)
+    np.testing.assert_array_equal(rowadr[rows], rowadr[head] + (rows - head) * width)
+    head_cols = colind[rowadr[head] : rowadr[head] + width]
+    for row in rows:
+      np.testing.assert_array_equal(colind[rowadr[row] : rowadr[row] + width], head_cols)
+  np.testing.assert_array_equal(np.sort(np.concatenate(covered)), np.arange(nefc))
+
+
 def _assert_efc_eq(mjm, m, d, mjd, nefc, name, nv, tol=_TOLERANCE):
   """Assert equality of efc fields after sorting both sides."""
   # Get the ordering indices based on efc fields for MJWarp
@@ -507,6 +528,33 @@ class ConstraintTest(parameterized.TestCase):
       _assert_eq(d.nf.numpy()[0], mjd.nf, "nf")
       _assert_eq(d.nl.numpy()[0], mjd.nl, "nl")
       _assert_efc_eq(mjm, m, d, mjd, mjd.nefc, "efc", m.nv)
+
+  @parameterized.parameters(
+    *itertools.product(
+      (
+        ("constraints.xml", (0, 1, 2)),
+        ("humanoid/humanoid.xml", (None,)),
+        ("aloha_pot/scene.xml", (None,)),
+        ("jdotv/connect_3d.xml", (None,)),
+        ("jdotv/weld_3d.xml", (None,)),
+        ("flex/moving_base_strain.xml", (0,)),
+        ("flex/rope.xml", (None,)),
+        ("tendon/tendon_limit.xml", (0,)),
+      ),
+      (mujoco.mjtCone.mjCONE_PYRAMIDAL, mujoco.mjtCone.mjCONE_ELLIPTIC),
+    )
+  )
+  def test_jtdaj_blocks(self, xml_keys, cone):
+    """Sparse Newton constraints group their rows into JTDAJ blocks."""
+    xml, keys = xml_keys
+    overrides = {"opt.cone": cone, "opt.jacobian": mujoco.mjtJacobian.mjJAC_SPARSE, "opt.solver": mujoco.mjtSolver.mjSOL_NEWTON}
+    for key in keys:
+      mjm, _, m, d = test_data.fixture(xml, keyframe=key, overrides=overrides)
+      d.efc.jtdaj_nblock.fill_(-1)
+      if mjm.nflex > 0:
+        mjw.fwd_position(m, d)
+      mjw.make_constraint(m, d)
+      _assert_jtdaj_blocks(d)
 
   @parameterized.parameters(
     mujoco.mjtJacobian.mjJAC_DENSE,
