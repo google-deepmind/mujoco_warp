@@ -2122,7 +2122,7 @@ def _flex_rod_box(
   """Computes the box of each 1D element for _flex_narrowphase_elem_detect.
 
   A separate kernel keeps the arguments of _flex_narrowphase_elem_detect under 4 KB: a larger kernel
-  crashes when launched inside a CUDA graph capture on CUDA 12.4 (issue 915).
+  crashes when launched inside a CUDA graph capture on CUDA 12.4.
   """
   worldid, elemid = wp.tid()
 
