@@ -829,51 +829,32 @@ def _test_tetra(p0: wp.vec3, p1: wp.vec3, p2: wp.vec3, p3: wp.vec3) -> bool:
 
 
 @wp.func
-def _tri_affine_coord(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, p: wp.vec3) -> wp.vec3:
-  # compute minors as in S2D
-  M_14 = v2[1] * v3[2] - v2[2] * v3[1] - v1[1] * v3[2] + v1[2] * v3[1] + v1[1] * v2[2] - v1[2] * v2[1]
-  M_24 = v2[0] * v3[2] - v2[2] * v3[0] - v1[0] * v3[2] + v1[2] * v3[0] + v1[0] * v2[2] - v1[2] * v2[0]
-  M_34 = v2[0] * v3[1] - v2[1] * v3[0] - v1[0] * v3[1] + v1[1] * v3[0] + v1[0] * v2[1] - v1[1] * v2[0]
-
-  # exclude one of the axes with the largest projection
-  # of the simplex using the computed minors
-  M_max = 0.0
-  x = 0
-  y = 0
-
-  mu1 = wp.abs(M_14)
-  mu2 = wp.abs(M_24)
-  mu3 = wp.abs(M_34)
-
-  if mu1 >= mu2 and mu1 >= mu3:
-    M_max = M_14
+def tri_affine_coord(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, p: wp.vec3) -> wp.vec3:
+  # Work relative to one vertex: absolute-coordinate determinants lose the
+  # small triangle area through cancellation on large height fields.
+  e0 = v2 - v1
+  e1 = v3 - v1
+  q = p - v1
+  normal = wp.cross(e0, e1)
+  x = int(0)
+  y = int(1)
+  det = normal[2]
+  if wp.abs(normal[0]) >= wp.abs(normal[1]) and wp.abs(normal[0]) >= wp.abs(normal[2]):
     x = 1
     y = 2
-  elif mu2 >= mu3:
-    M_max = M_24
+    det = normal[0]
+  elif wp.abs(normal[1]) >= wp.abs(normal[2]):
     x = 0
     y = 2
-  else:
-    M_max = M_34
-    x = 0
-    y = 1
-
-  # C31 corresponds to the signed area of 2-simplex: (v, s2, s3)
-  C31 = p[x] * v2[y] + p[y] * v3[x] + v2[x] * v3[y] - p[x] * v3[y] - p[y] * v2[x] - v3[x] * v2[y]
-
-  # C32 corresponds to the signed area of 2-simplex: (v, s1, s3)
-  C32 = p[x] * v3[y] + p[y] * v1[x] + v3[x] * v1[y] - p[x] * v1[y] - p[y] * v3[x] - v1[x] * v3[y]
-
-  # C33 corresponds to the signed area of 2-simplex: (v, s1, s2)
-  C33 = p[x] * v1[y] + p[y] * v2[x] + v1[x] * v2[y] - p[x] * v2[y] - p[y] * v1[x] - v2[x] * v1[y]
-
-  # compute affine coordinates
-  return wp.vec3(C31 / M_max, C32 / M_max, C33 / M_max)
+    det = -normal[1]
+  b = safe_div(q[x] * e1[y] - q[y] * e1[x], det)
+  c = safe_div(e0[x] * q[y] - e0[y] * q[x], det)
+  return wp.vec3(1.0 - b - c, b, c)
 
 
 @wp.func
 def _tri_point_intersect(v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, p: wp.vec3) -> bool:
-  coordinates = _tri_affine_coord(v1, v2, v3, p)
+  coordinates = tri_affine_coord(v1, v2, v3, p)
   l1 = coordinates[0]
   l2 = coordinates[1]
   l3 = coordinates[2]
@@ -1000,7 +981,7 @@ def _epa_witness(
   v3 = pt.vert[2 * face[2]] - pt.vert[2 * face[2] + 1]
 
   n = pt.face_pr[face_idx]
-  coordinates = _tri_affine_coord(v1, v2, v3, n)
+  coordinates = tri_affine_coord(v1, v2, v3, n)
 
   # coplanar faces tie for closest, so the selected face may not contain the witness; extrapolating
   # outside it is inaccurate and unbounded for sliver faces, so use the face the ray along n exits
@@ -1068,7 +1049,7 @@ def _epa_witness(
       sp = support(geom2, geomtype2, x2)
       x2 = sp.point
 
-    coordinates2 = _tri_affine_coord(a, b, c, x2)
+    coordinates2 = tri_affine_coord(a, b, c, x2)
     if coordinates2[0] > 0.0 and coordinates2[1] > 0.0 and coordinates2[2] > 0.0:
       x1 = coordinates2[0] * a + coordinates2[1] * b + coordinates2[2] * c
     else:
@@ -2664,7 +2645,7 @@ def _inflate(
       b = geom1.polyvert[4]
       c = geom1.polyvert[5]
 
-      coordinates = _tri_affine_coord(a, b, c, x2)
+      coordinates = tri_affine_coord(a, b, c, x2)
       if coordinates[0] > 0.0 and coordinates[1] > 0.0 and coordinates[2] > 0.0:
         x1 = coordinates[0] * a + coordinates[1] * b + coordinates[2] * c
       else:
