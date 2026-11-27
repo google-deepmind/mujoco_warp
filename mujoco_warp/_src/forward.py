@@ -13,6 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import dataclasses
 from typing import Optional, Tuple
 
 import warp as wp
@@ -3851,19 +3852,89 @@ def discrete(m: Model, d: Data):
   _advance(m, d, d.qacc)
 
 
-@event_scope
-def step(m: Model, d: Data):
-  """Advance simulation."""
-  forward(m, d)
+# Persistent inputs copied out of place; forward(m, d_out) normally recomputes the rest.
+_STEP_STATE_FIELDS = (
+  "qpos",
+  "qvel",
+  "act",
+  "history",
+  "plastic",
+  "ctrl",
+  "qfrc_applied",
+  "xfrc_applied",
+  "mocap_pos",
+  "mocap_quat",
+  "eq_active",
+  "userdata",
+  "time",
+  # Other fields copied by _copy_state for warmstarting, sleeping, or skipped forward stages:
+  # "qacc_warmstart",
+  # "qacc_smooth",
+  # "qLD",
+  # "qLDiagInv",
+  # "qHLD",
+  # "qHDiagInv",
+  # "tree_asleep",
+  # "tree_awake",
+  # "nacon",
+  # "ncollision",
+  # "contact",
+)
 
+
+def _copy_state(m: Model, d: Data, d_out: Data):
+  """Copies step inputs and values retained by skipped forward stages."""
+  for name in _STEP_STATE_FIELDS:
+    src = getattr(d, name)
+    if src.size:
+      wp.copy(getattr(d_out, name), src)
+  if not (m.opt.disableflags & DisableBit.WARMSTART):
+    wp.copy(d_out.qacc_warmstart, d.qacc_warmstart)
+  if smooth.skip_qacc_smooth(m, d_out):
+    # These outputs retain their previous values when the smooth solve is skipped.
+    wp.copy(d_out.qacc_smooth, d.qacc_smooth)
+    wp.copy(d_out.qLD, d.qLD)
+    wp.copy(d_out.qLDiagInv, d.qLDiagInv)
+    if m.opt.integrator == IntegratorType.DISCRETE:
+      wp.copy(d_out.qHLD, d.qHLD)
+      wp.copy(d_out.qHDiagInv, d.qHDiagInv)
+  if (m.opt.enableflags & EnableBit.SLEEP) and not (m.opt.disableflags & DisableBit.ISLAND):
+    # wake() reads both before update_sleep rebuilds the derived sleep arrays.
+    wp.copy(d_out.tree_asleep, d.tree_asleep)
+    wp.copy(d_out.tree_awake, d.tree_awake)
+  if not m.opt.run_collision_detection:
+    # Contacts are caller-provided inputs when collision detection is skipped.
+    wp.copy(d_out.nacon, d.nacon)
+    wp.copy(d_out.ncollision, d.ncollision)
+    for field in dataclasses.fields(d.contact):
+      src = getattr(d.contact, field.name)
+      if src.size:
+        wp.copy(getattr(d_out.contact, field.name), src)
+
+
+@event_scope
+def step(m: Model, d: Data, d_out: Optional[Data] = None):
+  """Advance simulation: in place (d_out=None) or out-of-place d -> d_out, leaving d untouched.
+
+  Under a wp.Tape, requires distinct input/output Data and records one analytic adjoint
+  (d_out.grad -> d.grad). Preserve input state and output intermediates until backward,
+  or restore them before backward.
+  """
+  inplace = d_out is None
+  if inplace:
+    d_out = d
+
+  if not inplace:
+    _copy_state(m, d, d_out)
+  forward(m, d_out)
   if m.opt.integrator == IntegratorType.EULER:
-    euler(m, d)
+    euler(m, d_out)
   elif m.opt.integrator == IntegratorType.RK4:
-    rungekutta4(m, d)
+    rungekutta4(m, d_out)
   elif m.opt.integrator in (IntegratorType.IMPLICITFAST, IntegratorType.IMPLICIT):
-    implicit(m, d)
+    implicit(m, d_out)
   elif m.opt.integrator == IntegratorType.DISCRETE:
-    discrete(m, d)
+    discrete(m, d_out)
   else:
     raise NotImplementedError(f"integrator {m.opt.integrator} not implemented.")
 

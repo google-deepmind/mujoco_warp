@@ -101,6 +101,56 @@ def get(obj: object, path: str) -> object:
   return obj
 
 
+def _snapshot(obj: object, memo: dict[int, object]) -> object:
+  """Retains dataclass bindings for backward without copying array storage."""
+  if not dataclasses.is_dataclass(obj) or isinstance(obj, type):
+    return obj
+  if id(obj) not in memo:
+    result = dataclasses.replace(obj)
+    memo[id(obj)] = result
+    for field in dataclasses.fields(obj):
+      value = getattr(obj, field.name)
+      if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        setattr(result, field.name, _snapshot(value, memo))
+  return memo[id(obj)]
+
+
+def launch_vjp(kernel, dim, pairs, outputs, adj_outputs):
+  """Launches a generated reverse with inputs paired to their cotangents."""
+  wp.launch(
+    kernel,
+    dim=dim,
+    inputs=[value for value, _ in pairs],
+    outputs=outputs,
+    adj_inputs=[adjoint for _, adjoint in pairs],
+    adj_outputs=adj_outputs,
+    adjoint=True,
+  )
+
+
+def clone_nograd(d: types.Data) -> types.Data:
+  """Deep-clone a Data's wp.arrays, grads off, so replay never mutates the tape-tracked d_out."""
+
+  def clone(value):
+    if isinstance(value, wp.array):
+      array = wp.clone(value)
+      array.requires_grad = False
+      return array
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+      return dataclasses.replace(
+        value, **{field.name: clone(getattr(value, field.name)) for field in dataclasses.fields(value)}
+      )
+    return value
+
+  return clone(d)
+
+
+@wp.kernel(enable_backward=False)
+def accum_cols(a: wp.array2d[float], out: wp.array2d[float]):
+  w, i = wp.tid()
+  out[w, i] = out[w, i] + a[w, i]
+
+
 @dataclasses.dataclass(frozen=True)
 class AdjointRule:
   """Reverse-mode rule for an API function.
@@ -119,6 +169,9 @@ class AdjointRule:
   receives it next. It must not change `requires_grad`, should keep scratch cotangents in inline
   allocations rather than `Data` gradients, and should recompute intermediates from its inputs
   rather than rely on outputs that later calls may overwrite.
+
+  Custom backward calls retain the forward's dataclass bindings, including nested containers.
+  Array contents are not copied and must remain available until backward or be recomputed.
 
   Attributes:
     backward: accumulates input gradients from output gradients; if None, the forward's launches
@@ -272,12 +325,15 @@ def _wrap(fn: Callable) -> Callable:
       # backward (as in a captured graph) zeroes them:
       tape.gradients.update({**fwd_tape.gradients, **{a: a.grad for a in arrays}})
     else:
+      memo = {}
+      backward_args = tuple(_snapshot(arg, memo) for arg in args)
+      backward_kwargs = {key: _snapshot(value, memo) for key, value in kwargs.items()}
 
       def backward():
         # Setting `requires_grad = False` after recording frees `.grad`:
         if any(a.grad is None for a in arrays):
           raise RuntimeError(f"Gradients for '{name}' were disabled after recording.")
-        _call(None, rule.backward, *args, **kwargs)
+        _call(None, rule.backward, *backward_args, **backward_kwargs)
 
       tape.record_func(backward=backward, arrays=arrays)
     return result
@@ -290,3 +346,7 @@ def differentiable(namespace: dict[str, object]) -> None:
   for name, obj in list(namespace.items()):
     if inspect.isfunction(obj) and not name.startswith("_"):
       namespace[name] = _wrap(obj)
+  if "step" in namespace:
+    from mujoco_warp._src.diff import flex
+
+    flex.register()
