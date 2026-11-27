@@ -28,6 +28,7 @@ from mujoco_warp import test_data
 from mujoco_warp._src import derivative
 from mujoco_warp._src import forward
 from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 
 # tolerance for difference between MuJoCo and mjwarp smooth calculations - mostly
 # due to float precision
@@ -2373,6 +2374,105 @@ class DerivativeTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(delta_res[0], delta_res[1]))
+
+  @parameterized.product(count=(3, 4, 6), constrained=(False, True), nworld=(1, 2))
+  def test_passive_flex_contact_newton_eff_solve(self, count, constrained, nworld):
+    """Direct Cholesky eff_solve under Newton solves (M + S) qacc_smooth = rhs in one shot."""
+    eq_active = "true" if constrained else "false"
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option solver="Newton" integrator="discrete" iterations="1"/>
+        <worldbody>
+          <geom type="plane" size="2 2 0.1"/>
+          <site name="anchor" pos="0.3 0 0.2"/>
+          <flexcomp name="cloth" type="grid" dim="2" count="{count} {count} 1" spacing="0.04 0.04 1"
+            pos="0 0 0.004" radius="0.005" mass="0.12">
+            <contact passive="true" selfcollide="none"/>
+            <elasticity young="2e3" poisson="0.3" thickness="1e-3" damping="0.01" elastic2d="both"/>
+          </flexcomp>
+          <body pos="0.3 0 0.05">
+            <joint name="slider" type="slide"/>
+            <geom size="0.02" mass="0.05" contype="0" conaffinity="0"/>
+            <site name="slider_site"/>
+          </body>
+        </worldbody>
+        <equality>
+          <joint joint1="slider" polycoef="0.02 0 0 0 0" active="{eq_active}"/>
+        </equality>
+        <tendon>
+          <spatial name="ten" stiffness="25" damping="1.5" springlength="0.2">
+            <site site="anchor"/>
+            <site site="slider_site"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <position joint="slider" kp="15" kv="1"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qvel = np.tile(0.2 * np.sin(np.arange(mjm.nv, dtype=np.float32)), (nworld, 1))
+    ctrl = np.full((nworld, mjm.nu), 0.005, dtype=np.float32)
+    if nworld == 2:
+      qvel[1] *= -1.5
+      ctrl[1] = -0.005
+    d.qvel.assign(qvel)
+    d.ctrl.assign(ctrl)
+    d.qacc_warmstart.zero_()
+
+    mjds = [mjd]
+    mjd.qvel[:] = qvel[0]
+    mjd.ctrl[:] = ctrl[0]
+    mjd.qacc_warmstart[:] = 0
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      mjd1.qpos[:] = d.qpos.numpy()[1]
+      mjd1.qvel[:] = qvel[1]
+      mjd1.ctrl[:] = ctrl[1]
+      mjds.append(mjd1)
+
+    d.qacc_smooth.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    d.qfrc_constraint.fill_(wp.inf)
+    d.solver_niter.fill_(-1)
+    mjw.forward(m, d)
+
+    mv = wp.zeros_like(d.qacc_smooth)
+    derivative.eff_mul_m(m, d, mv, d.qacc_smooth)
+    mv_np = mv.numpy()
+    rhs_np = d.qfrc_smooth.numpy() + d.efm_c.numpy() + d.efm_ca.numpy()
+    qacc_smooth = d.qacc_smooth.numpy()
+    qacc = d.qacc.numpy()
+    qfrc_constraint = d.qfrc_constraint.numpy()
+    nefc = d.nefc.numpy()
+    solver_niter = d.solver_niter.numpy()
+
+    for w in range(nworld):
+      rel_res = np.linalg.norm(mv_np[w] - rhs_np[w]) / max(1.0, float(np.linalg.norm(rhs_np[w])))
+      self.assertLess(rel_res, 2e-5)
+      if not constrained:
+        self.assertEqual(int(nefc[w]), 0)
+        self.assertEqual(int(solver_niter[w]), 0)
+        np.testing.assert_allclose(qfrc_constraint[w], 0.0, atol=1e-7)
+        np.testing.assert_allclose(qacc[w], qacc_smooth[w], rtol=1e-6, atol=1e-6)
+      else:
+        self.assertGreater(int(nefc[w]), 0)
+      # TODO(team): remove version check once mujoco >= 4.0.2 is required.
+      if util_pkg.check_version("mujoco>=4.0.2"):
+        mujoco.mj_forward(mjm, mjds[w])
+        scale = max(1.0, float(np.abs(mjds[w].qacc_smooth).max()))
+        np.testing.assert_allclose(qacc_smooth[w], mjds[w].qacc_smooth, rtol=1e-4, atol=1e-4 * scale)
+        np.testing.assert_allclose(qacc[w], mjds[w].qacc, rtol=1e-4, atol=1e-4 * scale)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc_smooth[0], qacc_smooth[1]))
+
+    if count == 6 and not constrained:
+      mjw.step(m, d)
+      self.assertFalse(np.isnan(d.qpos.numpy()).any())
 
   @parameterized.parameters(
     mujoco.mjtJacobian.mjJAC_DENSE,
