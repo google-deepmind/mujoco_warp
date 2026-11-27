@@ -284,7 +284,10 @@ def _main(argv: Sequence[str]):
 
     def render_callback(step, step_trace, latency):
       callback(step, step_trace, latency)
-      wp.capture_launch(step_capture.graph)
+      if step_capture.graph is None:
+        mjw.step(m, d)
+      else:
+        wp.capture_launch(step_capture.graph)
       wp.synchronize()
 
     # TODO(team): Support specifying multiple functions to benchmark them together,

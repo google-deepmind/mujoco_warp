@@ -48,6 +48,7 @@ jobs:
     if: github.event_name != 'schedule' || github.repository == 'google-deepmind/mujoco_warp'
     name: Run benchmark suite and verify zero overflows (CPU)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Install uv
