@@ -1133,7 +1133,8 @@ def _grad(final: bool):
 def _factor(rows: int):
   """Newton directions of blocked groups (H packed into U), as _update_gradient_cholesky_blocked."""
   BS = types.TILE_SIZE_JTDAJ_DENSE
-  factorize = create_blocked_cholesky_augmented_factorize_solve_newton_func(BS, rows, rows)
+  # the factorization reads H's upper tiles from the pool, without a copy into U
+  factorize = create_blocked_cholesky_augmented_factorize_solve_newton_func(BS, rows, rows, _TILE)
   solve_only = create_blocked_cholesky_solve_newton_func(BS, rows, rows)
 
   @wp.kernel(module="unique", enable_backward=False, module_options={"enable_mathdx_gemm": False})
@@ -1186,16 +1187,11 @@ def _factor(rows: int):
       b = wp.array(ptr=grad_in[worldid].ptr + wp.uint64(vbase * 4), shape=(rows, 1), dtype=float)
       x = wp.array(ptr=search_out[worldid].ptr + wp.uint64(vbase * 4), shape=(rows, 1), dtype=float)
       if changed_out[worldid, islandid] or niter_in[worldid, islandid] == 0:
-        # the factorization reads the upper triangle: copy the pool's upper tiles, whole (_pool_seed
-        # set identity on the padding)
-        for t in range(ntile * ntile):
-          ti = t // ntile
-          tj = t % ntile
-          if ti <= tj:
-            tile = wp.tile_load(H_in[worldid], shape=(_TILE, _TILE), offset=(_TILE * (tilebase + t), 0))
-            wp.tile_store(A, tile, offset=(_TILE * ti, _TILE * tj))
-        _sync()
-        sums = wp.static(factorize)(A, b, size, A, x)
+        # _pool_seed set identity on the padding
+        H = wp.array(
+          ptr=H_in[worldid].ptr + wp.uint64(tilebase * _TILE * _TILE * 4), shape=(ntile * ntile * _TILE, _TILE), dtype=float
+        )
+        sums = wp.static(factorize)(H, b, size, A, x)
       else:
         sums = wp.static(solve_only)(A, b, size, x)
       _sync()  # every thread has read the flag

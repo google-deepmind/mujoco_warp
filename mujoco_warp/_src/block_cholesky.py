@@ -149,8 +149,10 @@ def _create_blocked_cholesky_augmented_factorize_solve_func(
   matrix_size_static: int,
   with_newton_decrement: bool,
   vector_size_static: int,
+  pool_tile: int = 0,
 ):
   WITH_NEWTON_DECREMENT = with_newton_decrement
+  POOL_TILE = pool_tile
   border_size = block_size - 1
 
   @wp.func
@@ -163,14 +165,24 @@ def _create_blocked_cholesky_augmented_factorize_solve_func(
     U_out: wp.array2d[float],
     result_out: wp.array2d[float],
   ):
-    """Factor A with b as an augmented border and reuse it as the forward solution."""
+    """Factor A with b as an augmented border and reuse it as the forward solution.
+
+    With pool_tile (a multiple of block_size), A holds the upper tiles of that size as rows: tile
+    (i, j) of ntile per side at row (i * ntile + j) * pool_tile.
+    """
     rhs_tile = wp.tile_zeros(shape=(matrix_size_static, 1), dtype=float, storage="shared")
+    ntile = int(0)
+    if wp.static(POOL_TILE > 0):
+      ntile = (matrix_size + POOL_TILE - 1) // POOL_TILE
 
     for k in range(0, matrix_size, block_size):
       end = k + block_size
       input_rhs = wp.tile_load(b, shape=(block_size, 1), offset=(k, 0), storage="shared", bounds_check=False)
+      a_kk = wp.vec2i(k, k)
+      if wp.static(POOL_TILE > 0):
+        a_kk = wp.vec2i((k // POOL_TILE) * (ntile + 1) * POOL_TILE + k % POOL_TILE, k % POOL_TILE)
       A_kk_tile = wp.tile_load(
-        A, shape=(block_size, block_size), offset=(k, k), storage="shared", bounds_check=False, aligned=True
+        A, shape=(block_size, block_size), offset=(a_kk[0], a_kk[1]), storage="shared", bounds_check=False, aligned=True
       )
       input_diagonal_rhs = wp.tile_view(input_rhs, shape=(border_size, 1), offset=(0, 0))
       if end == matrix_size:
@@ -191,8 +203,11 @@ def _create_blocked_cholesky_augmented_factorize_solve_func(
       wp.tile_store(U_out, A_kk_tile, offset=(k, k), bounds_check=False, aligned=True)
 
       for i in range(end, matrix_size, block_size):
+        a_ki = wp.vec2i(k, i)
+        if wp.static(POOL_TILE > 0):
+          a_ki = wp.vec2i(((k // POOL_TILE) * ntile + i // POOL_TILE) * POOL_TILE + k % POOL_TILE, i % POOL_TILE)
         A_ki_tile = wp.tile_load(
-          A, shape=(block_size, block_size), offset=(k, i), storage="shared", bounds_check=False, aligned=True
+          A, shape=(block_size, block_size), offset=(a_ki[0], a_ki[1]), storage="shared", bounds_check=False, aligned=True
         )
         if i + block_size == matrix_size:
           wp.tile_assign(A_ki_tile, input_rhs, offset=(0, border_size))
@@ -310,9 +325,11 @@ def create_blocked_cholesky_augmented_factorize_solve_func(block_size: int, matr
 
 
 def create_blocked_cholesky_augmented_factorize_solve_newton_func(
-  block_size: int, matrix_size_static: int, vector_size_static: int
+  block_size: int, matrix_size_static: int, vector_size_static: int, pool_tile: int = 0
 ):
-  return _create_blocked_cholesky_augmented_factorize_solve_func(block_size, matrix_size_static, True, vector_size_static)
+  return _create_blocked_cholesky_augmented_factorize_solve_func(
+    block_size, matrix_size_static, True, vector_size_static, pool_tile
+  )
 
 
 def create_blocked_cholesky_solve_func(block_size: int, matrix_size_static: int):
