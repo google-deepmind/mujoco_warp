@@ -971,6 +971,169 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     for f in range(mjm.nflex)
   )
   m.efm0_active = bool(mjm.nefm0dof > 0 and not has_stretch_or_interp and not m.has_flex_passive and not m.has_non_simple_flex)
+  m.efm0_disjoint_trees = False
+  m.efm0_s_dofid = np.zeros(0, dtype=np.int32)
+  m.efm0_s_flexid = np.zeros(0, dtype=np.int32)
+  m.efm0_A_inv = np.zeros((0, 0), dtype=np.float32)
+  m.efm0_K_s_rownnz = np.zeros(0, dtype=np.int32)
+  m.efm0_K_s_rowadr = np.zeros(0, dtype=np.int32)
+  m.efm0_K_s_colind = np.zeros(0, dtype=np.int32)
+  m.efm0_K_s_val = np.zeros(0, dtype=np.float32)
+  if m.efm0_active:
+    efm0_dofs = np.asarray(mjm.efm0_dofid, dtype=np.int32)
+    efm0_mask = np.zeros(mjm.nv, dtype=bool)
+    efm0_mask[efm0_dofs] = True
+    efm0_trees = set(mjm.dof_treeid[efm0_mask].tolist())
+    other_trees = set(mjm.dof_treeid[~efm0_mask].tolist())
+    m.efm0_disjoint_trees = efm0_trees.isdisjoint(other_trees)
+    # Detect decoupled, axis-identical 3-DOF vertex blocks in efm0_L for tiled GEMM solve
+    n0 = int(mjm.nefm0dof)
+    if n0 > 0 and n0 % 3 == 0:
+      nvert = n0 // 3
+      d0 = efm0_dofs[0::3]
+      if np.array_equal(efm0_dofs[1::3], d0 + 1) and np.array_equal(efm0_dofs[2::3], d0 + 2):
+        L_dense = np.zeros((nvert, nvert), dtype=np.float64) if nvert <= 2048 else None
+        ok_scalar = True
+        for k in range(nvert):
+          rows_c = []
+          for c in range(3):
+            row = 3 * k + c
+            adr = int(mjm.efm0_L_rowadr[row])
+            nnz = int(mjm.efm0_L_rownnz[row])
+            cols = mjm.efm0_L_colind[adr : adr + nnz]
+            vals = mjm.efm0_L[adr : adr + nnz].astype(np.float32)
+            # Keep non-zero off-diagonals and always keep the diagonal (last entry)
+            keep = vals != 0.0
+            keep[-1] = True
+            kcols = cols[keep]
+            kvals = vals[keep]
+            if np.any((kcols % 3) != c):
+              ok_scalar = False
+              break
+            rows_c.append((kcols // 3, kvals, mjm.efm0_L[adr : adr + nnz][keep]))
+          if not ok_scalar:
+            break
+          c0, v0, v0_f64 = rows_c[0]
+          if not (
+            np.array_equal(c0, rows_c[1][0])
+            and np.array_equal(c0, rows_c[2][0])
+            and np.array_equal(v0, rows_c[1][1])
+            and np.array_equal(v0, rows_c[2][1])
+          ):
+            ok_scalar = False
+            break
+          if L_dense is not None:
+            L_dense[k, c0] = v0_f64
+        if ok_scalar:
+          m.efm0_s_dofid = d0.copy()
+          # Precompute dense inverse A_inv = (L^T L)^-1 = L^-1 L^-T for tiled GEMM solve
+          if L_dense is not None:
+            L_inv = np.linalg.inv(L_dense)
+            A_inv = (L_inv @ L_inv.T).astype(np.float32)
+            nvert_pad = ((nvert + 31) // 32) * 32
+            A_inv_pad = np.zeros((nvert_pad, nvert_pad), dtype=np.float32)
+            A_inv_pad[:nvert, :nvert] = A_inv
+            m.efm0_A_inv = A_inv_pad
+          # Assemble compact constant scalar bending matrix Q when all efm_K comes from efm0_s_dofid
+          dof_to_vert = {int(d): k for k, d in enumerate(d0)}
+          s_flexid = np.full(nvert, -1, dtype=np.int32)
+          Q_rows: list[dict[int, float]] = [{} for _ in range(nvert)]
+          has_flex_bend = any(
+            not mjm.flex_rigid[f] and mjm.flex_interp[f] == 0 and mjm.flex_dim[f] == 2 and mjm.flex_bendingadr[f] >= 0
+            for f in range(mjm.nflex)
+          )
+          ok_k = bool(m.nefmK > 0 and has_flex_bend and m.nflexintcell == 0)
+          if ok_k:
+            for f in range(mjm.nflex):
+              if mjm.flex_rigid[f] or mjm.flex_interp[f] != 0:
+                continue
+              if mjm.flex_dim[f] != 2 or mjm.flex_bendingadr[f] < 0:
+                ok_k = False
+                break
+              vbase = int(mjm.flex_vertadr[f])
+              ebase = int(mjm.flex_edgeadr[f])
+              enum = int(mjm.flex_edgenum[f])
+              badr = int(mjm.flex_bendingadr[f])
+              for le in range(enum):
+                eid = ebase + le
+                flap = mjm.flex_edgeflap[eid]
+                if flap[1] == -1:
+                  continue
+                boff = badr + 17 * le
+                bmat = mjm.flex_bending[boff : boff + 16]
+                if bmat[0] + bmat[5] + bmat[10] + bmat[15] < 0.0:
+                  continue
+                verts = (int(mjm.flex_edge[eid, 0]), int(mjm.flex_edge[eid, 1]), int(flap[0]), int(flap[1]))
+                vids = [-1, -1, -1, -1]
+                bids = [-1, -1, -1, -1]
+                for idx4 in range(4):
+                  bk = int(mjm.body_weldid[mjm.flex_vertbodyid[vbase + verts[idx4]]])
+                  bids[idx4] = bk
+                  if int(mjm.body_dofnum[bk]) == 3:
+                    dk = int(mjm.body_dofadr[bk])
+                    vk = dof_to_vert.get(dk, -1)
+                    if vk < 0:
+                      ok_k = False
+                      break
+                    vids[idx4] = vk
+                    s_flexid[vk] = f
+                if not ok_k:
+                  break
+                for ii in range(4):
+                  vi = vids[ii]
+                  if vi < 0:
+                    continue
+                  qi = mjm.body_quat[bids[ii]]
+                  row_dict = Q_rows[vi]
+                  for jj in range(4):
+                    vj = vids[jj]
+                    if vj < 0:
+                      continue
+                    qval = float(bmat[4 * ii + jj])
+                    if qval == 0.0:
+                      continue
+                    if bids[ii] != bids[jj] and (
+                      mjm.body_parentid[bids[ii]] != mjm.body_parentid[bids[jj]]
+                      or not np.array_equal(qi, mjm.body_quat[bids[jj]])
+                    ):
+                      ok_k = False
+                      break
+                    row_dict[vj] = row_dict.get(vj, 0.0) + qval
+                  if not ok_k:
+                    break
+                if not ok_k:
+                  break
+              if not ok_k:
+                break
+          if ok_k:
+            k_rownnz = np.empty(nvert, dtype=np.int32)
+            k_rowadr = np.empty(nvert, dtype=np.int32)
+            k_cols = []
+            k_vals = []
+            k_off = 0
+            for k in range(nvert):
+              items = sorted((c, v) for c, v in Q_rows[k].items() if v != 0.0)
+              k_rowadr[k] = k_off
+              k_rownnz[k] = len(items)
+              k_off += len(items)
+              for c, v in items:
+                k_cols.append(int(d0[c]))
+                k_vals.append(v)
+            m.efm0_s_flexid = s_flexid
+            m.efm0_K_s_rownnz = k_rownnz
+            m.efm0_K_s_rowadr = k_rowadr
+            m.efm0_K_s_colind = np.array(k_cols, dtype=np.int32)
+            m.efm0_K_s_val = np.array(k_vals, dtype=np.float32)
+          else:
+            m.efm0_s_flexid = np.full(nvert, -1, dtype=np.int32)
+            m.efm0_K_s_rownnz = np.zeros(nvert, dtype=np.int32)
+            m.efm0_K_s_rowadr = np.zeros(nvert, dtype=np.int32)
+    if m.efm0_A_inv.shape[0] == 0 and n0 > 0:
+      max_nnz = int(np.max(mjm.efm0_L_rownnz))
+      if max_nnz > 128:
+        m.block_dim.eff_prec_efm0 = 256
+      elif max_nnz > 64:
+        m.block_dim.eff_prec_efm0 = 128
   m.nefmdof = int(efm_d.nefmdof) if (efm_d and not m.efm0_active) else 0
   m.efm_dofid = (
     efm_d.efm_dofid if (efm_d and not m.efm0_active and efm_d.efm_dofid is not None) else np.zeros(0, dtype=np.int32)
@@ -1931,6 +2094,9 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nM_mulm": len(m.M_mulm_entry),
       "nefm_3dof": len(m.efm_L_dofid),
       "nefm_bt_adr": len(m.efm_BT_adr),
+      "nefm0vert": len(m.efm0_s_dofid),
+      "nefm0vert_pad": m.efm0_A_inv.shape[0],
+      "nefm0sK": len(m.efm0_K_s_val),
     }
   )
   for f in dataclasses.fields(types.Model):

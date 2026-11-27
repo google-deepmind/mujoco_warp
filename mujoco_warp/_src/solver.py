@@ -162,6 +162,26 @@ def create_solver_context(
     quad_changed_count=wp.empty((nworld,), dtype=int) if alloc_incremental else wp.empty((0,), dtype=int),
     state_changed_count=wp.empty((nworld,), dtype=int) if alloc_incremental else wp.empty((0,), dtype=int),
     solve_ld_scratch=wp.empty((nworld, nv_pad), dtype=float) if alloc_solve_ld_scratch else None,
+    efm0_buf_in=(
+      wp.zeros((((3 * nworld + 31) // 32) * 32, m.efm0_A_inv.shape[0]), dtype=float)
+      if (
+        m.opt.integrator == types.IntegratorType.DISCRETE
+        and m.opt.solver == types.SolverType.CG
+        and m.efm0_active
+        and m.efm0_A_inv.shape[0] > 0
+      )
+      else None
+    ),
+    efm0_buf_out=(
+      wp.empty((((3 * nworld + 31) // 32) * 32, m.efm0_A_inv.shape[0]), dtype=float)
+      if (
+        m.opt.integrator == types.IntegratorType.DISCRETE
+        and m.opt.solver == types.SolverType.CG
+        and m.efm0_active
+        and m.efm0_A_inv.shape[0] > 0
+      )
+      else None
+    ),
     tw_diag=wp.empty((nworld, nv), dtype=float) if alloc_tw_diag else None,
     h_tile_nz=h_tile_nz,
     h_row_mask=h_row_mask,
@@ -4567,6 +4587,8 @@ def _update_gradient(m: types.Model, d: types.Data, ctx: SolverContext, compact:
           ctx.grad,
           x_scratch=ctx.solve_ld_scratch,
           tw_diag=ctx.tw_diag,
+          skip=ctx.done,
+          efm0_scratch=(ctx.efm0_buf_in, ctx.efm0_buf_out) if ctx.efm0_buf_in is not None else None,
         )
       else:
         smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, ctx.Mgrad, ctx.grad, x_scratch=ctx.solve_ld_scratch)

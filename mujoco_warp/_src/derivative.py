@@ -3521,49 +3521,218 @@ def _eff_zero_efm0_dofs(
   vec_out[worldid, efm0_dofid[k]] = 0.0
 
 
-@wp.kernel
-def _eff_prec_efm0_solve(
-  # Model:
-  nefm0dof: int,
-  efm0_dofid: wp.array[int],
-  efm0_L_rownnz: wp.array[int],
-  efm0_L_rowadr: wp.array[int],
-  efm0_L_colind: wp.array[int],
-  efm0_L: wp.array[float],
-  # In:
-  vec_in: wp.array2d[float],
-  # Out:
-  res_out: wp.array2d[float],
-):
-  worldid = wp.tid()
-  for r in range(nefm0dof):
-    dof_r = efm0_dofid[r]
-    res_out[worldid, dof_r] = vec_in[worldid, dof_r]
+@cache_kernel
+def _eff_prec_efm0_gather_xyz(check_skip: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    efm0_s_dofid: wp.array[int],
+    # In:
+    vec_in: wp.array2d[float],
+    skip_in: wp.array[bool],
+    # Out:
+    buf_out: wp.array2d[float],
+  ):
+    worldid, r = wp.tid()
+    if wp.static(check_skip):
+      if skip_in[worldid]:
+        return
+    d0 = efm0_s_dofid[r]
+    row = 3 * worldid
+    buf_out[row, r] = vec_in[worldid, d0]
+    buf_out[row + 1, r] = vec_in[worldid, d0 + 1]
+    buf_out[row + 2, r] = vec_in[worldid, d0 + 2]
 
-  i = nefm0dof - 1
-  while i >= 0:
-    adr = efm0_L_rowadr[i]
-    nnz = efm0_L_rownnz[i]
-    diag_idx = adr + nnz - 1
-    dof_i = efm0_dofid[i]
-    val_i = res_out[worldid, dof_i] / efm0_L[diag_idx]
-    res_out[worldid, dof_i] = val_i
-    if val_i != 0.0:
-      for j in range(nnz - 1):
+  return kernel
+
+
+@cache_kernel
+def _eff_prec_efm0_gemm_tiled(check_skip: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    efm0_A_inv: wp.array2d[float],
+    # Data in:
+    nworld_in: int,
+    # In:
+    nvert_pad: int,
+    buf_in: wp.array2d[float],
+    skip_in: wp.array[bool],
+    # Out:
+    buf_out: wp.array2d[float],
+  ):
+    bm, bn = wp.tid()
+    if wp.static(check_skip):
+      w_lo = (bm * 32) // 3
+      w_hi = wp.min(nworld_in - 1, (bm * 32 + 31) // 3)
+      any_active = bool(False)
+      for w in range(w_lo, w_hi + 1):
+        if not skip_in[w]:
+          any_active = True
+          break
+      if not any_active:
+        return
+    acc = wp.tile_zeros(shape=(32, 32), dtype=float)
+    nkt = nvert_pad // 32
+    for kt in range(nkt):
+      a = wp.tile_load(buf_in, shape=(32, 32), offset=(bm * 32, kt * 32))
+      b = wp.tile_load(efm0_A_inv, shape=(32, 32), offset=(kt * 32, bn * 32))
+      wp.tile_matmul(a, b, acc)
+    wp.tile_store(buf_out, acc, offset=(bm * 32, bn * 32))
+
+  return kernel
+
+
+@cache_kernel
+def _eff_prec_efm0_scatter_xyz(check_skip: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    efm0_s_dofid: wp.array[int],
+    # In:
+    buf_in: wp.array2d[float],
+    skip_in: wp.array[bool],
+    # Out:
+    res_out: wp.array2d[float],
+  ):
+    worldid, r = wp.tid()
+    if wp.static(check_skip):
+      if skip_in[worldid]:
+        return
+    d0 = efm0_s_dofid[r]
+    row = 3 * worldid
+    res_out[worldid, d0] = buf_in[row, r]
+    res_out[worldid, d0 + 1] = buf_in[row + 1, r]
+    res_out[worldid, d0 + 2] = buf_in[row + 2, r]
+
+  return kernel
+
+
+@cache_kernel
+def _eff_mul_efm0_K_scalar(check_skip: bool, is_shift: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    opt_timestep: wp.array[float],
+    opt_disableflags: int,
+    flex_damping: wp.array[float],
+    efm0_s_dofid: wp.array[int],
+    efm0_s_flexid: wp.array[int],
+    efm0_K_s_rownnz: wp.array[int],
+    efm0_K_s_rowadr: wp.array[int],
+    efm0_K_s_colind: wp.array[int],
+    efm0_K_s_val: wp.array[float],
+    # In:
+    vec_in: wp.array2d[float],
+    skip_in: wp.array[bool],
+    # Out:
+    res_out: wp.array2d[float],
+  ):
+    worldid, v = wp.tid()
+    if wp.static(check_skip):
+      if skip_in[worldid]:
+        return
+    f = efm0_s_flexid[v]
+    if f < 0:
+      return
+    timestep = opt_timestep[worldid % opt_timestep.shape[0]]
+    if wp.static(is_shift):
+      scale = -timestep
+    else:
+      s1 = 0.0 if (opt_disableflags & DisableBit.SPRING) else timestep * timestep
+      s2 = 0.0 if (opt_disableflags & DisableBit.DAMPER) else timestep
+      scale = s1 + s2 * flex_damping[f]
+    if scale == 0.0:
+      return
+    rownnz = efm0_K_s_rownnz[v]
+    if rownnz == 0:
+      return
+    rowadr = efm0_K_s_rowadr[v]
+    sx = float(0.0)
+    sy = float(0.0)
+    sz = float(0.0)
+    for j in range(rownnz):
+      adr = rowadr + j
+      q = efm0_K_s_val[adr]
+      dc = efm0_K_s_colind[adr]
+      sx += q * vec_in[worldid, dc]
+      sy += q * vec_in[worldid, dc + 1]
+      sz += q * vec_in[worldid, dc + 2]
+    di = efm0_s_dofid[v]
+    res_out[worldid, di] = res_out[worldid, di] + scale * sx
+    res_out[worldid, di + 1] = res_out[worldid, di + 1] + scale * sy
+    res_out[worldid, di + 2] = res_out[worldid, di + 2] + scale * sz
+
+  return kernel
+
+
+@wp.func_native(snippet="WP_TILE_SYNC();")
+def _tile_sync():
+  """Synchronize all threads in the current tile block."""
+  ...
+
+
+@cache_kernel
+def _eff_prec_efm0_solve(check_skip: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def kernel(
+    # Model:
+    nefm0dof: int,
+    efm0_dofid: wp.array[int],
+    efm0_L_rownnz: wp.array[int],
+    efm0_L_rowadr: wp.array[int],
+    efm0_L_colind: wp.array[int],
+    efm0_L: wp.array[float],
+    # In:
+    vec_in: wp.array2d[float],
+    skip_in: wp.array[bool],
+    # Out:
+    res_out: wp.array2d[float],
+  ):
+    worldid, tid = wp.tid()
+    if wp.static(check_skip):
+      if skip_in[worldid]:
+        return
+
+    nthread = wp.block_dim()
+    for r in range(tid, nefm0dof, nthread):
+      dof_r = efm0_dofid[r]
+      res_out[worldid, dof_r] = vec_in[worldid, dof_r]
+    _tile_sync()
+
+    i = nefm0dof - 1
+    while i >= 0:
+      adr = efm0_L_rowadr[i]
+      nnz = efm0_L_rownnz[i]
+      diag_idx = adr + nnz - 1
+      dof_i = efm0_dofid[i]
+      val_i = res_out[worldid, dof_i] / efm0_L[diag_idx]
+      if val_i != 0.0:
+        for j in range(tid, nnz - 1, nthread):
+          c = efm0_L_colind[adr + j]
+          dc = efm0_dofid[c]
+          res_out[worldid, dc] = res_out[worldid, dc] - efm0_L[adr + j] * val_i
+      _tile_sync()
+      if tid == 0:
+        res_out[worldid, dof_i] = val_i
+      i -= 1
+    _tile_sync()
+
+    for i in range(nefm0dof):
+      adr = efm0_L_rowadr[i]
+      nnz = efm0_L_rownnz[i]
+      acc = float(0.0)
+      for j in range(tid, nnz - 1, nthread):
         c = efm0_L_colind[adr + j]
-        res_out[worldid, efm0_dofid[c]] -= efm0_L[adr + j] * val_i
-    i -= 1
+        acc += efm0_L[adr + j] * res_out[worldid, efm0_dofid[c]]
+      s = wp.tile_reduce(wp.add, wp.tile(acc, preserve_type=True))[0]
+      if tid == 0:
+        diag_idx = adr + nnz - 1
+        dof_i = efm0_dofid[i]
+        res_out[worldid, dof_i] = (res_out[worldid, dof_i] - s) / efm0_L[diag_idx]
+      _tile_sync()
 
-  for i in range(nefm0dof):
-    adr = efm0_L_rowadr[i]
-    nnz = efm0_L_rownnz[i]
-    diag_idx = adr + nnz - 1
-    dof_i = efm0_dofid[i]
-    acc = res_out[worldid, dof_i]
-    for j in range(nnz - 1):
-      c = efm0_L_colind[adr + j]
-      acc -= efm0_L[adr + j] * res_out[worldid, efm0_dofid[c]]
-    res_out[worldid, dof_i] = acc / efm0_L[diag_idx]
+  return kernel
 
 
 @wp.kernel
@@ -4579,7 +4748,27 @@ def eff_shift(m: Model, d: Data):
 
   if not (m.opt.disableflags & DisableBit.SPRING):
     passive.flex_hessian(m, d)
-    passive.flex_bend_mul(m, d, d.efm_c, d.qvel, s1_in=-1.0, s2_in=0.0, use_timestep=True, non_simple_only=False)
+    if m.efm0_K_s_val.shape[0] > 0:
+      wp.launch(
+        _eff_mul_efm0_K_scalar(False, True),
+        dim=(d.nworld, m.efm0_s_dofid.shape[0]),
+        inputs=[
+          m.opt.timestep,
+          m.opt.disableflags,
+          m.flex_damping,
+          m.efm0_s_dofid,
+          m.efm0_s_flexid,
+          m.efm0_K_s_rownnz,
+          m.efm0_K_s_rowadr,
+          m.efm0_K_s_colind,
+          m.efm0_K_s_val,
+          d.qvel,
+          m.body_is_free,
+        ],
+        outputs=[d.efm_c],
+      )
+    else:
+      passive.flex_bend_mul(m, d, d.efm_c, d.qvel, s1_in=-1.0, s2_in=0.0, use_timestep=True, non_simple_only=False)
     passive.flex_rod_mul(m, d, d.efm_c, d.qvel, s1_in=-1.0, s2_in=0.0, use_timestep=True, non_simple_only=False)
     passive.flex_stretch_mul(m, d, d.efm_c, d.qvel, s1_in=-1.0, s2_in=0.0, use_timestep=True, non_simple_only=False)
     if m.nflexrodedge > 0:
@@ -4878,7 +5067,7 @@ def eff_actuation(m: Model, d: Data):
   # Factor qH into qHLD and qHDiagInv (adding efm_K diagonal into the factor only,
   # keeping d.qH = M + efm_sdiag so regularize_constraint and Newton Hessian assembly
   # do not double-count efm_K).
-  if m.nefmK > 0:
+  if m.nefmK > 0 and not (m.efm0_active and m.efm0_disjoint_trees):
     qH_eff = wp.clone(d.qH)
     wp.launch(
       _eff_add_efmK_qH_diag,
@@ -4944,7 +5133,32 @@ def eff_mul_m(
   if m.opt.integrator == IntegratorType.DISCRETE:
     check_skip = skip is not None
     skip_arr = skip if check_skip else m.body_is_free
-    if m.nefmK > 0:
+    if m.efm0_K_s_val.shape[0] > 0:
+      wp.launch(
+        _eff_mul_diag(check_skip),
+        dim=(d.nworld, m.nv),
+        inputs=[d.efm_diag, vec, skip_arr],
+        outputs=[res],
+      )
+      wp.launch(
+        _eff_mul_efm0_K_scalar(check_skip, False),
+        dim=(d.nworld, m.efm0_s_dofid.shape[0]),
+        inputs=[
+          m.opt.timestep,
+          m.opt.disableflags,
+          m.flex_damping,
+          m.efm0_s_dofid,
+          m.efm0_s_flexid,
+          m.efm0_K_s_rownnz,
+          m.efm0_K_s_rowadr,
+          m.efm0_K_s_colind,
+          m.efm0_K_s_val,
+          vec,
+          skip_arr,
+        ],
+        outputs=[res],
+      )
+    elif m.nefmK > 0:
       wp.launch(
         _eff_mul_diag_and_csr(check_skip),
         dim=(d.nworld, m.nv),
@@ -5343,6 +5557,7 @@ def eff_prec(
   tw_diag: Optional[wp.array] = None,
   skip: Optional[wp.array] = None,
   chol_scratch: Optional[wp.array] = None,
+  efm0_scratch: Optional[tuple] = None,
 ):
   """Preconditions residual using backbone qHLD, folded diagonal, efm0_L, efm_L, or 1D rod twist."""
   has_rod_twist = m.nflexrodedge > 0 and not (
@@ -5351,15 +5566,21 @@ def eff_prec(
   has_tw_diag = tw_diag is not None
   tw_in = tw_diag if has_tw_diag else d.qH
   if m.efm0_active:
+    check_skip = skip is not None
+    skip_arr = skip if check_skip else m.body_is_free
+    use_efm0_gemm = m.efm0_A_inv.shape[0] > 0
     if m.nefm0dof < m.nv:
-      wp.copy(res, vec)
-      wp.launch(
-        _eff_zero_efm0_dofs,
-        dim=(d.nworld, m.nefm0dof),
-        inputs=[m.efm0_dofid],
-        outputs=[res],
-      )
-      smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, res, res, x_scratch=x_scratch)
+      if m.efm0_disjoint_trees:
+        smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, res, vec, x_scratch=x_scratch)
+      else:
+        wp.copy(res, vec)
+        wp.launch(
+          _eff_zero_efm0_dofs,
+          dim=(d.nworld, m.nefm0dof),
+          inputs=[m.efm0_dofid],
+          outputs=[res],
+        )
+        smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, res, res, x_scratch=x_scratch)
       if has_rod_twist:
         wp.launch(
           _eff_twist_solve(has_tw_diag),
@@ -5386,20 +5607,51 @@ def eff_prec(
           ],
           outputs=[d.flex_rodedge_tridiag, res],
         )
-    wp.launch(
-      _eff_prec_efm0_solve,
-      dim=d.nworld,
-      inputs=[
-        m.nefm0dof,
-        m.efm0_dofid,
-        m.efm0_L_rownnz,
-        m.efm0_L_rowadr,
-        m.efm0_L_colind,
-        m.efm0_L,
-        vec,
-      ],
-      outputs=[res],
-    )
+    if use_efm0_gemm:
+      nvert = m.efm0_s_dofid.shape[0]
+      nvert_pad = m.efm0_A_inv.shape[0]
+      m_pad = ((3 * d.nworld + 31) // 32) * 32
+      if efm0_scratch is not None:
+        buf_in, buf_out = efm0_scratch
+      else:
+        buf_in = wp.zeros((m_pad, nvert_pad), dtype=float)
+        buf_out = wp.empty((m_pad, nvert_pad), dtype=float)
+      wp.launch(
+        _eff_prec_efm0_gather_xyz(check_skip),
+        dim=(d.nworld, nvert),
+        inputs=[m.efm0_s_dofid, vec, skip_arr],
+        outputs=[buf_in],
+      )
+      wp.launch_tiled(
+        _eff_prec_efm0_gemm_tiled(check_skip),
+        dim=(m_pad // 32, nvert_pad // 32),
+        inputs=[m.efm0_A_inv, d.nworld, nvert_pad, buf_in, skip_arr],
+        outputs=[buf_out],
+        block_dim=m.block_dim.eff_prec_efm0_gemm,
+      )
+      wp.launch(
+        _eff_prec_efm0_scatter_xyz(check_skip),
+        dim=(d.nworld, nvert),
+        inputs=[m.efm0_s_dofid, buf_out, skip_arr],
+        outputs=[res],
+      )
+    else:
+      wp.launch_tiled(
+        _eff_prec_efm0_solve(check_skip),
+        dim=d.nworld,
+        inputs=[
+          m.nefm0dof,
+          m.efm0_dofid,
+          m.efm0_L_rownnz,
+          m.efm0_L_rowadr,
+          m.efm0_L_colind,
+          m.efm0_L,
+          vec,
+          skip_arr,
+        ],
+        outputs=[res],
+        block_dim=m.block_dim.eff_prec_efm0,
+      )
     if m.opt.enableflags & EnableBit.SLEEP:
       wp.launch(
         zero_sleeping_dofs,
@@ -5674,8 +5926,14 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
   # allocated here since _pcg_iteration may run inside wp.capture_while
   efm_con, flex_scratch = eff_mul_m_scratch(m, d)
   chol_scratch = wp.empty((d.nworld, 3 * m.nefmdof), dtype=float) if m.efm_chol_active else None
+  if m.efm0_active and m.efm0_A_inv.shape[0] > 0:
+    m_pad = ((3 * d.nworld + 31) // 32) * 32
+    nvert_pad = m.efm0_A_inv.shape[0]
+    efm0_scratch = (wp.zeros((m_pad, nvert_pad), dtype=float), wp.empty((m_pad, nvert_pad), dtype=float))
+  else:
+    efm0_scratch = None
 
-  eff_prec(m, d, efm_z, rhs, x_scratch=solve_ld_scratch, chol_scratch=chol_scratch)
+  eff_prec(m, d, efm_z, rhs, x_scratch=solve_ld_scratch, chol_scratch=chol_scratch, efm0_scratch=efm0_scratch)
   wp.launch_tiled(
     _pcg_init_tiled,
     dim=d.nworld,
@@ -5722,7 +5980,16 @@ def eff_solve(m: Model, d: Data, qacc: wp.array2d[float], qfrc: Optional[wp.arra
       ],
       block_dim=m.block_dim.eff_pcg,
     )
-    eff_prec(m, d, efm_z, efm_r, x_scratch=solve_ld_scratch, skip=efm_done, chol_scratch=chol_scratch)
+    eff_prec(
+      m,
+      d,
+      efm_z,
+      efm_r,
+      x_scratch=solve_ld_scratch,
+      skip=efm_done,
+      chol_scratch=chol_scratch,
+      efm0_scratch=efm0_scratch,
+    )
     wp.launch_tiled(
       _pcg_beta_and_p_update_tiled,
       dim=d.nworld,
