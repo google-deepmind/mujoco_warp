@@ -1959,7 +1959,7 @@ def solve(m: types.Model, d: types.Data) -> IslandContext:
   # make_constraint found the islands and wrote the rows in island order
   ctx = _create_context(m, d)
   wp.launch(_reset_counts, dim=1, outputs=[ctx.group_count, ctx.nsolving])
-  # islands are solved in groups (see island.MERGE)
+  # islands are solved in groups (see island.MERGE_NV)
   g = island.group_buffers(m, d)
   d.solver_niter.zero_()
   nrow = ctx.qacc.shape[1]

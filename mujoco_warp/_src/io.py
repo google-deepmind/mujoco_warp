@@ -3051,7 +3051,7 @@ def put_data(
 
 
 def _island_dense_rows(efc_J: np.ndarray, d: types.Data, groups, worldid: int):
-  """Fill the rows of island groups with dense rows (see island.DENSE_NV).
+  """Fill the rows of island groups with dense rows (see island.dense_width).
 
   A group's dense rows are a block of efc.J, a row of its n DOFs in group order each.
   """
@@ -3276,7 +3276,7 @@ def get_data_into(
         d.efc.J_rowadr.numpy()[world_id, :nefc],
         d.efc.J_colind.numpy()[world_id, 0],
       )
-      # groups with dense rows (see island.DENSE_NV) keep them only there, in group-local columns
+      # groups with dense rows (see island.dense_width) keep them only there, in group-local columns
       groups = d.__dict__.get("_island_groups")
       if groups is not None and d.__dict__.get("_island_rows"):
         _island_dense_rows(efc_J, d, groups, world_id)

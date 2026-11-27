@@ -39,7 +39,7 @@ def _holding(islands: bool):
   return contextlib.nullcontext() if islands else mock.patch.object(island, "MAX_NTREE", 0)
 
 
-def _fixture(dense_nv: int = island.DENSE_NV, merge: bool = True, cone: int = ConeType.PYRAMIDAL):
+def _fixture(dense: bool = True, merge: bool = True, cone: int = ConeType.PYRAMIDAL):
   """Islands of every kind: single boxes, stacks (every factorization), a weld, an arm, a chain."""
   # the chain (18 DOFs) is a group wider than a tile; the arm's first hinge is past its limit
   mjm, mjd, m, _ = test_data.fixture(
@@ -91,10 +91,10 @@ def _fixture(dense_nv: int = island.DENSE_NV, merge: bool = True, cone: int = Co
   mujoco.mj_forward(mjm, mjd)
   d = mjw.put_data(mjm, mjd)
   m.opt.island_solve = True
-  # rows in island order, dense rows for groups up to dense_nv DOFs; no stale Jacobian entry may be
+  # rows in island order, dense rows for small groups if dense; no stale Jacobian entry may be
   # used
   d.efc.J.fill_(np.nan)
-  with mock.patch.object(island, "DENSE_NV", dense_nv), mock.patch.object(island, "MERGE", merge):
+  with mock.patch.object(island, "_DENSE", dense), mock.patch.object(island, "_MERGE", merge):
     mjw.make_constraint(m, d)
   # start away from the solution so every island iterates
   d.qacc_warmstart.zero_()
@@ -200,7 +200,7 @@ class IslandSolverTest(parameterized.TestCase):
     def rows(island_solve):
       m.opt.island_solve = island_solve
       # without slots, so islands can be rediscovered from the sparse rows
-      with mock.patch.object(island, "DENSE_NV", 0):
+      with mock.patch.object(island, "_DENSE", False):
         mjw.make_constraint(m, d)
       nefc = d.nefc.numpy()[0]
       etype, eid = d.efc.type.numpy()[0, :nefc], d.efc.id.numpy()[0, :nefc]
@@ -246,7 +246,7 @@ class IslandSolverTest(parameterized.TestCase):
     multi_tree = False
     for merge, (_, _, m, d) in itertools.product((True, False), (rows_fixture, _fixture())):
       m.opt.island_solve = True
-      self.enterContext(mock.patch.object(island, "MERGE", merge))
+      self.enterContext(mock.patch.object(island, "_MERGE", merge))
 
       def rows():
         nefc = d.nefc.numpy()[0]
@@ -254,7 +254,7 @@ class IslandSolverTest(parameterized.TestCase):
         order = np.lexsort((np.arange(nefc), eid, etype))
         return _dense_J(d)[order]
 
-      with mock.patch.object(island, "DENSE_NV", 0):
+      with mock.patch.object(island, "_DENSE", False):
         mjw.make_constraint(m, d)
       expect = rows()
       # every dense entry must be written (stale values from other steps are not zero)
@@ -340,11 +340,11 @@ class IslandSolverTest(parameterized.TestCase):
     Single trees (boxes, the chain, the arm) take the dense world solver; several trees (stacks, the
     welded pair, merged groups) the block path.
     """
-    for (dense_nv, merge), cone in itertools.product(
-      ((32, True), (32, False), (16, True), (0, True)), (ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
+    for (dense, merge), cone in itertools.product(
+      ((True, True), (True, False), (False, True)), (ConeType.PYRAMIDAL, ConeType.ELLIPTIC)
     ):
-      with self.subTest(dense_nv=dense_nv, merge=merge, cone=cone.name):
-        mjm, mjd, m, d = _fixture(dense_nv, merge, cone)
+      with self.subTest(dense=dense, merge=merge, cone=cone.name):
+        mjm, mjd, m, d = _fixture(dense, merge, cone)
         d.efc.Ma.fill_(np.nan)
         island_solver.solve(m, d)
         # the chain's accelerations end within about 1e-3 of MuJoCo's (atomic sums are unordered)
@@ -352,7 +352,7 @@ class IslandSolverTest(parameterized.TestCase):
         np.testing.assert_allclose(d.qfrc_constraint.numpy()[0], mjd.qfrc_constraint, rtol=1e-3, atol=1e-3)
         _assert_Ma(mjm, mjd, d)
         # from a nonzero start point (M qacc at the start matters)
-        mjm, mjd, m, d = _fixture(dense_nv, merge, cone)
+        mjm, mjd, m, d = _fixture(dense, merge, cone)
         d.qacc_warmstart.assign(0.5 * mjd.qacc[None])
         island_solver.solve(m, d)
         np.testing.assert_allclose(d.qacc.numpy()[0], mjd.qacc, rtol=1e-3, atol=2e-3)
@@ -360,21 +360,21 @@ class IslandSolverTest(parameterized.TestCase):
   def test_hessian(self):
     """Each island's H block is M + J'DJ over its quadratic rows, after incremental updates."""
     niter = 0
-    for dense_nv, merge, cone in (
-      (32, True, ConeType.PYRAMIDAL),
-      (32, False, ConeType.PYRAMIDAL),
-      (0, True, ConeType.PYRAMIDAL),
-      (32, True, ConeType.ELLIPTIC),
-      (32, False, ConeType.ELLIPTIC),
-      (0, True, ConeType.ELLIPTIC),
+    for dense, merge, cone in (
+      (True, True, ConeType.PYRAMIDAL),
+      (True, False, ConeType.PYRAMIDAL),
+      (False, True, ConeType.PYRAMIDAL),
+      (True, True, ConeType.ELLIPTIC),
+      (True, False, ConeType.ELLIPTIC),
+      (False, True, ConeType.ELLIPTIC),
     ):
-      with self.subTest(dense_nv=dense_nv, merge=merge, cone=cone.name):
-        niter = max(niter, self._check_hessian(dense_nv, merge, cone))
+      with self.subTest(dense=dense, merge=merge, cone=cone.name):
+        niter = max(niter, self._check_hessian(dense, merge, cone))
     # incremental updates (niter is unwritten for dense groups)
     self.assertGreater(niter, 1)
 
-  def _check_hessian(self, dense_nv, merge, cone):
-    mjm, mjd, m, d = _fixture(dense_nv, merge, cone)
+  def _check_hessian(self, dense, merge, cone):
+    mjm, mjd, m, d = _fixture(dense, merge, cone)
     ctx = island_solver.solve(m, d)
     elliptic = cone == ConeType.ELLIPTIC
     # elliptic: H is assembled at the final point (quadratic rows and the cone curvature)
@@ -417,7 +417,7 @@ class IslandSolverTest(parameterized.TestCase):
     # a block over one tile per side
     self.assertGreater(max(ntiles), 1)
     # merging joins the single trees with their neighbours
-    if dense_nv == 32 and not merge:
+    if dense and not merge:
       self.assertGreater(ndense, 0)
     return ctx.niter.numpy()[0, : g.ngroup.numpy()[0]].max()
 
@@ -576,7 +576,7 @@ class IslandSolverTest(parameterized.TestCase):
     mjd = mujoco.MjData(mjm)
     mujoco.mj_forward(mjm, mjd)
     # one island per group: the arm's joint equality gets dense rows, without sparse entries
-    with mock.patch.object(island, "MERGE", False):
+    with mock.patch.object(island, "_MERGE", False):
       partitions = []
       for islands in (False, True):
         with _holding(islands):
@@ -812,7 +812,7 @@ class IslandSolverTest(parameterized.TestCase):
   def test_njmax_nnz_overflow(self):
     """Island rows past their sparse storage stay empty: no stale layout, as rows in world order."""
     self.enterContext(mock.patch.object(island, "MIN_NV", 0))
-    self.enterContext(mock.patch.object(island, "DENSE_NV", 0))
+    self.enterContext(mock.patch.object(island, "_DENSE", False))
     xml = """
     <mujoco>
       <option jacobian="sparse"/>

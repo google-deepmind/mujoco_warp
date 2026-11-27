@@ -1554,11 +1554,11 @@ ROW_DENSE_ROW0 = ROW_CLASSES + 2
 # dense: a block of efc.J ahead of the sparse rows, a row of the group's DOFs in group order
 # each (padded to 4), so kernels address them without row or column indices. They have no sparse
 # row fields (J_rownnz 0): readers of efc.J add them from the blocks (io._island_dense_rows).
-# DENSE_NV < 32 turns dense rows off.
-DENSE_NV = 32
+# _DENSE: a test switch.
+_DENSE = True
 # Groups are runs of consecutive islands of up to MERGE_NV DOFs (e.g. resting boxes); their rows
-# are not in class order, so the island solver classifies rows by type.
-MERGE = True
+# are not in class order, so the island solver classifies rows by type. _MERGE: a test switch.
+_MERGE = True
 MERGE_NV = 32
 # models of up to MIN_NV DOFs are one group, the world solver's problem
 MIN_NV = MERGE_NV
@@ -1634,7 +1634,7 @@ class GroupBuffers:
 
 
 def dense_width(m: types.Model) -> int:
-  """Width of the dense rows: the model's largest tree of 17 to 32 DOFs, or 16 (see DENSE_NV)."""
+  """Width of the dense rows: the model's largest tree of 17 to 32 DOFs, or 16."""
   return m.island_tree_nv
 
 
@@ -2060,9 +2060,9 @@ def island_layout(
       d.tree_awake if m.opt.enableflags & types.EnableBit.SLEEP else None,
       d.njmax,
       tree_nrow,
-      MERGE,
+      _MERGE,
       MERGE_NV,
-      dense_width(m) if DENSE_NV >= 32 else 0,
+      dense_width(m) if _DENSE else 0,
       # without qacc_smooth, the island solver solves the free trees
       smooth.skip_qacc_smooth(m, d),
     ],
