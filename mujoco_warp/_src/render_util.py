@@ -696,10 +696,12 @@ def create_render_context(
     wo = render_optix.get_wo()
     if wo is None:
       reason = "warp-optix is not installed (pip install mujoco-warp[optix])"
-    elif flex_geom_flexid or splat_count:
-      reason = "the OptiX backend does not support flexes or splats yet"
-    elif nworld * mjm.ngeom >= 1 << 24:
-      reason = "OptiX instance ids hold 24 bits, so nworld * ngeom must be below 2**24"
+    elif splat_count or np.any(mjm.flex_dim == 1):
+      reason = "the OptiX backend does not support 1D flexes or splats yet"
+    elif not flex_render_smooth and np.any(mjm.flex_dim == 2):
+      reason = "the OptiX backend renders 2D flexes smooth only"
+    elif nworld * mjm.ngeom + mjm.nflex >= 1 << 24:
+      reason = "OptiX instance ids hold 24 bits, so nworld * ngeom + nflex must be below 2**24"
     else:
       device = wp.get_device()
       try:

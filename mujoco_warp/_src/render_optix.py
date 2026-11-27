@@ -17,8 +17,9 @@
 Meshes and heightfields share triangle GASes across worlds. Analytic geoms instance a padded
 unit cube and reuse the ray intersections in ray.py. Worlds occupy separate grid cells;
 bounded geometry must remain within each cell's extent. Planes are intersected separately.
+The surfaces of 2D and 3D flexes are moved into their world's cell and refit every frame.
 
-Flexes and splats are unsupported.
+1D flexes and splats are unsupported.
 """
 
 import functools
@@ -37,6 +38,7 @@ from mujoco_warp._src.ray import ray_eliminate
 from mujoco_warp._src.ray import ray_plane
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
+from mujoco_warp._src.types import DeterminismType
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import Model
 from mujoco_warp._src.types import OptixScene
@@ -59,6 +61,9 @@ def get_wo():
 
 _TRIANGLE_SBT_OFFSET = 0
 _PRIMITIVE_SBT_OFFSET = 1
+# Visibility masks: rays() traces geoms only, renders trace geoms and flexes.
+_GEOM_MASK = 0x01
+_FLEX_MASK = 0x02
 # Capping raygen registers raises occupancy, which outweighs the extra spills.
 _MAX_REGISTERS = 72
 
@@ -86,6 +91,98 @@ def cell_range(pnt: wp.vec3, vec: wp.vec3, max_dist: float, extent: float) -> Tu
     elif wp.abs(pnt[axis]) > extent:
       intersects_cell = False
   return intersects_cell and tmax >= tmin, tmin, wp.max(0.0, tmax)
+
+
+@wp.kernel
+def _flex_points(
+  # Model:
+  flex_radius: wp.array[float],
+  # Data in:
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  # In:
+  flexvert_norm_in: wp.array2d[wp.vec3],
+  flexid: int,
+  point_vert: wp.array[int],
+  point_side: wp.array[float],
+  grid: int,
+  spacing: float,
+  # Out:
+  points_out: wp.array[wp.vec3],
+):
+  """Writes a flex's surface points, offset along the vertex normals, into each world's cell."""
+  worldid, i = wp.tid()
+  v = point_vert[i]
+  side = point_side[i]
+  x = flexvert_xpos_in[worldid, v] + world_offset(worldid, grid, spacing)
+  if side != 0.0:
+    x += side * flex_radius[flexid] * wp.normalize(flexvert_norm_in[worldid, v])
+  points_out[worldid * point_vert.shape[0] + i] = x
+
+
+def _flex_surface(mjm: mujoco.MjModel, f: int):
+  """Returns a flex's surface triangles over its points, and the vertex and side of each point."""
+  dim, nvert = mjm.flex_dim[f], mjm.flex_vertnum[f]
+  shell = mjm.flex_shell[mjm.flex_shelldataadr[f] :][: dim * mjm.flex_shellnum[f]].reshape(-1, dim)
+  vert = mjm.flex_vertadr[f] + np.arange(nvert)
+  if dim == 3:
+    return shell, vert, np.zeros(nvert)
+  # 2D flexes are slabs: points above and below each vertex, joined along the boundary.
+  elem = mjm.flex_elem[mjm.flex_elemdataadr[f] :][: 3 * mjm.flex_elemnum[f]].reshape(-1, 3)
+  i0, i1 = shell.T
+  tris = np.concatenate(
+    [elem, elem[:, [0, 2, 1]] + nvert, np.stack([i0, i1 + nvert, i1], 1), np.stack([i1 + nvert, i0, i0 + nvert], 1)]
+  )
+  return tris, np.tile(vert, 2), np.repeat([1.0, -1.0], nvert)
+
+
+# Model fields of the flex surface update, after nflexelem.
+_FLEX_FIELDS = ("flex_dim", "flex_vertadr", "flex_elemadr", "flex_elemnum", "flex_elemdataadr", "flex_elem", "flex_radius")
+
+
+def _update_flexes(
+  flexes: tuple,
+  flexvert_norm: wp.array2d[wp.vec3],
+  grid: int,
+  spacing: float,
+  nflexelem: int,
+  flex_dim: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_elemadr: wp.array[int],
+  flex_elemnum: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_elem: wp.array[int],
+  flex_radius: wp.array[float],
+  flexvert_xpos: wp.array2d[wp.vec3],
+  deterministic: bool,
+):
+  """Writes the surface points of `flexes` from the current vertex positions."""
+  # bvh imports this module, so import it here.
+  from mujoco_warp._src import bvh  # noqa: PLC0415
+
+  nworld = flexvert_xpos.shape[0]
+  flexvert_norm.zero_()
+  wp.launch(
+    bvh.accumulate_flex_vertex_normals(deterministic),
+    dim=(nworld, nflexelem),
+    inputs=[
+      flex_dim.shape[0],
+      flex_dim,
+      flex_vertadr,
+      flex_elemadr,
+      flex_elemnum,
+      flex_elemdataadr,
+      flex_elem,
+      flexvert_xpos,
+    ],
+    outputs=[flexvert_norm],
+  )
+  for flexid, points, vert, side in flexes:
+    wp.launch(
+      _flex_points,
+      dim=(nworld, vert.shape[0]),
+      inputs=[flex_radius, flexvert_xpos, flexvert_norm, flexid, vert, side, grid, spacing],
+      outputs=[points],
+    )
 
 
 def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, nworld: int):
@@ -117,6 +214,40 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
     primitive_traversable = accels[-1].id
 
   spacing = 3.0 * extent
+
+  # Each 2D and 3D flex has one triangle GAS over its surface in all worlds, and a wp.Mesh over
+  # the same points for the hit normals. Measured on draped cloth, refitting the GAS outpaces
+  # rebuilding the surface as triangle clusters.
+  flexes, surfaces = [], []
+  for f in rc.flex_mesh_registry:
+    tris, vert, side = _flex_surface(mjm, f)
+    points = wp.empty(nworld * len(vert), dtype=wp.vec3)
+    flexes.append((f, points, wp.array(vert, dtype=int), wp.array(side, dtype=float)))
+    surfaces.append(tris + len(vert) * np.arange(nworld)[:, None, None])
+  flexes = tuple(flexes)
+  flexvert_norm = wp.zeros((nworld, mjm.nflexvert), dtype=wp.vec3)
+  _update_flexes(
+    flexes,
+    flexvert_norm,
+    grid,
+    spacing,
+    mjm.nflexelem,
+    *(wp.array(getattr(mjm, name), dtype=float if name == "flex_radius" else int) for name in _FLEX_FIELDS),
+    wp.array(np.tile(mjd.flexvert_xpos[None], (nworld, 1, 1)), dtype=wp.vec3),
+    False,
+  )
+  flex_accels = []
+  for (f, points, _, _), tris in zip(flexes, surfaces):
+    indices = wp.array(tris.ravel(), dtype=wp.int32)
+    rc.flex_mesh_registry[f] = wp.Mesh(points=points, indices=indices)
+    flex_accels.append(
+      wo.Accel(
+        [wo.triangles(points, indices, validate=False)], flags=wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_BUILD
+      )
+    )
+  rc.flex_bvh_id = wp.array(
+    [rc.flex_mesh_registry[f].id if f in rc.flex_mesh_registry else 0 for f in range(mjm.nflex)], dtype=wp.uint64
+  )
 
   @wp.kernel(module="unique", enable_backward=False)
   def write_instances(
@@ -171,7 +302,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
     # Fully transparent geoms are invisible to rays, as in the BVH renderer. Planes are
     # intersected analytically by cast_ray and have no acceleration structure.
     rgba, _ = geom_color(geom_matid, geom_rgba, mat_rgba, worldid, gi)
-    mask = wp.where(rgba[3] == 0.0 or gtype == GeomType.PLANE, wp.uint32(0), wp.uint32(0xFF))
+    mask = wp.where(rgba[3] == 0.0 or gtype == GeomType.PLANE, wp.uint32(0), wp.uint32(_GEOM_MASK))
 
     instances_out[worldid, i] = wo.make_instance(
       linear,
@@ -183,16 +314,55 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
       wp.uint32(wp.static(int(wo.InstanceFlags.DISABLE_ANYHIT))),
     )
 
+  # Flex instances follow the geom instances, with ids after every world's geoms.
+  records = wp.empty(nworld * rc.bvh_ngeom + len(flexes), dtype=wo.Instance)
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def write_flex_instances(
+    # In:
+    flexid: wp.array[int],
+    traversable: wp.array[wp.uint64],
+    mask: wp.array[wp.uint32],
+    # Out:
+    instances_out: wp.array[wo.Instance],
+  ):
+    i = wp.tid()
+    instances_out[wp.static(nworld * rc.bvh_ngeom) + i] = wo.make_instance(
+      wp.identity(3, float),
+      wp.vec3(0.0),
+      traversable[i],
+      wp.uint32(wp.static(nworld * mjm.ngeom) + flexid[i]),
+      wp.uint32(_TRIANGLE_SBT_OFFSET),
+      mask[i],
+      wp.uint32(wp.static(int(wo.InstanceFlags.DISABLE_ANYHIT))),
+    )
+
+  if flexes:
+    # Fully transparent flexes are invisible to rays, as in the BVH renderer.
+    wp.launch(
+      write_flex_instances,
+      len(flexes),
+      inputs=[
+        wp.array([flex[0] for flex in flexes], dtype=int),
+        wp.array([accel.id for accel in flex_accels], dtype=wp.uint64),
+        wp.array([0 if mjm.flex_rgba[flex[0], 3] == 0.0 else _FLEX_MASK for flex in flexes], dtype=wp.uint32),
+      ],
+      outputs=[records],
+    )
+
   scene = OptixScene(
     mesh_traversable=mesh_traversable,
     hfield_traversable=hfield_traversable,
     primitive_traversable=primitive_traversable,
-    instances=wp.empty((nworld, rc.bvh_ngeom), dtype=wo.Instance),
+    instances=records[: nworld * rc.bvh_ngeom].reshape((nworld, rc.bvh_ngeom)),
     ias=None,
     extent=extent,
     planes=tuple(int(gi) for gi in rc.enabled_geom_ids.numpy() if mjm.geom_type[gi] == GeomType.PLANE),
     grid=grid,
     write_instances=write_instances,
+    flexes=flexes,
+    flex_accels=tuple(flex_accels),
+    flexvert_norm=flexvert_norm,
   )
   wp.launch(
     write_instances,
@@ -215,9 +385,10 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
     outputs=[scene.instances],
   )
   rc.bvh_id = 0
-  if rc.bvh_ngeom:
+  if records.size:
     scene.ias = wo.Accel(
-      [wo.instances(scene.instances, accels)], flags=wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_TRACE
+      [wo.instances(records, accels + flex_accels)],
+      flags=wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_TRACE,
     )
     rc.bvh_id = scene.ias.id
   rc.optix = scene
@@ -246,6 +417,19 @@ def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
     ],
     outputs=[scene.instances],
   )
+  if scene.flexes:
+    _update_flexes(
+      scene.flexes,
+      scene.flexvert_norm,
+      scene.grid,
+      3.0 * scene.extent,
+      m.nflexelem,
+      *(getattr(m, name) for name in _FLEX_FIELDS),
+      d.flexvert_xpos,
+      bool(m.opt.deterministic & DeterminismType.ATOMICS),
+    )
+    for accel in scene.flex_accels:
+      accel.refit()
   if scene.ias is not None:
     scene.ias.refit()
 
@@ -382,7 +566,7 @@ def create_ray_pipeline(scene: OptixScene, geom_ray_types: Tuple[int, ...]):
     # the closest hit may be on a geom the ray excludes: continue past it
     while intersects_cell and tmin <= tmax:
       query = wo.accel_query_ray(
-        ias, origin, ray_dir, tmax, tmin, 0xFF, wp.uint32(wp.static(int(wo.RayFlags.CULL_BACK_FACING_TRIANGLES)))
+        ias, origin, ray_dir, tmax, tmin, _GEOM_MASK, wp.uint32(wp.static(int(wo.RayFlags.CULL_BACK_FACING_TRIANGLES)))
       )
       if not query.result:
         break
