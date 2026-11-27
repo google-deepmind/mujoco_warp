@@ -1318,11 +1318,12 @@ def _linesearch_iterative_kernel(
     # alpha = 0 the slope is -newton_decrement / grad_scale, the curvature is
     # newton_decrement / grad_scale^2 and the first trial is grad_scale. Only the row cost
     # for the noise bound is still summed, in the pass that evaluates the trial.
-    lo_alpha_in = float(0.0)
+    grad_scale = float(0.0)
     if wp.static(NEWTON):
-      lo_alpha_in = ctx_grad_scale_in[worldid]
+      grad_scale = ctx_grad_scale_in[worldid]
+    lo_alpha_in = grad_scale
 
-    # p0 via parallel reduction over non-equality constraints
+    # p0 (Newton: lo_in and the row cost at alpha = 0) via reduction over non-equality constraints
     local_p0 = wp.vec3(0.0)
     local_lo_in = wp.vec4(0.0)
     for efcid in range(ne + tid, nefc, wp.block_dim()):
@@ -1417,9 +1418,7 @@ def _linesearch_iterative_kernel(
       lo_in_rows = wp.vec3(initial6_sum[2], initial6_sum[3], initial6_sum[4])
 
       newton_decrement = ctx_newton_decrement_in[worldid]
-      p0 = wp.vec3(
-        0.0, -math.safe_div(newton_decrement, lo_alpha_in), math.safe_div(newton_decrement, lo_alpha_in * lo_alpha_in)
-      )
+      p0 = wp.vec3(0.0, -math.safe_div(newton_decrement, grad_scale), math.safe_div(newton_decrement, grad_scale * grad_scale))
       rows_cost = initial6_sum[5]
       rows_hessian = p0[2] - 2.0 * ctx_quad_gauss[2]
     else:

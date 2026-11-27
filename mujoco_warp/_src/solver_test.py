@@ -1438,7 +1438,7 @@ class SolverTest(parameterized.TestCase):
         </worldbody>
       </mujoco>
       """,
-      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE, "opt.iterations": 0, "opt.ls_iterations": ls_iterations},
+      overrides={"opt.jacobian": mujoco.mjtJacobian.mjJAC_DENSE, "opt.ls_iterations": ls_iterations},
       nworld=3,
       njmax=1,
     )
@@ -1627,7 +1627,7 @@ class SolverTest(parameterized.TestCase):
     _, _, m, d = test_data.fixture(
       "humanoid/humanoid.xml",
       keyframe=2,
-      overrides={"opt.cone": cone, "opt.solver": SolverType.NEWTON},
+      overrides={"opt.cone": cone},
       nworld=2,
     )
     ctx = solver.create_solver_context(m, d)
@@ -1635,7 +1635,7 @@ class SolverTest(parameterized.TestCase):
     solver.init_context(m, d, ctx, grad=True)
 
     slope = np.sum(ctx.search.numpy() * ctx.grad.numpy()[:, : m.nv], axis=1)
-    self.assertTrue(np.all(slope < 0.0))
+    np.testing.assert_array_less(slope, 0.0)
     np.testing.assert_allclose(-ctx.newton_decrement.numpy() / ctx.grad_scale.numpy(), slope, rtol=1e-5)
 
   @parameterized.parameters(
