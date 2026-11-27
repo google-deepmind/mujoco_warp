@@ -31,9 +31,9 @@ import warp as wp
 from mujoco_warp._src import math
 from mujoco_warp._src.ray import RAY_TOL_ABS
 from mujoco_warp._src.ray import RAY_TOL_REL
-from mujoco_warp._src.ray import _ray_eliminate
 from mujoco_warp._src.ray import geom_color
 from mujoco_warp._src.ray import make_ray_primitive
+from mujoco_warp._src.ray import ray_eliminate
 from mujoco_warp._src.ray import ray_plane
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
@@ -351,7 +351,7 @@ def create_ray_pipeline(scene: OptixScene, geom_ray_types: Tuple[int, ...]):
     # planes are unbounded, so they are not in the world cells: intersect them directly
     for i in range(wp.static(len(planes))):
       planeid = wp.static(planes[i])
-      if not _ray_eliminate(
+      if not ray_eliminate(
         body_weldid,
         geom_bodyid,
         geom_matid_w,
@@ -380,7 +380,7 @@ def create_ray_pipeline(scene: OptixScene, geom_ray_types: Tuple[int, ...]):
     origin = ray_origin + world_offset(worldid, wp.static(grid), wp.static(3.0 * extent))
 
     # the closest hit may be on a geom the ray excludes: continue past it
-    while intersects_cell:
+    while intersects_cell and tmin <= tmax:
       query = wo.accel_query_ray(
         ias, origin, ray_dir, tmax, tmin, 0xFF, wp.uint32(wp.static(int(wo.RayFlags.CULL_BACK_FACING_TRIANGLES)))
       )
@@ -389,7 +389,7 @@ def create_ray_pipeline(scene: OptixScene, geom_ray_types: Tuple[int, ...]):
       gi = int(query.instance_id) - worldid * ngeom
       gtype = geom_type[gi]
       # like mj_ray, rays do not intersect SDF geoms
-      if gtype == GeomType.SDF or _ray_eliminate(
+      if gtype == GeomType.SDF or ray_eliminate(
         body_weldid, geom_bodyid, geom_matid_w, geom_group, geom_rgba_w, mat_rgba_w, gi, geomgroup, flg_static, body_exclude
       ):
         tmin = query.t * (1.0 + RAY_TOL_REL) + RAY_TOL_ABS

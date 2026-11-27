@@ -55,7 +55,7 @@ def _ray_map(pos: wp.vec3, mat: wp.mat33, pnt: wp.vec3, vec: wp.vec3) -> Tuple[w
 
 
 @wp.func
-def _ray_eliminate(
+def ray_eliminate(
   # Model:
   body_weldid: wp.array[int],
   geom_bodyid: wp.array[int],
@@ -895,7 +895,7 @@ def _ray_geom_mesh(
   bodyexclude: int,
   geomid: int,
 ) -> Tuple[float, wp.vec3]:
-  if not _ray_eliminate(
+  if not ray_eliminate(
     body_weldid,
     geom_bodyid,
     geom_matid[worldid % geom_matid.shape[0]],
@@ -1082,7 +1082,7 @@ def _ray_geom_mesh_bvh(
   hfield_bvh_id: wp.array[wp.uint64],
   min_dist: float,
 ) -> Tuple[float, wp.vec3]:
-  if not _ray_eliminate(
+  if not ray_eliminate(
     body_weldid,
     geom_bodyid,
     geom_matid[worldid % geom_matid.shape[0]],
