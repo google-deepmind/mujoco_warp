@@ -31,6 +31,7 @@ from mujoco_warp import ConeType
 from mujoco_warp import IntegratorType
 from mujoco_warp import test_data
 from mujoco_warp._src import io
+from mujoco_warp._src import math
 from mujoco_warp._src import types
 from mujoco_warp._src import warp_util
 from mujoco_warp._src.io import put_model
@@ -1443,6 +1444,46 @@ class IOTest(parameterized.TestCase):
     # box center should be at z ≈ 0.5 when resting on ground
     box_z = d.xpos.numpy()[0, 1, 2]  # world 0, body 1 (box), z coordinate
     self.assertGreater(box_z, 0.4, msg=f"Box fell through ground plane (z={box_z}, should be > 0.4)")
+
+  def test_geom_pair_type_count(self):
+    """Counts only geom pairs that pass contype/conaffinity and body exclude filtering."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="1 1 1"/>
+          <body name="sphere" pos="0 0 1">
+            <freejoint/>
+            <geom type="sphere" size="0.1"/>
+          </body>
+          <body name="box1" pos="1 0 1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+          </body>
+          <body name="box2" pos="2 0 1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+          </body>
+          <body pos="3 0 1">
+            <freejoint/>
+            <geom type="capsule" size="0.1 0.1" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+        <contact>
+          <exclude body1="sphere" body2="box2"/>
+        </contact>
+      </mujoco>
+    """)
+    m = put_model(mjm)
+
+    expected = np.zeros(len(types.GeomType) * (len(types.GeomType) + 1) // 2, dtype=int)
+    for type1, type2, count in (
+      (types.GeomType.PLANE, types.GeomType.SPHERE, 1),
+      (types.GeomType.PLANE, types.GeomType.BOX, 2),
+      (types.GeomType.SPHERE, types.GeomType.BOX, 1),
+      (types.GeomType.BOX, types.GeomType.BOX, 1),
+    ):
+      expected[math.upper_trid_index(len(types.GeomType), type1.value, type2.value)] = count
+    np.testing.assert_array_equal(m.geom_pair_type_count, expected)
 
   def test_make_data_nccdmax_exceeds_nconmax(self):
     mjm = mujoco.MjModel.from_xml_string("<mujoco/>")
