@@ -1866,8 +1866,9 @@ def _iteration(m: types.Model, d: types.Data, ctx: IslandContext, g: island.Grou
       m.opt.tolerance,
       m.opt.ls_tolerance,
       m.opt.impratio_invsqrt,
-      g.group_ne.reshape(flat),
-      g.group_nf.reshape(flat),
+      # ne, nf: unread in island mode, where rows are classified by type (_row_bounds)
+      g.group_nefc.reshape(flat),
+      g.group_nefc.reshape(flat),
       g.group_nefc.reshape(flat),
       ctx.qfrc_smooth,
       d.contact.friction,

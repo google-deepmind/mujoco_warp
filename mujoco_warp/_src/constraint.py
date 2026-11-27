@@ -24,9 +24,7 @@ from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src.island import ROW_CLASSES
 from mujoco_warp._src.island import ROW_CONTACT
-from mujoco_warp._src.island import ROW_EQUALITY
-from mujoco_warp._src.island import ROW_FRICTION
-from mujoco_warp._src.island import ROW_LIMIT
+from mujoco_warp._src.island import ROW_OTHER
 from mujoco_warp._src.island import _block_sync
 from mujoco_warp._src.island import _dsu_union
 from mujoco_warp._src.island import dense_set
@@ -34,6 +32,7 @@ from mujoco_warp._src.island import dense_stride
 from mujoco_warp._src.island import rows_discover
 from mujoco_warp._src.island import rows_discover_tendon
 from mujoco_warp._src.island import rows_island
+from mujoco_warp._src.island import rows_island_counted
 from mujoco_warp._src.island import rows_reserve
 from mujoco_warp._src.island import rows_tendon_tree
 from mujoco_warp._src.types import ConstraintType
@@ -371,6 +370,7 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_nnz_out: wp.array[int],
     island_cursor_out: wp.array2d[int],
     dense_J_out: wp.array3d[float],
+    island_count_out: wp.array2d[int],
   ):
     """Calculates constraint rows for connect equality constraints."""
     worldid, eqconnectid = wp.tid()
@@ -435,16 +435,17 @@ def _equality_connect(is_sparse: bool, newton: bool, is_discrete: bool = False):
         rows_body1 = site_bodyid[rows_body1]
       rows_tree0 = island_body_treeid_in[rows_body0]
       rows_tree1 = island_body_treeid_in[rows_body1]
-      rows = rows_island(
+      rows = rows_island_counted(
         tree_island_out,
         worldid,
         rows_tree0,
         rows_tree1,
         3,
-        ROW_EQUALITY,
+        ROW_OTHER,
         njmax_in,
         nefc_out,
         island_cursor_out,
+        island_count_out,
       )
       efcid = rows[0]
       srow = rows[1]
@@ -735,6 +736,7 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_nnz_out: wp.array[int],
     island_cursor_out: wp.array2d[int],
     dense_J_out: wp.array3d[float],
+    island_count_out: wp.array2d[int],
   ):
     worldid, eqjntid = wp.tid()
     eqid = eq_jnt_adr[eqjntid]
@@ -762,16 +764,17 @@ def _equality_joint(is_sparse: bool, newton: bool, is_discrete: bool = False):
       rows_tree0 = island_dof_treeid_in[jnt_dofadr[eq_obj1id[eqid]]]
       if eq_obj2id[eqid] >= 0:
         rows_tree1 = island_dof_treeid_in[jnt_dofadr[eq_obj2id[eqid]]]
-      rows = rows_island(
+      rows = rows_island_counted(
         tree_island_out,
         worldid,
         rows_tree0,
         rows_tree1,
         1,
-        ROW_EQUALITY,
+        ROW_OTHER,
         njmax_in,
         nefc_out,
         island_cursor_out,
+        island_count_out,
       )
       efcid = rows[0]
       srow = rows[1]
@@ -926,6 +929,7 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_nnz_out: wp.array[int],
     island_cursor_out: wp.array2d[int],
     dense_J_out: wp.array3d[float],
+    island_count_out: wp.array2d[int],
   ):
     worldid, eqtenid = wp.tid()
     eqid = eq_ten_adr[eqtenid]
@@ -1001,16 +1005,17 @@ def _equality_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
       rows_tree0 = rows_tendon_tree(island_dof_treeid_in, ten_J_rownnz, ten_J_rowadr, ten_J_colind, eq_obj1id[eqid])
       if rows_tree0 < 0:
         rows_tree0 = rows_tendon_tree(island_dof_treeid_in, ten_J_rownnz, ten_J_rowadr, ten_J_colind, eq_obj2id[eqid])
-      rows = rows_island(
+      rows = rows_island_counted(
         tree_island_out,
         worldid,
         rows_tree0,
         rows_tree1,
         1,
-        ROW_EQUALITY,
+        ROW_OTHER,
         njmax_in,
         nefc_out,
         island_cursor_out,
+        island_count_out,
       )
       efcid = rows[0]
       srow = rows[1]
@@ -1387,6 +1392,7 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_nnz_out: wp.array[int],
     island_cursor_out: wp.array2d[int],
     dense_J_out: wp.array3d[float],
+    island_count_out: wp.array2d[int],
   ):
     worldid, eqweldid = wp.tid()
     eqid = eq_wld_adr[eqweldid]
@@ -1485,16 +1491,17 @@ def _equality_weld(is_sparse: bool, newton: bool, is_discrete: bool = False):
         rows_body1 = site_bodyid[rows_body1]
       rows_tree0 = island_body_treeid_in[rows_body0]
       rows_tree1 = island_body_treeid_in[rows_body1]
-      rows = rows_island(
+      rows = rows_island_counted(
         tree_island_out,
         worldid,
         rows_tree0,
         rows_tree1,
         6,
-        ROW_EQUALITY,
+        ROW_OTHER,
         njmax_in,
         nefc_out,
         island_cursor_out,
+        island_count_out,
       )
       efcid = rows[0]
       srow = rows[1]
@@ -2191,6 +2198,7 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
     efc_nnz_out: wp.array[int],
     island_cursor_out: wp.array2d[int],
     dense_J_out: wp.array3d[float],
+    island_count_out: wp.array2d[int],
   ):
     worldid, dofid = wp.tid()
 
@@ -2214,16 +2222,17 @@ def _friction_dof(is_sparse: bool, is_discrete: bool = False):
     srow = int(-1)
     if island_cursor_out:
       rows_tree0 = island_dof_treeid_in[dofid]
-      rows = rows_island(
+      rows = rows_island_counted(
         tree_island_out,
         worldid,
         rows_tree0,
         rows_tree1,
         1,
-        ROW_FRICTION,
+        ROW_OTHER,
         njmax_in,
         nefc_out,
         island_cursor_out,
+        island_count_out,
       )
       efcid = rows[0]
       srow = rows[1]
@@ -2339,6 +2348,7 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     efc_nnz_out: wp.array[int],
     island_cursor_out: wp.array2d[int],
     dense_J_out: wp.array3d[float],
+    island_count_out: wp.array2d[int],
   ):
     worldid, tenid = wp.tid()
 
@@ -2362,16 +2372,17 @@ def _friction_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
     srow = int(-1)
     if island_cursor_out:
       rows_tree0 = rows_tendon_tree(island_dof_treeid_in, ten_J_rownnz, ten_J_rowadr, ten_J_colind, tenid)
-      rows = rows_island(
+      rows = rows_island_counted(
         tree_island_out,
         worldid,
         rows_tree0,
         rows_tree1,
         1,
-        ROW_FRICTION,
+        ROW_OTHER,
         njmax_in,
         nefc_out,
         island_cursor_out,
+        island_count_out,
       )
       efcid = rows[0]
       srow = rows[1]
@@ -2587,7 +2598,7 @@ def _limit_slide_hinge(is_sparse: bool, newton: bool, is_discrete: bool = False)
           rows_tree0,
           rows_tree1,
           1,
-          ROW_LIMIT,
+          ROW_OTHER,
           njmax_in,
           nefc_out,
           island_cursor_out,
@@ -2749,7 +2760,7 @@ def _limit_ball(is_sparse: bool, newton: bool, is_discrete: bool = False):
           rows_tree0,
           rows_tree1,
           1,
-          ROW_LIMIT,
+          ROW_OTHER,
           njmax_in,
           nefc_out,
           island_cursor_out,
@@ -2934,7 +2945,7 @@ def _limit_tendon(is_sparse: bool, newton: bool, is_discrete: bool = False):
           rows_tree0,
           rows_tree1,
           1,
-          ROW_LIMIT,
+          ROW_OTHER,
           njmax_in,
           nefc_out,
           island_cursor_out,
@@ -5870,6 +5881,9 @@ def _make_rows(
   """
   newton = m.opt.solver == types.SolverType.NEWTON
   is_discrete = m.opt.integrator == types.IntegratorType.DISCRETE
+  # island order: the equality and friction rows' counts per island (MuJoCo's island_ne, island_nf)
+  island_ne = d.island_ne if island_cursor is not None else None
+  island_nf = d.island_nf if island_cursor is not None else None
   if not (m.opt.disableflags & types.DisableBit.CONSTRAINT):
     if contacts is not True and not (m.opt.disableflags & types.DisableBit.EQUALITY):
       wp.launch(
@@ -5938,6 +5952,7 @@ def _make_rows(
           efc_nnz,
           island_cursor,
           dense_J,
+          island_ne,
         ],
       )
       wp.launch(
@@ -6007,6 +6022,7 @@ def _make_rows(
           efc_nnz,
           island_cursor,
           dense_J,
+          island_ne,
         ],
       )
       wp.launch(
@@ -6057,6 +6073,7 @@ def _make_rows(
           efc_nnz,
           island_cursor,
           dense_J,
+          island_ne,
         ],
       )
       wp.launch(
@@ -6109,6 +6126,7 @@ def _make_rows(
           efc_nnz,
           island_cursor,
           dense_J,
+          island_ne,
         ],
       )
 
@@ -6279,6 +6297,7 @@ def _make_rows(
           efc_nnz,
           island_cursor,
           dense_J,
+          island_nf,
         ],
       )
 
@@ -6326,6 +6345,7 @@ def _make_rows(
           efc_nnz,
           island_cursor,
           dense_J,
+          island_nf,
         ],
       )
 
@@ -7077,7 +7097,7 @@ def _island_discover_sources(ntree: int):
       tree0 = int(-1)
       tree1 = int(-1)
       nrow = int(1)
-      rowclass = int(ROW_EQUALITY)
+      rowclass = int(ROW_OTHER)
       active = i < nsource
       kind = int(0)
       if active:
@@ -7135,7 +7155,7 @@ def _island_discover_sources(ntree: int):
       elif active and kind == 4:
         active = dof_frictionloss[worldid % dof_frictionloss.shape[0], i] > 0.0
         tree0 = dof_treeid[i]
-        rowclass = ROW_FRICTION
+        rowclass = ROW_OTHER
       elif active and kind == 5:
         active = tendon_frictionloss[worldid % tendon_frictionloss.shape[0], i] > 0.0
         if active:
@@ -7143,7 +7163,7 @@ def _island_discover_sources(ntree: int):
           rows_discover_tendon(
             dof_treeid, ten_J_rownnz, ten_J_rowadr, ten_J_colind, worldid, tree0, i, tree_island_out, island_parent_out
           )
-        rowclass = ROW_FRICTION
+        rowclass = ROW_OTHER
       elif active and kind == 6:
         jntid = jnt_limited_slide_hinge_adr[i]
         lim = _limit_dist(
@@ -7153,7 +7173,7 @@ def _island_discover_sources(ntree: int):
         )
         active = lim[0] < 0.0
         tree0 = dof_treeid[jnt_dofadr[jntid]]
-        rowclass = ROW_LIMIT
+        rowclass = ROW_OTHER
       elif active and kind == 7:
         jntid = jnt_limited_ball_adr[i]
         qposadr = jnt_qposadr[jntid]
@@ -7165,7 +7185,7 @@ def _island_discover_sources(ntree: int):
         )
         active = pos < 0.0
         tree0 = dof_treeid[jnt_dofadr[jntid]]
-        rowclass = ROW_LIMIT
+        rowclass = ROW_OTHER
       elif active:
         tenid = tendon_limited_adr[i]
         lim = _limit_dist(
@@ -7179,7 +7199,7 @@ def _island_discover_sources(ntree: int):
           rows_discover_tendon(
             dof_treeid, ten_J_rownnz, ten_J_rowadr, ten_J_colind, worldid, tree0, tenid, tree_island_out, island_parent_out
           )
-        rowclass = ROW_LIMIT
+        rowclass = ROW_OTHER
       if tree0 < 0:
         tree0 = tree1
         tree1 = -1

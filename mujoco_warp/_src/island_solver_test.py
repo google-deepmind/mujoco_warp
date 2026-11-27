@@ -223,18 +223,21 @@ class IslandSolverTest(parameterized.TestCase):
     # (g, h), ball joint at its limit
     self.assertEqual(nisland[0], 7)
 
-    # each island's rows are contiguous and ordered equality, friction, limit, contact
+    # each island's rows are contiguous, its contacts last; MuJoCo's equality and friction counts
     nefc = d.nefc.numpy()[0]
     row_island = d.efc.island.numpy()[0, :nefc]
     self.assertTrue(np.all(np.diff(row_island) >= 0))
-    rank = {0: 0, 1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 3, 7: 3}  # MuJoCo constraint types to classes
     etype = d.efc.type.numpy()[0, :nefc]
     for i in range(nisland[0]):
-      cls = [rank[t] for t in etype[row_island == i]]
-      self.assertEqual(cls, sorted(cls))
-      self.assertEqual(d.island_ne.numpy()[0, i], cls.count(0))
-      self.assertEqual(d.island_nf.numpy()[0, i], cls.count(1))
-      self.assertEqual(d.island_nefc.numpy()[0, i], len(cls))
+      types_i = etype[row_island == i]
+      contact = types_i >= int(mujoco.mjtConstraint.mjCNSTR_CONTACT_FRICTIONLESS)
+      self.assertTrue(np.all(np.diff(contact.astype(int)) >= 0))
+      self.assertEqual(d.island_ne.numpy()[0, i], np.count_nonzero(types_i == int(mujoco.mjtConstraint.mjCNSTR_EQUALITY)))
+      friction = (types_i == int(mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF)) | (
+        types_i == int(mujoco.mjtConstraint.mjCNSTR_FRICTION_TENDON)
+      )
+      self.assertEqual(d.island_nf.numpy()[0, i], np.count_nonzero(friction))
+      self.assertEqual(d.island_nefc.numpy()[0, i], len(types_i))
 
   def test_dense_rows(self):
     """Narrow island groups write their rows only as dense rows of whole tiles, local columns."""

@@ -1534,14 +1534,14 @@ def compute_island_mapping(m: types.Model, d: types.Data):
 
 
 # make_constraint's row kernels write rows in class order per world, or with the island layout
-# (opt.island_solve) at their island's address, an island's rows contiguous and in class order as in
-# MuJoCo's island arrays. The layout comes from constraint._island_discover, which merges each
-# active constraint's trees and counts its rows per tree and class without writing them.
-ROW_CLASSES = 4
-ROW_EQUALITY = 0
-ROW_FRICTION = 1
-ROW_LIMIT = 2
-ROW_CONTACT = 3
+# (opt.island_solve) at their island's address, an island's rows contiguous: its other rows, then
+# its contacts (nefc overflow drops the last contacts, as in the world order; the contact update and
+# dense contact rows walk an island's contact rows). The solver classifies rows by type. The layout
+# comes from constraint._island_discover, which merges each active constraint's trees and counts its
+# rows per tree and class without writing them.
+ROW_CLASSES = 2
+ROW_OTHER = 0
+ROW_CONTACT = 1
 # an island's row record in island_cursor: the next row of each class, then the dense row width (a
 # 32-byte sector: a constraint takes its rows and finds their kind in one place)
 ROW_RECORD = 8
@@ -1610,8 +1610,6 @@ class GroupBuffers:
     self.group_nv = wp.empty(shape, dtype=int)
     self.group_nefc = wp.empty(shape, dtype=int)
     self.group_iefcadr = wp.empty(shape, dtype=int)
-    self.group_ne = wp.empty(shape, dtype=int)
-    self.group_nf = wp.empty(shape, dtype=int)
     self.group_island0 = wp.empty(shape, dtype=int)
     self.group_nisland = wp.empty(shape, dtype=int)
     self.group_dense = wp.empty(shape, dtype=wp.vec4i)
@@ -1687,11 +1685,9 @@ def _is_root(active: int, parent: int, tree: int) -> int:
 
 
 @wp.func
-def _island_rows_fit(neq: int, nfrc: int, nrow: int, rowadr: int, rowmax: int) -> wp.vec3i:
-  """An island's (equality, friction, all) rows below rowmax: nefc overflow drops the rest."""
-  nrow = wp.min(nrow, wp.max(rowmax - rowadr, 0))
-  neq = wp.min(neq, nrow)
-  return wp.vec3i(neq, wp.min(nfrc, nrow - neq), nrow)
+def _island_rows_fit(nrow: int, rowadr: int, rowmax: int) -> int:
+  """An island's rows below rowmax: nefc overflow drops the rest (its last contacts first)."""
+  return wp.min(nrow, wp.max(rowmax - rowadr, 0))
 
 
 @cache_kernel
@@ -1750,8 +1746,6 @@ def _island_world(ntree: int):
     group_nv_out: wp.array2d[int],
     group_nefc_out: wp.array2d[int],
     group_iefcadr_out: wp.array2d[int],
-    group_ne_out: wp.array2d[int],
-    group_nf_out: wp.array2d[int],
     group_island0_out: wp.array2d[int],
     group_nisland_out: wp.array2d[int],
     group_dense_out: wp.array2d[wp.vec4i],
@@ -1830,14 +1824,12 @@ def _island_world(ntree: int):
     igroup = wp.tile_zeros(shape=ntree, dtype=int, storage="shared")
     _block_sync()
     for i in range(lane, ntree, lanes):
-      ne = counts[i * ROW_CLASSES + ROW_EQUALITY]
-      nf = counts[i * ROW_CLASSES + ROW_FRICTION]
-      nefc = ne + nf + counts[i * ROW_CLASSES + ROW_LIMIT] + counts[i * ROW_CLASSES + ROW_CONTACT]
+      nefc = counts[i * ROW_CLASSES + ROW_OTHER] + counts[i * ROW_CLASSES + ROW_CONTACT]
       iefcadr = island_rowadr_out[worldid, i * ROW_CLASSES]
-      fit = _island_rows_fit(ne, nf, nefc, iefcadr, njmax_in)
-      island_ne_out[worldid, i] = fit[0]
-      island_nf_out[worldid, i] = fit[1]
-      island_nefc_out[worldid, i] = fit[2]
+      # the equality and friction rows' row kernels count them (rows_island_counted)
+      island_ne_out[worldid, i] = 0
+      island_nf_out[worldid, i] = 0
+      island_nefc_out[worldid, i] = _island_rows_fit(nefc, iefcadr, njmax_in)
       island_iefcadr_out[worldid, i] = iefcadr
       _tile_set(iefc, i, iefcadr)
       # each class's rows start where the class before ends
@@ -1888,24 +1880,12 @@ def _island_world(ntree: int):
         t = u - nisland
         n = int(0)
         nrow = int(0)
-        ne = int(0)
-        nf = int(0)
         nefc = int(0)
         asleep = bool(False)
         if island:
           n = ndof[i]
-          nrow = (
-            counts[i * ROW_CLASSES + ROW_EQUALITY]
-            + counts[i * ROW_CLASSES + ROW_FRICTION]
-            + counts[i * ROW_CLASSES + ROW_LIMIT]
-            + counts[i * ROW_CLASSES + ROW_CONTACT]
-          )
-          fit = _island_rows_fit(
-            counts[i * ROW_CLASSES + ROW_EQUALITY], counts[i * ROW_CLASSES + ROW_FRICTION], nrow, iefcadr, njmax_in
-          )
-          ne = fit[0]
-          nf = fit[1]
-          nefc = fit[2]
+          nrow = counts[i * ROW_CLASSES + ROW_OTHER] + counts[i * ROW_CLASSES + ROW_CONTACT]
+          nefc = _island_rows_fit(nrow, iefcadr, njmax_in)
           if tree_awake_in:
             asleep = tree_awake_in[worldid, island_root_out[worldid, i]] == 0
         else:
@@ -1934,8 +1914,6 @@ def _island_world(ntree: int):
           group_asleep_out[worldid, g] = asleep
           group_idofadr_out[worldid, g] = idofadr
           group_iefcadr_out[worldid, g] = iefcadr
-          group_ne_out[worldid, g] = ne
-          group_nf_out[worldid, g] = nf
           group_island0_out[worldid, g] = wp.where(island, i, nisland)
         if island:
           island_group_out[worldid, i] = g
@@ -2003,7 +1981,7 @@ def _island_world(ntree: int):
       if blk[0] > 0:
         r0 = iefc[i]
         base = i * ROW_CLASSES
-        rc = r0 + counts[base + ROW_EQUALITY] + counts[base + ROW_FRICTION] + counts[base + ROW_LIMIT]
+        rc = r0 + counts[base + ROW_OTHER]
         stride = dense_stride(blk[0])
         start = blk[1] + (r0 - blk[3]) * stride
         for k in range(start + lane, start + (wp.min(rc, njmax_in) - r0) * stride, lanes):
@@ -2123,8 +2101,6 @@ def island_layout(
       buf.group_nv,
       buf.group_nefc,
       buf.group_iefcadr,
-      buf.group_ne,
-      buf.group_nf,
       buf.group_island0,
       buf.group_nisland,
       buf.group_dense,
@@ -2287,6 +2263,33 @@ def rows_island(
     ) * dense_stride(n)
     srow = adr * 64 + dense_stride(n)
   return wp.vec2i(efcid, srow)
+
+
+@wp.func
+def rows_island_counted(
+  # Data in:
+  tree_island_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  tree0: int,
+  tree1: int,
+  nrow: int,
+  rowclass: int,
+  nrow_max: int,
+  # Data out:
+  nefc_out: wp.array[int],
+  # Out:
+  island_cursor_out: wp.array2d[int],
+  island_count_out: wp.array2d[int],
+) -> wp.vec2i:
+  """rows_island, its stored rows added to the island's count (island_ne or island_nf: MuJoCo's)."""
+  rows = rows_island(tree_island_in, worldid, tree0, tree1, nrow, rowclass, nrow_max, nefc_out, island_cursor_out)
+  tree = wp.where(tree0 >= 0, tree0, tree1)
+  if tree >= 0 and rows[0] < nrow_max:
+    wp.atomic_add(
+      island_count_out, worldid, tree_island_in[worldid, tree], wp.min(nrow, nrow_max - rows[0])
+    )  # kernel_analyzer: ignore[atomic]
+  return rows
 
 
 @wp.func
