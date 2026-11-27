@@ -5875,6 +5875,9 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
       block_dim=m.block_dim.solve_init_search_cg,
     )
   if m.opt.iterations != 0 and m.opt.graph_conditional:
+    if m.opt.solver == types.SolverType.NEWTON and not (run_qacc_smooth and m.opt.integrator == types.IntegratorType.DISCRETE):
+      # no launch above marks a world as done, so the first iteration needs no condition
+      _solver_iteration(m, d, ctx, nsolving, compact=compact)
     # Note: the iteration kernel (indicated by while_body) is repeatedly launched
     # as long as condition_iteration is not zero.
     # condition_iteration is a warp array of size 1 and type int, it counts the number
