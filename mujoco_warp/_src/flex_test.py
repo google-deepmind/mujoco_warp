@@ -32,6 +32,7 @@ from mujoco_warp._src import derivative
 from mujoco_warp._src import io
 from mujoco_warp._src import passive
 from mujoco_warp._src import types
+from mujoco_warp._src import util_pkg
 
 _TOLERANCE = 5e-4
 
@@ -4216,6 +4217,117 @@ class FlexContactParityTest(parameterized.TestCase):
 
     if nworld == 2:
       self.assertFalse(np.allclose(w_contacts_all[0][0]["dist"], w_contacts_all[1][0]["dist"]))
+
+  # TODO(team): remove version check once mujoco >= 4.0.2 is required.
+  @absltest.skipIf(not util_pkg.check_version("mujoco>=4.0.2"), "Requires MuJoCo >= 4.0.2")
+  @parameterized.product(
+    # name, capsule pose, capsule size, flex points, flex elements, (qpos address, offset) of the
+    # second world, contacts per world, their distance, their normal, what differs between worlds
+    case=[
+      # capsule shaft pressing against a triangle edge, both end caps far outside
+      ("shaft_edge", 'pos="0.5 -0.03 0"', "0.05 0.5", "0 0 0  1 0 0  0 1 0", "0 1 2", (1, -0.005), 1, None, None, "dist"),
+      # capsule shaft piercing a two-triangle cloth near a shared interior edge:
+      # exits along -z with no opposing lateral contact from the neighbour triangle
+      (
+        "piercing_interior_edge",
+        'pos="-0.2 0.5 0.08"',
+        "0.05 0.1",
+        "0 0 0  0 1 0  -1 0.5 0  1 0.5 0",
+        "0 1 2  1 0 3",
+        (2, 0.005),
+        1,
+        None,
+        [0.0, 0.0, -1.0],
+        "dist",
+      ),
+      # capsule lying in the cloth plane with both end caps outside the cloth: its axis crosses
+      # two interior edges of the center triangle, and each crossed triangle emits one contact
+      (
+        "coplanar_interior_triangle",
+        'pos="-0.3 0 0.5"',
+        "0.05 1",
+        "0 0 0  0 0 1  -1 0 0.5  1 0 0.5  -1 0 1.5  -1 0 -0.5",
+        "0 1 2  1 0 3  2 1 4  0 2 5",
+        (0, -0.1),
+        3,
+        -0.05,
+        [0.0, 1.0, 0.0],
+        "pos",
+      ),
+      # horizontal capsule lying in the triangle plane emits two -z contacts
+      (
+        "coplanar_shaft",
+        'pos="0.25 0.25 0" euler="0 90 0"',
+        "0.05 0.1",
+        "0 0 0  1 0 0  0 1 0",
+        "0 1 2",
+        (2, 0.003),
+        2,
+        None,
+        None,
+        "dist",
+      ),
+    ],
+    nworld=[1, 2],
+  )
+  def test_contact_capsule_2d_flex(self, case, nworld):
+    _, cap_pose, cap_size, points, elems, (qidx, dq), expected_ncon, expected_dist, expected_nrm, diff_key = case
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <body name="cap" {cap_pose}>
+            <freejoint/>
+            <geom type="capsule" size="{cap_size}"/>
+          </body>
+          <flexcomp name="cloth" type="direct" dim="2" radius="0"
+                    point="{points}" element="{elems}">
+            <edge equality="true"/>
+            <contact selfcollide="none" condim="3"/>
+          </flexcomp>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos = d.qpos.numpy().copy()
+    if nworld == 2:
+      qpos[1, qidx] += dq
+      d.qpos.assign(qpos)
+
+    d.nacon.fill_(-1)
+    for arr in (d.flexvert_xpos, d.contact.dist, d.contact.pos, d.contact.frame):
+      arr.fill_(wp.inf)
+    for arr in (d.contact.geom, d.contact.flex, d.contact.elem, d.contact.vert):
+      arr.fill_(-1)
+
+    mjw.kinematics(m, d)
+    mjw.flex(m, d)
+    mjw.collision(m, d)
+
+    self.assertEqual(d.nacon.numpy()[0], nworld * expected_ncon)
+
+    w_contacts_all = []
+    for w in range(nworld):
+      mjd.qpos[:] = qpos[w]
+      mujoco.mj_kinematics(mjm, mjd)
+      mujoco.mj_flex(mjm, mjd)
+      mujoco.mj_collision(mjm, mjd)
+      self.assertEqual(mjd.ncon, expected_ncon)
+
+      w_contacts = self._get_sorted_contacts(d, d.nacon.numpy()[0], world_idx=w, is_warp=True)
+      m_contacts = self._get_sorted_contacts(mjd, mjd.ncon, is_warp=False)
+      self._assert_contact_parity(w_contacts, m_contacts)
+      for c in w_contacts:
+        if expected_dist is not None:
+          np.testing.assert_allclose(c["dist"], expected_dist, atol=1e-5)
+        if expected_nrm is not None:
+          np.testing.assert_allclose(c["frame"][0], expected_nrm, atol=1e-5)
+      w_contacts_all.append(w_contacts)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose([c[diff_key] for c in w_contacts_all[0]], [c[diff_key] for c in w_contacts_all[1]]))
 
   @parameterized.parameters(1, 2)
   def test_contact_flex_flex_rope_margin(self, nworld):

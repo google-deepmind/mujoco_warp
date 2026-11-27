@@ -182,6 +182,31 @@ class SphereTriangleTest(parameterized.TestCase):
 
     self.assertEqual(dist, collision_primitive_core.MJ_MAXVAL)
 
+  def test_sphere_degenerate_triangle(self):
+    """Degenerate (collinear and coincident) triangles return exact distance, no NaNs."""
+    # collinear triangle along x in [0, 1]
+    t1 = np.array([0.0, 0.0, 0.0])
+    t2 = np.array([0.5, 0.0, 0.0])
+    t3 = np.array([1.0, 0.0, 0.0])
+
+    # far sphere: must not produce a phantom contact
+    dist, _, _ = self._run_sphere_triangle(np.array([0.5, 0.5, 0.0]), 0.1, t1, t2, t3, 0.0, margin=0.01)
+    self.assertEqual(dist, collision_primitive_core.MJ_MAXVAL)
+
+    # near sphere: distance to segment [0, 1] on x-axis
+    dist, pos, normal = self._run_sphere_triangle(np.array([0.5, 0.08, 0.0]), 0.1, t1, t2, t3, 0.0, margin=0.01)
+    np.testing.assert_allclose(dist, -0.02, atol=1e-6)
+    np.testing.assert_allclose(normal, [0.0, -1.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(pos, [0.5, -0.01, 0.0], atol=1e-6)
+
+    # coincident first two vertices (t1 == t2): tri_weights must not divide 0/0
+    dist, pos, normal = self._run_sphere_triangle(
+      np.array([0.5, 0.08, 0.0]), 0.1, t1, t1, t3, 0.0, margin=0.01
+    )
+    self.assertTrue(np.isfinite(dist))
+    np.testing.assert_allclose(dist, -0.02, atol=1e-6)
+    np.testing.assert_allclose(normal, [0.0, -1.0, 0.0], atol=1e-6)
+
 
 @wp.kernel
 def box_triangle_kernel(
@@ -394,14 +419,32 @@ def capsule_triangle_kernel(
   t3: wp.vec3,
   tri_radius: float,
   margin: float,
+  nbr_mask: int,
+  nbr0: wp.vec3,
+  nbr1: wp.vec3,
+  nbr2: wp.vec3,
   # Out:
-  dist_out: wp.array[collision_primitive_core.vec5],
-  pos_out: wp.array[collision_primitive_core.mat53],
-  normal_out: wp.array[collision_primitive_core.mat53],
+  ncon_out: wp.array[int],
+  dist_out: wp.array[vec8],
+  pos_out: wp.array[mat83],
+  normal_out: wp.array[mat83],
 ):
-  dist, pos, normal = collision_primitive_core.capsule_triangle(
-    capsule_pos, capsule_axis, capsule_radius, capsule_half_length, t1, t2, t3, tri_radius, margin
+  ncon, dist, pos, normal = collision_primitive_core.capsule_triangle(
+    capsule_pos,
+    capsule_axis,
+    capsule_radius,
+    capsule_half_length,
+    t1,
+    t2,
+    t3,
+    tri_radius,
+    margin,
+    nbr_mask,
+    nbr0,
+    nbr1,
+    nbr2,
   )
+  ncon_out[0] = ncon
   dist_out[0] = dist
   pos_out[0] = pos
   normal_out[0] = normal
@@ -421,12 +464,18 @@ class CapsuleTriangleTest(parameterized.TestCase):
     t3: np.ndarray,
     tri_radius: float,
     margin: float = 1.0,
+    nbr_mask: int = 0,
+    nbr0: np.ndarray | None = None,
+    nbr1: np.ndarray | None = None,
+    nbr2: np.ndarray | None = None,
   ):
-    """Helper to run the capsule_triangle kernel and return results."""
-    dist = wp.zeros(1, dtype=collision_primitive_core.vec5)
-    pos = wp.zeros(1, dtype=collision_primitive_core.mat53)
-    normal = wp.zeros(1, dtype=collision_primitive_core.mat53)
+    """Helper to run the capsule_triangle kernel and return active contacts."""
+    ncon = wp.zeros(1, dtype=int)
+    dist = wp.zeros(1, dtype=vec8)
+    pos = wp.zeros(1, dtype=mat83)
+    normal = wp.zeros(1, dtype=mat83)
 
+    z = np.zeros(3)
     wp.launch(
       capsule_triangle_kernel,
       dim=1,
@@ -440,11 +489,16 @@ class CapsuleTriangleTest(parameterized.TestCase):
         wp.vec3(t3),
         tri_radius,
         margin,
+        nbr_mask,
+        wp.vec3(z if nbr0 is None else nbr0),
+        wp.vec3(z if nbr1 is None else nbr1),
+        wp.vec3(z if nbr2 is None else nbr2),
       ],
-      outputs=[dist, pos, normal],
+      outputs=[ncon, dist, pos, normal],
     )
 
-    return dist.numpy()[0], pos.numpy()[0], normal.numpy()[0]
+    n = int(ncon.numpy()[0])
+    return dist.numpy()[0][:n], pos.numpy()[0][:n], normal.numpy()[0][:n]
 
   def test_capsule_above_triangle_center(self):
     """Capsule directly above triangle center."""
@@ -462,6 +516,7 @@ class CapsuleTriangleTest(parameterized.TestCase):
     )
 
     expected_dist = 0.5 - capsule_half_length - capsule_radius
+    self.assertGreaterEqual(len(dist), 1)
     np.testing.assert_allclose(dist[0], expected_dist, atol=1e-5)
 
   def test_capsule_penetrating_triangle(self):
@@ -479,6 +534,7 @@ class CapsuleTriangleTest(parameterized.TestCase):
       capsule_pos, capsule_axis, capsule_radius, capsule_half_length, t1, t2, t3, tri_radius
     )
 
+    self.assertGreaterEqual(len(dist), 1)
     self.assertLess(dist[0], 0)
 
   def test_horizontal_capsule(self):
@@ -497,6 +553,7 @@ class CapsuleTriangleTest(parameterized.TestCase):
     )
 
     expected_dist = 0.2 - capsule_radius
+    self.assertGreaterEqual(len(dist), 1)
     np.testing.assert_allclose(dist[0], expected_dist, atol=1e-5)
 
   def test_with_triangle_radius(self):
@@ -515,6 +572,7 @@ class CapsuleTriangleTest(parameterized.TestCase):
     )
 
     expected_dist = 0.5 - capsule_half_length - capsule_radius - tri_radius
+    self.assertGreaterEqual(len(dist), 1)
     np.testing.assert_allclose(dist[0], expected_dist, atol=1e-5)
 
   def test_triangle_vertex_against_capsule_side(self):
@@ -527,13 +585,13 @@ class CapsuleTriangleTest(parameterized.TestCase):
 
     dist, pos, normal = self._run_capsule_triangle(capsule_pos, capsule_axis, 0.05, 0.5, t1, t2, t3, 0.0, margin=0.01)
 
-    np.testing.assert_equal(dist[[0, 1, 3, 4]], [collision_primitive_core.MJ_MAXVAL] * 4)
-    np.testing.assert_allclose(dist[2], -0.01, atol=1e-6)  # slot 2: triangle vertex t1
-    np.testing.assert_allclose(normal[2], [0.0, 0.0, -1.0], atol=1e-6)
-    np.testing.assert_allclose(pos[2], [0.0, 0.0, 0.055], atol=1e-6)
+    self.assertEqual(len(dist), 1)
+    np.testing.assert_allclose(dist[0], -0.01, atol=1e-6)
+    np.testing.assert_allclose(normal[0], [0.0, 0.0, -1.0], atol=1e-6)
+    np.testing.assert_allclose(pos[0], [0.0, 0.0, 0.055], atol=1e-6)
 
   def test_triangle_vertex_on_capsule_axis(self):
-    """A vertex on the capsule axis gets the mju_normalize3 fallback normal (1, 0, 0)."""
+    """A vertex on the capsule axis resolves cleanly with depth -r and outward normal."""
     t1 = np.array([0.0, 0.0, 0.0])
     t2 = np.array([1.0, 0.0, 0.0])
     t3 = np.array([0.0, 1.0, 0.0])
@@ -542,10 +600,10 @@ class CapsuleTriangleTest(parameterized.TestCase):
       np.zeros(3), np.array([0.0, 0.0, 1.0]), 0.05, 0.5, t1, t2, t3, 0.0, margin=0.01
     )
 
-    np.testing.assert_equal(dist[[0, 1, 3, 4]], [collision_primitive_core.MJ_MAXVAL] * 4)
-    np.testing.assert_allclose(dist[2], -0.05, atol=1e-6)  # slot 2: triangle vertex t1
-    np.testing.assert_allclose(normal[2], [1.0, 0.0, 0.0], atol=1e-6)
-    np.testing.assert_allclose(pos[2], [0.025, 0.0, 0.0], atol=1e-6)
+    self.assertEqual(len(dist), 1)
+    np.testing.assert_allclose(dist[0], -0.05, atol=1e-6)
+    np.testing.assert_allclose(normal[0], [1.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(pos[0], [0.025, 0.0, 0.0], atol=1e-6)
 
   def test_capsule_beyond_margin(self):
     """Candidates farther than margin are discarded."""
@@ -557,7 +615,140 @@ class CapsuleTriangleTest(parameterized.TestCase):
       np.array([0.5, 0.33, 0.5]), np.array([0.0, 0.0, 1.0]), 0.1, 0.2, t1, t2, t3, 0.0, margin=0.01
     )
 
-    np.testing.assert_equal(dist, [collision_primitive_core.MJ_MAXVAL] * 5)
+    self.assertEqual(len(dist), 0)
+
+  def test_capsule_shaft_against_triangle_edge(self):
+    """Capsule shaft pressing against a triangle edge produces an edge contact."""
+    t1 = np.array([0.0, 0.0, 0.0])
+    t2 = np.array([1.0, 0.0, 0.0])
+    t3 = np.array([0.0, 1.0, 0.0])
+    # vertical shaft at (0.5, -0.03, 0) crosses edge (t1, t2) with both end caps far away
+    dist, pos, normal = self._run_capsule_triangle(
+      np.array([0.5, -0.03, 0.0]), np.array([0.0, 0.0, 1.0]), 0.05, 0.5, t1, t2, t3, 0.0, margin=0.01
+    )
+
+    self.assertEqual(len(dist), 1)
+    np.testing.assert_allclose(dist[0], -0.02, atol=1e-6)
+    np.testing.assert_allclose(normal[0], [0.0, 1.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(pos[0], [0.5, 0.01, 0.0], atol=1e-6)
+
+  def test_capsule_shaft_piercing_triangle_interior(self):
+    """Shaft piercing the triangle interior exits along +-N and ignores interior edges."""
+    t1 = np.array([0.0, 0.0, 0.0])
+    t2 = np.array([1.0, 0.0, 0.0])
+    t3 = np.array([0.0, 1.0, 0.0])
+    # capsule axis from z=-0.02 to z=+0.18 at (0.2, 0.2): shallower exit is -N (-z), depth 0.02
+    dist, pos, normal = self._run_capsule_triangle(
+      np.array([0.2, 0.2, 0.08]),
+      np.array([0.0, 0.0, 1.0]),
+      0.05,
+      0.10,
+      t1,
+      t2,
+      t3,
+      0.0,
+      margin=0.01,
+      nbr_mask=0b111,
+      nbr0=np.array([1.0, 1.0, 0.0]),
+      nbr1=np.array([-1.0, 0.0, 0.0]),
+      nbr2=np.array([0.0, -1.0, 0.0]),
+    )
+
+    self.assertEqual(len(dist), 1)
+    np.testing.assert_allclose(dist[0], -0.07, atol=1e-6)
+    np.testing.assert_allclose(normal[0], [0.0, 0.0, -1.0], atol=1e-6)
+    np.testing.assert_allclose(pos[0], [0.2, 0.2, -0.035], atol=1e-6)
+
+  def test_capsule_coplanar_shaft_on_triangle(self):
+    """Horizontal capsule lying directly in the triangle plane emits two clean -N contacts."""
+    t1 = np.array([0.0, 0.0, 0.0])
+    t2 = np.array([1.0, 0.0, 0.0])
+    t3 = np.array([0.5, 1.0, 0.0])
+    dist, _, normal = self._run_capsule_triangle(
+      np.array([0.5, 0.3, 0.0]), np.array([1.0, 0.0, 0.0]), 0.05, 0.15, t1, t2, t3, 0.0, margin=0.01
+    )
+
+    self.assertEqual(len(dist), 2)
+    np.testing.assert_allclose(dist, [-0.05, -0.05], atol=1e-6)
+    np.testing.assert_allclose(normal, [[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]], atol=1e-6)
+
+  def test_capsule_coplanar_rotated(self):
+    """Rounding never lets a boundary edge axis replace the end caps of a coplanar capsule."""
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    center = np.array([0.25, 0.25, 0.0])
+    shift = np.array([100.0, -100.0, 50.0])
+    for i in range(100):
+      rot = _rot(0, 37.0 * i + 11.0) @ _rot(1, 53.0 * i + 23.0) @ _rot(2, 71.0 * i + 5.0)
+      # odd rotations are far from the origin, where float32 rounds the geometry out of the plane
+      offset = shift * (i % 2)
+      atol = 1e-2 if i % 2 else 1e-5
+      t = points @ rot.T + offset
+      dist, pos, normal = self._run_capsule_triangle(
+        rot @ center + offset, rot[:, 0], 0.05, 0.1, t[0], t[1], t[2], 0.0, margin=0.01
+      )
+
+      self.assertEqual(len(dist), 2, f"rotation {i}")
+      np.testing.assert_allclose(dist, [-0.05, -0.05], atol=atol, err_msg=f"rotation {i}")
+      np.testing.assert_allclose(np.abs(normal @ rot[:, 2]), [1.0, 1.0], atol=atol, err_msg=f"rotation {i}")
+      np.testing.assert_allclose(normal[0] @ normal[1], 1.0, atol=atol, err_msg=f"rotation {i}")
+      np.testing.assert_allclose(np.linalg.norm(pos[0] - pos[1]), 0.2, atol=atol, err_msg=f"rotation {i}")
+
+  def test_capsule_coplanar_crossing_interior_triangle(self):
+    """Coplanar capsule crossing two interior edges with both end caps outside is not missed."""
+    t1 = np.array([0.0, 0.0, 0.0])
+    t2 = np.array([0.0, 0.0, 1.0])
+    t3 = np.array([-1.0, 0.0, 0.5])
+    dist, pos, normal = self._run_capsule_triangle(
+      np.array([-0.3, 0.0, 0.5]),
+      np.array([0.0, 0.0, 1.0]),
+      0.05,
+      1.0,
+      t1,
+      t2,
+      t3,
+      0.0,
+      margin=0.01,
+      nbr_mask=0b111,
+      nbr0=np.array([-1.0, 0.0, 1.5]),
+      nbr1=np.array([-1.0, 0.0, -0.5]),
+      nbr2=np.array([1.0, 0.0, 0.5]),
+    )
+
+    self.assertEqual(len(dist), 1)
+    np.testing.assert_allclose(dist[0], -0.05, atol=1e-6)
+    np.testing.assert_allclose(normal[0], [0.0, 1.0, 0.0], atol=1e-6)
+    # the witness is on the first Stencil2D edge that the axis crosses, here (t2, t3)
+    np.testing.assert_allclose(pos[0], [-0.3, 0.025, 0.85], atol=1e-6)
+
+  def test_capsule_far_from_origin(self):
+    """Precision is preserved when both capsule and triangle are shifted by 1000 m."""
+    shift = np.array([1000.0, -1000.0, 500.0])
+    t1 = shift + np.array([0.0, 0.0, 0.0])
+    t2 = shift + np.array([1.0, 0.0, 0.0])
+    t3 = shift + np.array([0.0, 1.0, 0.0])
+    dist, pos, normal = self._run_capsule_triangle(
+      shift + np.array([0.5, -0.03, 0.0]), np.array([0.0, 0.0, 1.0]), 0.05, 0.5, t1, t2, t3, 0.0, margin=0.01
+    )
+
+    self.assertEqual(len(dist), 1)
+    np.testing.assert_allclose(dist[0], -0.02, atol=1e-4)
+    np.testing.assert_allclose(normal[0], [0.0, 1.0, 0.0], atol=1e-5)
+    np.testing.assert_allclose(pos[0] - shift, [0.5, 0.01, 0.0], atol=1e-4)
+
+  def test_capsule_zero_length_and_degenerate_triangle(self):
+    """Zero-length capsule and degenerate triangle produce a single contact without NaNs."""
+    t1 = np.array([0.0, 0.0, 0.0])
+    t2 = np.array([0.0, 0.0, 0.0])
+    t3 = np.array([1.0, 0.0, 0.0])
+    dist, pos, normal = self._run_capsule_triangle(
+      np.array([0.5, 0.03, 0.0]), np.array([0.0, 0.0, 1.0]), 0.05, 0.0, t1, t2, t3, 0.0, margin=0.01
+    )
+
+    self.assertEqual(len(dist), 1)
+    self.assertTrue(np.all(np.isfinite(dist)))
+    self.assertTrue(np.all(np.isfinite(pos)))
+    self.assertTrue(np.all(np.isfinite(normal)))
+    np.testing.assert_allclose(dist[0], -0.02, atol=1e-6)
 
 
 @wp.kernel
