@@ -135,10 +135,6 @@ def _flex_surface(mjm: mujoco.MjModel, f: int):
   return tris, np.tile(vert, 2), np.repeat([1.0, -1.0], nvert)
 
 
-# Model fields of the flex surface update, after nflexelem.
-_FLEX_FIELDS = ("flex_dim", "flex_vertadr", "flex_elemadr", "flex_elemnum", "flex_elemdataadr", "flex_elem", "flex_radius")
-
-
 def _update_flexes(
   flexes: tuple,
   flexvert_norm: wp.array2d[wp.vec3],
@@ -160,22 +156,24 @@ def _update_flexes(
   from mujoco_warp._src import bvh  # noqa: PLC0415
 
   nworld = flexvert_xpos.shape[0]
-  flexvert_norm.zero_()
-  wp.launch(
-    bvh.accumulate_flex_vertex_normals(deterministic),
-    dim=(nworld, nflexelem),
-    inputs=[
-      flex_dim.shape[0],
-      flex_dim,
-      flex_vertadr,
-      flex_elemadr,
-      flex_elemnum,
-      flex_elemdataadr,
-      flex_elem,
-      flexvert_xpos,
-    ],
-    outputs=[flexvert_norm],
-  )
+  # Only 2D flexes offset their points along the vertex normals.
+  if flexvert_norm.size:
+    flexvert_norm.zero_()
+    wp.launch(
+      bvh.accumulate_flex_vertex_normals(deterministic),
+      dim=(nworld, nflexelem),
+      inputs=[
+        flex_dim.shape[0],
+        flex_dim,
+        flex_vertadr,
+        flex_elemadr,
+        flex_elemnum,
+        flex_elemdataadr,
+        flex_elem,
+        flexvert_xpos,
+      ],
+      outputs=[flexvert_norm],
+    )
   for flexid, points, vert, side in flexes:
     wp.launch(
       _flex_points,
@@ -219,20 +217,27 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
   # the same points for the hit normals. Measured on draped cloth, refitting the GAS outpaces
   # rebuilding the surface as triangle clusters.
   flexes, surfaces = [], []
-  for f in rc.flex_mesh_registry:
+  for f in range(mjm.nflex):
     tris, vert, side = _flex_surface(mjm, f)
     points = wp.empty(nworld * len(vert), dtype=wp.vec3)
     flexes.append((f, points, wp.array(vert, dtype=int), wp.array(side, dtype=float)))
     surfaces.append(tris + len(vert) * np.arange(nworld)[:, None, None])
   flexes = tuple(flexes)
-  flexvert_norm = wp.zeros((nworld, mjm.nflexvert), dtype=wp.vec3)
+  has_2d = np.any(mjm.flex_dim == 2)
+  flexvert_norm = wp.zeros((nworld, mjm.nflexvert) if has_2d else (0, 0), dtype=wp.vec3)
   _update_flexes(
     flexes,
     flexvert_norm,
     grid,
     spacing,
     mjm.nflexelem,
-    *(wp.array(getattr(mjm, name), dtype=float if name == "flex_radius" else int) for name in _FLEX_FIELDS),
+    wp.array(mjm.flex_dim, dtype=int),
+    wp.array(mjm.flex_vertadr, dtype=int),
+    wp.array(mjm.flex_elemadr, dtype=int),
+    wp.array(mjm.flex_elemnum, dtype=int),
+    wp.array(mjm.flex_elemdataadr, dtype=int),
+    wp.array(mjm.flex_elem, dtype=int),
+    wp.array(mjm.flex_radius, dtype=float),
     wp.array(np.tile(mjd.flexvert_xpos[None], (nworld, 1, 1)), dtype=wp.vec3),
     False,
   )
@@ -245,9 +250,7 @@ def build_scene_bvh(mjm: mujoco.MjModel, mjd: mujoco.MjData, rc: RenderContext, 
         [wo.triangles(points, indices, validate=False)], flags=wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_BUILD
       )
     )
-  rc.flex_bvh_id = wp.array(
-    [rc.flex_mesh_registry[f].id if f in rc.flex_mesh_registry else 0 for f in range(mjm.nflex)], dtype=wp.uint64
-  )
+  rc.flex_bvh_id = wp.array([rc.flex_mesh_registry[f].id for f in range(mjm.nflex)], dtype=wp.uint64)
 
   @wp.kernel(module="unique", enable_backward=False)
   def write_instances(
@@ -424,7 +427,13 @@ def refit_scene_bvh(m: Model, d: Data, rc: RenderContext):
       scene.grid,
       3.0 * scene.extent,
       m.nflexelem,
-      *(getattr(m, name) for name in _FLEX_FIELDS),
+      m.flex_dim,
+      m.flex_vertadr,
+      m.flex_elemadr,
+      m.flex_elemnum,
+      m.flex_elemdataadr,
+      m.flex_elem,
+      m.flex_radius,
       d.flexvert_xpos,
       bool(m.opt.deterministic & DeterminismType.ATOMICS),
     )

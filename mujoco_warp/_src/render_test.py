@@ -1994,7 +1994,7 @@ class RenderTest(parameterized.TestCase):
     """,
       nworld=nworld,
     )
-    kwargs = dict(nworld=nworld, cam_res=(64, 48), render_rgb=False, render_depth=True, render_seg=True)
+    kwargs = dict(nworld=nworld, cam_res=(64, 48), render_rgb=True, render_depth=True, render_seg=True)
     rc = mjw.create_render_context(mjm, backend="optix", **kwargs)
     self.assertEqual(rc.backend, "optix")
     rc_warp = mjw.create_render_context(mjm, **kwargs)
@@ -2007,14 +2007,16 @@ class RenderTest(parameterized.TestCase):
     outputs = []
     for ctx in (rc_warp, rc):
       mjw.refit_bvh(m, d, ctx)
+      ctx.rgb_data.fill_(wp.uint32(0))
       ctx.seg_data.fill_(wp.vec2i(-1, -1))
       ctx.depth_data.fill_(wp.inf)
       mjw.render(m, d, ctx)
-      outputs.append((ctx.seg_data.numpy(), ctx.depth_data.numpy()))
-    (seg_warp, depth_warp), (seg, depth) = outputs
+      outputs.append((ctx.rgb_data.numpy(), ctx.seg_data.numpy(), ctx.depth_data.numpy()))
+    (rgb_warp, seg_warp, depth_warp), (rgb, seg, depth) = outputs
 
     self.assertGreater(np.count_nonzero(seg[..., 1] == int(mjw.ObjType.FLEX)), 0)
     np.testing.assert_array_equal(seg, seg_warp)
+    np.testing.assert_array_equal(rgb, rgb_warp)
     np.testing.assert_allclose(depth, depth_warp, rtol=1e-5, atol=1e-5)
     if nworld == 2:
       self.assertFalse(np.array_equal(seg[0], seg[1]))
@@ -2023,7 +2025,7 @@ class RenderTest(parameterized.TestCase):
     pnt = wp.array(np.tile([[[0.0, 0.0, 2.0]]], (nworld, 1, 1)), dtype=wp.vec3)
     vec = wp.array(np.tile([[[0.0, 0.0, -1.0]]], (nworld, 1, 1)), dtype=wp.vec3)
     dist = wp.empty((nworld, 1), dtype=float)
-    geomid = wp.empty((nworld, 1), dtype=int)
+    geomid = wp.full((nworld, 1), -1, dtype=int)
     normal = wp.empty((nworld, 1), dtype=wp.vec3)
     mjw.rays(m, d, pnt, vec, vec6(-1, -1, -1, -1, -1, -1), True, wp.full(1, -1, dtype=int), dist, geomid, normal, rc)
     np.testing.assert_array_equal(geomid.numpy(), 0)
