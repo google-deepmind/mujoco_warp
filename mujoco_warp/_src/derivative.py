@@ -623,13 +623,16 @@ def _qderiv_actuator_passive(enable_sleep: bool = False):
   return kernel
 
 
-# TODO(team): improve performance with tile operations?
 @cache_kernel
-def _qderiv_tendon_damping(enable_sleep: bool = False):
-  @wp.kernel(module="unique", enable_backward=False)
+def _qderiv_tendon_damping(nM: int, enable_sleep: bool = False, deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+    module_options["deterministic_max_records"] = nM
+
+  @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
-    ntendon: int,
     opt_timestep: wp.array[float],
     dof_treeid: wp.array[int],
     tendon_actuatorid: wp.array[int],
@@ -643,8 +646,7 @@ def _qderiv_tendon_damping(enable_sleep: bool = False):
     actuator_damping: wp.array2d[float],
     actuator_dampingpoly: wp.array2d[wp.vec2],
     actuator_gear: wp.array2d[wp.spatial_vector],
-    M_colind: wp.array[int],
-    M_hinit_i: wp.array[int],
+    M_elemid: wp.array2d[int],
     # Data in:
     ten_J_in: wp.array2d[float],
     tree_awake_in: wp.array2d[int],
@@ -652,51 +654,52 @@ def _qderiv_tendon_damping(enable_sleep: bool = False):
     # Out:
     qDeriv_out: wp.array2d[float],
   ):
-    worldid, madr = wp.tid()
-    dofiid = M_hinit_i[madr]
-    if wp.static(enable_sleep):
-      treeid = dof_treeid[dofiid]
-      if treeid >= 0 and tree_awake_in[worldid, treeid] == 0:
-        return
-    dofjid = M_colind[madr]
+    worldid, tenid = wp.tid()
 
-    qderiv = float(0.0)
-    for tenid in range(ntendon):
-      damping, dpoly = util_misc.tendon_damping_total(
-        tendon_actuatorid,
-        tendon_damping,
-        tendon_dampingpoly,
-        actuator_trntype,
-        actuator_trnid,
-        actuator_damping,
-        actuator_dampingpoly,
-        actuator_gear,
-        worldid,
-        tenid,
-      )
-      if damping == 0.0 and dpoly[0] == 0.0 and dpoly[1] == 0.0:
+    damping, dpoly = util_misc.tendon_damping_total(
+      tendon_actuatorid,
+      tendon_damping,
+      tendon_dampingpoly,
+      actuator_trntype,
+      actuator_trnid,
+      actuator_damping,
+      actuator_dampingpoly,
+      actuator_gear,
+      worldid,
+      tenid,
+    )
+    if damping == 0.0 and dpoly[0] == 0.0 and dpoly[1] == 0.0:
+      return
+
+    v = ten_velocity_in[worldid, tenid]
+    scale = opt_timestep[worldid % opt_timestep.shape[0]] * util_misc._poly_force_deriv(damping, dpoly, v, 1)
+    if scale == 0.0:
+      return
+
+    # scatter h * b * J' * J into lower-triangular M-structure qDeriv
+    rownnz = ten_J_rownnz[tenid]
+    rowadr = ten_J_rowadr[tenid]
+    for i in range(rownnz):
+      sparseid_i = rowadr + i
+      Ji = ten_J_in[worldid, sparseid_i]
+      if Ji == 0.0:
         continue
+      dofi = ten_J_colind[sparseid_i]
+      if wp.static(enable_sleep):
+        treeid = dof_treeid[dofi]
+        if treeid >= 0 and tree_awake_in[worldid, treeid] == 0:
+          continue
+      scale_Ji = scale * Ji
 
-      rownnz = ten_J_rownnz[tenid]
-      rowadr = ten_J_rowadr[tenid]
-      Ji = float(0.0)
-      Jj = float(0.0)
-      for k in range(rownnz):
-        if Ji != 0.0 and Jj != 0.0:
-          break
-        sparseid = rowadr + k
-        colind = ten_J_colind[sparseid]
-        if colind == dofiid:
-          Ji = ten_J_in[worldid, sparseid]
-        if colind == dofjid:
-          Jj = ten_J_in[worldid, sparseid]
-
-      v = ten_velocity_in[worldid, tenid]
-      qderiv -= Ji * Jj * util_misc._poly_force_deriv(damping, dpoly, v, 1)
-
-    qderiv *= opt_timestep[worldid % opt_timestep.shape[0]]
-
-    qDeriv_out[worldid, madr] -= qderiv
+      for j in range(i + 1):
+        sparseid_j = rowadr + j
+        Jj = ten_J_in[worldid, sparseid_j]
+        if Jj == 0.0:
+          continue
+        dofj = ten_J_colind[sparseid_j]
+        elemid = M_elemid[dofi, dofj]
+        if elemid >= 0:
+          wp.atomic_add(qDeriv_out[worldid], elemid, scale_Ji * Jj)
 
   return kernel
 
@@ -1616,6 +1619,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
     out: M - dt * qDeriv (derivatives of smooth forces w.r.t velocities).
   """
   enable_sleep = bool(m.opt.enableflags & EnableBit.SLEEP)
+  det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
 
   flags = DisableBit.ACTUATION | DisableBit.DAMPER
   if (m.opt.disableflags & flags) != flags:
@@ -1672,7 +1676,6 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         outputs=[vel],
       )
       # out (qDeriv) is in M-structure.
-      det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
       wp.launch(
         _qderiv_actuator_passive_actuation_sparse(m.nM if det_atomics else 0, det_atomics),
         dim=(d.nworld, m.nactuator),
@@ -1718,13 +1721,12 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
     else:
       wp.copy(out, d.M)
 
-  if m.ntendon and not (m.opt.disableflags & DisableBit.DAMPER):
+  if not (m.opt.disableflags & DisableBit.DAMPER):
     # flex_edgedamping is omitted: tree-only M sparsity drops inter-tree flexcomp blocks
     wp.launch(
-      _qderiv_tendon_damping(enable_sleep),
-      dim=(d.nworld, m.nC),
+      _qderiv_tendon_damping(m.nM if det_atomics else 0, enable_sleep, det_atomics),
+      dim=(d.nworld, m.ntendon),
       inputs=[
-        m.ntendon,
         m.opt.timestep,
         m.dof_treeid,
         m.tendon_actuatorid,
@@ -1738,8 +1740,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         m.actuator_damping,
         m.actuator_dampingpoly,
         m.actuator_gear,
-        m.M_colind,
-        m.M_hinit_i,
+        m.M_elemid,
         d.ten_J,
         d.tree_awake,
         d.ten_velocity,
@@ -1748,7 +1749,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
     )
   if m.has_fluid:
     wp.launch(
-      _qderiv_ellipsoid_fluid(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
+      _qderiv_ellipsoid_fluid(det_atomics),
       dim=(d.nworld, m.body_fluid_ellipsoid_adr.size, m.nC),
       inputs=[
         m.opt.timestep,
