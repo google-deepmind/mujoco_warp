@@ -95,6 +95,8 @@ class BlockDim:
     warmstart_cost: discrete warmstart cost comparison block dimension (solver)
     contact_jac_sparse: sparse contact Jacobian block dimension (constraint)
     eff_pcg: effective-metric PCG block dimension (derivative)
+    eff_prec_efm0: effective-metric efm0 preconditioner block dimension (derivative)
+    eff_prec_efm0_gemm: effective-metric efm0 GEMM preconditioner block dimension (derivative)
     discrete_free_gyro: discrete free-body gyroscopic solve block dimension (forward)
     render: render block dimension (render)
   """
@@ -137,6 +139,8 @@ class BlockDim:
   contact_jac_sparse: int = 128
   # derivative
   eff_pcg: int = 128
+  eff_prec_efm0: int = 64
+  eff_prec_efm0_gemm: int = 64
   discrete_free_gyro: int = 128
   # render
   render: int = 64
@@ -1838,6 +1842,14 @@ class Model:
     flex_rodedge_jnt: twist hinge joint id of each DER chain edge; -1 none  (nflexrodedge,)
     flex_elem_rodedge: (chain edge index, orientation sign) per flex elem   (nflexelem, 2)
     flex_vert_rodelem: incident local element index per flex vertex         (nflexvert,)
+    efm0_disjoint_trees: whether efm0 DOFs occupy trees disjoint from other DOFs
+    efm0_s_dofid: first DOF id of each decoupled efm0 vertex                (nefm0vert,)
+    efm0_s_flexid: flex id of each decoupled efm0 vertex                    (nefm0vert,)
+    efm0_A_inv: padded dense (L^T L)^-1 for GEMM solve         (nefm0vert_pad, nefm0vert_pad)
+    efm0_K_s_rownnz: number of non-zeros per row in scalar bending matrix   (nefm0vert,)
+    efm0_K_s_rowadr: row start address in scalar bending matrix             (nefm0vert,)
+    efm0_K_s_colind: first DOF column indices in scalar bending matrix      (nefm0sK,)
+    efm0_K_s_val: unscaled scalar bending stiffness entries                 (nefm0sK,)
   """
 
   nq: int
@@ -2437,6 +2449,14 @@ class Model:
   flex_rodedge_jnt: array("nflexrodedge", int)
   flex_elem_rodedge: array("nflexelem", wp.vec2i)
   flex_vert_rodelem: array("nflexvert", int)
+  efm0_disjoint_trees: bool
+  efm0_s_dofid: array("nefm0vert", int)
+  efm0_s_flexid: array("nefm0vert", int)
+  efm0_A_inv: array("nefm0vert_pad", "nefm0vert_pad", float)
+  efm0_K_s_rownnz: array("nefm0vert", int)
+  efm0_K_s_rowadr: array("nefm0vert", int)
+  efm0_K_s_colind: array("nefm0sK", int)
+  efm0_K_s_val: array("nefm0sK", float)
 
 
 class ContactType(enum.IntFlag):
@@ -2966,6 +2986,8 @@ class SolverContext:
   efm_con: Optional[tuple] = None
   flex_scratch: Optional[tuple] = None
   solve_ld_scratch: Optional[wp.array] = None
+  efm0_buf_in: Optional[wp.array] = None
+  efm0_buf_out: Optional[wp.array] = None
   tw_diag: Optional[wp.array] = None
   # dense elliptic Newton: virtual Hessian rows of cone-state rows (solver._cone_virtual_row)
   cone_coef: Optional[wp.array] = None

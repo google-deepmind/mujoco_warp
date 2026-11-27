@@ -2753,17 +2753,28 @@ class DerivativeTest(parameterized.TestCase):
         </worldbody>
       </mujoco>
       """,
-      qpos_noise=0.005,
-      qvel_noise=0.1,
       nworld=nworld,
     )
+    # Deterministic non-zero initial state (distinct across worlds when nworld == 2)
+    qpos_np = d.qpos.numpy()
+    qvel_np = d.qvel.numpy()
+    qpos_idx = np.arange(mjm.nq, dtype=np.float32)
+    qvel_idx = np.arange(mjm.nv, dtype=np.float32)
+    qpos_np[0] += 0.005 * np.sin(0.7 * qpos_idx + 0.2)
+    qvel_np[0] = 0.1 * np.cos(0.5 * qvel_idx + 0.3)
     if nworld == 2:
-      qvel_np = d.qvel.numpy()
+      qpos_np[1] += 0.005 * np.cos(0.7 * qpos_idx + 0.4)
       qvel_np[1] = qvel_np[0] * 1.5 + 0.05
-      d.qvel = wp.array(qvel_np, dtype=float)
+    d.qpos.assign(qpos_np)
+    d.qvel.assign(qvel_np)
+    mjd.qpos[:] = qpos_np[0]
+    mjd.qvel[:] = qvel_np[0]
 
     self.assertTrue(m.efm0_active)
+    self.assertTrue(m.efm0_disjoint_trees)
     self.assertGreater(m.nefm0dof, 0)
+    self.assertGreater(m.efm0_A_inv.shape[0], 0)
+    self.assertGreater(m.efm0_K_s_val.shape[0], 0)
 
     d.efm_c.fill_(wp.inf)
     d.qacc_smooth.fill_(wp.inf)
@@ -2778,9 +2789,30 @@ class DerivativeTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(d.qacc.numpy()[0], d.qacc.numpy()[1]))
 
+    # Verify GEMM path vs tiled triangular fallback and skip mask handling.
+    vec_idx = np.arange(nworld * mjm.nv, dtype=np.float32).reshape(nworld, mjm.nv)
+    vec_np = np.sin(0.37 * vec_idx + 0.1)
+    vec_wp = wp.array(vec_np, dtype=float)
+    res_gemm = wp.full((nworld, mjm.nv), wp.inf, dtype=float)
+    skip_np = np.array([False, True][:nworld], dtype=bool)
+    derivative.eff_prec(m, d, res_gemm, vec_wp, skip=wp.array(skip_np, dtype=bool))
+    res_gemm_np = res_gemm.numpy()
+    efm0_dofid = m.efm0_dofid.numpy()
+    # Compare GEMM path against tiled triangular solve fallback (active and skipped worlds)
+    saved_a_inv = m.efm0_A_inv
+    m.efm0_A_inv = wp.zeros((0, 0), dtype=float)
+    res_tri = wp.full((nworld, mjm.nv), wp.inf, dtype=float)
+    derivative.eff_prec(m, d, res_tri, vec_wp, skip=wp.array(skip_np, dtype=bool))
+    m.efm0_A_inv = saved_a_inv
+    _assert_eq(res_gemm_np, res_tri.numpy(), "efm0_gemm_vs_tri")
+    if nworld == 2:
+      # Verify world 1 was actually skipped (differs from an unskipped solve)
+      res_all = wp.full((nworld, mjm.nv), wp.inf, dtype=float)
+      derivative.eff_prec(m, d, res_all, vec_wp)
+      self.assertFalse(np.allclose(res_gemm_np[1, efm0_dofid], res_all.numpy()[1, efm0_dofid]))
+
     # Verify _eff_prec_efm0_solve with cross-coordinate (off-axis) couplings in efm0_L.
     n0 = m.nefm0dof
-    efm0_dofid = m.efm0_dofid.numpy()
     L_dense = np.eye(n0, dtype=np.float64) * 2.5
     rownnz = []
     rowadr = []
@@ -2798,14 +2830,12 @@ class DerivativeTest(parameterized.TestCase):
       vals.append(L_dense[i, i])
       rownnz.append(len(colind) - rowadr[-1])
 
+    m.efm0_A_inv = wp.zeros((0, 0), dtype=float)
     m.efm0_L_rownnz = wp.array(rownnz, dtype=int)
     m.efm0_L_rowadr = wp.array(rowadr, dtype=int)
     m.efm0_L_colind = wp.array(colind, dtype=int)
     m.efm0_L = wp.array(vals, dtype=float)
 
-    rng = np.random.default_rng(123)
-    vec_np = rng.uniform(-1.0, 1.0, size=(nworld, mjm.nv)).astype(np.float32)
-    vec_wp = wp.array(vec_np, dtype=float)
     res_wp = wp.full((nworld, mjm.nv), wp.inf, dtype=float)
 
     derivative.eff_prec(m, d, res_wp, vec_wp)
