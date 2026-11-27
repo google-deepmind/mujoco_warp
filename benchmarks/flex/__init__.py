@@ -1,0 +1,107 @@
+ASSETS = [
+  {
+    "source": "https://github.com/google-deepmind/mujoco.git",
+    "ref": "8b76151a21e003925626ffbe3b7d325a35246b50",
+  }
+]
+
+BENCHMARKS = [
+  {
+    "name": "flex_curved_rods",
+    "mjcf": "curved_rods.xml",
+    "nworld": 1024,
+    "nconmax": 128,
+    "nccdmax": 128,
+    "njmax": 512,
+    "assets": [(ASSETS[0], "model/flex")],
+  },
+  {
+    "name": "flex_dipper",
+    "mjcf": "mechanisms/dipper.xml",
+    "nworld": 8192,
+    "nconmax": 32,
+    "njmax": 128,
+    "assets": [(ASSETS[0], "model/flex")],
+  },
+  {
+    "name": "flex_drape",
+    "mjcf": "drape.xml",
+    "nworld": 128,
+    "nconmax": 4096,
+    "nccdmax": 4096,
+    "njmax": 64,
+    # TODO(team): Remove once float32 eff_solve PCG converges within drape.xml's iterations=400.
+    "override": "opt.iterations=1000",
+    "assets": [(ASSETS[0], "model/flex")],
+  },
+  {
+    "name": "flex_poncho",
+    "mjcf": "poncho.xml",
+    "nworld": 64,
+    "nstep": 500,
+    "nconmax": 2048,
+    "nccdmax": 2048,
+    "njmax": 1024,
+    "assets": [(ASSETS[0], "model/flex")],
+  },
+  {
+    "name": "flex_bunny_shell",
+    "mjcf": "bunny_shell.xml",
+    "nworld": 512,
+    "nconmax": 512,
+    "nccdmax": 512,
+    "njmax": 2048,
+    "replay": "bunny_shell.npz",
+    "assets": [(ASSETS[0], "model/flex")],
+  },
+  {
+    "name": "flex_floppy",
+    "mjcf": "floppy.xml",
+    "nworld": 256,
+    "nconmax": 256,
+    "nccdmax": 256,
+    "njmax": 1024,
+    "assets": [(ASSETS[0], "model/flex")],
+  },
+  {
+    "name": "flex_gripper",
+    "mjcf": "gripper.xml",
+    "nworld": 64,
+    "nconmax": 512,
+    "nccdmax": 512,
+    "njmax": 3072,
+    "replay": "gripper.npz",
+    "assets": [(ASSETS[0], "model/flex")],
+  },
+  {
+    "name": "flex_hollow_vs_solid",
+    "mjcf": "hollow_vs_solid.xml",
+    "nworld": 256,
+    "nconmax": 256,
+    "nccdmax": 256,
+    "njmax": 2048,
+    "replay": "hollow_vs_solid.npz",
+    "assets": [(ASSETS[0], "model/flex")],
+  },
+  {
+    "name": "flex_strain",
+    "mjcf": "strain.xml",
+    "nworld": 256,
+    "nconmax": 2048,
+    "nccdmax": 2048,
+    "njmax": 3072,
+    "assets": [(ASSETS[0], "model/flex")],
+  },
+  {
+    "name": "flex_roller",
+    "mjcf": "roller.xml",
+    "nworld": 512,
+    "nstep": 500,
+    "nconmax": 512,
+    "nccdmax": 512,
+    "njmax": 512,
+    "assets": [(ASSETS[0], "model/plastic")],
+  },
+  # TODO(team): Add flex_bag (model/flex/bag.xml) once IPC and rigid flexes are supported.
+  # TODO(team): Add flex_clay (model/plastic/clay.xml) once float32 eff_solve PCG converges.
+]
