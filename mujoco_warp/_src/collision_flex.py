@@ -2082,6 +2082,91 @@ def _flex_narrowphase(warn_overflow: int):
   return kernel
 
 
+@wp.kernel
+def _flex_rod_box(
+  # Model:
+  qpos0: wp.array2d[float],
+  jnt_qposadr: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_elemadr: wp.array[int],
+  flex_elemnum: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_plasticadr: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_elem: wp.array[int],
+  flex_elemflexid: wp.array[int],
+  flex_rod_is_box: wp.array[bool],
+  flex_rod_root_clamped: wp.array[bool],
+  flex_rod_tail_clamped: wp.array[bool],
+  flex_rod_box_size: wp.array[wp.vec2],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_vert: wp.array[wp.vec2i],
+  flex_rodedge_jnt: wp.array[int],
+  flex_elem_rodedge: wp.array[wp.vec2i],
+  # Data in:
+  qpos_in: wp.array2d[float],
+  plastic_in: wp.array2d[float],
+  xquat_in: wp.array2d[wp.quat],
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
+  flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
+  flex_rod_tail_loc_in: wp.array3d[wp.vec3],
+  # Out:
+  rod_box_out: wp.array2d[bool],
+  rod_box_pos_out: wp.array2d[wp.vec3],
+  rod_box_mat_out: wp.array2d[wp.mat33],
+  rod_box_size_out: wp.array2d[wp.vec3],
+):
+  """Computes the box of each 1D element for _flex_narrowphase_elem_detect.
+
+  A separate kernel keeps the arguments of _flex_narrowphase_elem_detect under 4 KB: a larger kernel
+  crashes when launched inside a CUDA graph capture on CUDA 12.4.
+  """
+  worldid, elemid = wp.tid()
+
+  flexid = flex_elemflexid[elemid]
+  if flex_dim[flexid] != 1:
+    return
+
+  ok_box, bpos, bmat, bsize = support.rod_box_elem(
+    qpos0,
+    jnt_qposadr,
+    flex_vertadr,
+    flex_elemadr,
+    flex_elemnum,
+    flex_elemdataadr,
+    flex_plasticadr,
+    flex_vertbodyid,
+    flex_elem,
+    flex_rod_is_box,
+    flex_rod_root_clamped,
+    flex_rod_tail_clamped,
+    flex_rod_box_size,
+    flex_rod_edgeadr,
+    flex_rod_edgenum,
+    flex_rodedge_vert,
+    flex_rodedge_jnt,
+    flex_elem_rodedge,
+    qpos_in,
+    plastic_in,
+    xquat_in,
+    flexvert_xpos_in,
+    flex_rod_frame0_loc_in,
+    flex_rod_frame0_ref_in,
+    flex_rod_tail_loc_in,
+    worldid,
+    flexid,
+    elemid - flex_elemadr[flexid],
+  )
+  rod_box_out[worldid, elemid] = ok_box
+  if ok_box:
+    rod_box_pos_out[worldid, elemid] = bpos
+    rod_box_mat_out[worldid, elemid] = bmat
+    rod_box_size_out[worldid, elemid] = bsize
+
+
 @cache_kernel
 def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, has_ellipsoid_geom: bool):
   @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
@@ -2089,8 +2174,6 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
     # Model:
     ngeom: int,
     opt_ccd_tolerance: wp.array[float],
-    qpos0: wp.array2d[float],
-    jnt_qposadr: wp.array[int],
     geom_type: wp.array[int],
     geom_contype: wp.array[int],
     geom_conaffinity: wp.array[int],
@@ -2109,9 +2192,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
     flex_dim: wp.array[int],
     flex_vertadr: wp.array[int],
     flex_elemadr: wp.array[int],
-    flex_elemnum: wp.array[int],
     flex_elemdataadr: wp.array[int],
-    flex_plasticadr: wp.array[int],
     flex_vertbodyid: wp.array[int],
     flex_elem: wp.array[int],
     flex_elemlayer: wp.array[int],
@@ -2130,29 +2211,18 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
     mesh_polymapnum: wp.array[int],
     mesh_polymap: wp.array[int],
     flex_elemflexid: wp.array[int],
-    flex_rod_is_box: wp.array[bool],
-    flex_rod_root_clamped: wp.array[bool],
-    flex_rod_tail_clamped: wp.array[bool],
-    flex_rod_box_size: wp.array[wp.vec2],
-    flex_rod_edgeadr: wp.array[int],
-    flex_rod_edgenum: wp.array[int],
-    flex_rodedge_vert: wp.array[wp.vec2i],
-    flex_rodedge_jnt: wp.array[int],
-    flex_elem_rodedge: wp.array[wp.vec2i],
     # Data in:
-    qpos_in: wp.array2d[float],
-    plastic_in: wp.array2d[float],
-    xquat_in: wp.array2d[wp.quat],
     geom_xpos_in: wp.array2d[wp.vec3],
     geom_xquat_in: wp.array2d[wp.quat],
     flexvert_xpos_in: wp.array2d[wp.vec3],
     naccdmax_in: int,
     flex_aabb_min_in: wp.array2d[wp.vec3],
     flex_aabb_max_in: wp.array2d[wp.vec3],
-    flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
-    flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
-    flex_rod_tail_loc_in: wp.array3d[wp.vec3],
     # In:
+    rod_box: wp.array2d[bool],
+    rod_box_pos: wp.array2d[wp.vec3],
+    rod_box_mat: wp.array2d[wp.mat33],
+    rod_box_size: wp.array2d[wp.vec3],
     epa_vert: wp.array2d[wp.vec3],
     epa_vert_index: wp.array2d[int],
     epa_face: wp.array2d[int],
@@ -2238,38 +2308,12 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
       geom2.size = wp.vec3(elem_radius, r_elem, 0.0)
       geom2_type = int(GeomType.CAPSULE)
 
-      ok_box, bpos, bmat, bsize = support.rod_box_elem(
-        qpos0,
-        jnt_qposadr,
-        flex_vertadr,
-        flex_elemadr,
-        flex_elemnum,
-        flex_elemdataadr,
-        flex_plasticadr,
-        flex_vertbodyid,
-        flex_elem,
-        flex_rod_is_box,
-        flex_rod_root_clamped,
-        flex_rod_tail_clamped,
-        flex_rod_box_size,
-        flex_rod_edgeadr,
-        flex_rod_edgenum,
-        flex_rodedge_vert,
-        flex_rodedge_jnt,
-        flex_elem_rodedge,
-        qpos_in,
-        plastic_in,
-        xquat_in,
-        flexvert_xpos_in,
-        flex_rod_frame0_loc_in,
-        flex_rod_frame0_ref_in,
-        flex_rod_tail_loc_in,
-        worldid,
-        flexid,
-        local_elemid,
-      )
+      ok_box = rod_box[worldid, elemid]
       pad = elem_radius
       if ok_box:
+        bpos = rod_box_pos[worldid, elemid]
+        bmat = rod_box_mat[worldid, elemid]
+        bsize = rod_box_size[worldid, elemid]
         pad = wp.max(pad, wp.sqrt(bsize[0] * bsize[0] + bsize[1] * bsize[1]))
 
       elem_min = wp.min(t1, t2) - wp.vec3(pad, pad, pad)
@@ -3617,6 +3661,12 @@ class FlexWorkspace:
   filter_val: wp.array
   cand_active: wp.array
 
+  # Rod box buffers
+  rod_box: wp.array
+  rod_box_pos: wp.array
+  rod_box_mat: wp.array
+  rod_box_size: wp.array
+
   # EPA Narrowphase buffers
   epa_vert: wp.array
   epa_vert_index: wp.array
@@ -3652,6 +3702,9 @@ def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
 
   needs_nccd = m.nmesh > 0 or m.has_ellipsoid_geom or cylinder_elem or m.has_1d_flex or m.has_3d_flex
   nccd = wp.zeros(1, dtype=int) if needs_nccd else None
+
+  # only 1D elements have a rod box
+  rod_shape = (d.nworld, m.nflexelem) if m.has_1d_flex else (1, 1)
 
   has_geom_fps = m.has_3d_flex and m.ngeom > 0
   has_sap_fps = m.has_flex_selfcollide or m.nflex > 1
@@ -3693,6 +3746,10 @@ def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
     flex_group_start_indices=flex_group_start_indices,
     flex_fps_min_dist=flex_fps_min_dist,
     flex_num_groups=flex_num_groups,
+    rod_box=wp.empty(rod_shape, dtype=bool),
+    rod_box_pos=wp.empty(rod_shape, dtype=wp.vec3),
+    rod_box_mat=wp.empty(rod_shape, dtype=wp.mat33),
+    rod_box_size=wp.empty(rod_shape, dtype=wp.vec3),
     epa_vert=wp.empty(shape=(capacity, 10 + 2 * epa_iterations), dtype=wp.vec3),
     epa_vert_index=wp.empty(shape=(capacity, 10 + 2 * epa_iterations), dtype=int),
     epa_face=wp.empty(shape=(capacity, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int),
@@ -3972,14 +4029,48 @@ def _detect_elem_geom_candidates(
 ):
   """Detect candidates between 1D/2D/3D flex elements and geoms."""
   epa_iterations = m.opt.ccd_iterations
+  if m.has_1d_flex:
+    wp.launch(
+      _flex_rod_box,
+      dim=(d.nworld, m.nflexelem),
+      inputs=[
+        m.qpos0,
+        m.jnt_qposadr,
+        m.flex_dim,
+        m.flex_vertadr,
+        m.flex_elemadr,
+        m.flex_elemnum,
+        m.flex_elemdataadr,
+        m.flex_plasticadr,
+        m.flex_vertbodyid,
+        m.flex_elem,
+        m.flex_elemflexid,
+        m.flex_rod_is_box,
+        m.flex_rod_root_clamped,
+        m.flex_rod_tail_clamped,
+        m.flex_rod_box_size,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_vert,
+        m.flex_rodedge_jnt,
+        m.flex_elem_rodedge,
+        d.qpos,
+        d.plastic,
+        d.xquat,
+        d.flexvert_xpos,
+        d.flex_rod_frame0_loc,
+        d.flex_rod_frame0_ref,
+        d.flex_rod_tail_loc,
+      ],
+      outputs=[ws.rod_box, ws.rod_box_pos, ws.rod_box_mat, ws.rod_box_size],
+    )
+
   wp.launch(
     _flex_narrowphase_elem_detect(int(m.opt.warn_overflow), bool(m.has_cylinder_geom), bool(m.has_ellipsoid_geom)),
     dim=(d.nworld, m.nflexelem),
     inputs=[
       m.ngeom,
       m.opt.ccd_tolerance,
-      m.qpos0,
-      m.jnt_qposadr,
       m.geom_type,
       m.geom_contype,
       m.geom_conaffinity,
@@ -3998,9 +4089,7 @@ def _detect_elem_geom_candidates(
       m.flex_dim,
       m.flex_vertadr,
       m.flex_elemadr,
-      m.flex_elemnum,
       m.flex_elemdataadr,
-      m.flex_plasticadr,
       m.flex_vertbodyid,
       m.flex_elem,
       m.flex_elemlayer,
@@ -4019,27 +4108,16 @@ def _detect_elem_geom_candidates(
       m.mesh_polymapnum,
       m.mesh_polymap,
       m.flex_elemflexid,
-      m.flex_rod_is_box,
-      m.flex_rod_root_clamped,
-      m.flex_rod_tail_clamped,
-      m.flex_rod_box_size,
-      m.flex_rod_edgeadr,
-      m.flex_rod_edgenum,
-      m.flex_rodedge_vert,
-      m.flex_rodedge_jnt,
-      m.flex_elem_rodedge,
-      d.qpos,
-      d.plastic,
-      d.xquat,
       d.geom_xpos,
       d.geom_xquat,
       d.flexvert_xpos,
       d.naccdmax,
       d.flex_aabb_min,
       d.flex_aabb_max,
-      d.flex_rod_frame0_loc,
-      d.flex_rod_frame0_ref,
-      d.flex_rod_tail_loc,
+      ws.rod_box,
+      ws.rod_box_pos,
+      ws.rod_box_mat,
+      ws.rod_box_size,
       ws.epa_vert,
       ws.epa_vert_index,
       ws.epa_face,
