@@ -152,7 +152,7 @@ def create_solver_context(
     alpha=wp.empty((nworld,), dtype=float),
     grad_scale=wp.empty((nworld,), dtype=float),
     improvement=wp.empty((nworld,), dtype=float),
-    ls_exhausted=wp.zeros((nworld,), dtype=bool),
+    ls_exhausted=wp.empty((nworld,), dtype=bool),
     search_unchanged=wp.empty((nworld,), dtype=bool),
     prev_grad=wp.empty((nworld, nv), dtype=float) if alloc_mgrad else wp.empty((nworld, 0), dtype=float),
     prev_Mgrad=wp.empty((nworld, nv), dtype=float) if alloc_mgrad else wp.empty((nworld, 0), dtype=float),
