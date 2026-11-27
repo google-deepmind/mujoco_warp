@@ -1739,11 +1739,10 @@ class RenderTest(parameterized.TestCase):
     self.assertGreater(np.count_nonzero(rgb[..., 0] > 100), 20)
     self.assertGreater(np.count_nonzero(rgb[..., 1] > 100), 20)
 
-  @parameterized.named_parameters(
-    ("geom_rgba_overrides", 'rgba="1 0 0 1"', 0),
-    ("material_rgba_fallback", "", 2),
+  @parameterized.product(
+    (dict(geom_rgba_attr='rgba="1 0 0 1"', exp_channel=0), dict(geom_rgba_attr="", exp_channel=2)), backend=_BACKENDS
   )
-  def test_geom_rgba_precedence_over_material(self, geom_rgba_attr: str, exp_channel: int):
+  def test_geom_rgba_precedence_over_material(self, geom_rgba_attr: str, exp_channel: int, backend: str):
     """Custom geom rgba overrides material rgba and rgba[3] == 0 objects do not occlude."""
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
@@ -1782,6 +1781,7 @@ class RenderTest(parameterized.TestCase):
       use_ambient_lighting=False,
       enable_specular=False,
       shadow_light_fraction=0.0,
+      backend=backend,
     )
     rc.rgb_data.fill_(wp.uint32(0))
     rc.depth_data.fill_(wp.inf)
@@ -1936,11 +1936,8 @@ class RenderTest(parameterized.TestCase):
       self.assertFalse(np.any(mask))
       self.assertEqual(np.count_nonzero(rgb[..., 0] > 100), 0)
 
-  @parameterized.named_parameters(
-    ("inside", 0.0, True),
-    ("clipped", -5.0, False),
-  )
-  def test_zfar_clipping_flex(self, dist: float, is_visible: bool):
+  @parameterized.product((dict(dist=0.0, is_visible=True), dict(dist=-5.0, is_visible=False)), backend=_BACKENDS)
+  def test_zfar_clipping_flex(self, dist: float, is_visible: bool, backend: str):
     """Flex geometry past the far clipping plane (zfar) is clipped."""
     mjm, mjd, m, d = test_data.fixture(
       xml=f"""
@@ -1964,6 +1961,7 @@ class RenderTest(parameterized.TestCase):
       nworld=1,
       cam_res=(32, 32),
       render_rgb=True,
+      backend=backend,
     )
     mjw.render(m, d, rc)
     rgb = _unpack_rgb(rc.rgb_data.numpy()[0]).reshape(32, 32, 3)
@@ -1972,6 +1970,65 @@ class RenderTest(parameterized.TestCase):
       self.assertGreater(green_count, 0, f"Flex at dist {dist} should be visible")
     else:
       self.assertEqual(green_count, 0, f"Flex at dist {dist} should be clipped")
+
+  @parameterized.parameters(1, 2)
+  @absltest.skipIf("optix" not in _BACKENDS, "warp-optix is not installed")
+  def test_flex_optix_matches_warp(self, nworld: int):
+    """OptiX renders 2D and 3D flexes like the Warp BVH, and rays() still ignores them."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <camera pos="0 -1.5 1.2" xyaxes="1 0 0 0 0.6 0.8"/>
+        <geom type="plane" size="2 2 0.1" rgba="0.5 0.5 0.5 1"/>
+        <flexcomp name="cloth" type="grid" count="8 8 1" spacing="0.06 0.06 0.06" dim="2" mass="1" pos="0 0 0.6"
+                  radius="0.005" rgba="0 1 0 1">
+          <edge equality="true"/>
+        </flexcomp>
+        <flexcomp name="cube" type="grid" count="3 3 3" spacing="0.05 0.05 0.05" dim="3" mass="1" pos="-0.4 0 0.3"
+                  radius="0.005" rgba="0 0 1 1">
+          <edge equality="true"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=nworld,
+    )
+    kwargs = dict(nworld=nworld, cam_res=(64, 48), render_rgb=True, render_depth=True, render_seg=True)
+    rc = mjw.create_render_context(mjm, backend="optix", **kwargs)
+    self.assertEqual(rc.backend, "optix")
+    rc_warp = mjw.create_render_context(mjm, **kwargs)
+
+    # Move the flexes so the refit moves them, differently per world.
+    flexvert_xpos = d.flexvert_xpos.numpy()
+    flexvert_xpos[:, :, 2] -= 0.1 * (1 + np.arange(nworld))[:, None]
+    d.flexvert_xpos.assign(flexvert_xpos)
+
+    outputs = []
+    for ctx in (rc_warp, rc):
+      mjw.refit_bvh(m, d, ctx)
+      ctx.rgb_data.fill_(wp.uint32(0))
+      ctx.seg_data.fill_(wp.vec2i(-1, -1))
+      ctx.depth_data.fill_(wp.inf)
+      mjw.render(m, d, ctx)
+      outputs.append((ctx.rgb_data.numpy(), ctx.seg_data.numpy(), ctx.depth_data.numpy()))
+    (rgb_warp, seg_warp, depth_warp), (rgb, seg, depth) = outputs
+
+    self.assertGreater(np.count_nonzero(seg[..., 1] == int(mjw.ObjType.FLEX)), 0)
+    np.testing.assert_array_equal(seg, seg_warp)
+    np.testing.assert_array_equal(rgb, rgb_warp)
+    np.testing.assert_allclose(depth, depth_warp, rtol=1e-5, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.array_equal(seg[0], seg[1]))
+
+    # A ray down through the cloth hits the plane, as rays() casts against geoms only.
+    pnt = wp.array(np.tile([[[0.0, 0.0, 2.0]]], (nworld, 1, 1)), dtype=wp.vec3)
+    vec = wp.array(np.tile([[[0.0, 0.0, -1.0]]], (nworld, 1, 1)), dtype=wp.vec3)
+    dist = wp.empty((nworld, 1), dtype=float)
+    geomid = wp.full((nworld, 1), -1, dtype=int)
+    normal = wp.empty((nworld, 1), dtype=wp.vec3)
+    mjw.rays(m, d, pnt, vec, vec6(-1, -1, -1, -1, -1, -1), True, wp.full(1, -1, dtype=int), dist, geomid, normal, rc)
+    np.testing.assert_array_equal(geomid.numpy(), 0)
 
   @parameterized.product(backend=_BACKENDS)
   def test_authored_frame_mesh_bvh_parity(self, backend: str):

@@ -537,6 +537,30 @@ def create_render_context(
   hfield_bvh_id_arr = wp.array(hfield_bvh_id, dtype=wp.uint64)
   hfield_bounds_size_arr = wp.array(hfield_bounds_size, dtype=wp.vec3)
 
+  if backend not in ("warp", "optix"):
+    raise ValueError(f"backend must be 'warp' or 'optix', got {backend!r}")
+  if backend == "optix":
+    reason = ""
+    wo = render_optix.get_wo()
+    if wo is None:
+      reason = "warp-optix is not installed (pip install mujoco-warp[optix])"
+    elif splat_count or np.any(mjm.flex_dim == 1):
+      reason = "the OptiX backend does not support 1D flexes or splats yet"
+    elif not flex_render_smooth and np.any(mjm.flex_dim == 2):
+      reason = "the OptiX backend renders 2D flexes smooth only"
+    elif nworld * mjm.ngeom + mjm.nflex >= 1 << 24:
+      reason = "OptiX instance ids hold 24 bits, so nworld * ngeom + nflex must be below 2**24"
+    else:
+      device = wp.get_device()
+      try:
+        # OptiX raises device-specific errors when it cannot create a context.
+        wo.get_context(device)
+      except Exception as e:
+        reason = f"OptiX is not supported on device {device.alias} ({e})"
+    if reason:
+      warnings.warn(f"backend='optix' is unavailable, using backend='warp': {reason}")
+      backend = "warp"
+
   # Flex BVHs
   nflex = mjm.nflex
   flex_registry = {}
@@ -556,10 +580,12 @@ def create_render_context(
     else:
       flex_geom_flexid.append(f)
       flex_geom_edgeid.append(-1)
-      fmesh, group_root = bvh.build_flex_bvh(mjm, mjd, nworld, f, deterministic=bool(deterministic))
-      flex_registry[f] = fmesh
-      flex_bvh_id[f] = fmesh.id
-      flex_group_root[:, f] = group_root.numpy()
+      # The OptiX backend builds its own flex surfaces.
+      if backend == "warp":
+        fmesh, group_root = bvh.build_flex_bvh(mjm, mjd, nworld, f, deterministic=bool(deterministic))
+        flex_registry[f] = fmesh
+        flex_bvh_id[f] = fmesh.id
+        flex_group_root[:, f] = group_root.numpy()
 
   # Locate skybox texture
   skybox_tex_ids = np.nonzero(mjm.tex_type == mujoco.mjtTexture.mjTEXTURE_SKYBOX)[0] if mjm.ntex else np.array([], dtype=int)
@@ -688,28 +714,6 @@ def create_render_context(
 
   znear = float(mjm.vis.map.znear * mjm.stat.extent)
   zfar = float(mjm.vis.map.zfar * mjm.stat.extent)
-
-  if backend not in ("warp", "optix"):
-    raise ValueError(f"backend must be 'warp' or 'optix', got {backend!r}")
-  if backend == "optix":
-    reason = ""
-    wo = render_optix.get_wo()
-    if wo is None:
-      reason = "warp-optix is not installed (pip install mujoco-warp[optix])"
-    elif flex_geom_flexid or splat_count:
-      reason = "the OptiX backend does not support flexes or splats yet"
-    elif nworld * mjm.ngeom >= 1 << 24:
-      reason = "OptiX instance ids hold 24 bits, so nworld * ngeom must be below 2**24"
-    else:
-      device = wp.get_device()
-      try:
-        # OptiX raises device-specific errors when it cannot create a context.
-        wo.get_context(device)
-      except Exception as e:
-        reason = f"OptiX is not supported on device {device.alias} ({e})"
-    if reason:
-      warnings.warn(f"backend='optix' is unavailable, using backend='warp': {reason}")
-      backend = "warp"
 
   if samples_per_pixel < 1:
     raise ValueError("samples_per_pixel must be at least 1.")

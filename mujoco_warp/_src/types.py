@@ -2998,6 +2998,9 @@ class OptixScene:
     planes: enabled plane geom ids, which cast_ray intersects without the IAS
     grid: worlds per axis of the cubic world grid
     write_instances: kernel writing `instances` from the current geom poses
+    flexes: (flex id, surface points, vertex and side of each point) of each 2D and 3D flex
+    flex_accels: acceleration structure over each flex's surface points in all worlds
+    flexvert_norm: vertex normals the 2D flex surfaces are offset along (nworld, nflexvert)
     pipeline: render pipeline (warp_optix.Pipeline), compiled with the render context
     ray_pipeline: ray pipeline (warp_optix.Pipeline) for rays(), compiled on first use
   """
@@ -3011,6 +3014,9 @@ class OptixScene:
   planes: tuple
   grid: int
   write_instances: wp.Kernel
+  flexes: tuple = ()
+  flex_accels: tuple = ()
+  flexvert_norm: Optional[wp.array2d] = None
   pipeline: object = None
   ray_pipeline: object = None
 
