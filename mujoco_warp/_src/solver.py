@@ -5857,7 +5857,8 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
     nsolving.fill_(d.nworld)
   else:
     nsolving = wp.full(shape=(1,), value=d.nworld, dtype=int)
-  if run_qacc_smooth and m.opt.integrator == types.IntegratorType.DISCRETE:
+  skip_empty_efc = run_qacc_smooth and m.opt.integrator == types.IntegratorType.DISCRETE
+  if skip_empty_efc:
     wp.launch(
       _solve_skip_empty_efc,
       dim=d.nworld,
@@ -5875,7 +5876,7 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
       block_dim=m.block_dim.solve_init_search_cg,
     )
   if m.opt.iterations != 0 and m.opt.graph_conditional:
-    if m.opt.solver == types.SolverType.NEWTON and not (run_qacc_smooth and m.opt.integrator == types.IntegratorType.DISCRETE):
+    if m.opt.solver == types.SolverType.NEWTON and not skip_empty_efc:
       # no launch above marks a world as done, so the first iteration needs no condition
       _solver_iteration(m, d, ctx, nsolving, compact=compact)
     # Note: the iteration kernel (indicated by while_body) is repeatedly launched
