@@ -29,6 +29,8 @@
       --badge-render-text: #9333ea;
       --badge-physics-bg: rgba(37, 99, 235, 0.08);
       --badge-physics-text: #2563eb;
+      --badge-flex-bg: rgba(5, 150, 105, 0.08);
+      --badge-flex-text: #059669;
     }
 
     @media (prefers-color-scheme: dark) {
@@ -47,6 +49,8 @@
         --badge-render-text: #c084fc;
         --badge-physics-bg: rgba(59, 130, 246, 0.15);
         --badge-physics-text: #60a5fa;
+        --badge-flex-bg: rgba(16, 185, 129, 0.15);
+        --badge-flex-text: #34d399;
       }
     }
 
@@ -244,6 +248,11 @@
     .card-badge.physics {
       background: var(--badge-physics-bg);
       color: var(--badge-physics-text);
+    }
+
+    .card-badge.flex {
+      background: var(--badge-flex-bg);
+      color: var(--badge-flex-text);
     }
 
     .card-description {
@@ -640,6 +649,7 @@
         <button class="filter-pill active" data-filter="all">All</button>
         <button class="filter-pill" data-filter="physics">Physics</button>
         <button class="filter-pill" data-filter="render">Render</button>
+        <button class="filter-pill" data-filter="flex">Flex</button>
       </div>
     </div>
     <div class="grid-container" id="index-grid"></div>
@@ -748,7 +758,8 @@
       return updated ? 'RTX PRO 6000 Blackwell' : 'RTX 6000 Ada';
     }
 
-    // Benchmark metadata: [name, description, nbody, nv, ngeom, nu, isRender]
+    // Benchmark metadata: [name, description, nbody, nv, ngeom, nu, category]
+    // category: 'physics' (default when omitted), 'render', or 'flex'
     const BENCHMARK_DATA = {
       aloha_pot: ['Aloha Pot', 'Lifting a pot off a work table. Exercises convex mesh collision pipeline.', 26, 23, 204, 14],
       aloha_sdf: ['Aloha SDF', 'An SDF cow on the table. Exercises signed distance function queries.', 22, 22, 96, 14],
@@ -763,17 +774,27 @@
       sharpa_wave: ['Sharpa Wave', 'Sharpa Wave right hand grasping a mug with five fingertip tactile sensors (3,562 taxels).', 27, 34, 117, 28],
       unitree_g1_flat: ['Unitree G1 Flat', 'Unitree G1 humanoid replaying a shuffle dance on flat terrain.', 31, 35, 69, 29],
       unitree_g1_hfield: ['Unitree G1 Hfield', 'Unitree G1 humanoid on randomized heightfield terrain.', 31, 35, 69, 29],
-      primitives: ['Primitives', 'Rendering of primitive shapes.', 126, 750, 127, 0, true],
-      aloha_clutter_vision: ['Aloha Clutter Vision', 'Rendering of multi-camera workbench clutter scene.', 42, 136, 548, 14, true],
-      cloth_render: ['Cloth', 'Rendering a large cloth simulation.', 918, 2706, 21, 0, true],
-      unitree_g1_hfield_render: ['Unitree G1 Hfield', 'Rendering of Unitree G1 humanoid on terrain.', 31, 35, 69, 29, true]
+      primitives: ['Primitives', 'Rendering of primitive shapes.', 126, 750, 127, 0, 'render'],
+      aloha_clutter_vision: ['Aloha Clutter Vision', 'Rendering of multi-camera workbench clutter scene.', 42, 136, 548, 14, 'render'],
+      cloth_render: ['Cloth', 'Rendering a large cloth simulation.', 918, 2706, 21, 0, 'render'],
+      unitree_g1_hfield_render: ['Unitree G1 Hfield', 'Rendering of Unitree G1 humanoid on terrain.', 31, 35, 69, 29, 'render'],
+      flex_curved_rods: ['Flex Curved Rods', 'Four 1D discrete elastic rods with bending, torsion, inextensible edge equalities, and ground contact.', 130, 283, 3, 0, 'flex'],
+      flex_dipper: ['Flex Dipper', 'Cylinder-driven flexible 1D dipper arm mechanism coupled to rigid linkages and a tendon-suspended payload.', 51, 106, 17, 1, 'flex'],
+      flex_drape: ['Flex Drape', 'Three stacked 13×13 2D cloths dropped over a sphere with passive flex self- and layer-contact.', 508, 1521, 2, 0, 'flex'],
+      flex_poncho: ['Flex Poncho', '2D triangular cloth mesh with stretch and bending elasticity draped over a rigid humanoid mannequin.', 502, 1458, 21, 0, 'flex'],
+      flex_bunny_shell: ['Flex Bunny Shell', '2D trilinearly interpolated shell embedded on a 4,968-triangle Stanford Bunny mesh compressed by a press plate.', 58, 169, 2, 1, 'flex'],
+      flex_floppy: ['Flex Floppy', '24×4×4 3D tetrahedral soft body (1,242 tetrahedra) dropping onto a hinged cylinder.', 386, 1153, 2, 1, 'flex'],
+      flex_gripper: ['Flex Gripper', 'Parallel gripper with two pinned 3D tetrahedral compliant pads grasping and lifting a rigid box.', 351, 1047, 5, 2, 'flex'],
+      flex_hollow_vs_solid: ['Flex Hollow vs Solid', 'Two grippers squeezing a solid 3D trilinear volume alongside a hollow bending shell with elliptic friction.', 205, 594, 7, 4, 'flex'],
+      flex_strain: ['Flex Strain', 'Four pinned 3D trilinearly interpolated soft pads supporting a falling rigid box with strain equalities.', 22, 54, 6, 0, 'flex'],
+      flex_roller: ['Flex Roller', 'Spring-driven geared ribbed roller pressing across elastic and elasto-plastic 3D trilinear slabs.', 266, 794, 12, 0, 'flex']
     };
 
     // Execution orders for breakdown charts (matching forward.py)
     const EXECUTION_ORDERS = {
       fwd_position: ['fwd_kinematics', 'kinematics', 'com_pos', 'camlight', 'flex', 'tendon', 'crb',
-        'tendon_armature', 'factor_m', 'collision', 'make_constraint', 'island', 'transmission'],
-      fwd_velocity: ['actuator_velocity', 'tendon_velocity', 'com_vel', 'passive', 'rne', 'tendon_bias']
+        'tendon_armature', 'factor_m', 'collision', 'make_constraint', 'island', 'transmission', 'eff_build'],
+      fwd_velocity: ['actuator_velocity', 'tendon_velocity', 'com_vel', 'passive', 'rne', 'tendon_bias', 'eff_shift']
     };
 
     const topHoverPlugin = {
@@ -854,8 +875,8 @@
       const activeFilter = document.querySelector('.filter-pill.active').dataset.filter;
 
       Object.entries(BENCHMARK_DATA).forEach(([key, meta]) => {
-        const [name, desc, nbody, nv, ngeom, nu, isRender] = meta;
-        const type = isRender ? 'render' : 'physics';
+        const [name, desc, nbody, nv, ngeom, nu, category] = meta;
+        const type = category || 'physics';
 
         if (activeFilter !== 'all' && activeFilter !== type) return;
         if (searchQuery && !name.toLowerCase().includes(searchQuery) && !desc.toLowerCase().includes(searchQuery)) return;
@@ -982,7 +1003,7 @@
         document.getElementById('benchmark-detail-content').style.display = 'block';
 
         const meta = BENCHMARK_DATA[benchmarkName];
-        const isRender = meta ? (meta[6] || false) : false;
+        const isRender = meta ? meta[6] === 'render' : false;
         
         // Render charts with full data
         renderCharts(currentBenchmarkRawData, isRender);
