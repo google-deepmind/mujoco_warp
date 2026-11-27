@@ -628,19 +628,7 @@ def _make_cast_ray(
 
     if wp.static(optix is not None):
       # Intersect the world's cell before traversing, including rays from cameras outside it.
-      tmin = float(0.0)
-      tmax = max_dist
-      intersects_cell = True
-      for axis in range(3):
-        if ray_dir_world[axis] != 0.0:
-          a = (-wp.static(optix.extent) - ray_origin_world[axis]) / ray_dir_world[axis]
-          b = (wp.static(optix.extent) - ray_origin_world[axis]) / ray_dir_world[axis]
-          tmin = wp.max(tmin, wp.min(a, b))
-          tmax = wp.min(tmax, wp.max(a, b))
-        elif wp.abs(ray_origin_world[axis]) > wp.static(optix.extent):
-          intersects_cell = False
-      intersects_cell = intersects_cell and tmax >= tmin
-      tmax = wp.max(0.0, tmax)
+      intersects_cell, tmin, tmax = render_optix.cell_range(ray_origin_world, ray_dir_world, max_dist, wp.static(optix.extent))
 
       origin = ray_origin_world + world_offset(worldid, wp.static(optix.grid), wp.static(3.0 * optix.extent))
 
