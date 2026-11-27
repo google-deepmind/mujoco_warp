@@ -875,7 +875,7 @@ def _collide_mesh_convex(
   geom1.vert = mesh_vert
   geom1.graph = mesh_graph
 
-  dist, ncontact, w1, w2, _ = ccd(
+  contact = ccd(
     tolerance,
     margin,
     ccd_iterations,
@@ -897,12 +897,11 @@ def _collide_mesh_convex(
     overflow_out,
   )
 
-  if ncontact > 0 and dist < margin:
-    diff = (w1 - w2) if dist < 0.0 else (w2 - w1)
-    gjk_normal = wp.normalize(diff)
-    if wp.length(diff) < MJ_MINVAL:
-      fallback = geom2_pos - mesh_geom_pos
-      gjk_normal = wp.normalize(fallback) if wp.length(fallback) >= MJ_MINVAL else wp.vec3(1.0, 0.0, 0.0)
+  dist = contact.dist
+  w1 = contact.x1
+  w2 = contact.x2
+  if dist < margin:
+    gjk_normal = contact.normal
 
     # If the mesh witness point lies strictly in the interior of a mesh face (a flex vertex or edge
     # against the face), use the exact face normal instead of the single-precision GJK/EPA normal,
@@ -2029,7 +2028,7 @@ def _flex_narrowphase(warn_overflow: int):
 
       tol = opt_ccd_tolerance[worldid % opt_ccd_tolerance.shape[0]]
 
-      dist, ncontact, w1, w2, _ = ccd(
+      contact = ccd(
         tol,
         radius1 + radius2 + mix_margin,
         gjk_iterations,
@@ -2051,15 +2050,14 @@ def _flex_narrowphase(warn_overflow: int):
         overflow_out,
       )
 
-      if ncontact > 0 and dist < 0.0:
-        phys_dist = dist + mix_margin
-        pos = 0.5 * (w1 + w2)
-        nrm = wp.normalize(w1 - w2)
+      if contact.dist < 0.0:
+        phys_dist = contact.dist + mix_margin
+        pos = 0.5 * (contact.x1 + contact.x2)
         _write_candidate(
           max_candidates,
           phys_dist,
           pos,
-          nrm,
+          contact.normal,
           -2,
           flexid1,
           flexid2,
@@ -2683,7 +2681,7 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
           if swept:
             geom2.margin = 2.0 * elem_radius
           ccd_cutoff = (margin + elem_radius) if (f_dim == 2 and not swept) else margin
-          dist, ncontact, w1, w2, idx = ccd(
+          contact = ccd(
             tolerance,
             ccd_cutoff,
             ccd_iterations,
@@ -2705,16 +2703,13 @@ def _flex_narrowphase_elem_detect(warn_overflow: int, has_cylinder_geom: bool, h
             overflow_out,
           )
 
+          dist = contact.dist
           cand_dist = (dist - elem_radius) if (f_dim == 2 and not swept) else dist
           if swept:
             geom2.margin = 0.0
-          if ncontact > 0 and cand_dist < margin:
-            diff = (w1 - w2) if dist < 0.0 else (w2 - w1)
-            normal = wp.normalize(diff)
-            if wp.length_sq(diff) < 1e-12:
-              normal = wp.normalize(centroid - geom_pos)
-
-            contact_pos = 0.5 * (w1 + w2)
+          if cand_dist < margin:
+            normal = contact.normal
+            contact_pos = 0.5 * (contact.x1 + contact.x2)
             if f_dim == 2:
               if swept:
                 if wp.static(bool(has_cylinder_geom)):

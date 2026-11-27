@@ -23,6 +23,7 @@ from mujoco_warp import GeomType
 from mujoco_warp import Model
 from mujoco_warp import test_data
 from mujoco_warp._src.collision_core import Geom
+from mujoco_warp._src.collision_gjk import FLOAT_MAX
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.collision_gjk import multicontact
 from mujoco_warp._src.collision_gjk import support
@@ -48,6 +49,7 @@ def _geom_dist(
   warn_overflow: bool = True,
   overflow_out: wp.array | None = None,
   return_all: bool = False,
+  epa_iterations: int | None = None,
 ):
   # we run multiccd on static scenes so these need to be initialized
   has_cylinder = GeomType.CYLINDER in (m.geom_type.numpy()[gid1], m.geom_type.numpy()[gid2])
@@ -99,6 +101,7 @@ def _geom_dist(
     gid1: int,
     gid2: int,
     iterations: int,
+    epa_iterations: int,
     tolerance: wp.array[float],
     vert: wp.array[wp.vec3],
     vert_index: wp.array[int],
@@ -192,17 +195,11 @@ def _geom_dist(
       geom2.mesh_polymapnum = mesh_polymapnum
       geom2.mesh_polymap = mesh_polymap
 
-    (
-      dist,
-      ncon,
-      x1,
-      x2,
-      idx,
-    ) = ccd(
+    contact = ccd(
       tolerance[0],
       1.0e30,
       iterations,
-      iterations,
+      epa_iterations,
       geom1,
       geom2,
       geomtype1,
@@ -220,8 +217,13 @@ def _geom_dist(
       overflow_out,
     )
 
+    dist = contact.dist
+    ncon = int(1)
+    x1 = contact.x1
+    x2 = contact.x2
+    idx = contact.face
     if multiccd and idx >= 0:
-      ncon, witness1, witness2, dists = multicontact(
+      ncon, witness1, witness2, dists, _normal = multicontact(
         polygon,
         clipped,
         pnormal,
@@ -240,6 +242,7 @@ def _geom_dist(
         x1,
         x2,
         dist,
+        contact.normal,
         geom1,
         geom2,
         geomtype1,
@@ -292,6 +295,7 @@ def _geom_dist(
       gid1,
       gid2,
       m.opt.ccd_iterations,
+      m.opt.ccd_iterations if epa_iterations is None else epa_iterations,
       m.opt.ccd_tolerance,
       epa_vert,
       epa_vert_index,
@@ -465,6 +469,21 @@ class GJKTest(parameterized.TestCase):
     self.assertAlmostEqual(normal[0], 1)
     self.assertAlmostEqual(normal[1], 0)
     self.assertAlmostEqual(normal[2], 0)
+
+  def test_epa_without_face_drops_pair(self):
+    """Tests that a penetration whose EPA finds no face is dropped, not kept at GJK's distance."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="box" pos="-1 0 0" size="2.5 2.5 2.5"/>
+          <geom type="box" pos="1.5 0 0" size="1 1 1"/>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    dist, _, _, _ = _geom_dist(m, d, 0, 1, epa_iterations=0)
+    self.assertEqual(dist, np.float32(FLOAT_MAX))
 
   @parameterized.named_parameters(
     ("box_box", 'type="box" size=".3 .3 .3"', 'type="box" size=".05 .1 .05"', 0.0),
@@ -1467,7 +1486,7 @@ class GJKTest(parameterized.TestCase):
 
       centroid = (polyvert_in[0] + polyvert_in[1] + polyvert_in[2] + polyvert_in[3]) * 0.25
 
-      dist, ncontact, w1, w2, idx = ccd(
+      contact = ccd(
         1e-6,
         10.0,
         100,
@@ -1488,7 +1507,7 @@ class GJKTest(parameterized.TestCase):
         0,
         overflow,
       )
-      out_dist[0] = dist
+      out_dist[0] = contact.dist
 
     ccd_iterations = 100
     out_dist = wp.empty(1, dtype=float)
