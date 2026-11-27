@@ -5304,38 +5304,37 @@ def passive(m: Model, d: Data):
   )
 
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  if not (dsbl_spring and dsbl_damper):
-    wp.launch(
-      _spring_damper_tendon_passive(m.max_ten_J_rownnz if det_atomics else 0, det_atomics),
-      dim=(d.nworld, m.ntendon),
-      inputs=[
-        m.tendon_actuatorid,
-        m.tendon_plasticadr,
-        m.ten_J_rownnz,
-        m.ten_J_rowadr,
-        m.ten_J_colind,
-        m.tendon_stiffness,
-        m.tendon_stiffnesspoly,
-        m.tendon_damping,
-        m.tendon_dampingpoly,
-        m.tendon_lengthspring,
-        m.actuator_trntype,
-        m.actuator_trnid,
-        m.actuator_damping,
-        m.actuator_dampingpoly,
-        m.actuator_gear,
-        d.plastic,
-        d.ten_J,
-        d.ten_length,
-        d.ten_velocity,
-        dsbl_spring,
-        dsbl_damper,
-      ],
-      outputs=[
-        d.qfrc_spring,
-        d.qfrc_damper,
-      ],
-    )
+  wp.launch(
+    _spring_damper_tendon_passive(m.max_ten_J_rownnz if det_atomics else 0, det_atomics),
+    dim=(d.nworld, m.ntendon),
+    inputs=[
+      m.tendon_actuatorid,
+      m.tendon_plasticadr,
+      m.ten_J_rownnz,
+      m.ten_J_rowadr,
+      m.ten_J_colind,
+      m.tendon_stiffness,
+      m.tendon_stiffnesspoly,
+      m.tendon_damping,
+      m.tendon_dampingpoly,
+      m.tendon_lengthspring,
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.actuator_damping,
+      m.actuator_dampingpoly,
+      m.actuator_gear,
+      d.plastic,
+      d.ten_J,
+      d.ten_length,
+      d.ten_velocity,
+      dsbl_spring,
+      dsbl_damper,
+    ],
+    outputs=[
+      d.qfrc_spring,
+      d.qfrc_damper,
+    ],
+  )
 
   if not (dsbl_spring and dsbl_damper):
     wp.launch(

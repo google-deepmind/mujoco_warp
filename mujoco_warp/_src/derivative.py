@@ -681,14 +681,14 @@ def _qderiv_tendon_damping(nM: int, enable_sleep: bool = False, deterministic: b
     rowadr = ten_J_rowadr[tenid]
     for i in range(rownnz):
       sparseid_i = rowadr + i
+      Ji = ten_J_in[worldid, sparseid_i]
+      if Ji == 0.0:
+        continue
       dofi = ten_J_colind[sparseid_i]
       if wp.static(enable_sleep):
         treeid = dof_treeid[dofi]
         if treeid >= 0 and tree_awake_in[worldid, treeid] == 0:
           continue
-      Ji = ten_J_in[worldid, sparseid_i]
-      if Ji == 0.0:
-        continue
       scale_Ji = scale * Ji
 
       for j in range(i + 1):
