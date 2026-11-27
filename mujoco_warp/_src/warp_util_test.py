@@ -56,6 +56,18 @@ class WarpUtilTest(parameterized.TestCase):
       self.assertEqual(width % 32, 0)
       occupancy.assert_called_once_with(kernel, device)
 
+  def test_event_tracer_cpu_noop(self):
+    """EventTracer is a no-op on CPU where CUDA event timing is unavailable."""
+
+    @warp_util.event_scope
+    def fn():
+      return 1
+
+    with wp.ScopedDevice("cpu"):
+      with warp_util.EventTracer(enabled=True) as tracer:
+        self.assertEqual(fn(), 1)
+        self.assertEqual(tracer.trace(), {})
+
 
 if __name__ == "__main__":
   absltest.main()

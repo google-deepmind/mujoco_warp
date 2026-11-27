@@ -66,7 +66,8 @@ class EventTracer:
     global _STACK
     if _STACK is not None:
       raise ValueError("only one EventTracer can run at a time")
-    if enabled:
+    # CUDA event timing is unavailable on non-CUDA devices.
+    if enabled and wp.get_device().is_cuda:
       _STACK = {}
 
   def __enter__(self):
