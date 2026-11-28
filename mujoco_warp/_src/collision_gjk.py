@@ -1468,8 +1468,10 @@ def _epa(
     for i in range(pt.nhorizon):
       edge = _get_edge(pt.horizon[i])
       if not _attach_face(pt, pt.nface, wi, edge[0], edge[1]):
-        idx = -1
-        break
+        if pt.nface == pt.face.shape[0]:
+          idx = -1
+          break
+        continue
 
       pt.nface += 1
 

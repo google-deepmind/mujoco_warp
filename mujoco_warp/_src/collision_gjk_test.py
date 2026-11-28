@@ -660,6 +660,31 @@ class GJKTest(parameterized.TestCase):
     dist, _, _, _ = _geom_dist(m, d, 0, 1)
     self.assertAlmostEqual(dist_mujoco, dist, delta=1e-7)
 
+  @parameterized.parameters(
+    # support points in the plane of existing polytope faces: a horizon edge is collinear with them
+    ("0.19959889", -4.0111298e-04),
+    ("0.19997546", -2.4542980e-05),
+    ("0.19999649", -3.5129802e-06),
+  )
+  def test_mesh_mesh_aligned_cubes(self, z: str, dist_mujoco: float):
+    """Test mesh-mesh distance for two equal cubes stacked face-to-face near the symmetric pose."""
+    _, _, m, d = test_data.fixture(
+      xml=f"""
+    <mujoco>
+      <asset>
+        <mesh name="cube" vertex="-0.1 -0.1 -0.1  -0.1 -0.1 0.1  -0.1 0.1 -0.1  -0.1 0.1 0.1
+                                  0.1 -0.1 -0.1  0.1 -0.1 0.1  0.1 0.1 -0.1  0.1 0.1 0.1"/>
+      </asset>
+      <worldbody>
+        <geom type="mesh" mesh="cube"/>
+        <geom type="mesh" mesh="cube" pos="1.6925151e-09 -4.3465320e-09 {z}"/>
+      </worldbody>
+    </mujoco>
+    """
+    )
+    dist, _, _, _ = _geom_dist(m, d, 0, 1)
+    self.assertAlmostEqual(dist_mujoco, dist, delta=1e-7)
+
   @parameterized.named_parameters(
     # origin on a polytope3 face that is the Minkowski boundary
     (
