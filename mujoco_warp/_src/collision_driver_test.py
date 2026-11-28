@@ -1193,6 +1193,43 @@ class CollisionTest(parameterized.TestCase):
 
     self.assertEqual(mjd.ncon > 0, d.nacon.numpy()[0] > 0, "If MJ collides, MJW should too")
 
+  @parameterized.parameters("0 0 0", "3 0 0")
+  def test_hfield_box_slope(self, hfield_pos):
+    """Tests box contacts on a sloped height field against MuJoCo's depths and normals."""
+    # the box sits over the vertex shared by the 8 prisms of a 3x3 ramp
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <asset>
+          <hfield name="ramp" nrow="3" ncol="3" size="1 1 .25 .1" elevation="0 .5 1 0 .5 1 0 .5 1"/>
+        </asset>
+        <worldbody>
+          <geom type="hfield" hfield="ramp" pos="{hfield_pos}"/>
+          <body pos="{hfield_pos}">
+            <freejoint/>
+            <geom type="box" size=".1 .1 .1" pos="-.0015 0 .21" euler="0 -.85 0"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+
+    d.contact.dist.fill_(wp.inf)
+    d.contact.frame.fill_(wp.inf)
+
+    mujoco.mj_collision(mjm, mjd)
+    mjw.collision(m, d)
+
+    nacon = d.nacon.numpy()[0]
+    self.assertEqual(nacon, 4)
+
+    dist = d.contact.dist.numpy()[:nacon]
+    normal = d.contact.frame.numpy()[:nacon, 0]
+    for i in range(nacon):
+      # MJW keeps a subset of MuJoCo's contacts: each one should be one of them
+      err = np.abs(mjd.contact.dist - dist[i]) + np.linalg.norm(mjd.contact.frame[:, :3] - normal[i], axis=1)
+      self.assertLess(err.min(), 1e-4, f"contact {i}: dist {dist[i]}, normal {normal[i]}")
+
   def test_contact_exclude(self):
     """Tests contact exclude."""
     _, _, m, _ = test_data.fixture(

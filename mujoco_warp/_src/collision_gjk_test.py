@@ -1252,6 +1252,7 @@ class GJKTest(parameterized.TestCase):
       hfprism_in: mat63,
       eps_in: float,
       support_point: wp.array[wp.vec3],
+      support_index: wp.array[int],
     ):
       geom = Geom()
       geom.pos = wp.vec3(0.0, 0.0, 0.0)
@@ -1264,26 +1265,31 @@ class GJKTest(parameterized.TestCase):
       # dir = (eps, eps, 1): selects prism[5] (top, highest z, breaks tie with x,y)
       sp = support(geom, GeomType.HFIELD, wp.vec3(eps_in, eps_in, 1.0))
       support_point[0] = sp.point
+      support_index[0] = sp.vertex_index
 
       # dir = (-eps, -eps, -1): selects prism[0] (bottom, lowest z)
       sp = support(geom, GeomType.HFIELD, wp.vec3(-eps_in, -eps_in, -1.0))
       support_point[1] = sp.point
+      support_index[1] = sp.vertex_index
 
       # dir = (1, eps, eps): selects prism[4] (top, x=1, eps breaks ties)
       sp = support(geom, GeomType.HFIELD, wp.vec3(1.0, eps_in, eps_in))
       support_point[2] = sp.point
+      support_index[2] = sp.vertex_index
 
       # dir = (eps, 1, eps): selects prism[5] (top, y=1, eps breaks ties)
       sp = support(geom, GeomType.HFIELD, wp.vec3(eps_in, 1.0, eps_in))
       support_point[3] = sp.point
+      support_index[3] = sp.vertex_index
 
     support_point = wp.empty(4, dtype=wp.vec3)
+    support_index = wp.full(4, -1, dtype=int)
 
     wp.launch(
       _support_kernel,
       dim=1,
       inputs=[prism, eps],
-      outputs=[support_point],
+      outputs=[support_point, support_index],
     )
 
     result = support_point.numpy()
@@ -1299,6 +1305,9 @@ class GJKTest(parameterized.TestCase):
 
     # dir = (0, 1, eps): expect prism[5] + margin offset
     np.testing.assert_allclose(result[3], prism[5], rtol=1e-5)
+
+    # each prism vertex has its own index, so that EPA can tell support points apart
+    np.testing.assert_array_equal(support_index.numpy(), [5, 0, 4, 5])
 
   def test_mesh_support(self):
     """Test support function hill climb for mesh geoms."""
