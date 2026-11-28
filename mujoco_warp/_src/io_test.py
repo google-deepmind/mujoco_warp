@@ -445,6 +445,68 @@ _MESH_RANDOMIZE_XML = """
 
 
 class IOTest(parameterized.TestCase):
+  @parameterized.parameters(1, 2)
+  def test_numeric_model_option_overrides(self, nworld):
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint type="slide" axis="0 0 1"/>
+            <geom type="sphere" size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      overrides={"opt.gravity": [0.0, 0.0, -3.0], "opt.timestep": 0.005},
+    )
+    if nworld == 2:
+      io.override_model(
+        m,
+        {"opt.gravity": np.array([[0.0, 0.0, -3.0], [0.0, 0.0, -5.0]]), "opt.timestep": [0.005, 0.01]},
+      )
+
+    self.assertEqual(m.opt.gravity.dtype, wp.vec3)
+    self.assertEqual(m.opt.timestep.dtype, wp.float32)
+    self.assertEqual(m.opt.gravity.device, d.qvel.device)
+    self.assertEqual(m.opt.timestep.device, d.qvel.device)
+
+    d.qvel.fill_(0.25)
+    d.time.fill_(0.5)
+    mjwarp.step(m, d)
+    qvel_expected = []
+    time_expected = []
+    for worldid in range(nworld):
+      if worldid == 1:
+        mjm.opt.gravity[:] = [0.0, 0.0, -5.0]
+        mjm.opt.timestep = 0.01
+      mujoco.mj_resetData(mjm, mjd)
+      mjd.qvel[:] = 0.25
+      mjd.time = 0.5
+      mujoco.mj_step(mjm, mjd)
+      qvel_expected.append(mjd.qvel.copy())
+      time_expected.append(mjd.time)
+
+    got_qvel = d.qvel.numpy()
+    np.testing.assert_allclose(got_qvel, qvel_expected, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(d.time.numpy(), time_expected, rtol=1e-5, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(got_qvel[0], got_qvel[1]))
+
+  @parameterized.named_parameters(("cli", True), ("typed_array", False))
+  def test_vector_model_option_overrides(self, cli):
+    _, _, m, _ = test_data.fixture(xml="<mujoco/>")
+    gravity_device = m.opt.gravity.device
+    if cli:
+      io.override_model(m, ["opt.gravity=[0 0 -7]"])
+    else:
+      gravity = wp.array([[0.0, 0.0, -7.0]], dtype=wp.vec3, device=gravity_device)
+      io.override_model(m, {"opt.gravity": gravity})
+    self.assertEqual(m.opt.gravity.dtype, wp.vec3)
+    self.assertEqual(m.opt.gravity.device, gravity_device)
+    np.testing.assert_array_equal(m.opt.gravity.numpy(), [[0.0, 0.0, -7.0]])
+
   @parameterized.named_parameters(
     dict(
       testcase_name="control_timestamps",
