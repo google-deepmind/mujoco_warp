@@ -1966,16 +1966,58 @@ def _nvmax_pad(nvmax: int) -> int:
   return ((n + t - 1) // t) * t if n <= types.H_ONE_TILE_MAX else ((n + t) // t) * t
 
 
+def _estimate_broadphase_pairs(mjm: mujoco.MjModel, mjd: mujoco.MjData, capacity: int) -> int:
+  """Estimate an upper bound for rigid contact pairs at the supplied poses."""
+  if mjm.ngeom * (mjm.ngeom - 1) // 2 <= capacity:
+    return 0
+  if mjm.opt.disableflags & (types.DisableBit.CONSTRAINT | types.DisableBit.CONTACT):
+    return 0
+  # A fresh MjData may not have had kinematics computed yet. Do not count
+  # all geoms as overlapping at the origin in that case.
+  if not np.any(mjd.geom_xmat):
+    return 0
+
+  geom1, geom2, pairid = _nxn_pairid_contact(mjm)
+  # Match the device's default sphere filter; omitting the OBB filter
+  # deliberately overestimates candidate pairs. Count plane pairs
+  # conservatively as well. Bound temporary vector storage for large models.
+  xpos = mjd.geom_xpos.astype(np.float32)
+  radius = mjm.geom_rbound.astype(np.float32)
+  margins = (mjm.geom_margin + mjm.geom_gap).astype(np.float32)
+  pair_margins = (mjm.pair_margin + mjm.pair_gap).astype(np.float32)
+  count = 0
+  for start in range(0, len(pairid), 65536):
+    end = start + 65536
+    keep = pairid[start:end] >= -1
+    g1 = geom1[start:end][keep]
+    g2 = geom2[start:end][keep]
+    ids = pairid[start:end][keep]
+    margin = margins[g1] + margins[g2]
+    explicit = ids >= 0
+    margin[explicit] = pair_margins[ids[explicit]]
+    bound = radius[g1] + radius[g2] + margin
+    delta = xpos[g2] - xpos[g1]
+    dist_sq = np.einsum("ij,ij->i", delta, delta)
+    # A small allowance covers float32 evaluation differences at the boundary.
+    overlap = dist_sq <= bound * bound * (1.0 + 8.0 * np.finfo(np.float32).eps)
+    count += np.count_nonzero(overlap | (radius[g1] == 0) | (radius[g2] == 0))
+  return int(count)
+
+
 def _default_nconmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> int:
   """Returns a default guess for an ideal nconmax given a Model and optional Data.
 
   This guess is based off a very simple heuristic, and may need to be manually raised if MJWarp
   reports ncon overflow, or lowered in order to get the very best performance.
+  With initialized Data, include an estimate of rigid broad-phase contact pairs
+  in that snapshot, since the contact allocation also bounds their buffer.
   """
   valid_sizes = (2 + (np.arange(19) % 2)) * (2 ** (np.arange(19) // 2 + 3))  # 16, 24, 32, 48, ... 8192
   has_sdf = (mjm.geom_type == mujoco.mjtGeom.mjGEOM_SDF).any()
   has_flex = mjm.nflex > 0
   nconmax = max(mjm.nv * 0.35 * (mjm.nhfield > 0) * 10 + 45, 256 * has_flex, 64 * has_sdf, mjd.ncon if mjd else 0)
+  if mjd is not None:
+    nconmax = max(nconmax, _estimate_broadphase_pairs(mjm, mjd, int(nconmax)))
   if nconmax > valid_sizes[-1]:
     return int(nconmax)
   return int(valid_sizes[np.searchsorted(valid_sizes, nconmax)])
