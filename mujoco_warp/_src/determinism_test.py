@@ -244,14 +244,12 @@ _TREE_CASES = (
       "smooth._spatial_geom_tendon",
       "smooth._spatial_site_tendon",
       "smooth._tendon_armature",
-      "smooth._tendon_bias_coef",
-      "smooth._tendon_bias_qfrc",
+      "smooth._tendon_bias",
       "smooth._transmission",
       "solver._JTDACJ_sparse",
-      "solver._linesearch_jv_fused_kernel",
-      "solver._solve_init_jaref_kernel",
+      "solver._mul_jac_vec_kernel",
       "solver._update_constraint_efc",
-      "solver._update_constraint_init_qfrc_constraint_sparse",
+      "solver._update_constraint_init_qfrc_constraint_blocks",
       "solver._update_gradient_grad",
       "solver._update_gradient_h_incremental_sparse",
       "support._apply_ft_scatter",
@@ -264,6 +262,7 @@ _TREE_CASES = (
       "derivative._qderiv_actuator_passive_actuation_sparse",
       "derivative._qderiv_box_fluid",
       "derivative._qderiv_ellipsoid_fluid",
+      "derivative._qderiv_tendon_damping",
       "derivative.deriv_rne_body2jnt_sparse",
       "derivative.deriv_rne_cfrcbody_backward",
     ),
@@ -287,12 +286,12 @@ _TREE_CASES = (
   dict(
     testcase_name="discrete_cg",
     overrides={"opt.integrator": "DISCRETE", "opt.solver": "CG", "opt.tolerance": "1e-10"},
-    covers=(),
+    covers=("solver._update_constraint_init_qfrc_constraint_sparse",),
   ),
   dict(
     testcase_name="dense_blocks",
     overrides={"opt.jacobian": "DENSE"},
-    covers=("smooth._qLD_acc", "smooth._solve_LD_sparse_level"),
+    covers=("smooth._solve_LD_sparse_level",),
     sparse_blocks=True,
   ),
 )
@@ -772,6 +771,32 @@ class DeterminismTest(parameterized.TestCase):
     )
     self._check_scene(mjm, m, d, covers, replay=True)
 
+  def test_sparse_hessian_records(self):
+    """Hessian records are bounded by the Jacobian row support, not by the number of dofs."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="0 0 .1"/>
+          <replicate count="100" offset=".09 0 0">
+            <body pos="0 0 .05">
+              <freejoint/>
+              <geom size=".05"/>
+            </body>
+          </replicate>
+        </worldbody>
+      </mujoco>
+      """,
+      overrides={"opt.deterministic": "ATOMICS"},
+      nworld=2,
+      njmax=8000,  # far more rows than the scene has: nv * (nv + 1) / 2 records per row would not fit
+    )
+    d.qacc.fill_(wp.inf)
+    mjw.step(m, d)
+    # neighboring spheres overlap: their contact rows span the dofs of two free bodies
+    self.assertEqual(d.efc.J_rownnz.numpy()[0, : d.nefc.numpy()[0]].max(), m.max_efc_J_rownnz)
+    self.assertTrue(np.isfinite(d.qacc.numpy()).all())
+
   @parameterized.named_parameters(*_SLEEP_CASES)
   def test_sleep(self, overrides, covers):
     """Sleeping trees, with awake bodies and dofs in ascending order."""
@@ -1189,7 +1214,7 @@ class DeterminismTest(parameterized.TestCase):
     self.assertEqual(_RECORDS_ONLY_ARGS["passive._qfrc_adhesion"], ["nv"])
     self.assertEqual(_RECORDS_ONLY_ARGS["derivative._eff_flex_interp_mul"], ["nv"])
     self.assertEqual(_RECORDS_ONLY_ARGS["solver._JTDACJ_sparse"], ["max_records"])
-    self.assertEqual(_RECORDS_ONLY_ARGS["solver._linesearch_jv_fused_kernel"], [])
+    self.assertEqual(_RECORDS_ONLY_ARGS["solver._mul_jac_vec_kernel"], [])
     self.assertEqual(_RECORDS_ONLY_ARGS["smooth._transmission"], [])
 
     # kernel cache keys are (*args, module, name)

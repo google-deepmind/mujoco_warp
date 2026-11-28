@@ -17,12 +17,16 @@ from typing import Tuple
 
 import warp as wp
 
+from mujoco_warp._src import passive
 from mujoco_warp._src import support
 from mujoco_warp._src import types
 from mujoco_warp._src.types import ConstraintType
+from mujoco_warp._src.types import EnableBit
 from mujoco_warp._src.types import EqType
+from mujoco_warp._src.types import IntegratorType
 from mujoco_warp._src.types import ObjType
 from mujoco_warp._src.types import OverflowType
+from mujoco_warp._src.types import TrnType
 from mujoco_warp._src.warp_util import cache_kernel
 from mujoco_warp._src.warp_util import event_scope
 
@@ -75,6 +79,40 @@ def _dsu_union(parent: wp.array2d[int], worldid: int, tree0: int, tree1: int, tr
       return
 
 
+@wp.func
+def _union_tendon_trees(
+  # Model:
+  opt_enableflags: int,
+  dof_treeid: wp.array[int],
+  ten_J_rownnz: wp.array[int],
+  ten_J_rowadr: wp.array[int],
+  ten_J_colind: wp.array[int],
+  # Data in:
+  tree_awake_in: wp.array2d[int],
+  # In:
+  worldid: int,
+  tenid: int,
+  # Data out:
+  tree_island_out: wp.array2d[int],
+  # Out:
+  island_parent_out: wp.array2d[int],
+):
+  start = ten_J_rowadr[tenid]
+  end = start + ten_J_rownnz[tenid]
+  sleep_enabled = bool(opt_enableflags & EnableBit.SLEEP)
+  tree1 = int(-1)
+  for j in range(start, end):
+    tree2 = dof_treeid[ten_J_colind[j]]
+    if tree2 < 0:
+      continue
+    if sleep_enabled and tree_awake_in[worldid, tree2] == 0:
+      continue
+    if tree1 < 0:
+      tree1 = tree2
+    elif tree1 != tree2:
+      _dsu_union(island_parent_out, worldid, tree1, tree2, tree_island_out)
+
+
 @wp.kernel
 def _reset_dsu(
   # Data out:
@@ -92,7 +130,7 @@ def _reset_dsu(
 
 
 @wp.func
-def _is_repeated_fixed_support_efc(
+def is_repeated_fixed_support_efc(
   # Data in:
   efc_type_in: wp.array2d[int],
   efc_id_in: wp.array2d[int],
@@ -117,6 +155,7 @@ def _flex_contact_bodies(
   flex_dim: wp.array[int],
   flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
+  flex_celladr: wp.array[int],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
   flex_elemadr: wp.array[int],
@@ -124,6 +163,7 @@ def _flex_contact_bodies(
   flex_elemdataadr: wp.array[int],
   flex_nodebodyid: wp.array[int],
   flex_vertbodyid: wp.array[int],
+  flex_cellempty: wp.array[bool],
   flex_elem: wp.array[int],
   flex_vert0: wp.array[wp.vec3],
   flex_rod_has_twist: wp.array[bool],
@@ -159,6 +199,7 @@ def _flex_contact_bodies(
     flex_dim,
     flex_interp,
     flex_cellnum,
+    flex_celladr,
     flex_nodeadr,
     flex_vertadr,
     flex_elemadr,
@@ -166,6 +207,7 @@ def _flex_contact_bodies(
     flex_elemdataadr,
     flex_nodebodyid,
     flex_vertbodyid,
+    flex_cellempty,
     flex_elem,
     flex_vert0,
     flex_rod_has_twist,
@@ -190,6 +232,7 @@ def _flex_contact_bodies(
     flex_dim,
     flex_interp,
     flex_cellnum,
+    flex_celladr,
     flex_nodeadr,
     flex_vertadr,
     flex_elemadr,
@@ -197,6 +240,7 @@ def _flex_contact_bodies(
     flex_elemdataadr,
     flex_nodebodyid,
     flex_vertbodyid,
+    flex_cellempty,
     flex_elem,
     flex_vert0,
     flex_rod_has_twist,
@@ -291,6 +335,7 @@ def _passive_contact_island_dsu(
   flex_dim: wp.array[int],
   flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
+  flex_celladr: wp.array[int],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
   flex_elemadr: wp.array[int],
@@ -298,6 +343,7 @@ def _passive_contact_island_dsu(
   flex_elemdataadr: wp.array[int],
   flex_nodebodyid: wp.array[int],
   flex_vertbodyid: wp.array[int],
+  flex_cellempty: wp.array[bool],
   flex_elem: wp.array[int],
   flex_vert0: wp.array[wp.vec3],
   flex_rod_has_twist: wp.array[bool],
@@ -341,6 +387,7 @@ def _passive_contact_island_dsu(
     flex_dim,
     flex_interp,
     flex_cellnum,
+    flex_celladr,
     flex_nodeadr,
     flex_vertadr,
     flex_elemadr,
@@ -348,6 +395,7 @@ def _passive_contact_island_dsu(
     flex_elemdataadr,
     flex_nodebodyid,
     flex_vertbodyid,
+    flex_cellempty,
     flex_elem,
     flex_vert0,
     flex_rod_has_twist,
@@ -379,6 +427,91 @@ def _passive_contact_island_dsu(
       _dsu_union(island_parent_out, worldid, tree1, tree2, tree_island_out)
 
 
+@wp.kernel
+def _island_dsu_metric_couplings(
+  # Model:
+  nactuator: int,
+  ntendon: int,
+  opt_disableflags: int,
+  opt_enableflags: int,
+  body_treeid: wp.array[int],
+  dof_treeid: wp.array[int],
+  site_bodyid: wp.array[int],
+  tendon_actuatorid: wp.array[int],
+  ten_J_rownnz: wp.array[int],
+  ten_J_rowadr: wp.array[int],
+  ten_J_colind: wp.array[int],
+  tendon_stiffness: wp.array2d[float],
+  tendon_stiffnesspoly: wp.array2d[wp.vec2],
+  tendon_damping: wp.array2d[float],
+  tendon_dampingpoly: wp.array2d[wp.vec2],
+  actuator_trntype: wp.array[int],
+  actuator_gaintype: wp.array[int],
+  actuator_biastype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  # Data in:
+  nefc_in: wp.array[int],
+  tree_awake_in: wp.array2d[int],
+  # Data out:
+  tree_island_out: wp.array2d[int],
+  # Out:
+  island_parent_out: wp.array2d[int],
+):
+  worldid, idx = wp.tid()
+  if nefc_in[worldid] == 0:
+    return
+
+  if idx < ntendon:
+    if support.eff_tendon_possible(
+      opt_disableflags,
+      tendon_actuatorid,
+      tendon_stiffness,
+      tendon_stiffnesspoly,
+      tendon_damping,
+      tendon_dampingpoly,
+      worldid,
+      idx,
+    ):
+      _union_tendon_trees(
+        opt_enableflags,
+        dof_treeid,
+        ten_J_rownnz,
+        ten_J_rowadr,
+        ten_J_colind,
+        tree_awake_in,
+        worldid,
+        idx,
+        tree_island_out,
+        island_parent_out,
+      )
+
+  if idx < nactuator:
+    if support.eff_actuator_possible(opt_disableflags, actuator_gaintype, actuator_biastype, idx):
+      trntype = actuator_trntype[idx]
+      trnid = actuator_trnid[idx]
+      if trntype == TrnType.TENDON:
+        _union_tendon_trees(
+          opt_enableflags,
+          dof_treeid,
+          ten_J_rownnz,
+          ten_J_rowadr,
+          ten_J_colind,
+          tree_awake_in,
+          worldid,
+          trnid[0],
+          tree_island_out,
+          island_parent_out,
+        )
+      elif trntype == TrnType.SITE or trntype == TrnType.SLIDERCRANK:
+        if trnid[1] >= 0:
+          tree1 = body_treeid[site_bodyid[trnid[0]]]
+          tree2 = body_treeid[site_bodyid[trnid[1]]]
+          if tree1 >= 0 and tree2 >= 0 and tree1 != tree2:
+            sleep_enabled = bool(opt_enableflags & EnableBit.SLEEP)
+            if not sleep_enabled or (tree_awake_in[worldid, tree1] != 0 and tree_awake_in[worldid, tree2] != 0):
+              _dsu_union(island_parent_out, worldid, tree1, tree2, tree_island_out)
+
+
 @wp.kernel(module="unique", enable_backward=False)
 def _island_dsu(
   # Model:
@@ -393,6 +526,7 @@ def _island_dsu(
   flex_dim: wp.array[int],
   flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
+  flex_celladr: wp.array[int],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
   flex_elemadr: wp.array[int],
@@ -400,6 +534,7 @@ def _island_dsu(
   flex_elemdataadr: wp.array[int],
   flex_nodebodyid: wp.array[int],
   flex_vertbodyid: wp.array[int],
+  flex_cellempty: wp.array[bool],
   flex_elem: wp.array[int],
   flex_vert0: wp.array[wp.vec3],
   eq_type: wp.array[int],
@@ -449,7 +584,7 @@ def _island_dsu(
   for efcid in range(chunk_beg + lane, chunk_end, wp.block_dim()):
     efc_type = efc_type_in[worldid, efcid]
     efc_id = efc_id_in[worldid, efcid]
-    repeated = _is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid)
+    repeated = is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid)
     tree0 = int(-1)
     tree1 = int(-1)
     use_generic = int(0)
@@ -495,6 +630,7 @@ def _island_dsu(
           flex_dim,
           flex_interp,
           flex_cellnum,
+          flex_celladr,
           flex_nodeadr,
           flex_vertadr,
           flex_elemadr,
@@ -502,6 +638,7 @@ def _island_dsu(
           flex_elemdataadr,
           flex_nodebodyid,
           flex_vertbodyid,
+          flex_cellempty,
           flex_elem,
           flex_vert0,
           flex_rod_has_twist,
@@ -651,7 +788,7 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
       ],
       outputs=[d.tree_island, island_parent],
     )
-    if m.opt.integrator == types.IntegratorType.DISCRETE and m.has_flex_passive:
+    if m.opt.integrator == types.IntegratorType.DISCRETE and passive.flex_passive_contact(m):
       wp.launch(
         _passive_contact_island_dsu,
         dim=d.naconmax,
@@ -663,6 +800,7 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
           m.flex_dim,
           m.flex_interp,
           m.flex_cellnum,
+          m.flex_celladr,
           m.flex_nodeadr,
           m.flex_vertadr,
           m.flex_elemadr,
@@ -670,6 +808,7 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
           m.flex_elemdataadr,
           m.flex_nodebodyid,
           m.flex_vertbodyid,
+          m.flex_cellempty,
           m.flex_elem,
           m.flex_vert0,
           m.flex_rod_has_twist,
@@ -709,6 +848,7 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
       m.flex_dim,
       m.flex_interp,
       m.flex_cellnum,
+      m.flex_celladr,
       m.flex_nodeadr,
       m.flex_vertadr,
       m.flex_elemadr,
@@ -716,6 +856,7 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
       m.flex_elemdataadr,
       m.flex_nodebodyid,
       m.flex_vertbodyid,
+      m.flex_cellempty,
       m.flex_elem,
       m.flex_vert0,
       m.eq_type,
@@ -750,6 +891,35 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
     ],
     block_dim=types.BlockDim.island_dsu,
   )
+  if m.opt.integrator == IntegratorType.DISCRETE and (m.has_tendon_stiffness or m.has_tendon_damping or m.has_efm_actuator):
+    wp.launch(
+      _island_dsu_metric_couplings,
+      dim=(d.nworld, max(m.ntendon, m.nactuator)),
+      inputs=[
+        m.nactuator,
+        m.ntendon,
+        m.opt.disableflags,
+        m.opt.enableflags,
+        m.body_treeid,
+        m.dof_treeid,
+        m.site_bodyid,
+        m.tendon_actuatorid,
+        m.ten_J_rownnz,
+        m.ten_J_rowadr,
+        m.ten_J_colind,
+        m.tendon_stiffness,
+        m.tendon_stiffnesspoly,
+        m.tendon_damping,
+        m.tendon_dampingpoly,
+        m.actuator_trntype,
+        m.actuator_gaintype,
+        m.actuator_biastype,
+        m.actuator_trnid,
+        d.nefc,
+        d.tree_awake,
+      ],
+      outputs=[d.tree_island, island_parent],
+    )
   wp.launch(
     _finalize_dsu,
     dim=d.nworld,
@@ -954,6 +1124,7 @@ def _island_count_constraints(
   flex_dim: wp.array[int],
   flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
+  flex_celladr: wp.array[int],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
   flex_elemadr: wp.array[int],
@@ -961,6 +1132,7 @@ def _island_count_constraints(
   flex_elemdataadr: wp.array[int],
   flex_nodebodyid: wp.array[int],
   flex_vertbodyid: wp.array[int],
+  flex_cellempty: wp.array[bool],
   flex_elem: wp.array[int],
   flex_vert0: wp.array[wp.vec3],
   eq_type: wp.array[int],
@@ -1063,6 +1235,7 @@ def _island_count_constraints(
         flex_dim,
         flex_interp,
         flex_cellnum,
+        flex_celladr,
         flex_nodeadr,
         flex_vertadr,
         flex_elemadr,
@@ -1070,6 +1243,7 @@ def _island_count_constraints(
         flex_elemdataadr,
         flex_nodebodyid,
         flex_vertbodyid,
+        flex_cellempty,
         flex_elem,
         flex_vert0,
         flex_rod_has_twist,
@@ -1268,6 +1442,7 @@ def compute_island_mapping(m: types.Model, d: types.Data):
       m.flex_dim,
       m.flex_interp,
       m.flex_cellnum,
+      m.flex_celladr,
       m.flex_nodeadr,
       m.flex_vertadr,
       m.flex_elemadr,
@@ -1275,6 +1450,7 @@ def compute_island_mapping(m: types.Model, d: types.Data):
       m.flex_elemdataadr,
       m.flex_nodebodyid,
       m.flex_vertbodyid,
+      m.flex_cellempty,
       m.flex_elem,
       m.flex_vert0,
       m.eq_type,

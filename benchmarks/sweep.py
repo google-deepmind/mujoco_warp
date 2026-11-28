@@ -32,6 +32,7 @@ in commit_range.json with "from" and "to" fields.
 
 Usage:
   python benchmarks/sweep.py forward                # Sweep to HEAD
+  python benchmarks/sweep.py --daily forward        # Sweep 1 commit per completed UTC day
   python benchmarks/sweep.py forward 5              # Sweep 5 commits forward
   python benchmarks/sweep.py forward abc123f        # Sweep to specific commit
   python benchmarks/sweep.py back 20                # Sweep back 20 commits
@@ -170,14 +171,36 @@ def _sweep(input_dir: str, output_dir: str):
   # determine commits to process
   if _ARGS.direction == "forward":
     end = "HEAD" if _ARGS.target.isdigit() else _ARGS.target
-    result = git("rev-list", "--reverse", f"{commit_range['to']}..{end}", cwd=input_dir)
+    rev_args = ("--reverse", f"{commit_range['to']}..{end}")
+  elif _ARGS.target == "root" or _ARGS.target.isdigit():
+    rev_args = (f"{commit_range['from']}^",)
   else:
-    if _ARGS.target == "root" or _ARGS.target.isdigit():
-      result = git("rev-list", f"{commit_range['from']}^", cwd=input_dir)
-    else:
-      result = git("rev-list", f"{_ARGS.target}^..{commit_range['from']}^", cwd=input_dir)
+    rev_args = (f"{_ARGS.target}^..{commit_range['from']}^",)
 
-  commits = result.stdout.strip().splitlines()
+  if _ARGS.daily:
+    result = git("log", "--first-parent", "--format=%H %cd", "--date=format-local:%Y-%m-%d", *rev_args, cwd=input_dir)
+    if _ARGS.direction == "forward":
+      # Exclude today's incomplete UTC day for HEAD and count forward sweeps.
+      cutoff_day = (
+        datetime.now(timezone.utc).strftime("%Y-%m-%d") if (_ARGS.target == "HEAD" or _ARGS.target.isdigit()) else None
+      )
+    else:
+      # Skip commit_range["from"]'s UTC day so repeated back sweeps don't re-sample it.
+      cutoff_day = git(
+        "log", "-1", "--format=%cd", "--date=format-local:%Y-%m-%d", commit_range["from"], cwd=input_dir
+      ).stdout.strip()
+    by_day: dict[str, str] = {}
+    for line in result.stdout.strip().splitlines():
+      sha, day = line.split(" ", 1)
+      if cutoff_day is not None and day >= cutoff_day:
+        continue
+      if _ARGS.direction == "forward" or day not in by_day:
+        by_day[day] = sha
+    commits = list(by_day.values())
+  else:
+    result = git("rev-list", *rev_args, cwd=input_dir)
+    commits = result.stdout.strip().splitlines()
+
   if _ARGS.target.isdigit():
     commits = commits[: int(_ARGS.target)]
 
@@ -246,6 +269,7 @@ def main():
   parser.add_argument("-f", "--filter", default=".*", help="filter benchmarks by name (regex)")
   parser.add_argument("--mock", action="store_true", help="run with nworld=1 nstep=10 for fast testing")
   parser.add_argument("--dry_run", action="store_true", help="run benchmarks but don't push results")
+  parser.add_argument("--daily", action="store_true", help="sample only the last commit per completed UTC day")
   parser.add_argument("--assets_root", default="/tmp/benchmark_assets", help="root directory to assemble benchmark assets")
   sub = parser.add_subparsers(dest="direction", required=True)
   fwd = sub.add_parser("forward", help="sweep from last benchmarked commit toward HEAD")

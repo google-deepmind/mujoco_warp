@@ -628,19 +628,7 @@ def _make_cast_ray(
 
     if wp.static(optix is not None):
       # Intersect the world's cell before traversing, including rays from cameras outside it.
-      tmin = float(0.0)
-      tmax = max_dist
-      intersects_cell = True
-      for axis in range(3):
-        if ray_dir_world[axis] != 0.0:
-          a = (-wp.static(optix.extent) - ray_origin_world[axis]) / ray_dir_world[axis]
-          b = (wp.static(optix.extent) - ray_origin_world[axis]) / ray_dir_world[axis]
-          tmin = wp.max(tmin, wp.min(a, b))
-          tmax = wp.min(tmax, wp.max(a, b))
-        elif wp.abs(ray_origin_world[axis]) > wp.static(optix.extent):
-          intersects_cell = False
-      intersects_cell = intersects_cell and tmax >= tmin
-      tmax = wp.max(0.0, tmax)
+      intersects_cell, tmin, tmax = render_optix.cell_range(ray_origin_world, ray_dir_world, max_dist, wp.static(optix.extent))
 
       origin = ray_origin_world + world_offset(worldid, wp.static(optix.grid), wp.static(3.0 * optix.extent))
 
@@ -660,26 +648,36 @@ def _make_cast_ray(
             dist = query.t
             # Custom normals use three attributes; the query holds the first two.
             is_triangle = False
-            if wp.static(any(t in geom_ray_types for t in (GeomType.MESH, GeomType.SDF, GeomType.HFIELD))):
-              gtype = geom_type[geom_id]
-              is_triangle = gtype == GeomType.MESH or gtype == GeomType.SDF or gtype == GeomType.HFIELD
-              if is_triangle:
+            if wp.static(len(optix.flexes) > 0):
+              # Flex instances follow every world's geoms; their faces are in world space.
+              flexid = int(query.instance_id) - geom_xpos_in.shape[0] * geom_type.shape[0]
+              if flexid >= 0:
+                is_triangle = True
+                geom_id = -2
+                geom_mesh_id = flexid
                 face_idx = int(query.primitive_index)
-                dataid = geom_dataid[worldid % geom_dataid.shape[0], geom_id]
-                mesh = wp.uint64(0)
-                mat = math.quat_to_mat(geom_xquat_in[worldid, geom_id])
-                if wp.static(int(GeomType.HFIELD) in geom_ray_types):
-                  if gtype == GeomType.HFIELD:
-                    mesh = hfield_bvh_id[dataid]
-                if wp.static(int(GeomType.MESH) in geom_ray_types or int(GeomType.SDF) in geom_ray_types):
-                  if gtype != GeomType.HFIELD:
-                    mesh = mesh_bvh_id[dataid]
-                    geom_mesh_id = dataid
-                    if wp.static(has_reframed_meshes):
-                      mat = mat @ mesh_bvh_rot[dataid]
-                normal = wp.normalize(mat @ wp.mesh_eval_face_normal(mesh, face_idx))
-                bary_u = 1.0 - query.u - query.v
-                bary_v = query.u
+                normal = wp.mesh_eval_face_normal(flex_bvh_id[flexid], face_idx)
+            if wp.static(any(t in geom_ray_types for t in (GeomType.MESH, GeomType.SDF, GeomType.HFIELD))):
+              if geom_id >= 0:
+                gtype = geom_type[geom_id]
+                is_triangle = gtype == GeomType.MESH or gtype == GeomType.SDF or gtype == GeomType.HFIELD
+                if is_triangle:
+                  face_idx = int(query.primitive_index)
+                  dataid = geom_dataid[worldid % geom_dataid.shape[0], geom_id]
+                  mesh = wp.uint64(0)
+                  mat = math.quat_to_mat(geom_xquat_in[worldid, geom_id])
+                  if wp.static(int(GeomType.HFIELD) in geom_ray_types):
+                    if gtype == GeomType.HFIELD:
+                      mesh = hfield_bvh_id[dataid]
+                  if wp.static(int(GeomType.MESH) in geom_ray_types or int(GeomType.SDF) in geom_ray_types):
+                    if gtype != GeomType.HFIELD:
+                      mesh = mesh_bvh_id[dataid]
+                      geom_mesh_id = dataid
+                      if wp.static(has_reframed_meshes):
+                        mat = mat @ mesh_bvh_rot[dataid]
+                  normal = wp.normalize(mat @ wp.mesh_eval_face_normal(mesh, face_idx))
+                  bary_u = 1.0 - query.u - query.v
+                  bary_v = query.u
             if not is_triangle:
               normal = wp.vec3(query.u, query.v, wp.optix_uint32_as_float(wp.optix_hit_object_get_attribute(2)))
 

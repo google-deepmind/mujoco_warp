@@ -56,6 +56,11 @@ class TypesTest(parameterized.TestCase):
       mj_fields.insert(mj_fields.index("nbuffer") + 1, "opt")
       mj_fields.insert(mj_fields.index("nbuffer") + 2, "vis")
       mj_fields.insert(mj_fields.index("nbuffer") + 3, "stat")
+      # TODO(team): remove once mujoco >= 4.0.2 is required.
+      if "flex_cellempty" not in mj_fields:
+        mj_fields.insert(mj_fields.index("nflexshelldata") + 1, "nflexcell")
+        mj_fields.insert(mj_fields.index("flex_cellnum") + 1, "flex_celladr")
+        mj_fields.insert(mj_fields.index("flex_vertcell") + 1, "flex_cellempty")
     elif mjw_class is Data:
       # TODO(team): remove this reordering after MjData._all_fields order is fixed
       # there's a bug in _all_fields where solver_niter is in the wrong place
@@ -102,7 +107,8 @@ class TypesTest(parameterized.TestCase):
     self.assertEqual(int(OverflowType.ITERATIONS), 1 << 9)
     self.assertEqual(int(OverflowType.LS_ITERATIONS), 1 << 10)
     self.assertEqual(int(OverflowType.TACTILE), 1 << 11)
-    self.assertEqual(int(OverflowType.ALL), (1 << 12) - 1)
+    self.assertEqual(int(OverflowType.BADQACC), 1 << 12)
+    self.assertEqual(int(OverflowType.ALL), (1 << 13) - 1)
 
   def test_option_warn_overflow(self):
     mjm = mujoco.MjModel.from_xml_string("<mujoco/>")

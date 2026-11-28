@@ -28,6 +28,7 @@ import mujoco_warp as mjw
 from mujoco_warp import ConeType
 from mujoco_warp import DisableBit
 from mujoco_warp import test_data
+from mujoco_warp._src import smooth
 from mujoco_warp._src import solver
 from mujoco_warp._src import types
 
@@ -313,6 +314,72 @@ class SmoothTest(parameterized.TestCase):
       _assert_eq(d.mocap_pos.numpy()[i], mjd.mocap_pos, "mocap_pos")
       _assert_eq(d.mocap_quat.numpy()[i], mjd.mocap_quat, "mocap_quat")
 
+  @parameterized.parameters(1, 2)
+  def test_kinematics_phases(self, nworld):
+    """Tests kinematics1 and kinematics2 phases."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body pos=".2 -.3 .4" euler="10 20 -15">
+            <joint pos=".03 .02 .01" axis=".2 .7 .5"/>
+            <inertial pos=".1 .03 -.02" euler="20 -10 30" mass="1" diaginertia=".02 .03 .04"/>
+            <geom type="box" size=".05 .1 .15" pos=".1 -.1 .2" euler="5 10 15"/>
+            <site pos=".2 .1 -.1" euler="-10 20 5"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    qpos = np.array([[0.35], [-0.45]], dtype=np.float32)[:nworld]
+    d.qpos.assign(qpos)
+
+    refs = []
+    for world in range(nworld):
+      ref = mujoco.MjData(mjm)
+      ref.qpos[:] = qpos[world]
+      mujoco.mj_kinematics(mjm, ref)
+      refs.append(ref)
+
+    # Skip constant worldbody frames initialized by make_data.
+    for arr in (d.xpos, d.xquat, d.xipos, d.xiquat):
+      arr[:, 1:].fill_(wp.inf)
+    for arr in (d.xanchor, d.xaxis, d.geom_xpos, d.geom_xquat, d.site_xpos, d.site_xquat):
+      arr.fill_(wp.inf)
+
+    # Phase 1 computes body poses and joint anchors/axes without touching the other frames.
+    smooth.kinematics1(m, d)
+    for arr in (d.xipos[:, 1:], d.xiquat[:, 1:], d.geom_xpos, d.geom_xquat, d.site_xpos, d.site_xquat):
+      self.assertTrue(np.isinf(arr.numpy()).all())
+
+    # Copy the snapshots because numpy() can return a view of CPU arrays.
+    xpos, xquat = d.xpos.numpy().copy(), d.xquat.numpy().copy()
+    xanchor, xaxis = d.xanchor.numpy().copy(), d.xaxis.numpy().copy()
+    np.testing.assert_allclose(xpos, [ref.xpos for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(xquat, [ref.xquat for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(xanchor, [ref.xanchor for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(xaxis, [ref.xaxis for ref in refs], rtol=1e-5, atol=1e-5)
+
+    # Phase 2 computes inertial, geom, and site frames from body poses without reading qpos.
+    d.qpos.fill_(wp.inf)
+    smooth.kinematics2(m, d)
+    for arr, before in ((d.xpos, xpos), (d.xquat, xquat), (d.xanchor, xanchor), (d.xaxis, xaxis)):
+      np.testing.assert_array_equal(arr.numpy(), before)
+
+    xipos, xiquat = d.xipos.numpy(), d.xiquat.numpy()
+    geom_xpos, geom_xquat = d.geom_xpos.numpy(), d.geom_xquat.numpy()
+    site_xpos, site_xquat = d.site_xpos.numpy(), d.site_xquat.numpy()
+    np.testing.assert_allclose(xipos, [ref.xipos for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(xiquat, [ref.xiquat for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(geom_xpos, [ref.geom_xpos for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(geom_xquat, [ref.geom_xquat for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(site_xpos, [ref.site_xpos for ref in refs], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(site_xquat, [ref.site_xquat for ref in refs], rtol=1e-5, atol=1e-5)
+    if nworld == 2:
+      self.assertFalse(np.allclose(xquat[0], xquat[1]))
+      self.assertFalse(np.allclose(site_xpos[0], site_xpos[1]))
+
   @parameterized.named_parameters(_tree_cases())
   def test_com_pos(self, model):
     """Tests com_pos."""
@@ -388,6 +455,60 @@ class SmoothTest(parameterized.TestCase):
     _assert_eq(d.cam_xmat.numpy()[0], mjd.cam_xmat.reshape((-1, 3, 3)), "cam_xmat")
     _assert_eq(d.light_xpos.numpy()[0], mjd.light_xpos, "light_xpos")
     _assert_eq(d.light_xdir.numpy()[0], mjd.light_xdir, "light_xdir")
+
+  @parameterized.parameters(1, 2)
+  def test_camlight_normalization_fallback(self, nworld):
+    """Tests target camera and light normalization fallbacks."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="target">
+            <joint type="slide" axis="0 1 0"/>
+            <geom size=".1"/>
+          </body>
+          <camera mode="targetbody" target="target" pos="0 0 1"/>
+          <camera mode="targetbody" target="target"/>
+          <light mode="targetbody" target="target"/>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 0] = 0.25
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_kinematics(mjm, mjd1)
+      mujoco.mj_comPos(mjm, mjd1)
+      mujoco.mj_camlight(mjm, mjd1)
+      mjds.append(mjd1)
+      mjw.kinematics(m, d)
+      mjw.com_pos(m, d)
+
+    d.cam_xpos.fill_(wp.inf)
+    d.cam_xmat.fill_(wp.inf)
+    d.light_xpos.fill_(wp.inf)
+    d.light_xdir.fill_(wp.inf)
+    mjw.camlight(m, d)
+
+    cam_xpos = d.cam_xpos.numpy()
+    cam_xmat = d.cam_xmat.numpy()
+    light_xpos = d.light_xpos.numpy()
+    light_xdir = d.light_xdir.numpy()
+    for w in range(nworld):
+      _assert_eq(cam_xpos[w], mjds[w].cam_xpos, f"cam_xpos_world_{w}")
+      _assert_eq(cam_xmat[w], mjds[w].cam_xmat.reshape((-1, 3, 3)), f"cam_xmat_world_{w}")
+      _assert_eq(light_xpos[w], mjds[w].light_xpos, f"light_xpos_world_{w}")
+      _assert_eq(light_xdir[w], mjds[w].light_xdir, f"light_xdir_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(cam_xmat[0], cam_xmat[1]))
+      self.assertFalse(np.allclose(light_xdir[0], light_xdir[1]))
 
   @parameterized.named_parameters(
     _tree_cases(("sparse", mujoco.mjtJacobian.mjJAC_SPARSE), ("dense", mujoco.mjtJacobian.mjJAC_DENSE))
@@ -1807,6 +1928,104 @@ class SmoothTest(parameterized.TestCase):
     mjw.solve_m(m, d, res, d.qfrc_smooth)
     _assert_eq(res.numpy()[0], ref[0], "M \\ qfrc_smooth (mixed blocks)")
 
+  @parameterized.product(nworld=(1, 2), mode=("separate", "combined", "deterministic", "all_sparse", "wide"))
+  def test_sparse_factor_sleep(self, nworld, mode):
+    def chain(n):
+      return '<body pos="0 0 .05"><joint axis="0 1 0"/><geom size=".02"/>' * n + "</body>" * n
+
+    small = "" if mode == "all_sparse" else chain(4) + chain(7) + '<body><freejoint/><geom size=".1"/></body>'
+    branches = chain(15) * 40 if mode == "wide" else chain(8) * 8
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <option><flag contact="disable"/></option>
+        <default><joint armature="1"/></default>
+        <worldbody>
+          <body><freejoint/><geom size=".1"/>{branches}</body>
+          <body><freejoint/><geom size=".1"/>{chain(15) * 5}</body>
+          {small}
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+      qpos_noise=0.1,
+    )
+    matrices, expected = [], []
+    rhs = np.random.default_rng(42).normal(size=(nworld, m.nv)).astype(np.float32)
+    for world in range(nworld):
+      if world:
+        mujoco.mj_integratePos(mjm, mjd.qpos, np.ones(m.nv), 0.2)
+        mujoco.mj_forward(mjm, mjd)
+      matrices.append(mjd.M.copy())
+      result = np.empty((1, m.nv))
+      mujoco.mj_solveM(mjm, mjd, result, rhs[world : world + 1])
+      expected.append(result[0])
+    matrices = np.asarray(matrices, dtype=np.float32)
+    expected = np.asarray(expected)
+    d.M.assign(matrices)
+    d.qLD.fill_(wp.inf)
+    d.qLDiagInv.fill_(wp.inf)
+    mjw.factor_m(m, d)
+    block_adr = m.qLD_block_adr.numpy()
+    m.opt.enableflags |= types.EnableBit.SLEEP
+    if mode == "deterministic":
+      m.opt.deterministic |= types.DeterminismType.ATOMICS
+    b = wp.array(rhs)
+    x = wp.full_like(b, wp.inf)
+    scratch = wp.empty_like(x) if mode == "deterministic" else None
+    with wp.ScopedCapture() as capture:
+      if mode in ("combined", "all_sparse", "wide"):
+        mjw._src.smooth.factor_solve_i(m, d, d.M, d.qLD, d.qLDiagInv, x, b)
+      else:
+        mjw.factor_m(m, d)
+        mjw.solve_m(m, d, x, b, x_scratch=scratch)
+    for phase in (0, 1):
+      saved_factor, saved_diagonal = d.qLD.numpy(), d.qLDiagInv.numpy()
+      awake = ((np.indices(d.tree_awake.shape).sum(axis=0) + phase) % 2).astype(np.int32)
+      d.tree_awake.assign(awake)
+      scale = 0.5 if phase == 0 else 2.0
+      values = matrices * scale
+      reference = expected / scale
+      asleep_factor = np.zeros(d.qLD.shape, dtype=bool)
+      for world in range(nworld):
+        for i in range(m.nv):
+          if not awake[world, mjm.dof_treeid[i]]:
+            adr, end = mjm.M_rowadr[i], mjm.M_rowadr[i] + mjm.M_rownnz[i]
+            values[world, adr:end] = np.nan
+            asleep_factor[world, m.qLD_block_total + adr : m.qLD_block_total + end] = True
+            reference[world, i] = 0
+        for start, size in zip(mjm.tree_dofadr, mjm.tree_dofnum):
+          if block_adr[start] >= 0 and not awake[world, mjm.dof_treeid[start]]:
+            asleep_factor[world, block_adr[start] : block_adr[start] + size * size] = True
+      d.M.assign(values)
+      x.fill_(wp.inf)
+      wp.capture_launch(capture.graph)
+      np.testing.assert_allclose(x.numpy(), reference, atol=1e-5, rtol=1e-5)
+      np.testing.assert_array_equal(d.qLD.numpy()[asleep_factor], saved_factor[asleep_factor])
+      asleep_dof = awake[:, mjm.dof_treeid] == 0
+      np.testing.assert_array_equal(d.qLDiagInv.numpy()[asleep_dof], saved_diagonal[asleep_dof])
+      if nworld == 2:
+        self.assertFalse(np.allclose(x.numpy()[0], x.numpy()[1]))
+
+  def test_sparse_factor_strided(self):
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco><default><joint armature="1"/></default><worldbody>
+        {'<body pos="0 0 .05"><joint/><geom size=".02"/>' * 70}{"</body>" * 70}
+      </worldbody></mujoco>
+      """,
+    )
+    storage = wp.full((1, 2 * d.qLD.shape[1]), -123.0, dtype=float)
+    d.qLD = storage[:, ::2]
+    mjw.factor_m(m, d)
+    rhs = wp.ones((1, m.nv), dtype=float)
+    out = wp.full_like(rhs, wp.inf)
+    mjw.solve_m(m, d, out, rhs)
+    expected = np.empty((1, m.nv))
+    mujoco.mj_solveM(mjm, mjd, expected, rhs.numpy())
+    np.testing.assert_allclose(out.numpy(), expected, atol=1e-5, rtol=1e-5)
+    np.testing.assert_array_equal(storage.numpy()[:, 1::2], -123.0)
+
   def test_factor_solve_lu(self):
     """Tests factor_solve_lu with a sparse matrix representing a tree."""
     xml = """
@@ -1989,6 +2208,426 @@ class SmoothTest(parameterized.TestCase):
     if nworld == 2:
       self.assertFalse(np.allclose(M[0], M[1]))
       self.assertFalse(np.allclose(qfrc_bias[0], qfrc_bias[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_spatial_tendon_wrap_parallel(self, nworld):
+    """Tests parallel spatial tendon wrap path across mixed tendon types and worlds."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom name="wrap_sphere" size="0.3"/>
+          <site name="s_left" pos="-0.6 0.1 0"/>
+          <site name="s_mid" pos="0 0.5 0"/>
+          <body>
+            <joint name="j0" type="slide" axis="0 1 0"/>
+            <geom size="0.05"/>
+            <site name="s_right" pos="0.6 0.1 0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed>
+            <joint joint="j0" coef="1"/>
+          </fixed>
+          <spatial>
+            <pulley divisor="2"/>
+            <site site="s_left"/>
+            <site site="s_mid"/>
+          </spatial>
+          <spatial>
+            <site site="s_left"/>
+            <geom geom="wrap_sphere"/>
+            <site site="s_right"/>
+          </spatial>
+          <spatial>
+            <site site="s_mid"/>
+            <site site="s_right"/>
+          </spatial>
+        </tendon>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      qpos[1, 0] = 0.8
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_kinematics(mjm, mjd1)
+      mujoco.mj_comPos(mjm, mjd1)
+      mujoco.mj_tendon(mjm, mjd1)
+      mjds.append(mjd1)
+      mjw.kinematics(m, d)
+      mjw.com_pos(m, d)
+
+    for arr in (d.ten_length, d.ten_J, d.wrap_xpos):
+      arr.fill_(wp.inf)
+    for arr in (d.wrap_obj, d.ten_wrapnum, d.ten_wrapadr):
+      arr.fill_(-1)
+
+    mjw.tendon(m, d)
+
+    ten_length = d.ten_length.numpy()
+    ten_J = d.ten_J.numpy()
+    wrap_xpos = d.wrap_xpos.numpy()
+    wrap_obj = d.wrap_obj.numpy()
+    ten_wrapnum = d.ten_wrapnum.numpy()
+    ten_wrapadr = d.ten_wrapadr.numpy()
+    for w in range(nworld):
+      _assert_eq(ten_length[w], mjds[w].ten_length, f"ten_length_world_{w}")
+      _assert_eq(ten_J[w], mjds[w].ten_J, f"ten_J_world_{w}")
+      _assert_eq(wrap_xpos[w], mjds[w].wrap_xpos, f"wrap_xpos_world_{w}")
+      _assert_eq(wrap_obj[w], mjds[w].wrap_obj, f"wrap_obj_world_{w}")
+      _assert_eq(ten_wrapnum[w], mjds[w].ten_wrapnum, f"ten_wrapnum_world_{w}")
+      _assert_eq(ten_wrapadr[w], mjds[w].ten_wrapadr, f"ten_wrapadr_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.array_equal(ten_wrapnum[0], ten_wrapnum[1]))
+      self.assertFalse(np.array_equal(ten_wrapadr[0], ten_wrapadr[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_spatial_tendon_shared_ancestors(self, nworld):
+    """Tests tendon Jacobians with shared ancestor dofs; catches walks that stop early."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body name="base" pos="0 0 1">
+            <freejoint/>
+            <geom size="0.1"/>
+            <body name="upper">
+              <joint type="hinge" axis="0 1 0"/>
+              <geom type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03"/>
+              <site name="s_upper" pos="0.05 0 0"/>
+              <body name="lower" pos="0 0 -0.3">
+                <joint type="hinge" axis="1 0 0"/>
+                <geom name="wrap_cylinder" type="cylinder" size="0.08 0.05" zaxis="0 1 0"/>
+                <site name="side" pos="0.15 0 0"/>
+                <body name="hand" pos="0 0 -0.3">
+                  <joint type="ball"/>
+                  <geom size="0.03"/>
+                  <site name="s_hand" pos="0.05 0 0"/>
+                </body>
+              </body>
+            </body>
+            <body name="other" pos="0.2 0 0">
+              <joint type="hinge" axis="0 0 1"/>
+              <geom name="wrap_far" size="0.01" pos="0 0.5 0"/>
+              <site name="s_other" pos="0 0.1 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial>
+            <site site="s_upper"/>
+            <site site="s_hand"/>
+          </spatial>
+          <spatial>
+            <site site="s_hand"/>
+            <site site="s_other"/>
+          </spatial>
+          <spatial>
+            <site site="s_upper"/>
+            <geom geom="wrap_cylinder" sidesite="side"/>
+            <site site="s_hand"/>
+          </spatial>
+          <spatial>
+            <site site="s_upper"/>
+            <geom geom="wrap_far"/>
+            <site site="s_hand"/>
+          </spatial>
+        </tendon>
+      </mujoco>
+      """,
+      qpos_noise=0.3,
+      nworld=nworld,
+    )
+
+    # the third tendon wraps its cylinder and the fourth misses its sphere
+    self.assertGreater(mjd.ten_wrapnum[2], 2)
+    self.assertEqual(mjd.ten_wrapnum[3], 2)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qpos = d.qpos.numpy()
+      # move the base and bend the elbow so world 1's Jacobians differ from world 0's
+      qpos[1, 3:7] = np.array([0.9, 0.3, -0.2, 0.25]) / np.linalg.norm([0.9, 0.3, -0.2, 0.25])
+      qpos[1, 8] += 0.4
+      d.qpos.assign(qpos)
+      mjd1.qpos[:] = qpos[1]
+      mujoco.mj_kinematics(mjm, mjd1)
+      mujoco.mj_comPos(mjm, mjd1)
+      mujoco.mj_tendon(mjm, mjd1)
+      mjds.append(mjd1)
+      mjw.kinematics(m, d)
+      mjw.com_pos(m, d)
+
+    d.ten_length.fill_(wp.inf)
+    d.ten_J.fill_(wp.inf)
+
+    mjw.tendon(m, d)
+
+    ten_length = d.ten_length.numpy()
+    ten_J = d.ten_J.numpy()
+    for w in range(nworld):
+      _assert_eq(ten_length[w], mjds[w].ten_length, f"ten_length_world_{w}")
+      _assert_eq(ten_J[w], mjds[w].ten_J, f"ten_J_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(ten_J[0], ten_J[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_tendon_armature_runtime_update(self, nworld):
+    """Tests runtime updates to tendon_armature and actuator_armature inside a captured graph."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 -10">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <site name="s0" pos="0 0 .5"/>
+          <body>
+            <joint name="j0" axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+            <site name="s1" pos=".2 0 .05"/>
+            <body pos=".3 0 0">
+              <joint type="ball"/>
+              <joint name="j2" type="slide" axis="1 0 0"/>
+              <geom size=".05"/>
+              <site name="s2" pos=".1 .05 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed name="t0">
+            <joint joint="j0" coef="1"/>
+            <joint joint="j2" coef="-.5"/>
+          </fixed>
+          <spatial name="t1">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+          <spatial name="t2">
+            <pulley divisor="2"/>
+            <site site="s0"/>
+            <site site="s2"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <motor tendon="t1" gear="2" damping=".1"/>
+        </actuator>
+        <keyframe>
+          <key qpos=".3 1 .1 -.2 0 .05" qvel="1.2 -.8 .5 -.4 .6"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+      batch_sizes={
+        "tendon_armature": nworld,
+        "actuator_armature": nworld,
+        "dof_invweight0": nworld,
+        "body_invweight0": nworld,
+        "tendon_invweight0": nworld,
+        "actuator_acc0": nworld,
+      },
+    )
+
+    with wp.ScopedCapture() as capture:
+      mjw.set_const(m, d)
+      mjw.forward(m, d)
+      mjw.rne_postconstraint(m, d)
+
+    for arr in (d.M, d.qfrc_bias, d.qacc, d.cacc, d.cfrc_int, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+    M_zero = d.M.numpy().copy()
+    bias_zero = d.qfrc_bias.numpy().copy()
+    _assert_eq(M_zero[0], mjd.M, "M_zero")
+    _assert_eq(bias_zero[0], mjd.qfrc_bias, "qfrc_bias_zero")
+
+    ten_arm = np.tile(np.array([0.2, 0.0, 0.3], dtype=np.float32), (nworld, 1))
+    act_arm = np.tile(np.array([0.15], dtype=np.float32), (nworld, 1))
+    if nworld == 2:
+      ten_arm[1] = [0.4, 0.1, 0.5]
+      act_arm[1] = [0.35]
+    m.tendon_armature.assign(ten_arm)
+    m.actuator_armature.assign(act_arm)
+
+    for arr in (d.M, d.qfrc_bias, d.qacc, d.cacc, d.cfrc_int, d.cfrc_ext):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+
+    M = d.M.numpy()
+    qfrc_bias = d.qfrc_bias.numpy()
+    qacc = d.qacc.numpy()
+    cacc = d.cacc.numpy()
+    cfrc_int = d.cfrc_int.numpy()
+    cfrc_ext = d.cfrc_ext.numpy()
+    dof_invweight0 = m.dof_invweight0.numpy()
+    body_invweight0 = m.body_invweight0.numpy()
+    tendon_invweight0 = m.tendon_invweight0.numpy()
+    actuator_acc0 = m.actuator_acc0.numpy()
+    self.assertFalse(np.allclose(M[0], M_zero[0]))
+    self.assertFalse(np.allclose(qfrc_bias[0], bias_zero[0]))
+
+    for w in range(nworld):
+      mjm.tendon_armature[:] = ten_arm[w]
+      mjm.actuator_armature[:] = act_arm[w]
+      mujoco.mj_setConst(mjm, mjd)
+      mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+      mujoco.mj_forward(mjm, mjd)
+      mujoco.mj_rnePostConstraint(mjm, mjd)
+      _assert_eq(dof_invweight0[w], mjm.dof_invweight0, f"dof_invweight0_world_{w}")
+      _assert_eq(body_invweight0[w], mjm.body_invweight0, f"body_invweight0_world_{w}")
+      _assert_eq(tendon_invweight0[w], mjm.tendon_invweight0, f"tendon_invweight0_world_{w}")
+      _assert_eq(actuator_acc0[w], mjm.actuator_acc0, f"actuator_acc0_world_{w}")
+      _assert_eq(M[w], mjd.M, f"M_world_{w}")
+      _assert_eq(qfrc_bias[w], mjd.qfrc_bias, f"qfrc_bias_world_{w}")
+      _assert_eq(qacc[w], mjd.qacc, f"qacc_world_{w}")
+      _assert_eq(cacc[w], mjd.cacc, f"cacc_world_{w}")
+      _assert_eq(cfrc_int[w], mjd.cfrc_int, f"cfrc_int_world_{w}")
+      _assert_eq(cfrc_ext[w], mjd.cfrc_ext, f"cfrc_ext_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(M[0], M[1]))
+      self.assertFalse(np.allclose(qfrc_bias[0], qfrc_bias[1]))
+
+  @parameterized.product(
+    nworld=(1, 2),
+    actuator=(
+      '<dcmotor tendon="t0" gear="3" motorconst="2" resistance="1" input="none"/>',
+      '<pid tendon="t0" gear="3" input="pos vel ff" kp="10" kv="2"/>',
+    ),
+  )
+  def test_rne_postconstraint_tendon_actuator_nu_mismatch(self, nworld, actuator):
+    """Tests rne_postconstraint tendon actuator forces when nu != nactuator."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <site name="s0"/>
+          <body pos="0.3 0 0">
+            <joint name="j0" type="slide" axis="1 0 0"/>
+            <geom size="0.1"/>
+            <site name="s1" pos="0.1 0 0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="t0">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          {actuator}
+        </actuator>
+        <keyframe>
+          <key qvel="1.5"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+      nworld=nworld,
+    )
+    self.assertNotEqual(m.nu, m.nactuator)
+
+    mjds = [mjd]
+    if nworld == 2:
+      mjd1 = mujoco.MjData(mjm)
+      qvel = d.qvel.numpy()
+      qvel[1] = -2.0
+      d.qvel.assign(qvel)
+      mjd1.qvel[:] = qvel[1]
+      mjds.append(mjd1)
+
+    mjw.forward(m, d)
+    d.cfrc_ext.fill_(wp.inf)
+    mjw.rne_postconstraint(m, d)
+
+    cfrc_ext = d.cfrc_ext.numpy()
+    for w in range(nworld):
+      mujoco.mj_forward(mjm, mjds[w])
+      mujoco.mj_rnePostConstraint(mjm, mjds[w])
+      _assert_eq(cfrc_ext[w], mjds[w].cfrc_ext, f"cfrc_ext_world_{w}")
+    if nworld == 2:
+      self.assertFalse(np.allclose(cfrc_ext[0], cfrc_ext[1]))
+
+  @parameterized.product(
+    nworld=(1, 2),
+    cone=(ConeType.PYRAMIDAL, ConeType.ELLIPTIC),
+  )
+  def test_transmission_body_moment_njmax_overflow(self, nworld, cone):
+    """Tests body adhesion transmission when a contact overflows njmax."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <geom type="plane" size="5 5 0.1"/>
+          <body name="b1" pos="0 0 1">
+            <freejoint/>
+            <geom size="0.1" pos="-0.1 0 0"/>
+            <geom size="0.1" pos="0.1 0 0"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <adhesion name="adhere" body="b1" ctrlrange="0 1"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+      njmax=5,
+      overrides={"opt.cone": cone},
+    )
+
+    qpos = d.qpos.numpy()
+    qpos[:, 2] = 0.05
+    if nworld == 2:
+      qpos[1, 2] = 0.04
+      qpos[1, 4] = 0.1
+    d.qpos.assign(qpos)
+
+    d.actuator_length.fill_(wp.inf)
+    d.actuator_moment.fill_(wp.inf)
+    mjw.fwd_position(m, d)
+
+    moment = d.actuator_moment.numpy()
+    moment_rownnz = d.moment_rownnz.numpy()
+    moment_rowadr = d.moment_rowadr.numpy()
+    moment_colind = d.moment_colind.numpy()
+    self.assertTrue(np.all(np.isfinite(moment)))
+
+    # Compare against MuJoCo C where the same contact has efc_address == -1.
+    efc_addr = d.contact.efc_address.numpy()[: 2 * nworld, 0]
+    worldids = d.contact.worldid.numpy()[: 2 * nworld]
+    geoms = d.contact.geom.numpy()[: 2 * nworld]
+    dense_moments = []
+    for w in range(nworld):
+      mjd_ref = mujoco.MjData(mjm)
+      mjd_ref.qpos[:] = qpos[w]
+      mujoco.mj_fwdPosition(mjm, mjd_ref)
+      dropped = geoms[(worldids == w) & (efc_addr < 0)]
+      self.assertEqual(len(dropped), 1)
+      for ci in range(mjd_ref.ncon):
+        if np.array_equal(mjd_ref.contact.geom[ci], dropped[0]):
+          mjd_ref.contact.efc_address[ci] = -1
+      mujoco.mj_transmission(mjm, mjd_ref)
+      ref_dense = np.zeros((mjm.nu, mjm.nv))
+      wp_dense = np.zeros((mjm.nu, mjm.nv))
+      mujoco.mju_sparse2dense(
+        ref_dense, mjd_ref.actuator_moment, mjd_ref.moment_rownnz, mjd_ref.moment_rowadr, mjd_ref.moment_colind
+      )
+      mujoco.mju_sparse2dense(wp_dense, moment[w], moment_rownnz[w], moment_rowadr[w], moment_colind[w])
+      _assert_eq(wp_dense, ref_dense, f"actuator_moment_world_{w}")
+      dense_moments.append(wp_dense)
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(dense_moments[0], dense_moments[1]))
 
 
 if __name__ == "__main__":

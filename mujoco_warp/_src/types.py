@@ -79,20 +79,23 @@ class BlockDim:
     cholesky_factorize_solve: block-dense Cholesky factorize+solve block dimension (smooth)
     cholesky_solve: Cholesky solve block dimension (smooth)
     small_cholesky: scalar small-block Cholesky block dimension (smooth)
+    factor_LD_sparse_fused: sparse LDL factorization block dimension (smooth)
     solve_LD_sparse_fused: solve LD sparse fused block dimension (smooth)
     update_gradient_cholesky: update gradient Cholesky block dimension (solver)
     update_gradient_cholesky_blocked: update gradient Cholesky blocked block dimension (solver)
     update_gradient_JTDAJ_sparse: update gradient JTDAJ sparse block dimension (solver)
     update_gradient_JTDAJ_dense: update gradient JTDAJ dense block dimension (solver)
     linesearch_iterative: linesearch iterative block dimension (solver)
+    update_constraint_qfrc_gradient_sparse_tiled: sparse gradient block dimension (solver)
     update_gradient_grad: update gradient grad block dimension (solver)
-    solve_beta_accumulate: solve beta accumulate block dimension (solver)
     solve_search_update_cg: solve search update CG block dimension (solver)
     solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
     noslip_solve: noslip solve block dimension, one thread per world (solver)
+    warmstart_cost: discrete warmstart cost comparison block dimension (solver)
     contact_jac_sparse: sparse contact Jacobian block dimension (constraint)
     eff_pcg: effective-metric PCG block dimension (derivative)
+    discrete_free_gyro: discrete free-body gyroscopic solve block dimension (forward)
     render: render block dimension (render)
   """
 
@@ -115,6 +118,7 @@ class BlockDim:
   cholesky_factorize_solve: int = 32
   cholesky_solve: int = 64
   small_cholesky: int = 64
+  factor_LD_sparse_fused: int = 64
   solve_LD_sparse_fused: int = 128
   # solver
   update_gradient_cholesky: int = 32
@@ -122,16 +126,18 @@ class BlockDim:
   update_gradient_JTDAJ_sparse: int = 128
   update_gradient_JTDAJ_dense: int = 128
   linesearch_iterative: int = 32
+  update_constraint_qfrc_gradient_sparse_tiled: int = 32
   update_gradient_grad: int = 256
-  solve_beta_accumulate: int = 256
   solve_search_update_cg: int = 256
   solve_init_search_cg: int = 256
   contact_jac_tiled: int = 32
   noslip_solve: int = 32
+  warmstart_cost: int = 256
   # constraint
   contact_jac_sparse: int = 128
   # derivative
   eff_pcg: int = 128
+  discrete_free_gyro: int = 128
   # render
   render: int = 64
 
@@ -183,6 +189,7 @@ class OverflowType(enum.IntFlag):
     ITERATIONS: solver iteration limit reached
     LS_ITERATIONS: linesearch iteration limit reached
     TACTILE: tactile sensor collision pair overflow
+    BADQACC: bad number in integrated acceleration (NaN, Inf, or |qacc| > MJ_MAXVAL)
     ALL: all overflows
   """
 
@@ -199,6 +206,7 @@ class OverflowType(enum.IntFlag):
   ITERATIONS = 1 << 9
   LS_ITERATIONS = 1 << 10
   TACTILE = 1 << 11
+  BADQACC = 1 << 12
   ALL = (
     NEFC
     | NJMAX_NNZ
@@ -212,6 +220,7 @@ class OverflowType(enum.IntFlag):
     | ITERATIONS
     | LS_ITERATIONS
     | TACTILE
+    | BADQACC
   )
 
 
@@ -410,6 +419,7 @@ class DynType(enum.IntEnum):
     MUSCLE: piece-wise linear filter with two time constants
     USER: user-defined dynamics via act_dyn_callback
     DCMOTOR: DC motor dynamics
+    PID: PID actuator dynamics
   """
 
   NONE = mujoco.mjtDyn.mjDYN_NONE
@@ -419,6 +429,7 @@ class DynType(enum.IntEnum):
   MUSCLE = mujoco.mjtDyn.mjDYN_MUSCLE
   USER = mujoco.mjtDyn.mjDYN_USER
   DCMOTOR = mujoco.mjtDyn.mjDYN_DCMOTOR
+  PID = mujoco.mjtDyn.mjDYN_PID
 
 
 class GainType(enum.IntEnum):
@@ -430,6 +441,8 @@ class GainType(enum.IntEnum):
     MUSCLE: muscle FLV curve computed by muscle_gain
     USER: user-defined gain via act_gain_callback
     DCMOTOR: DC motor gain
+    PID: PID actuator gain
+    SO3: SO(3) orientation servo gain
   """
 
   FIXED = mujoco.mjtGain.mjGAIN_FIXED
@@ -437,6 +450,7 @@ class GainType(enum.IntEnum):
   MUSCLE = mujoco.mjtGain.mjGAIN_MUSCLE
   USER = mujoco.mjtGain.mjGAIN_USER
   DCMOTOR = mujoco.mjtGain.mjGAIN_DCMOTOR
+  PID = mujoco.mjtGain.mjGAIN_PID
   SO3 = mujoco.mjtGain.mjGAIN_SO3
 
 
@@ -1222,6 +1236,9 @@ class Model:
     nactuator: number of actuators
     na: number of activation states
     nbody: number of bodies
+    nbvh: number of total bounding volumes in all bodies
+    nbvhstatic: number of static bounding volumes (aabb stored in Model)
+    nbvhdynamic: number of dynamic bounding volumes (aabb computed per step)
     noct: number of total octree cells in all meshes
     njnt: number of joints
     ntree: number of kinematic trees
@@ -1244,6 +1261,7 @@ class Model:
     nefm0L: number of non-zeros in zero-mass flex Cholesky factor
     nflexelemedge: number of element edge ids in all flexes
     nflexshelldata: number of shell fragment vertex ids in all flexes
+    nflexcell: number of finite cells in all interpolated flexes
     nJfe: number of non-zeros in sparse flexedge Jacobian
     nmesh: number of meshes
     nmeshvert: number of vertices for all meshes
@@ -1299,6 +1317,8 @@ class Model:
     body_gravcomp: antigravity force, units of body weight   (*, nbody)
     body_contype: OR over all geom contypes                  (nbody,)
     body_conaffinity: OR over all geom conaffinities         (nbody,)
+    bvh_child: left and right children in tree               (nbvh, 2)
+    bvh_nodeid: geom or elem id of node; -1: non-leaf        (nbvh,)
     oct_child: octree children                               (noct, 8)
     oct_aabb: octree axis-aligned bounding boxes             (noct, 2, 3)
     oct_coeff: octree interpolation coefficients             (noct, 8)
@@ -1413,6 +1433,7 @@ class Model:
     flex_dim: 1: lines, 2: triangles, 3: tetrahedra          (nflex,)
     flex_interp: interpolation order (0: vertex, 1+: nodes)  (nflex,)
     flex_cellnum: cell count per dimension                   (nflex, 3)
+    flex_celladr: first cell address; -1: not interpolated   (nflex,)
     flex_nodeadr: first node address                         (nflex,)
     flex_nodenum: number of nodes                            (nflex,)
     flex_vertadr: first vertex address                       (nflex,)
@@ -1432,6 +1453,7 @@ class Model:
     flex_nodebodyid: node body ids                           (nflexnode,)
     flex_vertbodyid: vertex body ids                         (nflexvert,)
     flex_vertcell: finite cell index for vertex; -1: none    (nflexvert,)
+    flex_cellempty: is finite cell empty (pruned)            (nflexcell,)
     flex_edge: edge vertex ids (2 per edge)                  (nflexedge, 2)
     flex_edgeflap: adjacent vertex ids (dim=2 only)          (nflexedge, 2)
     flex_elem: element vertex ids (dim+1 per elem)           (nflexelemdata,)
@@ -1461,6 +1483,8 @@ class Model:
     flex_rigid: flex is rigid (all vertices on same body)    (nflex,)
     flexedge_rigid: edge is rigid (e.g. vertices welded to same body) (nflexedge,)
     flex_centered: flex vertices are centered at body origin (nflex,)
+    flex_bvhadr: address of bvh root; -1: no bvh             (nflex,)
+    flex_bvhnum: number of bounding volumes                  (nflex,)
     flexedge_J_rownnz: number of nonzeros in Jacobian row    (nflexedge,)
     flexedge_J_rowadr: row start address in colind array     (nflexedge,)
     flexedge_J_colind: column indices in sparse Jacobian     (nJfe,)
@@ -1615,10 +1639,21 @@ class Model:
   warp only fields:
     nefmK: number of non-zeros in effective flex stiffness matrix
     nefmdof: number of covered flex vertex triples
+    nefmL: number of non-zeros in 1D rod effective Cholesky factor
+    nefmBT: number of off-diagonal 3x3 blocks in 1D rod effective Cholesky factor
     efm_K_rownnz: row non-zeros in effective flex stiffness CSR (nv,)
     efm_K_rowadr: row addresses in effective flex stiffness CSR (nv,)
     efm_K_colind: column indices in effective flex stiffness CSR (nefmK,)
     efm_dofid: starting DOF index for each covered flex triple (nefmdof,)
+    efm_L_dofid: global DOF index for each permuted Cholesky row (3*nefmdof,)
+    efm_L_rownnz: row non-zeros in 1D rod effective Cholesky factor (3*nefmdof,)
+    efm_L_rowadr: row addresses in 1D rod effective Cholesky factor (3*nefmdof,)
+    efm_L_colind: column indices in 1D rod effective Cholesky factor (nefmL,)
+    efm_BT_adr: supernodal update block start addresses (nefmdof+1,)
+    efm_BT_row: supernodal update block row indices (nefmBT,)
+    efm_BT_off: supernodal update block column offsets (nefmBT,)
+    efm_L_M_src: M/qH CSR index for each diagonal block entry in efm_L (nefmL,)
+    efm_L_K_src: efm_K CSR index for each entry in efm_L (nefmL,)
     callback: custom physics callbacks
     nbranch: number of branches (leaf-to-root paths)
     nv_pad: number of degrees of freedom + padding
@@ -1647,15 +1682,20 @@ class Model:
     has_flex_snh: whether any flex uses 3D SNH elasticity
     has_non_simple_flex: whether any flex has non-simple vertex bodies
     has_flex_edge_stiff_damp: whether any non-rigid flex has edge stiffness or damping
+    has_flex_stiff: whether any flex contributes elastic stiffness
     has_tendon_stiffness: whether any tendon has positive stiffness
     has_tendon_damping: whether any tendon has positive damping
     has_efm_actuator: whether any actuator contributes effective metric coupling
     has_actuator_wrap: whether any wrap-eligible rotational actuator is present
     has_actuator_dcmotor: whether any DC motor actuator is present
     efm0_active: whether zero-mass flex Cholesky preconditioner is active
+    efm_chol_active: whether 1D rod effective Cholesky preconditioner is active
+    efm_all_covered_or_twist: whether all DOFs are covered by efm_L or 1D rod twist
+    efm_prec_exact: whether eff_prec is exact for the effective metric
     flex_interp_assemblable: whether interpolated flex stiffness can be assembled into efm_K
     has_unsupported_flex_interp: whether model has unsupported flex interpolation orders
     has_ellipsoid_geom: whether the model contains ellipsoid geoms
+    has_cylinder_geom: whether the model contains cylinder geoms
     has_plane_geom: whether the model contains plane geoms
     has_1d_flex: whether the model contains 1D flexes
     has_2d_flex: whether the model contains 2D flexes
@@ -1696,12 +1736,15 @@ class Model:
     tendon_geom_adr: geom tendon address
     tendon_limited_adr: addresses for limited tendons
     max_ten_J_rownnz: maximum number of non-zeros in a tendon row
-    ten_wrapadr_site: wrap object starting address for sites
-    ten_wrapnum_site: number of site wrap objects per tendon
+    max_efc_J_rownnz: upper bound on the number of non-zeros in a constraint Jacobian row
+    tendon_geom_wrapadr: first geom wrap index per tendon (into wrap_geom_adr)
     wrap_jnt_adr: addresses for joint tendon wrap object
     wrap_site_adr: addresses for site tendon wrap object
     wrap_site_pair_adr: first address for site wrap pair
+    wrap_site_pair_lca: lowest common ancestor body of each site pair
     wrap_geom_adr: addresses for geom tendon wrap object
+    wrap_geom_lca: lowest common ancestor body of each geom wrap's
+                   (site0, geom), (geom, site1), (site0, site1) pairs
     wrap_pulley_scale: pulley scaling                        (nwrap,)
     actuator_trntype_body_adr: addresses for actuators
                                with body transmission
@@ -1734,12 +1777,14 @@ class Model:
     weld_tactile_id: weld body to tactile weld index         (nbody,)
     taxel_vertadr: tactile sensor vertex address             (nsensortaxel,)
     taxel_sensorid: address for tactile sensors
+    dof_subtreenum: subtree size including the dof itself   (nv,)
+    qLD_fused_level_adr: offsets of each sparse tree's level pointers
+    qLD_fused_pair_adr: offsets of factor entries grouped by tree and depth
+    qLD_fused_pairs: factor entries as (dof, row offset)
     M_tiles: scalar and tiled block-factorization groups
     qLD_updates: sparse factor updates grouped by tree level
     qLD_all_updates: tuple of all levels concatenated
     qLD_level_offsets: tuple of start offsets for each level
-    M_fullm_i: sparse mass matrix addressing
-    M_fullm_j: sparse mass matrix addressing
     M_elemid: (row, col) -> CSR madr addresses; -1 if not a chain ancestor
     M_hinit_i: row index of each CSR M entry; for densifying M into the dense Newton H (nC,)
     M_tile_colmask: per Newton H tile, bitmask of the tiles above it coupled by M; read by the
@@ -1749,15 +1794,17 @@ class Model:
     qD_fullm_i: D-structure row indices for RNE derivatives
     qD_fullm_j: D-structure column indices for RNE derivatives
     M_mulm_rowadr: sparse matmul row pointers
-    M_mulm_col: sparse matmul column indices
-    M_mulm_madr: sparse matmul matrix addresses
+    M_mulm_entry: sparse matmul column (low 32 bits) and matrix address (high 32 bits)
     flex_elemflexid: maps each element index directly to its flexid         (nflexelem,)
+    flex_bvhflexid: maps each dynamic bvh node to its flexid                (nbvhdynamic,)
+    flex_bvh_tree: internal flex bvh node ids by tree depth
     flex_edgeflexid: maps each edge index directly to its flexid            (nflexedge,)
     flex_shellflexid: maps each shell index directly to its flexid          (nflexshelldata,)
     flex_vertflexid: maps each vertex index directly to its flexid          (nflexvert,)
     flex_shelladr: maps each flex to its start shell index                  (nflex,)
     flex_faceadr: maps each flex to its start face index                    (nflex,)
     flex_simple: whether all vertices of flex are on simple bodies          (nflex,)
+    flex_stiff_possible: whether flex contributes elastic stiffness         (nflex,)
     flex_efcnum: number of edge equality rows (non-rigid edges)             (nflex,)
     flex_efcnnz: number of Jacobian nonzeros in edge equality rows          (nflex,)
     flexedge_efcadr: row of the edge among its flex's edge equality rows,   (nflexedge,)
@@ -1802,6 +1849,9 @@ class Model:
   nactuator: int
   na: int
   nbody: int
+  nbvh: int
+  nbvhstatic: int
+  nbvhdynamic: int
   noct: int
   njnt: int
   ntree: int
@@ -1825,6 +1875,7 @@ class Model:
   nefm0L: int
   nflexelemedge: int
   nflexshelldata: int
+  nflexcell: int
   nJfe: int
   nmesh: int
   nmeshvert: int
@@ -1880,6 +1931,8 @@ class Model:
   body_gravcomp: array("*", "nbody", float)
   body_contype: array("nbody", int)
   body_conaffinity: array("nbody", int)
+  bvh_child: array("nbvh", wp.vec2i)
+  bvh_nodeid: array("nbvh", int)
   oct_child: array("noct", vec8i)
   oct_aabb: array("noct", 2, wp.vec3)
   oct_coeff: array("noct", vec8)
@@ -1994,6 +2047,7 @@ class Model:
   flex_dim: array("nflex", int)
   flex_interp: array("nflex", int)
   flex_cellnum: array("nflex", wp.vec3i)
+  flex_celladr: array("nflex", int)
   flex_nodeadr: array("nflex", int)
   flex_nodenum: array("nflex", int)
   flex_vertadr: array("nflex", int)
@@ -2013,6 +2067,7 @@ class Model:
   flex_nodebodyid: array("nflexnode", int)
   flex_vertbodyid: array("nflexvert", int)
   flex_vertcell: array("nflexvert", int)
+  flex_cellempty: array("nflexcell", bool)
   flex_edge: array("nflexedge", wp.vec2i)
   flex_edgeflap: array("nflexedge", wp.vec2i)
   flex_elem: array("nflexelemdata", int)
@@ -2042,6 +2097,8 @@ class Model:
   flex_rigid: array("nflex", bool)
   flexedge_rigid: array("nflexedge", bool)
   flex_centered: array("nflex", bool)
+  flex_bvhadr: array("nflex", int)
+  flex_bvhnum: array("nflex", int)
   flexedge_J_rownnz: array("nflexedge", int)
   flexedge_J_rowadr: array("nflexedge", int)
   flexedge_J_colind: array("nJfe", int)
@@ -2195,10 +2252,21 @@ class Model:
   # warp only fields:
   nefmK: int
   nefmdof: int
+  nefmL: int
+  nefmBT: int
   efm_K_rownnz: array("nv", int)
   efm_K_rowadr: array("nv", int)
   efm_K_colind: array("nefmK", int)
   efm_dofid: array("nefmdof", int)
+  efm_L_dofid: array("nefm_3dof", int)
+  efm_L_rownnz: array("nefm_3dof", int)
+  efm_L_rowadr: array("nefm_3dof", int)
+  efm_L_colind: array("nefmL", int)
+  efm_BT_adr: array("nefm_bt_adr", int)
+  efm_BT_row: array("nefmBT", int)
+  efm_BT_off: array("nefmBT", int)
+  efm_L_M_src: array("nefmL", int)
+  efm_L_K_src: array("nefmL", int)
   callback: Callback
   nbranch: int
   nv_pad: int
@@ -2225,15 +2293,20 @@ class Model:
   has_flex_snh: bool
   has_non_simple_flex: bool
   has_flex_edge_stiff_damp: bool
+  has_flex_stiff: bool
   has_tendon_stiffness: bool
   has_tendon_damping: bool
   has_efm_actuator: bool
   has_actuator_wrap: bool
   has_actuator_dcmotor: bool
   efm0_active: bool
+  efm_chol_active: bool
+  efm_all_covered_or_twist: bool
+  efm_prec_exact: bool
   flex_interp_assemblable: bool
   has_unsupported_flex_interp: bool
   has_ellipsoid_geom: bool
+  has_cylinder_geom: bool
   has_plane_geom: bool
   has_1d_flex: bool
   has_2d_flex: bool
@@ -2270,12 +2343,14 @@ class Model:
   tendon_geom_adr: array("ntendon_geom", int)
   tendon_limited_adr: array("ntendon_limited", int)
   max_ten_J_rownnz: int
-  ten_wrapadr_site: array("nten_wrapadr_site", int)
-  ten_wrapnum_site: array("ntendon", int)
+  max_efc_J_rownnz: int
+  tendon_geom_wrapadr: array("ntendon", int)
   wrap_jnt_adr: array("nwrap_jnt", int)
   wrap_site_adr: array("nwrap_site", int)
   wrap_site_pair_adr: array("nwrap_site_pair", int)
+  wrap_site_pair_lca: array("nwrap_site_pair", int)
   wrap_geom_adr: array("nwrap_geom", int)
+  wrap_geom_lca: array("nwrap_geom", wp.vec3i)
   wrap_pulley_scale: array("nwrap", float)
   actuator_trntype_body_adr: array("nacttrnbody", int)
   sensor_pos_adr: array("nsensor_pos", int)
@@ -2304,14 +2379,14 @@ class Model:
   weld_tactile_id: array("nbody", int)
   taxel_vertadr: array("nsensortaxel", int)
   taxel_sensorid: array("nsensortaxel", int)
+  dof_subtreenum: array("nv", int)
+  qLD_fused_level_adr: array("nqLD_fused_level_adr", int)
+  qLD_fused_pair_adr: array("nqLD_fused_pair_adr", int)
+  qLD_fused_pairs: array("nqLD_fused_pairs", wp.vec2i)
   M_tiles: tuple[TileSet, ...]
   qLD_updates: tuple[array("nqLD_all_updates", wp.vec3i), ...]
   qLD_all_updates: array("nqLD_all_updates", wp.vec3i)
   qLD_level_offsets: array("nqLD_level_offsets", int)
-  # TODO(team): Remove M_fullm_i/j and M_elemid by iterating the M CSR layout
-  # directly in the solver/derivative kernels
-  M_fullm_i: array("nM_fullm", int)
-  M_fullm_j: array("nM_fullm", int)
   M_elemid: array("nv", "nv", int)  # (row, col) -> CSR madr address; -1 if col is not a chain ancestor of row
   M_hinit_i: array("nC", int)  # row index of each CSR M entry (for densifying M into the dense Newton H)
   M_tile_colmask: array("nv_tile", "nv_tile_word", wp.uint64)  # per Newton H tile, bitmask of the tiles above it coupled by M
@@ -2321,15 +2396,17 @@ class Model:
   qD_fullm_j: array("nqD_fullm", int)  # D-structure (full square) column indices for RNE derivatives
   # Gather-based sparse mul_m indices (thread per DOF, no atomics)
   M_mulm_rowadr: array("nv_plus_1", int)  # start address for each row [nv+1]
-  M_mulm_col: array("nM_mulm", int)  # column index to gather from
-  M_mulm_madr: array("nM_mulm", int)  # matrix address to read
+  M_mulm_entry: array("nM_mulm", wp.uint64)
   flex_elemflexid: array("nflexelem", int)
+  flex_bvhflexid: array("nbvhdynamic", int)
+  flex_bvh_tree: tuple[array("nbvhdynamic", int), ...]
   flex_edgeflexid: array("nflexedge", int)
   flex_shellflexid: array("nflexshelldata", int)
   flex_vertflexid: array("nflexvert", int)
   flex_shelladr: array("nflex", int)
   flex_faceadr: array("nflex", int)
   flex_simple: array("nflex", bool)
+  flex_stiff_possible: array("nflex", bool)
   flex_efcnum: array("nflex", int)
   flex_efcnnz: array("nflex", int)
   flexedge_efcadr: array("nflexedge", int)
@@ -2593,6 +2670,7 @@ class Data:
     efm_fluid: fluid drag blocks in M's sparsity pattern        (nworld, nC)
     efm_ca: actuation-stage smooth-force shift                  (nworld, nv)
     efm_K_val: effective flex stiffness CSR values              (nworld, nefmK)
+    efm_L_val: 1D rod effective Cholesky factor values          (nworld, nefmL)
     qHLD: factor of modified mass matrix qH                     (nworld, qld_total)
     efm_ts: tendon metric scale h^2*k + h*b                     (nworld, ntendon)
     efm_as: actuator metric scale h^2*gp + h*gv                 (nworld, nactuator)
@@ -2765,6 +2843,7 @@ class Data:
   efm_fluid: array("nworld", "nC", float)
   efm_ca: array("nworld", "nv", float)
   efm_K_val: array("nworld", "nefmK", float)
+  efm_L_val: array("nworld", "nefmL", float)
   qHLD: array("nworld", "qld_total", float)
   efm_ts: array("nworld", "ntendon", float)
   efm_as: array("nworld", "nactuator", float)
@@ -2875,7 +2954,6 @@ class SolverContext:
   search_unchanged: wp.array[bool]
   prev_grad: wp.array2d[float]
   prev_Mgrad: wp.array2d[float]
-  beta: wp.array[float]
   h: wp.array3d[float]
   hfactor: wp.array3d[float]
   quad_changed_ids: wp.array2d[int]
@@ -2884,6 +2962,8 @@ class SolverContext:
   # the full-coordinate Data, set by solve_compact (None natively)
   compact_m_full: Optional["Model"] = None
   compact_d_full: Optional["Data"] = None
+  nsolving: Optional[wp.array] = None
+  qfrc_smooth_eff: Optional[wp.array] = None
   # discrete integrator effective-metric scratch built before the solver loop, which may run
   # inside wp.capture_while where memory cannot be allocated (None otherwise)
   efm_con: Optional[tuple] = None
@@ -2918,7 +2998,11 @@ class OptixScene:
     planes: enabled plane geom ids, which cast_ray intersects without the IAS
     grid: worlds per axis of the cubic world grid
     write_instances: kernel writing `instances` from the current geom poses
+    flexes: (flex id, surface points, vertex and side of each point) of each 2D and 3D flex
+    flex_accels: acceleration structure over each flex's surface points in all worlds
+    flexvert_norm: vertex normals the 2D flex surfaces are offset along (nworld, nflexvert)
     pipeline: render pipeline (warp_optix.Pipeline), compiled with the render context
+    ray_pipeline: ray pipeline (warp_optix.Pipeline) for rays(), compiled on first use
   """
 
   mesh_traversable: wp.array
@@ -2930,7 +3014,11 @@ class OptixScene:
   planes: tuple
   grid: int
   write_instances: wp.Kernel
+  flexes: tuple = ()
+  flex_accels: tuple = ()
+  flexvert_norm: Optional[wp.array2d] = None
   pipeline: object = None
+  ray_pipeline: object = None
 
 
 @dataclasses.dataclass

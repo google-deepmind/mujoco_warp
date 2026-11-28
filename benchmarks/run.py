@@ -136,9 +136,18 @@ def _run_benchmark(bm: dict, input_dir: Path) -> dict:
     "--measure_solver=true",
     "--measure_alloc=true",
   ]
+  if _ARGS.nworld is not None:
+    bm = {**bm, "nworld": _ARGS.nworld}
   cmd += _bm_flags(bm, benchmark_root)
 
-  result = uv_run(*cmd, cwd=input_dir)
+  try:
+    result = uv_run(*cmd, cwd=input_dir)
+  except subprocess.CalledProcessError as e:
+    if e.stdout:
+      log.error("Benchmark %s stdout:\n%s", bm["name"], e.stdout)
+    if e.stderr:
+      log.error("Benchmark %s stderr:\n%s", bm["name"], e.stderr)
+    raise
 
   # parse short-format output into a dict
   data = {}
@@ -180,6 +189,7 @@ def main():
     type=lambda v: v.lower() not in ("false", "0"),
     help="clear warp caches (kernel, LTO, CUDA compute)",
   )
+  parser.add_argument("--nworld", type=int, default=None, help="override number of parallel worlds")
 
   _ARGS = parser.parse_args()
 

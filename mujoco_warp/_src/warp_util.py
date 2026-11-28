@@ -66,7 +66,8 @@ class EventTracer:
     global _STACK
     if _STACK is not None:
       raise ValueError("only one EventTracer can run at a time")
-    if enabled:
+    # CUDA event timing is unavailable on non-CUDA devices.
+    if enabled and wp.get_device().is_cuda:
       _STACK = {}
 
   def __enter__(self):
@@ -183,6 +184,16 @@ def side_stream(device: wp.Device) -> wp.Stream | None:
   if key not in _SIDE_STREAMS:
     _SIDE_STREAMS[key] = wp.Stream(device)
   return _SIDE_STREAMS[key]
+
+
+def efc_threads_per_world(nworld: int, njmax: int, device, kernel: wp.Kernel, num_waves: int = 6) -> int:
+  """Size row launches from kernel occupancy, capped at capacity and aligned to warps."""
+  if not device.is_cuda or njmax <= 32:
+    return njmax
+  block_size, min_grid_size = wp.get_suggested_block_size(kernel, device)
+  # Iterative updates need extra waves as converged worlds stop contributing work.
+  warps = max(1, num_waves * block_size * min_grid_size // (32 * max(1, nworld)))
+  return 32 * min(njmax // 32, warps)
 
 
 def check_toolkit_driver():

@@ -27,6 +27,7 @@ from mujoco_warp._src.collision_core import sap_binary_search
 from mujoco_warp._src.collision_core import sap_range
 from mujoco_warp._src.collision_flex import flex_collision
 from mujoco_warp._src.collision_primitive import primitive_narrowphase
+from mujoco_warp._src.collision_sdf import prepare_sdf_context
 from mujoco_warp._src.collision_sdf import sdf_narrowphase
 from mujoco_warp._src.math import quat_to_mat
 from mujoco_warp._src.math import upper_tri_index
@@ -95,7 +96,7 @@ MJ_FLEX_COLLISION_TABLE = {
   (GeomType.SPHERE, GeomType.FLEX): CollisionType.PRIMITIVE,
   (GeomType.CAPSULE, GeomType.FLEX): CollisionType.PRIMITIVE,
   (GeomType.BOX, GeomType.FLEX): CollisionType.PRIMITIVE,
-  (GeomType.CYLINDER, GeomType.FLEX): CollisionType.PRIMITIVE,
+  (GeomType.CYLINDER, GeomType.FLEX): CollisionType.CONVEX,
   (GeomType.MESH, GeomType.FLEX): CollisionType.CONVEX,
   (GeomType.ELLIPSOID, GeomType.FLEX): CollisionType.CONVEX,
 }
@@ -1194,6 +1195,8 @@ def prepare_collision_context(m: Model, d: Data) -> CollisionContext:
   if d.naconmax > 0 and not (m.opt.disableflags & (DisableBit.CONSTRAINT | DisableBit.CONTACT)):
     convex_pairs, _ = _collision_table_pairs(m)
     prepare_convex_context(m, d, ctx, convex_pairs)
+    if m.has_sdf_geom:
+      prepare_sdf_context(d, ctx)
   return ctx
 
 
@@ -1259,6 +1262,10 @@ def collision(
     d.ncollision.zero_()
     d.nacon.zero_()
     d_col = d
+    if m.nflex > 0:
+      d.contact.flex.fill_(wp.vec2i(-1, -1))
+      d.contact.elem.fill_(wp.vec2i(-1, -1))
+      d.contact.vert.fill_(wp.vec2i(-1, -1))
 
   if m.opt.broadphase == BroadphaseType.NXN:
     nxn_broadphase(m, d_col, ctx, awake_prev, woke=woke)

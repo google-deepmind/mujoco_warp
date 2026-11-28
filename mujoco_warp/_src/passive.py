@@ -82,6 +82,14 @@ def ellipsoid_max_moment(size: wp.vec3, dir: int) -> float:
   return wp.static(8.0 / 15.0 * wp.pi) * d0 * _pow4(wp.max(d1, d2))
 
 
+@wp.func
+def flex_bend_convex(flex_bending: wp.array[float], bend_offset: int) -> bool:
+  """Whether the edge bending stencil is convex: trace(s * c * c') >= 0."""
+  trace = flex_bending[bend_offset] + flex_bending[bend_offset + 5]
+  trace += flex_bending[bend_offset + 10] + flex_bending[bend_offset + 15]
+  return trace >= 0.0
+
+
 @wp.kernel
 def _spring_damper_dof_passive(
   # Model:
@@ -231,10 +239,11 @@ def _spring_damper_dof_passive(
 
 
 @cache_kernel
-def _spring_damper_tendon_passive(deterministic: bool = False):
+def _spring_damper_tendon_passive(max_ten_J_rownnz: int, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
+    module_options["deterministic_max_records"] = 2 * max_ten_J_rownnz
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
@@ -266,37 +275,38 @@ def _spring_damper_tendon_passive(deterministic: bool = False):
     qfrc_spring_out: wp.array2d[float],
     qfrc_damper_out: wp.array2d[float],
   ):
-    worldid, tenid, dofid_sparse = wp.tid()
+    worldid, tenid = wp.tid()
 
-    stiffness = tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid]
-    spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
-    damping, dpoly = util_misc.tendon_damping_total(
-      tendon_actuatorid,
-      tendon_damping,
-      tendon_dampingpoly,
-      actuator_trntype,
-      actuator_trnid,
-      actuator_damping,
-      actuator_dampingpoly,
-      actuator_gear,
-      worldid,
-      tenid,
-    )
+    has_stiffness = False
+    stiffness = float(0.0)
+    spoly = wp.vec2(0.0)
+    if not dsbl_spring:
+      stiffness = tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid]
+      spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
+      has_stiffness = stiffness != 0.0 or spoly[0] != 0.0 or spoly[1] != 0.0
 
-    has_stiffness = (stiffness != 0.0 or spoly[0] != 0.0 or spoly[1] != 0.0) and not dsbl_spring
-    has_damping = (damping != 0.0 or dpoly[0] != 0.0 or dpoly[1] != 0.0) and not dsbl_damper
+    has_damping = False
+    damping = float(0.0)
+    dpoly = wp.vec2(0.0)
+    if not dsbl_damper:
+      damping, dpoly = util_misc.tendon_damping_total(
+        tendon_actuatorid,
+        tendon_damping,
+        tendon_dampingpoly,
+        actuator_trntype,
+        actuator_trnid,
+        actuator_damping,
+        actuator_dampingpoly,
+        actuator_gear,
+        worldid,
+        tenid,
+      )
+      has_damping = damping != 0.0 or dpoly[0] != 0.0 or dpoly[1] != 0.0
 
     if not has_stiffness and not has_damping:
       return
 
-    rownnz = ten_J_rownnz[tenid]
-    if dofid_sparse >= rownnz:
-      return
-    rowadr = ten_J_rowadr[tenid]
-    sparseid = rowadr + dofid_sparse
-    J = ten_J_in[worldid, sparseid]
-    dofid = ten_J_colind[sparseid]
-
+    frc_spring = float(0.0)
     if has_stiffness:
       # compute spring force along tendon
       length = ten_length_in[worldid, tenid]
@@ -316,16 +326,28 @@ def _spring_damper_tendon_passive(deterministic: bool = False):
       )
       frc_spring = -x * util_misc._poly_force(stiffness, spoly, x, 0)
 
-      # transform to joint torque
-      wp.atomic_add(qfrc_spring_out[worldid], dofid, J * frc_spring)
-
+    frc_damper = float(0.0)
     if has_damping:
       # compute damper force along tendon
       v = ten_velocity_in[worldid, tenid]
       frc_damper = -v * util_misc._poly_force(damping, dpoly, v, 1)
 
-      # transform to joint torque
-      wp.atomic_add(qfrc_damper_out[worldid], dofid, J * frc_damper)
+    if frc_spring == 0.0 and frc_damper == 0.0:
+      return
+
+    # scatter tendon spring and damper forces to joint torques
+    rownnz = ten_J_rownnz[tenid]
+    rowadr = ten_J_rowadr[tenid]
+    for dofid_sparse in range(rownnz):
+      sparseid = rowadr + dofid_sparse
+      J = ten_J_in[worldid, sparseid]
+      if J == 0.0:
+        continue
+      dofid = ten_J_colind[sparseid]
+      if frc_spring != 0.0:
+        wp.atomic_add(qfrc_spring_out[worldid], dofid, J * frc_spring)
+      if frc_damper != 0.0:
+        wp.atomic_add(qfrc_damper_out[worldid], dofid, J * frc_damper)
 
   return kernel
 
@@ -3275,6 +3297,9 @@ def _flex_bend_mul(check_skip: bool, nv: int, deterministic: bool = False):
     vbase = flex_vertadr[f]
     local_edgeid = edgeid - flex_edgeadr[f]
     bend_offset = bendingadr + 17 * local_edgeid
+    # keep only convex stencils so the metric stays SPD
+    if not flex_bend_convex(flex_bending, bend_offset):
+      return
     verts = wp.vec4i(edge[0], edge[1], flap[0], flap[1])
 
     wvec = mat43()
@@ -4769,6 +4794,67 @@ def _add_con_dof(
   return nnz + 1
 
 
+@wp.func
+def _add_body_normal_jac(
+  # Model:
+  body_rootid: wp.array[int],
+  body_weldid: wp.array[int],
+  body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
+  body_simple: wp.array[int],
+  dof_parentid: wp.array[int],
+  efm_con_max_dof: int,
+  # Data in:
+  subtree_com_in: wp.array2d[wp.vec3],
+  cdof_in: wp.array2d[wp.spatial_vector],
+  # In:
+  worldid: int,
+  cid: int,
+  raw_bodyid: int,
+  pos: wp.vec3,
+  normal: wp.vec3,
+  weight: float,
+  nnz: int,
+  # Out:
+  efm_con_dof_out: wp.array2d[int],
+  efm_con_val_out: wp.array2d[float],
+) -> int:
+  if raw_bodyid < 0:
+    return nnz
+  b = body_weldid[raw_bodyid]
+  dofnum = body_dofnum[b]
+  if dofnum == 0:
+    return nnz
+  da = body_dofadr[b]
+  if body_simple[b] == 2:
+    for d in range(dofnum):
+      nnz = _add_con_dof(
+        efm_con_max_dof,
+        cid,
+        da + d,
+        weight * wp.dot(normal, wp.spatial_bottom(cdof_in[worldid, da + d])),
+        nnz,
+        efm_con_dof_out,
+        efm_con_val_out,
+      )
+    return nnz
+  offset = pos - subtree_com_in[worldid, body_rootid[b]]
+  i = da + dofnum - 1
+  while i >= 0:
+    cdof = cdof_in[worldid, i]
+    column = wp.spatial_bottom(cdof) + wp.cross(wp.spatial_top(cdof), offset)
+    nnz = _add_con_dof(efm_con_max_dof, cid, i, weight * wp.dot(normal, column), nnz, efm_con_dof_out, efm_con_val_out)
+    i = dof_parentid[i]
+  return nnz
+
+
+def flex_passive_contact(m: Model) -> bool:
+  """Returns True if passive flex contacts are active."""
+  return bool(
+    m.has_flex_passive and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER))
+  )
+
+
 @wp.kernel
 def _eff_contact_build(
   # Model:
@@ -4777,6 +4863,7 @@ def _eff_contact_build(
   body_weldid: wp.array[int],
   body_dofnum: wp.array[int],
   body_dofadr: wp.array[int],
+  body_simple: wp.array[int],
   jnt_dofadr: wp.array[int],
   dof_parentid: wp.array[int],
   geom_type: wp.array[int],
@@ -4799,7 +4886,6 @@ def _eff_contact_build(
   flex_vert_rodelem: wp.array[int],
   # Data in:
   plastic_in: wp.array2d[float],
-  xquat_in: wp.array2d[wp.quat],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
   flexvert_xpos_in: wp.array2d[wp.vec3],
@@ -4833,17 +4919,10 @@ def _eff_contact_build(
     return
 
   worldid = contact_worldid_in[cid]
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
   geom_pair = contact_geom_in[cid]
   flex_pair = contact_flex_in[cid]
   elem_pair = contact_elem_in[cid]
   vert_pair = contact_vert_in[cid]
-  flex0 = flex_pair[0]
-  flex1 = flex_pair[1]
-  elem0 = elem_pair[0]
-  elem1 = elem_pair[1]
-  vert0 = vert_pair[0]
-  vert1 = vert_pair[1]
 
   k = _flex_contact_stiffness(
     body_weldid,
@@ -4858,12 +4937,12 @@ def _eff_contact_build(
     M_rowadr,
     M_in,
     worldid,
-    flex0,
-    flex1,
-    elem0,
-    elem1,
-    vert0,
-    vert1,
+    flex_pair[0],
+    flex_pair[1],
+    elem_pair[0],
+    elem_pair[1],
+    vert_pair[0],
+    vert_pair[1],
   )
 
   if k <= float(0.0):
@@ -4872,6 +4951,7 @@ def _eff_contact_build(
     efm_con_scale_out[cid] = float(0.0)
     return
 
+  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
   gap = contact_dist_in[cid]
   pos = contact_pos_in[cid]
   normal = contact_frame_in[cid][0]
@@ -4884,54 +4964,94 @@ def _eff_contact_build(
       continue
     vs = vert_pair[side]
     es = elem_pair[side]
+    vert_opp = vert_pair[1 - side] if flex_pair[1 - side] == fs else -1
     sgn = 1.0 if side == 1 else -1.0
     if vs >= 0:
       gv = flex_vertadr[fs] + vs
-      b = body_weldid[flex_vertbodyid[gv]]
-      if body_dofnum[b] == 3:
-        da = body_dofadr[b]
-        n_loc = wp.transpose(math.quat_to_mat(xquat_in[worldid, b])) @ normal
-        for ax in range(3):
-          nnz = _add_con_dof(
-            efm_con_max_dof,
-            cid,
-            da + ax,
-            sgn * n_loc[ax],
-            nnz,
-            efm_con_dof_out,
-            efm_con_val_out,
-          )
+      nnz = _add_body_normal_jac(
+        body_rootid,
+        body_weldid,
+        body_dofnum,
+        body_dofadr,
+        body_simple,
+        dof_parentid,
+        efm_con_max_dof,
+        subtree_com_in,
+        cdof_in,
+        worldid,
+        cid,
+        flex_vertbodyid[gv],
+        pos,
+        normal,
+        sgn,
+        nnz,
+        efm_con_dof_out,
+        efm_con_val_out,
+      )
     elif es >= 0:
       dims = flex_dim[fs]
       nvrts = dims + 1
       bases = flex_elemdataadr[fs] + nvrts * es
-      ws = support.flex_elem_weights(
-        flex_dim,
-        flex_vertadr,
-        flex_elemdataadr,
-        flex_elem,
-        flexvert_xpos_in,
-        fs,
-        es,
-        pos,
-        worldid,
-      )
+      v_s = wp.vec4i(-1, -1, -1, -1)
+      n_s = int(0)
       for j in range(nvrts):
-        gv = flex_vertadr[fs] + flex_elem[bases + j]
-        b = body_weldid[flex_vertbodyid[gv]]
-        if body_dofnum[b] == 3:
-          da = body_dofadr[b]
-          n_loc = wp.transpose(math.quat_to_mat(xquat_in[worldid, b])) @ normal
-          for ax in range(3):
-            nnz = _add_con_dof(
-              efm_con_max_dof,
-              cid,
-              da + ax,
-              sgn * ws[j] * n_loc[ax],
-              nnz,
-              efm_con_dof_out,
-              efm_con_val_out,
-            )
+        v_local = flex_elem[bases + j]
+        if vert_opp >= 0 and v_local == vert_opp:
+          continue
+        v_s[n_s] = flex_vertadr[fs] + v_local
+        n_s += 1
+      if n_s == nvrts:
+        ws = support.flex_elem_weights(
+          flex_dim,
+          flex_vertadr,
+          flex_elemdataadr,
+          flex_elem,
+          flexvert_xpos_in,
+          fs,
+          es,
+          pos,
+          worldid,
+        )
+      elif n_s == 1:
+        ws = wp.vec4(1.0, 0.0, 0.0, 0.0)
+      elif n_s == 2:
+        x0 = flexvert_xpos_in[worldid, v_s[0]]
+        x1 = flexvert_xpos_in[worldid, v_s[1]]
+        ab = x1 - x0
+        len2 = wp.dot(ab, ab)
+        t = wp.clamp(math.safe_div(wp.dot(pos - x0, ab), len2), 0.0, 1.0)
+        ws = wp.vec4(1.0 - t, t, 0.0, 0.0)
+      elif n_s == 3:
+        wt = support.tri_weights(
+          pos,
+          flexvert_xpos_in[worldid, v_s[0]],
+          flexvert_xpos_in[worldid, v_s[1]],
+          flexvert_xpos_in[worldid, v_s[2]],
+        )
+        ws = wp.vec4(wt[0], wt[1], wt[2], 0.0)
+      else:
+        ws = wp.vec4(0.0, 0.0, 0.0, 0.0)
+      for j in range(n_s):
+        nnz = _add_body_normal_jac(
+          body_rootid,
+          body_weldid,
+          body_dofnum,
+          body_dofadr,
+          body_simple,
+          dof_parentid,
+          efm_con_max_dof,
+          subtree_com_in,
+          cdof_in,
+          worldid,
+          cid,
+          flex_vertbodyid[v_s[j]],
+          pos,
+          normal,
+          sgn * ws[j],
+          nnz,
+          efm_con_dof_out,
+          efm_con_val_out,
+        )
 
     (
       dof_twist,
@@ -5048,11 +5168,7 @@ def build_efm_contact(
   efm_con_scale = wp.zeros(d.naconmax, dtype=float)
   efm_con_force = wp.zeros(d.naconmax, dtype=float)
   efm_con_nnz = wp.zeros(d.naconmax, dtype=int)
-  if (
-    rebuild
-    and m.has_flex_passive
-    and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER))
-  ):
+  if rebuild and flex_passive_contact(m):
     wp.launch(
       _eff_contact_build,
       dim=d.naconmax,
@@ -5062,6 +5178,7 @@ def build_efm_contact(
         m.body_weldid,
         m.body_dofnum,
         m.body_dofadr,
+        m.body_simple,
         m.jnt_dofadr,
         m.dof_parentid,
         m.geom_type,
@@ -5083,7 +5200,6 @@ def build_efm_contact(
         m.flex_elem_rodedge,
         m.flex_vert_rodelem,
         d.plastic,
-        d.xquat,
         d.subtree_com,
         d.cdof,
         d.flexvert_xpos,
@@ -5188,38 +5304,37 @@ def passive(m: Model, d: Data):
   )
 
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-  if m.ntendon:
-    wp.launch(
-      _spring_damper_tendon_passive(det_atomics),
-      dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
-      inputs=[
-        m.tendon_actuatorid,
-        m.tendon_plasticadr,
-        m.ten_J_rownnz,
-        m.ten_J_rowadr,
-        m.ten_J_colind,
-        m.tendon_stiffness,
-        m.tendon_stiffnesspoly,
-        m.tendon_damping,
-        m.tendon_dampingpoly,
-        m.tendon_lengthspring,
-        m.actuator_trntype,
-        m.actuator_trnid,
-        m.actuator_damping,
-        m.actuator_dampingpoly,
-        m.actuator_gear,
-        d.plastic,
-        d.ten_J,
-        d.ten_length,
-        d.ten_velocity,
-        dsbl_spring,
-        dsbl_damper,
-      ],
-      outputs=[
-        d.qfrc_spring,
-        d.qfrc_damper,
-      ],
-    )
+  wp.launch(
+    _spring_damper_tendon_passive(m.max_ten_J_rownnz if det_atomics else 0, det_atomics),
+    dim=(d.nworld, m.ntendon),
+    inputs=[
+      m.tendon_actuatorid,
+      m.tendon_plasticadr,
+      m.ten_J_rownnz,
+      m.ten_J_rowadr,
+      m.ten_J_colind,
+      m.tendon_stiffness,
+      m.tendon_stiffnesspoly,
+      m.tendon_damping,
+      m.tendon_dampingpoly,
+      m.tendon_lengthspring,
+      m.actuator_trntype,
+      m.actuator_trnid,
+      m.actuator_damping,
+      m.actuator_dampingpoly,
+      m.actuator_gear,
+      d.plastic,
+      d.ten_J,
+      d.ten_length,
+      d.ten_velocity,
+      dsbl_spring,
+      dsbl_damper,
+    ],
+    outputs=[
+      d.qfrc_spring,
+      d.qfrc_damper,
+    ],
+  )
 
   if not (dsbl_spring and dsbl_damper):
     wp.launch(
@@ -5473,7 +5588,7 @@ def passive(m: Model, d: Data):
         use_timestep=False,
         snh_only=True,
       )
-    if m.opt.integrator == IntegratorType.DISCRETE and m.has_flex_passive:
+    if m.opt.integrator == IntegratorType.DISCRETE and flex_passive_contact(m):
       efm_con_dof, efm_con_val, _, efm_con_force, efm_con_nnz = build_efm_contact(m, d, rebuild=True)
       wp.launch(
         _eff_contact_force(m.efm_con_max_dof if det_atomics else 0, det_atomics),

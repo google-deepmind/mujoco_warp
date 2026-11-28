@@ -55,7 +55,7 @@ def _ray_map(pos: wp.vec3, mat: wp.mat33, pnt: wp.vec3, vec: wp.vec3) -> Tuple[w
 
 
 @wp.func
-def _ray_eliminate(
+def ray_eliminate(
   # Model:
   body_weldid: wp.array[int],
   geom_bodyid: wp.array[int],
@@ -584,7 +584,7 @@ def ray_hfield(
   lpnt, lvec = _ray_map(pos, mat, pnt, vec)
 
   # construct basis vectors of normal plane
-  b0, b1 = _orthogonal_basis(lvec)
+  b0, b1 = _orthogonal_basis(wp.normalize(lvec))
 
   # find ray segment intersecting top box
   seg = wp.vec2(0.0, top_intersect)
@@ -713,7 +713,7 @@ def ray_mesh(
   pnt, vec = _ray_map(pos, mat, pnt, vec)
 
   # compute orthogonal basis vectors
-  b0, b1 = _orthogonal_basis(vec)
+  b0, b1 = _orthogonal_basis(wp.normalize(vec))
 
   x = float(-1.0)
   normal = wp.vec3()
@@ -895,7 +895,7 @@ def _ray_geom_mesh(
   bodyexclude: int,
   geomid: int,
 ) -> Tuple[float, wp.vec3]:
-  if not _ray_eliminate(
+  if not ray_eliminate(
     body_weldid,
     geom_bodyid,
     geom_matid[worldid % geom_matid.shape[0]],
@@ -1082,7 +1082,7 @@ def _ray_geom_mesh_bvh(
   hfield_bvh_id: wp.array[wp.uint64],
   min_dist: float,
 ) -> Tuple[float, wp.vec3]:
-  if not _ray_eliminate(
+  if not ray_eliminate(
     body_weldid,
     geom_bodyid,
     geom_matid[worldid % geom_matid.shape[0]],
@@ -1297,10 +1297,9 @@ def rays(
       indicates no intersection.
     normal: Output array for normals at intersection points, shape (nworld, nray).
     rc: Optional Render context containing BVH information for BVH accelerated ray
-      intersections.
+      intersections. With the "optix" backend, rays are cast with OptiX, which cannot be
+      recorded into CUDA graphs.
   """
-  if rc is not None and rc.backend != "warp":
-    raise ValueError(f"rays() requires a render context with backend='warp', got {rc.backend!r}")
   assert pnt.shape[0] in (1, d.nworld), f"pnt.shape[0] must be 1 or d.nworld ({d.nworld}), got {pnt.shape[0]}"
   assert pnt.shape == vec.shape, f"pnt.shape {pnt.shape} != vec.shape {vec.shape}"
   assert bodyexclude.shape[0] == pnt.shape[1], f"bodyexclude length {bodyexclude.shape[0]} != nray {pnt.shape[1]}"
@@ -1346,6 +1345,40 @@ def rays(
       ],
       block_dim=m.block_dim.ray,
     )
+  elif rc.backend == "optix":
+    # render_optix imports this module, so import it here.
+    from mujoco_warp._src import render_optix  # noqa: PLC0415
+
+    if rc.optix.ray_pipeline is None:
+      rc.optix.ray_pipeline = render_optix.create_ray_pipeline(rc.optix, rc.geom_ray_types)
+    if d.nworld and pnt.shape[1]:  # OptiX rejects empty launches
+      render_optix.get_wo().launch(
+        rc.optix.ray_pipeline,
+        (d.nworld, pnt.shape[1]),
+        inputs=[
+          m.body_weldid,
+          m.geom_type,
+          m.geom_bodyid,
+          m.geom_dataid,
+          m.geom_matid,
+          m.geom_group,
+          m.geom_size,
+          m.geom_rgba,
+          m.mat_rgba,
+          d.geom_xpos,
+          d.geom_xquat,
+          pnt,
+          vec,
+          geomgroup,
+          flg_static,
+          bodyexclude,
+          rc.bvh_id,
+          rc.mesh_bvh_id,
+          rc.mesh_bvh_rot,
+          rc.hfield_bvh_id,
+        ],
+        outputs=[dist, geomid, normal],
+      )
   else:
     wp.launch(
       _ray_bvh,

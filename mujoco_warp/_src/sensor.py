@@ -21,9 +21,11 @@ from mujoco_warp._src import history
 from mujoco_warp._src import math
 from mujoco_warp._src import ray
 from mujoco_warp._src import smooth
+from mujoco_warp._src import sort
 from mujoco_warp._src import support
 from mujoco_warp._src.collision_sdf import get_sdf_params
 from mujoco_warp._src.collision_sdf import sdf
+from mujoco_warp._src.island import is_repeated_fixed_support_efc
 from mujoco_warp._src.types import MJ_MAXCONPAIR
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
@@ -431,6 +433,9 @@ def _limit_pos(
       ConstraintType.LIMIT_JOINT if sensor_type[sensorid] == SensorType.JOINTLIMITPOS else ConstraintType.LIMIT_TENDON
     )
     if efc_type_in[worldid, efcid] == limit_type:
+      # report the first row, the lower limit when both sides are active
+      if is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid):
+        return
       val = efc_pos_in[worldid, efcid] - efc_margin_in[worldid, efcid]
       _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, val, sensordata_out[worldid])
 
@@ -679,8 +684,11 @@ def _sensor_pos(
   subtree_com_in: wp.array2d[wp.vec3],
   ten_length_in: wp.array2d[float],
   actuator_length_in: wp.array2d[float],
+  contact_dist_in: wp.array[float],
+  contact_pos_in: wp.array[wp.vec3],
+  contact_frame_in: wp.array[wp.mat33],
   # In:
-  sensor_collision_in: wp.array4d[float],
+  sensor_collision_in: wp.array2d[wp.uint64],
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
@@ -805,25 +813,18 @@ def _sensor_pos(
         else:
           pairid = math.upper_tri_index(ngeom, geomid2, geomid1)
         collisionid = nxn_pairid[pairid][1]
-
-        for i in range(8):
-          dist_new = sensor_collision_in[worldid, collisionid, i, 0]
+        packed = sensor_collision_in[worldid, collisionid]
+        if packed != ~wp.uint64(0):
+          conid = int(wp.uint32(packed))
+          dist_new = contact_dist_in[conid]
 
           if dist_new < dist:
             dist = dist_new
 
             if sensortype == SensorType.GEOMFROMTO:
-              pos = wp.vec3(
-                sensor_collision_in[worldid, collisionid, i, 1],
-                sensor_collision_in[worldid, collisionid, i, 2],
-                sensor_collision_in[worldid, collisionid, i, 3],
-              )
+              pos = contact_pos_in[conid]
             if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
-              normal = wp.vec3(
-                sensor_collision_in[worldid, collisionid, i, 4],
-                sensor_collision_in[worldid, collisionid, i, 5],
-                sensor_collision_in[worldid, collisionid, i, 6],
-              )
+              normal = contact_frame_in[conid][0]
 
             if geom_type[geomid1] > geom_type[geomid2]:
               flip = True
@@ -898,15 +899,12 @@ def _sensor_collision(
   nxn_pairid: wp.array[wp.vec2i],
   # Data in:
   contact_dist_in: wp.array[float],
-  contact_pos_in: wp.array[wp.vec3],
-  contact_frame_in: wp.array[wp.mat33],
   contact_geom_in: wp.array[wp.vec2i],
   contact_worldid_in: wp.array[int],
   contact_type_in: wp.array[int],
-  contact_geomcollisionid_in: wp.array[int],
   nacon_in: wp.array[int],
   # Out:
-  sensor_collision_out: wp.array4d[float],
+  sensor_collision_out: wp.array2d[wp.uint64],
 ):
   conid = wp.tid()
 
@@ -922,21 +920,13 @@ def _sensor_collision(
   else:
     pairid = math.upper_tri_index(ngeom, geom[1], geom[0])
 
-  worldid = contact_worldid_in[conid]
   collisionid = nxn_pairid[pairid][1]
-  geomcollisionid = contact_geomcollisionid_in[conid]
 
-  dist = contact_dist_in[conid]
-  pos = contact_pos_in[conid]
-  frame = contact_frame_in[conid]
-
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 0] = dist
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 1] = pos[0]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 2] = pos[1]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 3] = pos[2]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 4] = frame[0, 0]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 5] = frame[0, 1]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 6] = frame[0, 2]
+  # Pack ordered float32 distance bits above unique contact index for exact min reduction.
+  worldid = contact_worldid_in[conid]
+  dist_key = sort.float_key(wp.cast(contact_dist_in[conid], wp.uint32))
+  key = (wp.uint64(dist_key) << wp.uint64(32)) | wp.uint64(conid)
+  wp.atomic_min(sensor_collision_out, worldid, collisionid, key)  # kernel_analyzer: ignore[atomic]
 
 
 @event_scope
@@ -1017,7 +1007,7 @@ def sensor_pos(m: Model, d: Data):
     energy_vel(m, d)
 
   # collision sensors (distance, normal, fromto)
-  sensor_collision = wp.full((d.nworld, m.nsensorcollision, 8, 7), 1.0e32, dtype=float)
+  sensor_collision = wp.full((d.nworld, m.nsensorcollision), 0xFFFFFFFFFFFFFFFF, dtype=wp.uint64)
   if m.nsensorcollision:
     wp.launch(
       _sensor_collision,
@@ -1026,12 +1016,9 @@ def sensor_pos(m: Model, d: Data):
         m.ngeom,
         m.nxn_pairid,
         d.contact.dist,
-        d.contact.pos,
-        d.contact.frame,
         d.contact.geom,
         d.contact.worldid,
         d.contact.type,
-        d.contact.geomcollisionid,
         d.nacon,
       ],
       outputs=[sensor_collision],
@@ -1083,6 +1070,9 @@ def sensor_pos(m: Model, d: Data):
       d.subtree_com,
       d.ten_length,
       d.actuator_length,
+      d.contact.dist,
+      d.contact.pos,
+      d.contact.frame,
       sensor_collision,
     ],
     outputs=[d.sensordata],
@@ -1220,6 +1210,9 @@ def _limit_vel(
       ConstraintType.LIMIT_JOINT if sensor_type[sensorid] == SensorType.JOINTLIMITVEL else ConstraintType.LIMIT_TENDON
     )
     if efc_type_in[worldid, efcid] == limit_type:
+      # report the first row, the lower limit when both sides are active
+      if is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid):
+        return
       _write_scalar(
         sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_vel_in[worldid, efcid], sensordata_out[worldid]
       )
@@ -1917,6 +1910,9 @@ def _limit_frc(
       ConstraintType.LIMIT_JOINT if sensor_type[sensorid] == SensorType.JOINTLIMITFRC else ConstraintType.LIMIT_TENDON
     )
     if efc_type_in[worldid, efcid] == limit_type:
+      # report the first row, the lower limit when both sides are active
+      if is_repeated_fixed_support_efc(efc_type_in, efc_id_in, worldid, efcid):
+        return
       _write_scalar(
         sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, efc_force_in[worldid, efcid], sensordata_out[worldid]
       )
@@ -2473,7 +2469,6 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
     contact_type_in: wp.array[int],
     contact_adhesion_in: wp.array[float],
     efc_force_in: wp.array2d[float],
-    njmax_in: int,
     nacon_in: wp.array[int],
     # In:
     sensor_contact_adr_in: wp.array[int],
@@ -2580,7 +2575,6 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
         contact_efc_address_in,
         contact_adhesion_in,
         efc_force_in,
-        njmax_in,
         nacon_in,
         worldid,
         contactid,
@@ -2651,7 +2645,6 @@ def _sensor_contact(
   contact_efc_address_in: wp.array2d[int],
   contact_adhesion_in: wp.array[float],
   efc_force_in: wp.array2d[float],
-  njmax_in: int,
   nacon_in: wp.array[int],
   # In:
   sensor_contact_adr_in: wp.array[int],
@@ -2721,7 +2714,6 @@ def _sensor_contact(
         contact_efc_address_in,
         contact_adhesion_in,
         efc_force_in,
-        njmax_in,
         nacon_in,
         worldid,
         cid,
@@ -2816,7 +2808,6 @@ def _sensor_contact(
           contact_efc_address_in,
           contact_adhesion_in,
           efc_force_in,
-          njmax_in,
           nacon_in,
           worldid,
           cid,
@@ -2927,7 +2918,6 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
       d.contact.type,
       d.contact.adhesion,
       d.efc.force,
-      d.njmax,
       d.nacon,
       sensor_contact_adr,
     ],
@@ -2971,7 +2961,6 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
       d.contact.efc_address,
       d.contact.adhesion,
       d.efc.force,
-      d.njmax,
       d.nacon,
       sensor_contact_adr,
       sensor_contact_nmatch,

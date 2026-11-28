@@ -802,6 +802,7 @@ def ccd_kernel_builder(
     multiccd_idx2_in: wp.array2d[int],
     multiccd_n1_in: wp.array2d[wp.vec3],
     multiccd_n2_in: wp.array2d[wp.vec3],
+    multiccd_edge_in: wp.array2d[wp.vec3],
     multiccd_endvert_in: wp.array2d[wp.vec3],
     multiccd_face1_in: wp.array2d[wp.vec3],
     multiccd_face2_in: wp.array2d[wp.vec3],
@@ -947,6 +948,7 @@ def ccd_kernel_builder(
           multiccd_idx2_in[ccdid],
           multiccd_n1_in[ccdid],
           multiccd_n2_in[ccdid],
+          multiccd_edge_in[ccdid],
           multiccd_endvert_in[ccdid],
           multiccd_face1_in[ccdid],
           multiccd_face2_in[ccdid],
@@ -1098,6 +1100,7 @@ def ccd_kernel_builder(
     multiccd_idx2_in: wp.array2d[int],
     multiccd_n1_in: wp.array2d[wp.vec3],
     multiccd_n2_in: wp.array2d[wp.vec3],
+    multiccd_edge_in: wp.array2d[wp.vec3],
     multiccd_endvert_in: wp.array2d[wp.vec3],
     multiccd_face1_in: wp.array2d[wp.vec3],
     multiccd_face2_in: wp.array2d[wp.vec3],
@@ -1199,6 +1202,7 @@ def ccd_kernel_builder(
         multiccd_idx2_in,
         multiccd_n1_in,
         multiccd_n2_in,
+        multiccd_edge_in,
         multiccd_endvert_in,
         multiccd_face1_in,
         multiccd_face2_in,
@@ -1308,6 +1312,7 @@ def prepare_convex_context(m: Model, d: Data, ctx: CollisionContext, collision_t
   ctx.multiccd_idx2 = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=int)
   ctx.multiccd_n1 = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=wp.vec3)
   ctx.multiccd_n2 = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=wp.vec3)
+  ctx.multiccd_edge = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=wp.vec3)
   ctx.multiccd_endvert = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=wp.vec3)
   ctx.multiccd_face1 = wp.empty(shape=(d.naccdmax, npolygonmax), dtype=wp.vec3)
   ctx.multiccd_face2 = wp.empty(shape=(d.naccdmax, npolygonmax), dtype=wp.vec3)
@@ -1514,6 +1519,7 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
           ctx.multiccd_idx2,
           ctx.multiccd_n1,
           ctx.multiccd_n2,
+          ctx.multiccd_edge,
           ctx.multiccd_endvert,
           ctx.multiccd_face1,
           ctx.multiccd_face2,

@@ -482,6 +482,64 @@ class SetConstTest(parameterized.TestCase):
     for f in ("body_invweight0", "tendon_invweight0", "actuator_acc0"):
       _assert_eq(getattr(m, f).numpy()[0], getattr(mjm, f), f"{f}_nv0")
 
+  @parameterized.parameters(1, 2)
+  def test_set_const_body_invweight0_components(self, nworld):
+    """Test a zero translational or rotational body inverse weight stays zero, as in mj_setConst."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+    <mujoco>
+      <worldbody>
+        <body name="hinge">
+          <joint type="hinge"/>
+          <inertial pos="0 0 0" mass="2" diaginertia="1 2 3"/>
+        </body>
+        <body name="ball">
+          <joint type="ball"/>
+          <inertial pos="0 0 0" mass="2" diaginertia="1 2 3"/>
+        </body>
+        <body name="slide">
+          <joint type="slide" axis="1 0 0"/>
+          <joint type="slide" axis="0 1 0"/>
+          <joint type="slide" axis="0 0 1"/>
+          <inertial pos="0 0 0" mass="2" diaginertia="1 2 3"/>
+        </body>
+        <body name="free">
+          <freejoint/>
+          <inertial pos="0 0 0" mass="2" diaginertia="1 2 3"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """,
+      nworld=nworld,
+      batch_sizes={
+        "body_mass": nworld,
+        "body_subtreemass": nworld,
+        "body_inertia": nworld,
+        "body_invweight0": nworld,
+      },
+    )
+    # centered hinge and ball: no translational weight; three slides: no rotational weight
+    expected = np.array([[0, 0], [0, 1 / 9], [0, 11 / 18], [1 / 2, 0], [1 / 2, 11 / 18]])
+    np.testing.assert_allclose(mjm.body_invweight0, expected, rtol=1e-6, atol=0)
+
+    scales = np.arange(1, nworld + 1, dtype=float)
+    body_mass = scales[:, None] * mjm.body_mass[None, :]
+    body_inertia = scales[:, None, None] * mjm.body_inertia[None, :, :]
+    m.body_mass.assign(body_mass)
+    m.body_inertia.assign(body_inertia)
+    m.body_invweight0.fill_(wp.inf)
+    mjwarp.set_const(m, d)
+
+    body_invweight0 = m.body_invweight0.numpy()
+    for w in range(nworld):
+      mjm.body_mass[:] = body_mass[w]
+      mjm.body_inertia[:] = body_inertia[w]
+      mujoco.mj_setConst(mjm, mjd)
+      _assert_eq(body_invweight0[w], mjm.body_invweight0, f"body_invweight0_world_{w}")
+      np.testing.assert_array_equal(body_invweight0[w] == 0.0, expected == 0.0)
+    if nworld == 2:
+      self.assertFalse(np.allclose(body_invweight0[0], body_invweight0[1]))
+
   def test_set_const_preserves_qpos(self):
     """Test that qpos is restored after set_const."""
     mjm, mjd, m, d = test_data.fixture(
@@ -995,6 +1053,35 @@ class SetConstTest(parameterized.TestCase):
     expected_hi = mjm.tendon_range[0, 1]
     np.testing.assert_allclose(lr_np[0, 0, 0], expected_lo, atol=1e-5)
     np.testing.assert_allclose(lr_np[0, 0, 1], expected_hi, atol=1e-5)
+
+  @parameterized.parameters(
+    '<dcmotor joint="j1" gear="2" motorconst="1" resistance="1" input="none"/>',
+    '<pid joint="j1" gear="2" input="pos vel ff" kp="10"/>',
+  )
+  def test_set_length_range_nu_mismatch(self, actuator):
+    """Test set_length_range when nu != nactuator."""
+    mjm, _, m, d = test_data.fixture(
+      xml=f"""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j1" limited="true" range="-90 90"/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          {actuator}
+        </actuator>
+      </mujoco>
+      """
+    )
+    self.assertNotEqual(m.nu, m.nactuator)
+
+    m.actuator_lengthrange.fill_(wp.inf)
+    set_length_range(m, d)
+
+    lr_np = m.actuator_lengthrange.numpy()
+    np.testing.assert_allclose(lr_np[0, 0], mjm.jnt_range[0] * 2.0, rtol=1e-5, atol=1e-5)
 
   @parameterized.parameters(1, 2)
   def test_set_const_geom_bound(self, nworld):

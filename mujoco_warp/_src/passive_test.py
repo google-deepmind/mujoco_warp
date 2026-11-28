@@ -1038,6 +1038,367 @@ class PassiveTest(parameterized.TestCase):
       _assert_eq(d.qpos.numpy()[0], mjd.qpos, f"interp_qpos_step_{step_idx}")
       _assert_eq(d.qvel.numpy()[0], mjd.qvel, f"interp_qvel_step_{step_idx}")
 
+  @parameterized.parameters(1, 2)
+  def test_gravcomp_runtime_update(self, nworld):
+    """Tests runtime updates to body_gravcomp and gravity inside a captured graph."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="1 2 -3">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <body>
+            <joint name="j0" axis="0 1 0" actuatorgravcomp="true"/>
+            <geom size=".1" pos=".2 0 0"/>
+            <body pos=".3 0 0">
+              <joint type="ball"/>
+              <joint type="slide" axis="1 0 0"/>
+              <geom size=".1" pos=".1 .1 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <actuator>
+          <motor joint="j0"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+      batch_sizes={"body_gravcomp": nworld},
+    )
+
+    with wp.ScopedCapture() as capture:
+      mjw.set_const(m, d)
+      mjw.passive(m, d)
+      mjw.fwd_actuation(m, d)
+
+    for arr in (d.qfrc_gravcomp, d.qfrc_passive, d.qfrc_actuator):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+    np.testing.assert_array_equal(d.qfrc_gravcomp.numpy(), 0.0)
+
+    gravcomp = np.tile(np.array([0.0, 0.5, 1.0], dtype=np.float32), (nworld, 1))
+    if nworld == 2:
+      gravcomp[1] = [0.0, 1.0, 0.25]
+    gravity = np.array([[-2.0, 1.0, -4.0]], dtype=np.float32)
+    m.body_gravcomp.assign(gravcomp)
+    m.opt.gravity.assign(gravity)
+
+    for arr in (d.qfrc_gravcomp, d.qfrc_passive, d.qfrc_actuator):
+      arr.fill_(wp.inf)
+    wp.capture_launch(capture.graph)
+
+    qfrc_gravcomp = d.qfrc_gravcomp.numpy()
+    qfrc_passive = d.qfrc_passive.numpy()
+    qfrc_actuator = d.qfrc_actuator.numpy()
+    mjm.opt.gravity[:] = gravity[0]
+    for w in range(nworld):
+      mjm.body_gravcomp[:] = gravcomp[w]
+      mujoco.mj_setConst(mjm, mjd)
+      mujoco.mj_passive(mjm, mjd)
+      mujoco.mj_fwdActuation(mjm, mjd)
+      _assert_eq(qfrc_gravcomp[w], mjd.qfrc_gravcomp, f"qfrc_gravcomp_world_{w}")
+      _assert_eq(qfrc_passive[w], mjd.qfrc_passive, f"qfrc_passive_world_{w}")
+      _assert_eq(qfrc_actuator[w], mjd.qfrc_actuator, f"qfrc_actuator_world_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_gravcomp[0], qfrc_gravcomp[1]))
+
+  @parameterized.product(
+    mode=("pinned", "carrier", "reordered_slides", "hinge_vert"),
+    nworld=(1, 2),
+  )
+  def test_flex_passive_pinned_carrier_jacobian(self, mode, nworld):
+    """Verify passive flex contact on pinned, carrier, reordered-slide, and hinge vertices."""
+    if mode == "pinned":
+      mjm, _, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option integrator="discrete" solver="CG" jacobian="sparse" timestep="0.001"/>
+          <worldbody>
+            <geom pos="0.01 -0.02 -0.03" size="0.05"/>
+            <body name="v0" pos="0 -0.05 0.015">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+            </body>
+            <body name="v1" pos="0.05 0.05 0.002">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+            <body name="v2" pos="-0.05 0.05 0.008">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+          </worldbody>
+          <deformable>
+            <flex name="cloth" body="v0 v1 v2" element="0 1 2" radius="0.01">
+              <contact passive="true" selfcollide="none"/>
+              <elasticity young="500" thickness="0.005" elastic2d="stretch" damping="0.05"/>
+            </flex>
+          </deformable>
+        </mujoco>
+        """,
+        nworld=nworld,
+      )
+    elif mode == "carrier":
+      mjm, _, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option integrator="discrete" solver="CG" jacobian="sparse" timestep="0.001"/>
+          <worldbody>
+            <geom pos="0.01 -0.02 -0.03" size="0.05"/>
+            <body name="carrier" pos="0 0 0.05">
+              <inertial pos="0 0 0" mass="0.2" diaginertia="1e-3 1e-3 1e-3"/>
+              <joint name="hinge" axis="0 1 0"/>
+              <body name="v0" pos="0 -0.05 -0.035">
+                <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+                <joint type="slide" axis="1 0 0"/>
+                <joint type="slide" axis="0 1 0"/>
+                <joint type="slide" axis="0 0 1"/>
+              </body>
+            </body>
+            <body name="v1" pos="0.05 0.05 0.002">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+            <body name="v2" pos="-0.05 0.05 0.008">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+          </worldbody>
+          <deformable>
+            <flex name="cloth" body="v0 v1 v2" element="0 1 2" radius="0.01">
+              <contact passive="true" selfcollide="none"/>
+              <elasticity young="500" thickness="0.005" elastic2d="stretch" damping="0.05"/>
+            </flex>
+          </deformable>
+        </mujoco>
+        """,
+        nworld=nworld,
+      )
+    elif mode == "reordered_slides":
+      mjm, _, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option integrator="discrete" solver="CG" jacobian="sparse" timestep="0.001"/>
+          <worldbody>
+            <geom pos="0.01 -0.02 -0.03" size="0.05"/>
+            <body name="v0" pos="0 -0.05 0.015">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="-1 0 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+            <body name="v1" pos="0.05 0.05 0.002">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+            <body name="v2" pos="-0.05 0.05 0.008">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+          </worldbody>
+          <deformable>
+            <flex name="cloth" body="v0 v1 v2" element="0 1 2" radius="0.01">
+              <contact passive="true" selfcollide="none"/>
+              <elasticity young="500" thickness="0.005" elastic2d="stretch" damping="0.05"/>
+            </flex>
+          </deformable>
+        </mujoco>
+        """,
+        nworld=nworld,
+      )
+    else:
+      mjm, _, m, d = test_data.fixture(
+        xml="""
+        <mujoco>
+          <option integrator="discrete" solver="CG" jacobian="sparse" timestep="0.001"/>
+          <worldbody>
+            <geom pos="0.01 -0.02 -0.03" size="0.05"/>
+            <body name="v0" pos="0 -0.05 0.015">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint pos="0.03 0 0" axis="1 1 0"/>
+            </body>
+            <body name="v1" pos="0.05 0.05 0.002">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+            <body name="v2" pos="-0.05 0.05 0.008">
+              <inertial pos="0 0 0" mass="0.1" diaginertia="1e-4 1e-4 1e-4"/>
+              <joint type="slide" axis="1 0 0"/>
+              <joint type="slide" axis="0 1 0"/>
+              <joint type="slide" axis="0 0 1"/>
+            </body>
+          </worldbody>
+          <deformable>
+            <flex name="cloth" body="v0 v1 v2" element="0 1 2" radius="0.01">
+              <contact passive="true" selfcollide="none"/>
+              <elasticity young="500" thickness="0.005" elastic2d="stretch" damping="0.05"/>
+            </flex>
+          </deformable>
+        </mujoco>
+        """,
+        nworld=nworld,
+      )
+    qpos = d.qpos.numpy()
+    qvel = d.qvel.numpy()
+    qvel[0, :] = -0.2
+    if nworld == 2:
+      qpos[1, 0] = -0.002
+      qvel[1, :] = -0.4
+    d.qpos.assign(qpos)
+    d.qvel.assign(qvel)
+
+    d.qfrc_spring.fill_(wp.inf)
+    d.qfrc_damper.fill_(wp.inf)
+    d.qacc.fill_(wp.inf)
+    mjw.forward(m, d)
+
+    qfrc_spring = d.qfrc_spring.numpy()
+    qfrc_damper = d.qfrc_damper.numpy()
+    qacc = d.qacc.numpy()
+    mjds = [mujoco.MjData(mjm) for _ in range(nworld)]
+    for w in range(nworld):
+      mjds[w].qpos[:] = qpos[w]
+      mjds[w].qvel[:] = qvel[w]
+      mujoco.mj_forward(mjm, mjds[w])
+      self.assertGreater(abs(float(mjds[w].qfrc_spring[0])), 0.1)
+      _assert_eq(qfrc_spring[w], mjds[w].qfrc_spring, f"qfrc_spring_{mode}_{w}")
+      _assert_eq(qfrc_damper[w], mjds[w].qfrc_damper, f"qfrc_damper_{mode}_{w}")
+      _assert_eq(qacc[w], mjds[w].qacc, f"qacc_{mode}_{w}")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qfrc_spring[0], qfrc_spring[1]))
+
+  @parameterized.parameters(1, 2)
+  def test_tendon_passive_runtime_mutation(self, nworld):
+    """Tests runtime mutation of tendon stiffness/damping from zero without set_const."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option gravity="0 0 -10" integrator="implicitfast">
+          <flag contact="disable"/>
+        </option>
+        <worldbody>
+          <site name="s0" pos="0 0 .5"/>
+          <body>
+            <joint name="j0" axis="0 1 0"/>
+            <geom type="capsule" size=".05" fromto="0 0 0 .3 0 0"/>
+            <site name="s1" pos=".2 0 .05"/>
+            <body pos=".3 0 0">
+              <joint name="j1" axis="0 1 0"/>
+              <geom size=".05" pos=".2 0 0"/>
+              <site name="s2" pos=".1 .05 0"/>
+            </body>
+          </body>
+        </worldbody>
+        <tendon>
+          <spatial name="t0">
+            <site site="s0"/>
+            <site site="s1"/>
+          </spatial>
+          <spatial name="t1">
+            <site site="s0"/>
+            <site site="s2"/>
+          </spatial>
+        </tendon>
+        <actuator>
+          <motor tendon="t0" gear="2"/>
+          <motor tendon="t1" gear="0" damping="0.5"/>
+        </actuator>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+
+    qpos_np = np.array([[0.3, -0.4], [-0.5, 0.7]][:nworld], dtype=np.float32)
+    qvel_np = np.array([[0.8, -0.5], [-0.6, 0.9]][:nworld], dtype=np.float32)
+    d.qpos.assign(qpos_np)
+    d.qvel.assign(qvel_np)
+
+    # Capture step once (exercises passive and deriv_smooth_vel); mutate without set_const
+    with wp.ScopedCapture() as capture:
+      mjw.step(m, d)
+
+    def run_and_check(label):
+      d.qpos.assign(qpos_np)
+      d.qvel.assign(qvel_np)
+      for arr in (d.qfrc_spring, d.qfrc_damper, d.qfrc_passive, d.qacc):
+        arr.fill_(wp.inf)
+      wp.capture_launch(capture.graph)
+      qfrc_spring = d.qfrc_spring.numpy().copy()
+      qfrc_damper = d.qfrc_damper.numpy().copy()
+      qfrc_passive = d.qfrc_passive.numpy().copy()
+      qacc = d.qacc.numpy().copy()
+      qvel = d.qvel.numpy().copy()
+      for w in range(nworld):
+        mjd.qpos[:] = qpos_np[w]
+        mjd.qvel[:] = qvel_np[w]
+        mujoco.mj_step(mjm, mjd)
+        _assert_eq(qfrc_spring[w], mjd.qfrc_spring, f"qfrc_spring_{label}_w{w}")
+        _assert_eq(qfrc_damper[w], mjd.qfrc_damper, f"qfrc_damper_{label}_w{w}")
+        _assert_eq(qfrc_passive[w], mjd.qfrc_passive, f"qfrc_passive_{label}_w{w}")
+        _assert_eq(qacc[w], mjd.qacc, f"qacc_{label}_w{w}")
+        _assert_eq(qvel[w], mjd.qvel, f"qvel_{label}_w{w}")
+      return qfrc_spring, qfrc_damper, qacc, qvel
+
+    # Zero stiffness and damping
+    qfrc_spring_zero, qfrc_damper_zero, qacc_zero, qvel_zero = run_and_check("zero")
+    np.testing.assert_allclose(qfrc_spring_zero, 0.0, atol=1e-6)
+    np.testing.assert_allclose(qfrc_damper_zero, 0.0, atol=1e-6)
+
+    # Mutate to non-zero without calling set_const
+    m.tendon_stiffness.fill_(10.0)
+    m.tendon_damping.fill_(2.0)
+    m.actuator_damping.assign(np.array([[0.3, 0.5]], dtype=np.float32))
+    gear_active = m.actuator_gear.numpy().copy()
+    gear_active[0, 1, 0] = 1.5
+    m.actuator_gear.assign(gear_active)
+    mjm.tendon_stiffness[:] = 10.0
+    mjm.tendon_damping[:] = 2.0
+    mjm.actuator_damping[:] = [0.3, 0.5]
+    mjm.actuator_gear[1, 0] = 1.5
+
+    qfrc_spring_nz, qfrc_damper_nz, qacc_nz, qvel_nz = run_and_check("nonzero")
+    self.assertGreater(np.max(np.abs(qfrc_spring_nz)), 1e-2)
+    self.assertGreater(np.max(np.abs(qfrc_damper_nz)), 1e-2)
+    self.assertFalse(np.allclose(qacc_nz, qacc_zero))
+    self.assertFalse(np.allclose(qvel_nz, qvel_zero))
+
+    # Mutate back to zero without calling set_const
+    m.tendon_stiffness.zero_()
+    m.tendon_damping.zero_()
+    m.actuator_damping.assign(np.array([[0.0, 0.5]], dtype=np.float32))
+    gear_zero = gear_active.copy()
+    gear_zero[0, 1, 0] = 0.0
+    m.actuator_gear.assign(gear_zero)
+    mjm.tendon_stiffness[:] = 0.0
+    mjm.tendon_damping[:] = 0.0
+    mjm.actuator_damping[:] = [0.0, 0.5]
+    mjm.actuator_gear[1, 0] = 0.0
+
+    qfrc_spring_reset, qfrc_damper_reset, qacc_reset, qvel_reset = run_and_check("reset")
+    np.testing.assert_allclose(qfrc_spring_reset, 0.0, atol=1e-6)
+    np.testing.assert_allclose(qfrc_damper_reset, 0.0, atol=1e-6)
+    _assert_eq(qacc_reset, qacc_zero, "qacc_reset")
+    _assert_eq(qvel_reset, qvel_zero, "qvel_reset")
+
+    if nworld == 2:
+      self.assertFalse(np.allclose(qacc_nz[0], qacc_nz[1]))
+
 
 if __name__ == "__main__":
   wp.init()

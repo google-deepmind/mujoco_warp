@@ -396,6 +396,23 @@ class RayTest(parameterized.TestCase):
       _assert_eq(geomid.numpy()[0, 0], mj_geomid[0], f"degenerate geomid ({bad_nrow}, {bad_ncol})")
       _assert_eq(normal.numpy()[0, 0], mj_normal, f"degenerate normal ({bad_nrow}, {bad_ncol})")
 
+  def test_ray_mesh_hfield_unnormalized_vec(self):
+    """Tests ray<>mesh and ray<>hfield match MuJoCo when vec is not unit length."""
+    mjm, mjd, m, d = test_data.fixture("ray.xml")
+
+    # tetrahedron, hfield
+    for pnt_np, vec_np in (((2.0, 2.0, 2.0), (-2.0, -2.0, -2.0)), ((0.35, 2.15, 3.0), (0.2, -0.1, -2.0))):
+      pnt = wp.array([wp.vec3(*pnt_np)], dtype=wp.vec3).reshape((1, 1))
+      vec = wp.array([wp.vec3(*vec_np)], dtype=wp.vec3).reshape((1, 1))
+      dist, geomid, normal = mjw.ray(m, d, pnt, vec)
+
+      mj_geomid = np.zeros(1, dtype=np.int32)
+      mj_normal = np.zeros(3, dtype=np.float64)
+      mj_dist = mujoco.mj_ray(mjm, mjd, np.array(pnt_np), np.array(vec_np), None, 1, -1, mj_geomid, mj_normal)
+      _assert_eq(geomid.numpy()[0, 0], mj_geomid[0], f"geom_id {vec_np}")
+      _assert_eq(dist.numpy()[0, 0], mj_dist, f"dist {vec_np}")
+      _assert_eq(normal.numpy()[0, 0], mj_normal, f"normal {vec_np}")
+
   def test_ray_geomgroup(self):
     """Tests ray geomgroup filter."""
     mjm, mjd, m, d = test_data.fixture("ray.xml")
@@ -720,15 +737,82 @@ class RayTest(parameterized.TestCase):
     _assert_eq(dist_bvh.numpy(), dist.numpy(), "bvh dist")
     _assert_eq(normal_bvh.numpy()[:, :2], normal.numpy()[:, :2], "bvh normal")
 
-  def test_rays_rejects_optix_render_context(self):
-    mjm, _, m, d = test_data.fixture("ray.xml")
-    rc = mjw.create_render_context(mjm, backend="optix")
+  @parameterized.parameters(1, 2)
+  def test_rays_optix(self, nworld):
+    """Tests that OptiX rays match the warp BVH rays, including the ray filters."""
+    mjm, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <asset>
+          <mesh name="tet" vertex="0 0 0 .4 0 0 0 .4 0 0 0 .4"/>
+          <hfield name="hfield" nrow="3" ncol="2" elevation="1 2 3 3 2 1" size=".6 .4 .1 .1"/>
+        </asset>
+        <worldbody>
+          <geom type="plane" size="4 4 4"/>
+          <geom type="hfield" hfield="hfield" pos="0 2 0"/>
+          <body pos="0 0 1">
+            <freejoint/>
+            <geom type="sphere" size=".3" group="1"/>
+            <geom type="capsule" size=".1 .3" pos=".5 0 0" euler="30 40 0"/>
+          </body>
+          <body pos="1 0 1">
+            <freejoint/>
+            <geom type="box" size=".3 .2 .1" euler="10 20 30" group="2"/>
+            <geom type="mesh" mesh="tet" pos="0 .5 0" euler="0 30 0"/>
+          </body>
+          <body pos="0 1 1">
+            <freejoint/>
+            <geom type="cylinder" size=".2 .3" euler="45 0 0"/>
+            <geom type="ellipsoid" size=".3 .2 .1" pos=".5 0 0" group="1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=nworld,
+    )
+    rc = mjw.create_render_context(mjm, nworld=nworld, backend="optix")
     if rc.backend != "optix":
       self.skipTest("OptiX is unavailable")
-    pnt = wp.array([wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3).reshape((1, 1))
-    vec = wp.array([wp.vec3(0.0, 0.0, -1.0)], dtype=wp.vec3).reshape((1, 1))
-    with self.assertRaisesRegex(ValueError, "backend='warp'"):
-      mjw.ray(m, d, pnt, vec, rc=rc)
+    rc_warp = mjw.create_render_context(mjm, nworld=nworld)
+
+    if nworld == 2:
+      qpos = d.qpos.numpy()
+      qpos[1, :3] += 0.2
+      d.qpos.assign(qpos)
+    mjw.kinematics(m, d)
+    mjw.refit_bvh(m, d, rc)
+    mjw.refit_bvh(m, d, rc_warp)
+
+    rng = np.random.default_rng(0)
+    nray = 512
+    pnt_np = rng.uniform((-1.5, -1.5, 0.2), (2.5, 3.0, 3.0), (nworld, nray, 3))
+    vec_np = rng.uniform((-0.3, -0.3, 0.7), (1.3, 1.3, 1.3), (nworld, nray, 3)) - pnt_np
+    pnt = wp.array(pnt_np, dtype=wp.vec3)
+    vec = wp.array(vec_np, dtype=wp.vec3)
+
+    for geomgroup, flg_static, bodyexclude in (
+      (vec6(-1, -1, -1, -1, -1, -1), True, -1),
+      (vec6(1, 0, 1, 1, 1, 1), True, 2),
+      (vec6(-1, -1, -1, -1, -1, -1), False, 1),
+    ):
+      bodyexclude = wp.full(nray, bodyexclude, dtype=int)
+      outputs = []
+      for ctx in (rc_warp, rc):
+        dist = wp.empty((nworld, nray), dtype=float)
+        geomid = wp.empty((nworld, nray), dtype=int)
+        normal = wp.empty((nworld, nray), dtype=wp.vec3)
+        mjw.rays(m, d, pnt, vec, geomgroup, flg_static, bodyexclude, dist, geomid, normal, rc=ctx)
+        outputs.append((dist.numpy(), geomid.numpy(), normal.numpy()))
+
+      (dist_warp, geomid_warp, normal_warp), (dist, geomid, normal) = outputs
+      self.assertGreater((geomid >= 0).sum(), nworld * nray // 4)
+      _assert_eq(geomid, geomid_warp, "geomid")
+      np.testing.assert_allclose(dist, dist_warp, rtol=1e-4, atol=1e-4)
+      # OptiX traces in translated world cells, which costs some float precision
+      np.testing.assert_allclose(normal, normal_warp, rtol=1e-3, atol=1e-3)
+
+    if nworld == 2:
+      self.assertFalse(np.array_equal(dist[0], dist[1]))
 
   def test_ray_module_is_unique(self):
     """Ensure _ray does not share a module with _ray_bvh."""

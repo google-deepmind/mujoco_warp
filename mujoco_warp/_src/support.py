@@ -22,10 +22,13 @@ from mujoco_warp._src.collision_primitive_core import tri_weights
 from mujoco_warp._src.math import motion_cross
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINVAL
+from mujoco_warp._src.types import BiasType
 from mujoco_warp._src.types import ConeType
 from mujoco_warp._src.types import Data
 from mujoco_warp._src.types import DeterminismType
+from mujoco_warp._src.types import DisableBit
 from mujoco_warp._src.types import DynType
+from mujoco_warp._src.types import GainType
 from mujoco_warp._src.types import GeomType
 from mujoco_warp._src.types import JointType
 from mujoco_warp._src.types import Model
@@ -854,14 +857,70 @@ def _append_body_weight_zero(
   return wp.vec4i(body_ids[0], body_ids[1], body_ids[2], b), 4
 
 
+@wp.func
+def eff_tendon_possible(
+  # Model:
+  opt_disableflags: int,
+  tendon_actuatorid: wp.array[int],
+  tendon_stiffness: wp.array2d[float],
+  tendon_stiffnesspoly: wp.array2d[wp.vec2],
+  tendon_damping: wp.array2d[float],
+  tendon_dampingpoly: wp.array2d[wp.vec2],
+  # In:
+  worldid: int,
+  tenid: int,
+) -> bool:
+  if not (opt_disableflags & DisableBit.SPRING):
+    if tendon_stiffness[worldid % tendon_stiffness.shape[0], tenid] != 0.0:
+      return True
+    spoly = tendon_stiffnesspoly[worldid % tendon_stiffnesspoly.shape[0], tenid]
+    if spoly[0] != 0.0 or spoly[1] != 0.0:
+      return True
+  if not (opt_disableflags & DisableBit.DAMPER):
+    if tendon_damping[worldid % tendon_damping.shape[0], tenid] != 0.0 or tendon_actuatorid[tenid] != -1:
+      return True
+    dpoly = tendon_dampingpoly[worldid % tendon_dampingpoly.shape[0], tenid]
+    if dpoly[0] != 0.0 or dpoly[1] != 0.0:
+      return True
+  return False
+
+
+@wp.func
+def eff_actuator_possible(
+  # Model:
+  opt_disableflags: int,
+  actuator_gaintype: wp.array[int],
+  actuator_biastype: wp.array[int],
+  # In:
+  actid: int,
+) -> bool:
+  if opt_disableflags & DisableBit.ACTUATION:
+    return False
+  gaintype = actuator_gaintype[actid]
+  biastype = actuator_biastype[actid]
+  return (
+    biastype == BiasType.AFFINE
+    or biastype == BiasType.DCMOTOR
+    or biastype == BiasType.MUSCLE
+    or gaintype == GainType.AFFINE
+    or gaintype == GainType.SO3
+    or gaintype == GainType.MUSCLE
+    or gaintype == GainType.DCMOTOR
+  )
+
+
+@wp.func
+def mul_m_indices(entry: wp.uint64):
+  return wp.int32(entry), wp.int32(entry >> wp.uint64(32))
+
+
 @cache_kernel
 def mul_m_kernel(check_skip: bool):
   @wp.kernel(module="unique", grid_stride=False)
   def _mul_m(
     # Model:
     M_mulm_rowadr: wp.array[int],
-    M_mulm_col: wp.array[int],
-    M_mulm_madr: wp.array[int],
+    M_mulm_entry: wp.array[wp.uint64],
     # Data in:
     M_in: wp.array2d[float],
     # In:
@@ -882,8 +941,7 @@ def mul_m_kernel(check_skip: bool):
     start = M_mulm_rowadr[dofid]
     end = M_mulm_rowadr[dofid + 1]
     for k in range(start, end):
-      col = M_mulm_col[k]
-      madr = M_mulm_madr[k]
+      col, madr = mul_m_indices(M_mulm_entry[k])
       acc += M_in[worldid, madr] * vec[worldid, col]
 
     res[worldid, dofid] = acc
@@ -955,7 +1013,7 @@ def mul_m(
     wp.launch(
       mul_m_kernel(check_skip),
       dim=(d.nworld, m.nv),
-      inputs=[m.M_mulm_rowadr, m.M_mulm_col, m.M_mulm_madr, M, vec, skip],
+      inputs=[m.M_mulm_rowadr, m.M_mulm_entry, M, vec, skip],
       outputs=[res],
     )
 
@@ -1088,7 +1146,7 @@ def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d[float]):
 
 
 @wp.func
-def _decode_pyramid(njmax_in: int, pyramid: wp.array[float], efc_address: int, mu: vec5, condim: int) -> wp.spatial_vector:
+def _decode_pyramid(pyramid: wp.array[float], efc_address: int, mu: vec5, condim: int) -> wp.spatial_vector:
   """Converts pyramid representation to contact force."""
   force = wp.spatial_vector()
 
@@ -1099,14 +1157,8 @@ def _decode_pyramid(njmax_in: int, pyramid: wp.array[float], efc_address: int, m
   force[0] = float(0.0)
   for i in range(condim - 1):
     adr = 2 * i + efc_address
-    if adr < njmax_in:
-      dir1 = pyramid[adr]
-    else:
-      dir1 = 0.0
-    if adr + 1 < njmax_in:
-      dir2 = pyramid[adr + 1]
-    else:
-      dir2 = 0.0
+    dir1 = pyramid[adr]
+    dir2 = pyramid[adr + 1]
     force[0] += dir1 + dir2
     force[i + 1] = (dir1 - dir2) * mu[i]
 
@@ -1124,7 +1176,6 @@ def contact_force_fn(
   contact_efc_address_in: wp.array2d[int],
   contact_adhesion_in: wp.array[float],
   efc_force_in: wp.array2d[float],
-  njmax_in: int,
   nacon_in: wp.array[int],
   # In:
   worldid: int,
@@ -1133,13 +1184,15 @@ def contact_force_fn(
 ) -> wp.spatial_vector:
   """Extract 6D force:torque for one contact, in contact frame by default."""
   force = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+  if contact_id < 0 or contact_id >= wp.min(nacon_in[0], contact_dim_in.shape[0]):
+    return force
+
   condim = contact_dim_in[contact_id]
   efc_address = contact_efc_address_in[contact_id, 0]
 
-  if contact_id >= 0 and contact_id <= nacon_in[0] and efc_address >= 0:
+  if efc_address >= 0:
     if opt_cone == ConeType.PYRAMIDAL:
       force = _decode_pyramid(
-        njmax_in,
         efc_force_in[worldid],
         efc_address,
         contact_friction_in[contact_id],
@@ -1147,8 +1200,7 @@ def contact_force_fn(
       )
     else:
       for i in range(condim):
-        if contact_efc_address_in[contact_id, i] < njmax_in:
-          force[i] = efc_force_in[worldid, contact_efc_address_in[contact_id, i]]
+        force[i] = efc_force_in[worldid, contact_efc_address_in[contact_id, i]]
 
     # report net interface force: solver cone force minus adhesive pull
     force[0] -= contact_adhesion_in[contact_id]
@@ -1174,7 +1226,6 @@ def contact_force_kernel(
   contact_worldid_in: wp.array[int],
   contact_adhesion_in: wp.array[float],
   efc_force_in: wp.array2d[float],
-  njmax_in: int,
   nacon_in: wp.array[int],
   # In:
   contact_ids: wp.array[int],
@@ -1186,7 +1237,8 @@ def contact_force_kernel(
 
   contactid = contact_ids[tid]
 
-  if contactid >= nacon_in[0]:
+  if contactid < 0 or contactid >= wp.min(nacon_in[0], contact_worldid_in.shape[0]):
+    out[tid] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     return
 
   worldid = contact_worldid_in[contactid]
@@ -1199,7 +1251,6 @@ def contact_force_kernel(
     contact_efc_address_in,
     contact_adhesion_in,
     efc_force_in,
-    njmax_in,
     nacon_in,
     worldid,
     contactid,
@@ -1229,7 +1280,6 @@ def contact_force(m: Model, d: Data, contact_ids: wp.array[int], to_world_frame:
       d.contact.worldid,
       d.contact.adhesion,
       d.efc.force,
-      d.njmax,
       d.nacon,
       contact_ids,
       to_world_frame,
@@ -1838,8 +1888,10 @@ def add_interp_point_weights(
   # Model:
   body_weldid: wp.array[int],
   flex_nodebodyid: wp.array[int],
+  flex_cellempty: wp.array[bool],
   # In:
   coord: wp.vec3,
+  celladr: int,
   scale: float,
   cn: wp.vec3i,
   nstart: int,
@@ -1849,19 +1901,46 @@ def add_interp_point_weights(
   local_bodies: vec_interp_body,
   local_weights: vec_interp_weight,
 ) -> tuple[int, vec_interp_body, vec_interp_weight]:
-  """Accumulates trilinear cell node body weights at coord (with Coons TFI in shell mode)."""
+  """Accumulates trilinear cell node body weights at reference coord (with Coons TFI in shell mode).
+
+  The weights are evaluated in the active cell of coord (see mju_flexActiveCell): its natural cell,
+  or the nearest non-empty cell if that cell is empty (celladr: address in flex_cellempty,
+  -1: no cells), in which case local coordinates are extrapolated within [-0.02, 1.02]^3
+  (see mju_cellLookup).
+  """
   if scale == 0.0:
     return local_nb, local_bodies, local_weights
   cx = cn[0]
   cy = cn[1]
   cz = cn[2]
-  ci = wp.clamp(int(wp.floor(coord[0] * float(cx))), 0, cx - 1)
-  cj = wp.clamp(int(wp.floor(coord[1] * float(cy))), 0, cy - 1)
-  ck = wp.clamp(int(wp.floor(coord[2] * float(cz))), 0, cz - 1)
+  uc = wp.vec3(coord[0] * float(cx), coord[1] * float(cy), coord[2] * float(cz))
+  ci = wp.clamp(int(wp.floor(uc[0])), 0, cx - 1)
+  cj = wp.clamp(int(wp.floor(uc[1])), 0, cy - 1)
+  ck = wp.clamp(int(wp.floor(uc[2])), 0, cz - 1)
+  lo = float(0.0)
+  hi = float(1.0)
+  if celladr >= 0:
+    if flex_cellempty[celladr + ci * cy * cz + cj * cz + ck]:
+      # nearest non-empty cell (first minimum in cell order), extrapolated
+      best = float(MJ_MAXVAL)
+      for cc in range(cx * cy * cz):
+        if not flex_cellempty[celladr + cc]:
+          d = uc - wp.vec3(
+            wp.clamp(uc[0], float(cc // (cy * cz)), float(cc // (cy * cz) + 1)),
+            wp.clamp(uc[1], float((cc // cz) % cy), float((cc // cz) % cy + 1)),
+            wp.clamp(uc[2], float(cc % cz), float(cc % cz + 1)),
+          )
+          if wp.dot(d, d) < best:
+            best = wp.dot(d, d)
+            ci = cc // (cy * cz)
+            cj = (cc // cz) % cy
+            ck = cc % cz
+            lo = -0.02
+            hi = 1.02
   local = wp.vec3(
-    wp.clamp(coord[0] * float(cx) - float(ci), 0.0, 1.0),
-    wp.clamp(coord[1] * float(cy) - float(cj), 0.0, 1.0),
-    wp.clamp(coord[2] * float(cz) - float(ck), 0.0, 1.0),
+    wp.clamp(uc[0] - float(ci), lo, hi),
+    wp.clamp(uc[1] - float(cj), lo, hi),
+    wp.clamp(uc[2] - float(ck), lo, hi),
   )
   cy1 = cy + 1
   cz1 = cz + 1
@@ -1906,10 +1985,12 @@ def add_flex_interp_weights(
   flex_dim: wp.array[int],
   flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
+  flex_celladr: wp.array[int],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
   flex_elemdataadr: wp.array[int],
   flex_nodebodyid: wp.array[int],
+  flex_cellempty: wp.array[bool],
   flex_elem: wp.array[int],
   flex_vert0: wp.array[wp.vec3],
   # Data in:
@@ -1926,7 +2007,11 @@ def add_flex_interp_weights(
   local_bodies: vec_interp_body,
   local_weights: vec_interp_weight,
 ) -> tuple[int, vec_interp_body, vec_interp_weight]:
-  """Accumulates interpolated flex contact side bodies and weights at blended reference coord."""
+  """Accumulates interpolated flex contact side bodies and weights at the blended reference coord.
+
+  As in mj_contactBodyWeight, the weights are the cell basis at the blended reference coordinates
+  of the contact vertex or element vertices, in their active cell.
+  """
   coord = wp.vec3(0.0)
   if vert_id >= 0:
     coord = flex_vert0[flex_vertadr[f] + vert_id]
@@ -1946,7 +2031,9 @@ def add_flex_interp_weights(
   return add_interp_point_weights(
     body_weldid,
     flex_nodebodyid,
+    flex_cellempty,
     coord,
+    flex_celladr[f],
     scale,
     flex_cellnum[f],
     flex_nodeadr[f],
@@ -2350,6 +2437,7 @@ def contact_bodies_and_weights(
   flex_dim: wp.array[int],
   flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
+  flex_celladr: wp.array[int],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
   flex_elemadr: wp.array[int],
@@ -2357,6 +2445,7 @@ def contact_bodies_and_weights(
   flex_elemdataadr: wp.array[int],
   flex_nodebodyid: wp.array[int],
   flex_vertbodyid: wp.array[int],
+  flex_cellempty: wp.array[bool],
   flex_elem: wp.array[int],
   flex_vert0: wp.array[wp.vec3],
   flex_rod_has_twist: wp.array[bool],
@@ -2396,10 +2485,12 @@ def contact_bodies_and_weights(
       flex_dim,
       flex_interp,
       flex_cellnum,
+      flex_celladr,
       flex_nodeadr,
       flex_vertadr,
       flex_elemdataadr,
       flex_nodebodyid,
+      flex_cellempty,
       flex_elem,
       flex_vert0,
       flexvert_xpos_in,

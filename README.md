@@ -112,12 +112,13 @@ mjwarp-testspeed benchmarks/humanoid/humanoid.xml --event_trace
 
 There are many ways to use MuJoCo Warp in your projects. In many cases, you can directly install and use MJWarp as a drop-in replacement for MuJoCo.
 
-If you prefer the [JAX](https://github.com/jax-ml/jax) ecosystem, you can use MJWarp via [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html).  See [MuJoCo Playground](https://github.com/google-deepmind/mujoco_playground) for robotics machine learning recipes that use [JAX](https://github.com/jax-ml/jax) and MJWarp.
+If you prefer [PyTorch](https://pytorch.org/), consider one of these options:
 
-If you prefer [PyTorch](https://pytorch.org/) for research, consider one of these two great options:
+* [MuJoCo Playground](https://github.com/google-deepmind/mujoco_playground) and [reaf-sim](https://github.com/google-deepmind/reaf-sim) are the official first-party PyTorch simulation frameworks built by the MuJoCo team, supporting GPU-accelerated RL training, single-threaded sim eval execution, and end-to-end sim-to-real workflows.
+* [Isaac Lab](https://github.com/isaac-sim/IsaacLab) integrates MJWarp via [Newton](https://github.com/newton-physics/newton).  This setup enables powerful, highly extensible multi-physics simulation with deep NVIDIA ecosystem integration.
+* [mjlab](https://github.com/mujocolab/mjlab) exposes the [Isaac Lab](https://github.com/isaac-sim/IsaacLab) manager-based API directly on top of MJWarp rather than Newton.
 
-* [Isaac Lab](https://github.com/isaac-sim/IsaacLab/tree/feature/newton) integrates MJWarp via [Newton](https://github.com/newton-physics/newton).  This setup enables powerful, highly extensible multi-physics simulation with deep NVIDIA ecosystem integration.
-* [mjlab](https://github.com/mujocolab/mjlab) exposes the [Isaac Lab](https://github.com/isaac-sim/IsaacLab) manager-based API directly on top of MJWarp, providing a focused framework for robotics research with minimal dependencies and direct access to native MuJoCo data structures.
+If you prefer the [JAX](https://github.com/jax-ml/jax) ecosystem, you can use MJWarp via [MJX](https://mujoco.readthedocs.io/en/stable/mjx.html) and the legacy MJX environments in Playground's [`rss2025`](https://github.com/google-deepmind/mujoco_playground/tree/main/rss2025) directory.
 
 # MuJoCo API Compatibility
 

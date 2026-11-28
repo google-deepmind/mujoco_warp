@@ -546,6 +546,91 @@ class IOTest(parameterized.TestCase):
 
     self.assertEqual(io._default_njmax_nnz(mjm, nconmax=0, njmax=2), 2)
 
+  def test_max_efc_J_rownnz(self):
+    """Bound constraint rows by the widest contact, equality, friction or limit row."""
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom size=".1"/>
+            <replicate count="2" euler="0 0 180">
+              <body pos=".2 0 0">
+                <joint axis="0 1 0"/>
+                <geom size=".05"/>
+                <body pos=".2 0 0">
+                  <joint axis="0 1 0"/>
+                  <geom size=".05"/>
+                </body>
+              </body>
+            </replicate>
+          </body>
+          <body pos="0 0 1">
+            <joint axis="0 1 0"/>
+            <geom size=".1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """
+    )
+    # the arm tips can collide; the bound counts the dofs that move either, shared or not: 6 + 2 + 2
+    self.assertEqual(mjwarp.put_model(mjm).max_efc_J_rownnz, 10)
+
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <worldbody>
+          <replicate count="4" offset=".5 0 0">
+            <body>
+              <joint name="hinge" axis="0 1 0"/>
+              <geom size=".1"/>
+            </body>
+          </replicate>
+        </worldbody>
+        <tendon>
+          <fixed name="tendon0">
+            <joint joint="hinge0" coef="1"/>
+            <joint joint="hinge1" coef="1"/>
+          </fixed>
+          <fixed name="tendon1">
+            <joint joint="hinge2" coef="1"/>
+            <joint joint="hinge3" coef="1"/>
+          </fixed>
+        </tendon>
+        <equality>
+          <tendon tendon1="tendon0" tendon2="tendon1"/>
+        </equality>
+      </mujoco>
+      """
+    )
+    # the tendon equality spans all four hinges, a contact only two
+    self.assertEqual(mjwarp.put_model(mjm).max_efc_J_rownnz, 4)
+
+  def test_default_njmax_nnz_includes_bilateral_limits(self):
+    """Count both limit sides when the range is narrower than twice the margin."""
+    mjm = mujoco.MjModel.from_xml_string(
+      """
+      <mujoco>
+        <option jacobian="sparse"/>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide" limited="true" range="-1 1" margin="1.5"/>
+            <joint type="hinge" limited="true" range="-1 1"/>
+            <geom size="0.1" contype="0" conaffinity="0"/>
+          </body>
+        </worldbody>
+        <tendon>
+          <fixed limited="true" range="-1 1" margin="1.5">
+            <joint joint="slide" coef="1"/>
+          </fixed>
+        </tendon>
+      </mujoco>
+      """
+    )
+
+    self.assertEqual(io._default_njmax_nnz(mjm, nconmax=0, njmax=5), 5)
+
   def test_make_put_data(self):
     """Tests that make_data and put_data are producing the same shapes for all arrays."""
     mjm, _, _, d = test_data.fixture("pendula.xml", nvmax=None)
@@ -2910,6 +2995,8 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(m.nflexrodhinge, 2)
     np.testing.assert_array_equal(m.flex_rodhinge_map.numpy(), [[rod, adr + 1], [rod, adr + 1 + types.ROD_HINGE_SIZE]])
     self.assertFalse(m.has_flex_edge_stiff_damp)
+    self.assertTrue(m.has_flex_stiff)
+    np.testing.assert_array_equal(m.flex_stiff_possible.numpy(), [True, False, True])
 
   @parameterized.parameters(
     # quadratic flexes are rejected before the self-collision check
@@ -3231,6 +3318,32 @@ class IOTest(parameterized.TestCase):
     if nworld == 2:
       self.assertEqual(d_put.tree_awake.numpy()[1, 0], 1)
       self.assertFalse(np.allclose(d_put.qpos.numpy()[0], d_put.qpos.numpy()[1]))
+
+  def test_get_data_into_nu_zero_nJmom(self):
+    """get_data_into copies actuator_moment when nu == 0 and nJmom > 0."""
+    mjm, mjd, _, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <joint name="j0"/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <dcmotor joint="j0" gear="2" motorconst="1" resistance="1" input="none"/>
+        </actuator>
+      </mujoco>
+      """
+    )
+    self.assertEqual(mjm.nu, 0)
+    self.assertEqual(mjm.nactuator, 1)
+    self.assertEqual(mjm.nJmom, 1)
+
+    result = mujoco.MjData(mjm)
+    mjwarp.get_data_into(result, mjm, d)
+    _assert_eq(result.moment_colind, mjd.moment_colind, "moment_colind")
+    _assert_eq(result.actuator_moment, mjd.actuator_moment, "actuator_moment")
 
 
 if __name__ == "__main__":
