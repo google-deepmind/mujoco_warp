@@ -823,6 +823,37 @@ class IOTest(parameterized.TestCase):
     self.assertEqual(d.naconmax, nconmax_expected)
     self.assertEqual(d.njmax, njmax_expected)
 
+  def test_put_data_default_capacity_includes_broadphase_pairs(self):
+    # Adjacent octahedra have overlapping bounds but disjoint surfaces.
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option gravity="0 0 0"/>
+        <asset>
+          <mesh name="octahedron"
+                vertex=".05 0 0 -.05 0 0 0 .05 0 0 -.05 0 0 0 .05 0 0 -.05"/>
+        </asset>
+        <worldbody>
+          <replicate count="60" offset=".060104 .060104 0">
+            <body pos="0 0 1">
+              <freejoint/>
+              <geom type="mesh" mesh="octahedron"/>
+            </body>
+          </replicate>
+        </worldbody>
+      </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    self.assertEqual(io._default_nconmax(mjm, mjd), io._default_nconmax(mjm))
+    mujoco.mj_forward(mjm, mjd)
+    self.assertEqual(mjd.ncon, 0)
+    m = mjwarp.put_model(mjm)
+    d = mjwarp.put_data(mjm, mjd)
+    mjwarp.step(m, d)
+    self.assertEqual(int(d.ncollision.numpy()[0]), 59)
+    self.assertGreaterEqual(d.naconmax, 59)
+    self.assertFalse(int(d.overflow.numpy()[0]) & int(types.OverflowType.BROADPHASE))
+    self.assertEqual(mjwarp.put_data(mjm, mjd, nconmax=48).naconmax, 48)
+
   def test_get_data_into_m(self):
     mjm = mujoco.MjModel.from_xml_string("""
       <mujoco>
