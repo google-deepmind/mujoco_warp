@@ -4069,6 +4069,8 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     opt.iterations = 1
     opt.cone = pyramidal
     opt.disableflags = contact | spring
+
+  Dictionary values for array-backed options can be numeric scalars or sequences.
   """
   enum_fields = {
     "opt.broadphase": types.BroadphaseType,
@@ -4166,10 +4168,14 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
         if val.upper() not in ("TRUE", "FALSE"):
           raise ValueError(f"Unrecognized value for field: {key}")
         val = val.upper() == "TRUE"
-      elif typ is wp.array and isinstance(val, str):
+      elif typ is wp.array:
         arr = getattr(obj, attr)
-        floats = [float(p) for p in val.strip("[]").split()]
-        val = wp.array([arr.dtype(*floats)], dtype=arr.dtype)
+        if isinstance(val, str):
+          floats = [float(p) for p in val.strip("[]").split()]
+          val = [arr.dtype(*floats)]
+        elif np.isscalar(val):
+          val = [val]
+        val = wp.array(val, dtype=arr.dtype, device=arr.device)
       elif typ is np.ndarray and isinstance(val, str):
         arr = getattr(obj, attr)
         val = np.array([float(p) for p in val.strip("[]").split()], dtype=arr.dtype)
