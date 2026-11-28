@@ -217,13 +217,13 @@ def support(geom: Geom, geomtype: int, dir: wp.vec3) -> SupportPoint:
   elif geomtype == GeomType.HFIELD:
     max_dist = float(FLOAT_MIN)
     # TODO(kbayes): Support edge prisms
-    sp.vertex_index = wp.where(dir[2] < 0.0, -2, -3)
     for i in range(6):
       vert = geom.polyvert[i]
       dist = wp.dot(vert, dir)
       if dist > max_dist:
         max_dist = dist
         sp.point = vert
+        sp.vertex_index = i
   elif geomtype == GeomType.TRIANGLE:
     t1 = geom.rot[0, :]
     t2 = geom.rot[1, :]
@@ -1044,7 +1044,10 @@ def _epa_witness(
   i1 = pt.vert_index[2 * face[0]]
   i2 = pt.vert_index[2 * face[1]]
   i3 = pt.vert_index[2 * face[2]]
-  if geomtype1 == GeomType.HFIELD and (i1 != i2 or i1 != i3):
+  # a face with bottom (0-2) and top (3-5) prism vertices is a side of the prism: a sphere or
+  # capsule contacts the top of the prism instead, other geoms keep the EPA witness points
+  is_round = geomtype2 == GeomType.CAPSULE or geomtype2 == GeomType.SPHERE
+  if geomtype1 == GeomType.HFIELD and is_round and ((i1 < 3) != (i2 < 3) or (i1 < 3) != (i3 < 3)):
     # TODO(kbayes): Fix case where geom2 is near bottom of height field or "extreme" prism heights
     n = wp.vec3(0.0, 0.0, 1.0)
 
@@ -1054,19 +1057,14 @@ def _epa_witness(
     c = geom1.polyvert[5]
 
     # TODO(kbayes): Support cases where geom2 is larger than the height field
-    if geomtype2 == GeomType.CAPSULE or geomtype2 == GeomType.SPHERE:
-      radius = geom2.size[0]
-      margin = geom2.margin
-      geom2.margin = 0.0
-      geom2.size = wp.vec3(0.0, geom2.size[1], geom2.size[2])
-      sp = support(geom2, geomtype2, x2)
-      x2 = sp.point - (0.5 * margin + radius) * n
-      geom2.size[0] = radius
-      geom2.margin = margin
-    else:
-      x2 = wp.normalize(x2)
-      sp = support(geom2, geomtype2, x2)
-      x2 = sp.point
+    radius = geom2.size[0]
+    margin = geom2.margin
+    geom2.margin = 0.0
+    geom2.size = wp.vec3(0.0, geom2.size[1], geom2.size[2])
+    sp = support(geom2, geomtype2, x2)
+    x2 = sp.point - (0.5 * margin + radius) * n
+    geom2.size[0] = radius
+    geom2.margin = margin
 
     coordinates2 = _tri_affine_coord(a, b, c, x2)
     if coordinates2[0] > 0.0 and coordinates2[1] > 0.0 and coordinates2[2] > 0.0:
@@ -2647,10 +2645,11 @@ def _inflate(
   x2 = result.x2
 
   if geomtype1 == GeomType.HFIELD:
-    v = result.simplex_index1[0]
+    # prism vertices 0-2 are the bottom, 3-5 the top: a simplex with both is on a side
+    v = result.simplex_index1[0] < 3
     is_side = bool(False)
     for i in range(result.dim):
-      if result.simplex_index1[i] != v:
+      if (result.simplex_index1[i] < 3) != v:
         is_side = True
         break
 
